@@ -18,7 +18,7 @@
 
 ## Запуск
 
-Только Python 3.9+ из стандартной библиотеки, ничего ставить не нужно:
+Только Python 3.8+ из стандартной библиотеки, ничего ставить не нужно:
 
 ```bash
 python3 app/server.py            # http://0.0.0.0:8000
@@ -28,6 +28,59 @@ python3 app/server.py --port 8080
 - `app/import_data.py` — пересборка `app/data/items.json` из `Data Pool.xlsx` (запускается автоматически, если файла нет);
 - `app/data/cbpr.db` — SQLite, создаётся при первом старте (в git не хранится);
 - аккаунт с ролью **ГМ** даёт доступ к размещению заказов и выплатам евробаксов персонажам.
+
+## Установка на Ubuntu Server (сайт работает постоянно)
+
+Нужен только сервер с Ubuntu и доступ по SSH. Скопируй команды по шагам:
+
+```bash
+# 1. Подключись к серверу (с своего компьютера):
+ssh root@IP_СЕРВЕРА            # например: ssh root@95.123.45.67
+
+# 2. Обнови систему и поставь git + python:
+apt update && apt install -y git python3
+
+# 3. Забери код проекта:
+git clone https://github.com/a3sthex/CBPR-helper.git
+cd CBPR-helper
+
+# 4. Запусти установщик — он сам создаст службу с автозапуском:
+bash deploy/install.sh          # можно свой порт: bash deploy/install.sh 8080
+```
+
+После установки сайт живёт по адресу `http://IP_СЕРВЕРА:8000` и **переживает перезагрузку сервера**.
+
+Полезные команды:
+
+```bash
+journalctl -u cbpr -f                # смотреть логи вживую
+systemctl restart cbpr               # перезапустить сайт
+cd CBPR-helper && git pull && systemctl restart cbpr   # обновить до новой версии
+```
+
+Если сайт не открывается снаружи — открой порт 8000 в панели хостинга (группа безопасности) и/или `ufw allow 8000/tcp`.
+
+**Резервная копия** (все аккаунты, персонажи и посты лежат в одном файле `app/data/cbpr.db`):
+
+```bash
+systemctl stop cbpr
+cp CBPR-helper/app/data/cbpr.db ~/cbpr-backup-$(date +%F).db
+systemctl start cbpr
+```
+
+### Свой домен и HTTPS (по желанию)
+
+```bash
+apt install -y nginx                # nginx на порту 80 проксирует сайт
+cp deploy/nginx-cbpr.conf /etc/nginx/sites-available/cbpr
+ln -sf /etc/nginx/sites-available/cbpr /etc/nginx/sites-enabled/cbpr
+rm -f /etc/nginx/sites-enabled/default
+nginx -t && systemctl reload nginx
+
+# HTTPS, когда домен привязан A-записью к IP сервера:
+apt install -y certbot python3-certbot-nginx
+certbot --nginx -d твой-домен.ru
+```
 
 ## Используемые правила (Cyberpunk RED)
 

@@ -851,8 +851,10 @@ class Handler(BaseHTTPRequestHandler):
             'JOIN users u ON u.id=n.author_id ORDER BY n.created DESC LIMIT 100').fetchall()
         out = []
         for r in rows:
-            out.append({k: r[k] for k in self.NEWS_FIELDS} |
-                       {'author': r['author'], 'mine': False})
+            o = dict((k, r[k]) for k in self.NEWS_FIELDS)
+            o['author'] = r['author']
+            o['mine'] = False
+            out.append(o)
         u = self.current_user(conn)
         if u:
             for o in out:
@@ -871,8 +873,9 @@ class Handler(BaseHTTPRequestHandler):
             (u['id'], title, tag, text, time.time()))
         conn.commit()
         r = conn.execute('SELECT * FROM news WHERE id=?', (cur.lastrowid,)).fetchone()
-        self.send_json({k: r[k] for k in self.NEWS_FIELDS} | {'author': u['display_name']},
-                       status=201)
+        created = dict((k, r[k]) for k in self.NEWS_FIELDS)
+        created['author'] = u['display_name']
+        self.send_json(created, status=201)
 
     def api_news_delete(self, conn, qs, m, body):
         u = self.require_user(conn)
