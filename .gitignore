@@ -1,0 +1,9 @@
+# рантайм-база приложения (создаётся автоматически)
+app/data/cbpr.db
+app/data/cbpr.db-wal
+app/data/cbpr.db-shm
+
+__pycache__/
+*.pyc
+.venv/
+nohup.out

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CBPR Helper — Cyberpunk RED</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Orbitron:wght@600;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🌆%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/">
+    <span class="brand-mark">▞</span>
+    <span class="brand-name">CBPR<b>helper</b></span>
+  </a>
+  <nav id="nav">
+    <a href="#/" data-route="">Главная</a>
+    <a href="#/codex" data-route="codex">Справочник</a>
+    <a href="#/market" data-route="market">Чёрный рынок</a>
+    <a href="#/calc" data-route="calc">Калькулятор</a>
+    <a href="#/characters" data-route="characters">Мои персонажи</a>
+    <a href="#/roster" data-route="roster">Ростер</a>
+    <a href="#/news" data-route="news">Новости</a>
+    <a href="#/jobs" data-route="jobs">Доска заказов</a>
+  </nav>
+  <div id="userbox" class="userbox"></div>
+</header>
+<main id="view" class="container"></main>
+<footer class="footer">
+  <span>CBPR helper — неофициальный фанатский инструмент для <b>Cyberpunk RED</b> (R. Talsorian Games).</span>
+  <span>Ночной город не спит. Данные — из Data Pool.xlsx.</span>
+</footer>
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+<script src="/app.js"></script>
+</body>
+</html>
