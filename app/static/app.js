@@ -2145,10 +2145,19 @@ function wizStepSummaryHtml() {
 
 /* ---------- биндинги шагов ---------- */
 
+function hasRoleSpecificProgress(wiz) {
+  const hasLifepath = Object.values(wiz.roleLifepath || {})
+    .some(value => String(value || '').trim());
+  const currentSetup = JSON.stringify(wiz.roleSetup || {});
+  const defaultSetup = JSON.stringify(defaultRoleSetup(wiz.role));
+  return hasLifepath || currentSetup !== defaultSetup;
+}
+
 function changeWizardRole(nextRole) {
   const wiz = state.wizard;
   if (!nextRole || nextRole === wiz.role) return;
-  if (!window.confirm(`Сменить роль ${wiz.role} на ${nextRole}? Ролевой Lifepath, настройка способности и стартовые преимущества роли будут сброшены. Общие данные сохранятся.`)) return;
+  if (hasRoleSpecificProgress(wiz) &&
+      !window.confirm(`Сменить роль ${wiz.role} на ${nextRole}? Заполненный ролевой Lifepath и изменённая настройка способности будут сброшены. Общие данные сохранятся.`)) return;
   wiz.role = nextRole;
   wiz.roleLifepath = {};
   wiz.roleSetup = defaultRoleSetup(nextRole);
