@@ -60,6 +60,9 @@ if (MERGED_LIFEPATH_FIELDS.find(field => field.key === 'region').options.length 
 if (state.wizard.role !== '') throw new Error('new draft must not preselect a Role');
 if (state.wizard.public !== false) throw new Error('new character must default to Private');
 if (wizStatSpent() !== 50 || wizSkillSpent() !== 26) throw new Error('invalid defaults');
+state.wizard.subSkills.push({{ base: 'Language', name: 'Russian', lvl: 5, native: true, free: true }});
+if (wizSubAllocated('Language') !== 3) throw new Error('Cultural Language levels above 4 must consume parent-pool');
+state.wizard.subSkills.pop();
 if (!wizStepRoleHtml().includes('Choose a Role')) throw new Error('missing empty Role state');
 if (!wizStepLifepathHtml().includes('creation-section')) throw new Error('Lifepath is not collapsible');
 if (!wizStepStatsHtml().includes('data-stat-lock')) throw new Error('STAT locks missing');

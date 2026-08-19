@@ -178,6 +178,16 @@ class CreationValidationTests(unittest.TestCase):
         self.assertEqual(server.creation_skill_cost(char), 86)
         server.validate_creation(char)
 
+    def test_cultural_language_can_advance_above_free_four(self):
+        char = valid_merged_character()
+        char['skills']['Language (Русский)'] = 5
+        char['skill_pools']['Language'] = 3
+        donor = next(name for name, level in char['skills'].items()
+                     if level == 6 and server.skill_base(name) not in server.SPECIALIZED_SKILLS)
+        char['skills'][donor] = 5
+        self.assertEqual(server.creation_skill_cost(char), 86)
+        server.validate_creation(char)
+
     def test_parent_pool_may_keep_unallocated_levels(self):
         char = valid_merged_character()
         char['skill_pools']['Language'] = 3
