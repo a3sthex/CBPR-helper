@@ -80,6 +80,19 @@ const englishVisibleText = html => String(html)
   .replace(/&[^;]+;/g, ' ').replace(/\\s+/g, ' ').trim();
 const englishAttributes = html => [...String(html).matchAll(/(?:placeholder|title|aria-label)="([^"]*)"/g)]
   .map(match => APP_I18N.translate(match[1])).join(' ');
+const ncContractHtml = ncContractCard({{
+  id: 1, status: 'open', risk_level: 'high', title: 'Relay Run', teaser: 'Test',
+  participants: [], district_id: 'watson', reward_mode: 'hidden', scheduled_at: null,
+  crew_capacity: 4, crew_count: 1, waitlist_count: 0,
+}});
+const ncFeedHtml = ncFeedCard({{
+  id: 1, format: 'short', author: {{display_name:'V',accent_color:'#00e5ff'}},
+  body: 'Signal', created: 1,
+}});
+for (const html of [ncMapHtml([]), ncContractHtml, ncFeedHtml]) {{
+  const visible = englishVisibleText(html) + ' ' + englishAttributes(html);
+  if (hasCyrillic(visible)) throw new Error('untranslated English NC//NET surface: ' + visible);
+}}
 for (const field of MERGED_LIFEPATH_FIELDS) {{
   for (const option of field.options) if (hasCyrillic(displayKnownValue(option.value))) throw new Error('untranslated Common Lifepath option: ' + option.value);
 }}
@@ -112,6 +125,7 @@ console.log('ok');
             (ROOT / 'app/static/i18n.js').read_text(encoding='utf-8'),
             (ROOT / 'app/static/theme.js').read_text(encoding='utf-8'),
             (ROOT / 'app/static/creation-data.js').read_text(encoding='utf-8'),
+            (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8'),
             app,
             test,
         ])

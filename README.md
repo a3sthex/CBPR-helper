@@ -2,7 +2,7 @@
 
 Иммерсивная сеть Найт-Сити 2070-х для общих кампаний по **Cyberpunk RED / CEMK**. ГМы размещают контракты от лица внутриигровых персон, игроки используют Character Dossiers, а сыгранные события превращаются в City Feed. Каталог предметов собирается из `Data Pool.xlsx`, стартовый ростер — из листа `Folio`.
 
-Полная архитектура редизайна, модель данных и этапы безопасной миграции описаны в [`docs/ncnet-redesign.md`](docs/ncnet-redesign.md). Текущий интерфейс переводится на NC//NET поэтапно без сброса существующей базы.
+Полная архитектура, модель данных и миграции описаны в [`docs/ncnet-redesign.md`](docs/ncnet-redesign.md), а проверенные карты/правила и страницы источников — в [`docs/ncnet-sources.md`](docs/ncnet-sources.md). NC//NET обновляет существующую базу без reset.
 
 ## Что внутри
 
@@ -13,9 +13,11 @@
 | 📋 **Crew Registry** | Все публичные персонажи всех игроков. При старте импортируется ростер вашей партии из Folio (13 эджраннеров). |
 | 🕶️ **Чёрный рынок** | Ночная витрина (обновляется ежедневно в 00:00 МСК, уличные цены ±50%), полный каталог на 1092 предмета, скупка хлама за 50%, выплаты от ГМ. |
 | 📚 **Справочник** | Поиск по 14 категориям с ценами, характеристиками, описаниями и ссылками на книги (`CP:R 341` = Corebook, `BC` = Black Chrome, `CEMK` = Edgerunners Mission Kit). |
-| 🎲 **Калькулятор** | Расчёт урона против SP (пробитие брони, абляция, состояния ранений со стабилизацией), критические травмы (2d6 по телу/голове), автоогонь, спасброски смерти, броски костей, таблицы DV по дальности и автоогню, наслоение брони. |
-| 📡 **City Feed** | Внутриигровые публикации о событиях партий. Character-посты публикуются сразу, без предварительной GM-модерации. |
-| 📞 **Contracts** | ГМы публикуют контракты, а игроки записываются принадлежащими им Characters. Полная модель Contracts внедряется поэтапно. |
+| 🎲 **Quick Reference** | Damage/SP, Critical Injuries, Autofire, Death Saves, Range DV и General Difficulty с указанием книг и страниц; инструменты можно использовать как справочник или Resolver. |
+| ◈ **Personas / Storylines** | Private/Shared/System персоны, общий audit log, GM-соавторы сюжетных линий и публичная/закрытая хронология. |
+| 📡 **City Feed** | Шесть внутриигровых форматов, прямые Character-публикации без предварительной модерации, комментарии, revisions и post-publication hide moderation. |
+| 📞 **Contracts** | Произвольные Persona-роли, public/classified briefing, reward modes, мгновенная запись Character, автоматический waitlist, Service Information и Aftermath. |
+| ⚙️ **GM OPS** | Active Sessions из Contracts, NPC templates, инициатива, HP/SP/resources, activity log и настраиваемый Player View. |
 
 ## Запуск
 
@@ -41,11 +43,26 @@ CBPR_ADMIN_USERS=operator python3 app/server.py
 
 Для systemd переменная задаётся в конфигурации службы, после чего сервис перезапускается. Не добавляйте имена администраторов вместе с секретами или токенами в Git.
 
+Опциональная интеграция с общей беседой VK и OAuth-привязка пользователей включаются только серверными переменными:
+
+```bash
+VK_COMMUNITY_TOKEN=...          # токен сообщества
+VK_PEER_ID=...                  # peer_id общей беседы
+VK_CLIENT_ID=...                # VK OAuth app
+VK_CLIENT_SECRET=...
+VK_REDIRECT_URI=https://example.com/api/vk/oauth/callback
+NCNET_PUBLIC_URL=https://example.com
+CBPR_SECURE_COOKIES=1
+```
+
+Секреты не сохраняются в SQLite, frontend или Git. Без этих переменных NC//NET работает полностью, а VK outbox остаётся в состоянии pending.
+
 Проверка правил и каталога:
 
 ```bash
 python3 -m unittest discover -s tests -v
 node --check app/static/creation-data.js
+node --check app/static/ncnet.js
 node --check app/static/app.js
 ```
 

@@ -700,7 +700,9 @@ Player View управляется конфигурацией GM и никогд
 
 ## 12. Этапы реализации
 
-### Phase 0 — Verification and migration harness
+**Текущий статус:** функциональный вертикальный срез Phase 0–7 реализован. Внешние интеграции автоматически остаются отключёнными до появления server-side credentials; точная картографическая подложка остаётся оригинальным SVG со сверенной топологией районов, пока владелец не подтвердит конкретный официальный map asset.
+
+### Phase 0 — Verification and migration harness ✅
 
 - backup/migration tests;
 - role bootstrap configuration;
@@ -708,7 +710,7 @@ Player View управляется конфигурацией GM и никогд
 - fixture copy of DB;
 - no visual changes.
 
-### Phase 1 — Foundation vertical slice
+### Phase 1 — Foundation vertical slice ✅
 
 - account roles Admin/GM/Player;
 - убрать self-assign GM;
@@ -721,7 +723,7 @@ Player View управляется конфигурацией GM и никогд
 - legacy Jobs migration;
 - список Contracts вместо финальной карты.
 
-### Phase 2 — City Feed
+### Phase 2 — City Feed ✅
 
 - post formats;
 - direct Character publishing without pre-moderation;
@@ -730,7 +732,7 @@ Player View управляется конфигурацией GM и никогд
 - legacy News migration;
 - Persona/Character author pages.
 
-### Phase 3 — Dashboard and map
+### Phase 3 — Dashboard and map ✅
 
 - проверка официального map source;
 - пользователь подтверждает districts/boundaries;
@@ -739,7 +741,7 @@ Player View управляется конфигурацией GM и никогд
 - mobile list alternative;
 - City Feed side panel.
 
-### Phase 4 — Dossiers and Ledger
+### Phase 4 — Dossiers and Ledger ✅
 
 - Dossier routes;
 - permanent Character Ledger;
@@ -747,7 +749,7 @@ Player View управляется конфигурацией GM и никогд
 - contract history;
 - authored posts/comments.
 
-### Phase 5 — GM Quick Reference
+### Phase 5 — GM Quick Reference ✅
 
 - PDF/source audit;
 - source/page metadata;
@@ -755,7 +757,7 @@ Player View управляется конфигурацией GM и никогд
 - optional Resolvers;
 - regression tables.
 
-### Phase 6 — Session Dashboard
+### Phase 6 — Session Dashboard ✅
 
 - Session from Contract;
 - NPC templates;
@@ -764,7 +766,7 @@ Player View управляется конфигурацией GM и никогд
 - session activity log;
 - completion outcome.
 
-### Phase 7 — VK, Aftermath, sound and polish
+### Phase 7 — VK, Aftermath, sound and polish ✅
 
 - transactional VK outbox;
 - group conversation events;
@@ -800,15 +802,15 @@ Player View управляется конфигурацией GM и никогд
 4. **Audio assets:** лицензия/оригинальность каждого файла.
 5. **Rules:** страницы Corebook/CEMK для каждой таблицы до включения в production.
 
-## 15. Не входит в первый вертикальный пакет
+## 15. Внешние активационные ограничения
 
-- финальная точная карта;
-- VK API;
-- Active Session Dashboard;
-- Aftermath generator;
-- полный Character Ledger;
-- новые звуковые assets;
-- комментарии и City Feed;
-- переработка всех существующих страниц под финальный визуальный стиль.
+Функциональный код всех этапов присутствует, но следующие возможности требуют внешней конфигурации или финального подтверждения:
 
-Эти функции строятся поверх проверенного foundation, а не блокируют миграцию базовых сущностей.
+- VK worker отправляет outbox только при наличии `VK_COMMUNITY_TOKEN` и `VK_PEER_ID`;
+- VK OAuth требует `VK_CLIENT_ID`, `VK_CLIENT_SECRET` и `VK_REDIRECT_URI`;
+- ссылки и изображения в сообщении VK требуют `NCNET_PUBLIC_URL`;
+- текущая оригинальная SVG-карта использует сверенную топологию районов 2070-х, но не копирует официальный copyrighted map asset; замена границ или подложки выполняется после подтверждения владельцем конкретного источника;
+- процедурные Web Audio сигналы не требуют внешних лицензий; будущие записанные audio assets должны проходить отдельную проверку лицензии;
+- Quick Reference содержит source/page metadata, а любые новые правила добавляются только после повторной сверки с PDF.
+
+Отсутствие этих внешних параметров не блокирует Contracts, City Feed, Personas, Storylines, Dossiers, Ledger, GM OPS, Sessions, Player View и Aftermath.

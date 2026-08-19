@@ -188,7 +188,8 @@ const routeAliases = {
 const routes = {
   '': viewHome, database: viewCodex, guides: viewGuides, market: viewMarket,
   'quick-reference': viewCalc, dossiers: viewCharacters, crew: viewRoster,
-  feed: viewNews, contracts: viewJobs, admin: viewAdmin,
+  feed: viewCityFeed, contracts: viewContracts, personas: viewPersonas,
+  gm: viewGMOperations, session: viewSessionPlayer, admin: viewAdmin,
   // Compatibility aliases keep old bookmarks and links working during migration.
   codex: viewCodex, calc: viewCalc, characters: viewCharacters,
   roster: viewRoster, news: viewNews, jobs: viewJobs,
@@ -204,6 +205,10 @@ async function route() {
   window.scrollTo(0, 0);
   closeModal();
   try {
+    if (seg0 === 'contracts' && seg1) { await viewContractDetail(view, seg1); return; }
+    if (seg0 === 'feed' && seg1) { await viewFeedDetail(view, seg1); return; }
+    if (seg0 === 'personas' && seg1) { await viewPersonaDetail(view, seg1); return; }
+    if (seg0 === 'session' && seg1) { await viewSessionPlayer(view, seg1); return; }
     if (seg0 === 'char') {
       const raw = seg1 || '';
       const charId = raw.split('?')[0];
@@ -238,8 +243,11 @@ function renderUserbox() {
       <span>${esc(state.me.display_name)}</span>
       ${state.me.is_admin ? '<span class="gm-badge">ADMIN</span>' : (state.me.is_gm ? `<span class="gm-badge">${T('GM','ГМ')}</span>` : '')}
     </span>
+    <button class="btn-sm" id="notifications-btn" title="${T('Notifications','Уведомления')}">◉</button>
+    ${state.me.is_gm ? `<a class="btn-sm" href="#/gm">GM OPS</a>` : ''}
     <button class="btn-sm" id="logout-btn">${T('Sign out','Выйти')}</button>`;
   $('#userchip').onclick = () => go('/profile');
+  if ($('#notifications-btn') && typeof openNotifications === 'function') $('#notifications-btn').onclick = openNotifications;
   $('#logout-btn').onclick = async () => {
     try { await api('/api/logout', { method: 'POST' }); } catch (e) {}
     state.me = null;
@@ -253,11 +261,11 @@ function renderUserbox() {
 
 async function viewHome(view) {
   view.innerHTML = spinner();
-  const [stats, news, jobs] = await Promise.all([
-    api('/api/stats'), api('/api/news'), api('/api/jobs'),
+  const [stats, feed, contracts] = await Promise.all([
+    api('/api/stats'), api('/api/feed'), api('/api/contracts'),
   ]);
-  const lastNews = news.news.slice(0, 3);
-  const openJobs = jobs.jobs.filter(j => j.status === 'open').slice(0, 3);
+  const lastNews = feed.posts.slice(0, 3);
+  const openJobs = contracts.contracts.filter(item => ['open','crew_full'].includes(item.status)).slice(0, 3);
   view.innerHTML = `
   <div class="hero ncnet-hero">
     <div class="small muted">NC//NET · 2070s · ${T('SECURE CITY RELAY','ЗАЩИЩЁННЫЙ ГОРОДСКОЙ КАНАЛ')}</div>
@@ -272,8 +280,8 @@ async function viewHome(view) {
       <span class="sb"><span class="v">${nf.format(stats.items)}</span><span class="k">${T('items','предметов')}</span></span>
       <span class="sb"><span class="v">${nf.format(stats.characters)}</span><span class="k">${T('characters','персонажей')}</span></span>
       <span class="sb"><span class="v">${nf.format(stats.users)}</span><span class="k">${T('edgerunners','эджраннеров')}</span></span>
-      <span class="sb"><span class="v">${nf.format(stats.news)}</span><span class="k">${T('reports','новостей')}</span></span>
-      <span class="sb"><span class="v">${nf.format(stats.open_jobs)}</span><span class="k">${T('open Jobs','открытых заказов')}</span></span>
+      <span class="sb"><span class="v">${nf.format(stats.feed_posts ?? stats.news)}</span><span class="k">${T('transmissions','передач')}</span></span>
+      <span class="sb"><span class="v">${nf.format(stats.open_contracts ?? stats.open_jobs)}</span><span class="k">${T('open Contracts','открытых контрактов')}</span></span>
     </div>
   </div>
   <div class="grid cols-2">
@@ -283,9 +291,9 @@ async function viewHome(view) {
         <a href="#/feed" class="small">${T('open feed →','открыть ленту →')}</a>
       </div>
       ${lastNews.length ? lastNews.map(n => `
-        <div class="post mt">
-          <div class="meta user-content">${n.tag ? `<span class="tag">${esc(n.tag)}</span>` : ''}<span>${esc(n.author)}</span>·<span>${timeAgo(n.created)}</span></div>
-          <div class="title user-content">${esc(n.title)}</div>
+        <div class="post mt" style="cursor:pointer" onclick="location.hash='#/feed/${n.id}'">
+          <div class="meta"><span class="tag">${esc(n.format)}</span>${n.district_id?`<span>${esc(n.district_id)}</span>`:''}<span class="user-content">${esc(n.author?.display_name||'NC//NET')}</span>·<span>${timeAgo(n.published_at||n.created)}</span></div>
+          <div class="title user-content">${esc(n.headline||n.body.slice(0,90))}</div>
           <div class="desc user-content" style="max-height:70px;overflow:hidden">${esc(n.body)}</div>
         </div>`).join('') : `<div class="empty mt">${T('No city transmissions yet. ','Городских передач пока нет. ')}<a href="#/feed">${T('Publish from your Character','Опубликовать от лица персонажа')}</a>.</div>`}
     </div>
@@ -295,10 +303,10 @@ async function viewHome(view) {
         <a href="#/contracts" class="small">${T('all contracts →','все контракты →')}</a>
       </div>
       ${openJobs.length ? openJobs.map(j => `
-        <div class="card job mt" style="cursor:pointer" onclick="location.hash='#/contracts'">
-          <div class="meta"><span class="tag user-content">${esc(j.system || 'Cyberpunk RED')}</span>${j.when_text ? `<span class="user-content">⏱ ${esc(j.when_text)}</span>` : ''}<span>${T('GM:','ГМ:')} <span class="user-content">${esc(j.author)}</span></span></div>
+        <div class="card job mt" style="cursor:pointer" onclick="location.hash='#/contracts/${j.id}'">
+          <div class="meta"><span class="tag">${esc(typeof ncLabel==='function'?ncLabel(j.risk_level).toUpperCase():j.risk_level.toUpperCase())}</span>${j.district_id?`<span>${esc(j.district_id)}</span>`:''}${j.scheduled_at?`<span>⏱ ${new Date(j.scheduled_at*1000).toLocaleString()}</span>`:''}<span class="user-content">${esc(j.participants[0]?.display_name||'NC//NET')}</span></div>
           <h3 class="user-content" style="margin:4px 0">${esc(j.title)}</h3>
-          <div class="small muted">${j.slots ? `${T('slots:','слотов:')} ${j.signups}/${j.slots}` : T('unlimited','без ограничений')} · ${T('signed up:','записалось:')} ${j.signups}</div>
+          <div class="small muted">${j.crew_capacity ? `${T('crew:','команда:')} ${j.crew_count}/${j.crew_capacity}` : T('unlimited crew','без ограничения команды')} · ${j.waitlist_count ? `${T('waitlist:','резерв:')} ${j.waitlist_count}` : esc(typeof ncLabel==='function'?ncLabel(j.status):j.status)}</div>
         </div>`).join('') : `<div class="empty mt">${T('No active Contracts. ','Активных контрактов нет. ')}${state.me && state.me.is_gm ? `<a href="#/contracts">${T('Open the GM relay','Открыть канал GM')}</a>.` : ''}</div>`}
     </div>
   </div>
@@ -816,6 +824,18 @@ async function viewCalc(view) {
   <div class="panel mt">
     <h2>🔥 ${T('DV Table (Autofire)','Таблица DV (автоогонь)')}</h2>
     <div style="overflow-x:auto">${tableHtml(auto)}</div>
+  </div>
+  <div class="panel mt">
+    <div class="row" style="justify-content:space-between"><h2>◈ ${T('General Difficulty Values','Общие уровни сложности')}</h2><span class="tag source">CP:R p. 129</span></div>
+    <div class="table-scroll"><table class="rtable"><tr><th>${T('Difficulty','Сложность')}</th><th>DV</th><th>${T('Guidance','Ориентир')}</th></tr>${[
+      ['Simple','Простая',9,'Most people can do it without thinking.','Большинство делает это не задумываясь.'],
+      ['Everyday','Повседневная',13,'No special training is normally required.','Обычно не требует специальной подготовки.'],
+      ['Difficult','Трудная',15,'Training or natural talent is important.','Важны подготовка или природный талант.'],
+      ['Professional','Профессиональная',17,'Requires professional-level training.','Требует профессиональной подготовки.'],
+      ['Heroic','Героическая',21,'Only highly trained specialists succeed reliably.','Надёжно справляются только отличные специалисты.'],
+      ['Incredible','Невероятная',24,'A feat for the very best in the field.','Достижение для лучших в профессии.'],
+      ['Legendary','Легендарная',29,'The kind of feat people tell stories about.','О таком достижении будут рассказывать истории.'],
+    ].map(([en,ru,dv,de,dr])=>`<tr><td><b>${T(en,ru)}</b></td><td>${dv}</td><td>${T(de,dr)}</td></tr>`).join('')}</table></div>
   </div>`;
 
   const doDamage = () => {
@@ -2518,7 +2538,7 @@ async function viewSheet(id) {
       <div class="sub">Character Sheet · ${(ch.roles||[]).map(role=>`${esc(role.name)} ${role.rank}${role.name===ch.active_role?' ★':''}`).join(' · ')||`${esc(ch.role||'—')} ${ch.role_rank||4}`} · ${T('owner','владелец')}: <span class="user-content">${esc(c.owner_name||'—')}</span>${ch.player?' · '+T('player','игрок')+': <span class="user-content">'+esc(ch.player)+'</span>':''}</div></div>
     <div class="row">
       <button id="sheet-back">← ${T('Characters','Персонажи')}</button>
-      <button class="btn-sm" id="sheet-print">🖨️ Print</button><button class="btn-sm" id="sheet-json">⬇ JSON</button>
+      <button class="btn-sm" id="sheet-print">🖨️ Print</button><button class="btn-sm" id="sheet-json">⬇ JSON</button><button class="btn-sm" id="sheet-network">◎ ${T('Network','Сеть')}</button>${mine||state.me?.is_gm?`<button class="btn-sm" id="sheet-ledger">◫ ${T('Ledger','Журнал')}</button>`:''}
       ${mine ? `<label class="btn-sm">🖼️ Portrait<input id="sheet-portrait-file" type="file" accept="image/jpeg,image/png,image/webp" hidden></label><button class="btn-primary" id="sheet-edit">✏️ ${T('Edit','Редактировать')}</button>
                 <button class="btn-danger" id="sheet-del">🗑️ ${T('Delete','Удалить')}</button>` : ''}
     </div>
@@ -2600,6 +2620,23 @@ async function viewSheet(id) {
   const improveBtn=$('#sheet-improve');if(improveBtn)improveBtn.onclick=()=>openImprovementModal(c);const gmIp=$('#sheet-ip-gm');if(gmIp)gmIp.onclick=()=>openIpAdjustment(c.id,()=>viewSheet(c.id));
   const notes=$('#sheet-notes');if(notes){let timer;notes.oninput=()=>{clearTimeout(timer);$('#sheet-notes-status').textContent='Saving…';timer=setTimeout(async()=>{try{ch.notes=notes.value;await api('/api/characters/'+c.id,{method:'PUT',body:{data:ch}});$('#sheet-notes-status').textContent='Saved';}catch(e){$('#sheet-notes-status').textContent=e.message;}},700);};}
   const portraitInput=$('#sheet-portrait-file');if(portraitInput)portraitInput.onchange=()=>openImageCrop(portraitInput.files[0],'character_portrait',async media=>{try{ch.portrait_media_id=media.id;await api('/api/characters/'+c.id,{method:'PUT',body:{data:ch}});viewSheet(c.id);}catch(e){toast(e.message,true);}});
+  const networkButton=$('#sheet-network');
+  if(networkButton)networkButton.onclick=async()=>{
+    try{
+      const network=await api(`/api/characters/${c.id}/network`);
+      openModal(`<h2>${T('NC//NET Activity','Активность NC//NET')}</h2><h3>${T('Contracts','Контракты')}</h3>${network.contracts.map(item=>`<a class="inv-row" href="#/contracts/${item.id}"><span class="iname user-content">${esc(item.title)}</span><span class="tag">${esc(item.signup_status)}</span></a>`).join('')||'<div class="empty">—</div>'}<h3>${T('Transmissions','Передачи')}</h3>${network.posts.map(item=>`<a class="inv-row" href="#/feed/${item.id}"><span class="iname user-content">${esc(item.headline||item.body.slice(0,80))}</span></a>`).join('')||'<div class="empty">—</div>'}`,true);
+    }catch(e){toast(e.message,true);}
+  };
+  const ledgerButton=$('#sheet-ledger');
+  if(ledgerButton)ledgerButton.onclick=async()=>{
+    try{
+      const history=await api(`/api/characters/${c.id}/ledger`);
+      const rows=history.entries.length
+        ? history.entries.map(entry=>`<div class="inv-row"><span class="tag">${esc(entry.category)}</span><span class="iname user-content">${esc(entry.reason||'')}</span><span class="small muted">${timeAgo(entry.created)} · ${esc(entry.actor)}</span></div>`).join('')
+        : `<div class="empty">${T('No permanent changes recorded.','Постоянные изменения не записаны.')}</div>`;
+      openModal(`<h2>${T('Dossier Ledger','Журнал досье')}</h2>${rows}`,true);
+    }catch(e){toast(e.message,true);}
+  };
   $('#sheet-print').onclick = () => window.print();
   $('#sheet-json').onclick = () => { const blob = new Blob([JSON.stringify(ch, null, 2)], {type:'application/json'}), a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${(ch.handle || 'character').replace(/[^a-z0-9_-]+/gi,'-')}.json`; a.click(); URL.revokeObjectURL(a.href); };
   $('#sheet-back').onclick = () => go('/dossiers');
@@ -3404,9 +3441,15 @@ async function viewProfile(view) {
     <label class="f"><span>${T('Display name','Отображаемое имя')}</span><input id="pf-d" value="${esc(state.me.display_name)}"></label>
     <label class="f"><span>${T('Network access','Доступ к сети')}</span><input value="${esc(role)}" disabled></label>
     <label class="checkbox mb"><input type="checkbox" id="pf-show-name" ${state.me.show_display_name ? 'checked' : ''}> ${T('Show my account display name to other members of my Contracts','Показывать display name аккаунта другим участникам моих контрактов')}</label>
-    <div class="panel mb"><b>VK</b><div class="small muted">${state.me.vk_linked ? T('Connected','Подключён') : T('Not connected · OAuth integration is planned for a later phase.','Не подключён · OAuth-интеграция запланирована на следующий этап.')}</div></div>
+    <div class="panel mb"><label class="f"><span>${T('NC//NET Audio Volume','Громкость NC//NET')}</span><input id="pf-audio-volume" type="range" min="0" max="1" step=".05" value="${typeof NC_AUDIO!=='undefined'?NC_AUDIO.getVolume():.55}"></label></div>
+    <div class="panel mb"><div class="row" style="justify-content:space-between"><div><b>VK</b><div class="small muted">${state.me.vk_linked ? T('Connected for NC//NET mentions','Подключён для упоминаний NC//NET') : T('Connect VK to allow mentions in the campaign conversation.','Подключите VK для упоминаний в беседе кампании.')}</div></div>${state.me.vk_linked?'✓':`<button class="btn-sm" id="pf-vk-connect">${T('Connect VK','Подключить VK')}</button>`}</div></div>
     <div class="row"><button class="btn-primary" id="pf-save">${T('Save','Сохранить')}</button>${state.me.is_admin ? `<a class="btn-sm" href="#/admin">${T('Admin Console','Панель Admin')}</a>` : ''}</div>
   </div>`;
+  if ($('#pf-audio-volume') && typeof NC_AUDIO !== 'undefined') $('#pf-audio-volume').oninput = event => NC_AUDIO.setVolume(event.target.value);
+  if ($('#pf-vk-connect')) $('#pf-vk-connect').onclick = async () => {
+    try { const result = await api('/api/vk/oauth/start', { method: 'POST' }); location.href = result.url; }
+    catch (e) { toast(e.message, true); }
+  };
   $('#pf-save').onclick = async () => {
     try {
       state.me = await api('/api/profile', { method: 'POST', body: {
@@ -3462,6 +3505,9 @@ async function viewAdmin(view) {
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveWizardDraft(); });
   const themeToggle = $('#theme-toggle');
   if (themeToggle) themeToggle.onclick = openThemeSettings;
+  const audioToggle = $('#audio-toggle');
+  if (audioToggle && typeof NC_AUDIO !== 'undefined') audioToggle.onclick = () => NC_AUDIO.toggle();
+  if (typeof NC_AUDIO !== 'undefined') NC_AUDIO.maybeGate();
   const languageToggle = $('#language-toggle');
   if (languageToggle) languageToggle.onclick = () => APP_I18N.toggle();
   window.addEventListener('app-language-change', async () => {

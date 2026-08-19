@@ -15,9 +15,12 @@ import secrets
 import sqlite3
 import sys
 import time
+import threading
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote, urlencode
+from urllib.request import Request, urlopen
+from urllib.error import URLError, HTTPError
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE, 'data')
@@ -61,6 +64,17 @@ def item_by_id(iid):
 # ---------------------------------------------------------------- правила
 
 STATS = ['INT', 'REF', 'DEX', 'TECH', 'COOL', 'WILL', 'LUCK', 'MOVE', 'BODY', 'EMP']
+GENERAL_DV = [
+    ['Simple', 9], ['Everyday', 13], ['Difficult', 15],
+    ['Professional', 17], ['Heroic', 21], ['Incredible', 24], ['Legendary', 29],
+]
+RULE_SOURCES = {
+    'general_dv': 'Cyberpunk RED Corebook p. 129',
+    'range_dv': 'Cyberpunk RED Corebook pp. 172–173; Data Pool source tables',
+    'autofire_dv': 'Cyberpunk RED Corebook pp. 173–174; Data Pool source tables',
+    'critical_injuries': 'Cyberpunk RED Corebook pp. 187–190',
+    'wound_states': 'Cyberpunk RED Corebook pp. 186–187',
+}
 
 ROLES = {
     'Rockerboy': 'Charismatic Impact',
@@ -470,9 +484,304 @@ CREATE INDEX IF NOT EXISTS idx_ip_character ON ip_ledger(character_id, created);
 CREATE INDEX IF NOT EXISTS idx_role_audit_target ON account_role_audit(target_user_id, created);
 """
 
+NETWORK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS personas(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_user_id INTEGER NOT NULL,
+  access TEXT NOT NULL DEFAULT 'private',
+  kind TEXT NOT NULL DEFAULT 'person',
+  handle TEXT UNIQUE COLLATE NOCASE NOT NULL,
+  display_name TEXT NOT NULL,
+  avatar_media_id TEXT,
+  cover_media_id TEXT,
+  accent_color TEXT NOT NULL DEFAULT '#00e5ff',
+  short_bio TEXT NOT NULL DEFAULT '',
+  public_bio TEXT NOT NULL DEFAULT '',
+  affiliation TEXT NOT NULL DEFAULT '',
+  public_connections TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'active',
+  secret_bio TEXT NOT NULL DEFAULT '',
+  goals TEXT NOT NULL DEFAULT '',
+  voice_notes TEXT NOT NULL DEFAULT '',
+  secret_connections TEXT NOT NULL DEFAULT '{}',
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS persona_audit(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  persona_id INTEGER NOT NULL,
+  actor_user_id INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  before_json TEXT,
+  after_json TEXT,
+  created REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS storylines(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_user_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  code_name TEXT NOT NULL DEFAULT '',
+  public_summary TEXT NOT NULL DEFAULT '',
+  private_summary TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS storyline_collaborators(
+  storyline_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  can_edit INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY(storyline_id,user_id)
+);
+CREATE TABLE IF NOT EXISTS storyline_timeline(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  storyline_id INTEGER NOT NULL,
+  event_at REAL,
+  public_text TEXT,
+  private_text TEXT NOT NULL DEFAULT '',
+  contract_id INTEGER,
+  feed_post_id INTEGER,
+  created_by INTEGER NOT NULL,
+  created REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS contracts(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  legacy_job_id INTEGER UNIQUE,
+  owner_user_id INTEGER NOT NULL,
+  storyline_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'draft',
+  title TEXT NOT NULL,
+  teaser TEXT NOT NULL DEFAULT '',
+  public_brief TEXT NOT NULL DEFAULT '',
+  classified_brief TEXT NOT NULL DEFAULT '',
+  district_id TEXT NOT NULL DEFAULT '',
+  risk_level TEXT NOT NULL DEFAULT 'moderate',
+  reward_mode TEXT NOT NULL DEFAULT 'hidden',
+  reward_exact REAL,
+  reward_min REAL,
+  reward_max REAL,
+  reward_text TEXT,
+  scheduled_at REAL,
+  timezone TEXT NOT NULL DEFAULT 'Europe/Moscow',
+  duration_text TEXT,
+  crew_capacity INTEGER NOT NULL DEFAULT 0,
+  requirements TEXT NOT NULL DEFAULT '',
+  content_notes TEXT NOT NULL DEFAULT '',
+  service_format TEXT NOT NULL DEFAULT '',
+  service_contact TEXT NOT NULL DEFAULT '',
+  service_vtt_url TEXT NOT NULL DEFAULT '',
+  service_notes TEXT NOT NULL DEFAULT '',
+  cover_media_id TEXT,
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS contract_participants(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contract_id INTEGER NOT NULL,
+  persona_id INTEGER NOT NULL,
+  role_key TEXT NOT NULL DEFAULT 'custom',
+  role_label TEXT NOT NULL DEFAULT '',
+  visibility TEXT NOT NULL DEFAULT 'public',
+  note TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS contract_signups(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contract_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  character_id INTEGER,
+  legacy_char_name TEXT,
+  status TEXT NOT NULL DEFAULT 'crew',
+  queue_position INTEGER NOT NULL DEFAULT 0,
+  joined_at REAL NOT NULL,
+  updated REAL NOT NULL,
+  UNIQUE(contract_id,character_id)
+);
+CREATE INDEX IF NOT EXISTS idx_personas_access ON personas(access,status);
+CREATE INDEX IF NOT EXISTS idx_persona_audit ON persona_audit(persona_id,created);
+CREATE INDEX IF NOT EXISTS idx_storylines_status ON storylines(status,updated);
+CREATE INDEX IF NOT EXISTS idx_contracts_status ON contracts(status,scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_contract_signups ON contract_signups(contract_id,status,queue_position);
+"""
+
+FEED_SCHEMA = """
+CREATE TABLE IF NOT EXISTS feed_posts(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  legacy_news_id INTEGER UNIQUE,
+  format TEXT NOT NULL DEFAULT 'short',
+  status TEXT NOT NULL DEFAULT 'published',
+  creator_user_id INTEGER NOT NULL,
+  hidden_by_user_id INTEGER,
+  hidden_reason TEXT,
+  author_persona_id INTEGER,
+  author_character_id INTEGER,
+  storyline_id INTEGER,
+  contract_id INTEGER,
+  reply_to_post_id INTEGER,
+  district_id TEXT,
+  headline TEXT,
+  lead TEXT,
+  body TEXT NOT NULL,
+  image_media_id TEXT,
+  truth_status TEXT NOT NULL DEFAULT 'unknown',
+  event_at REAL,
+  published_at REAL,
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS feed_post_revisions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id INTEGER NOT NULL,
+  actor_user_id INTEGER NOT NULL,
+  action TEXT NOT NULL,
+  before_json TEXT,
+  after_json TEXT,
+  reason TEXT,
+  created REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS feed_post_links(
+  post_id INTEGER NOT NULL,
+  linked_post_id INTEGER NOT NULL,
+  relation TEXT NOT NULL DEFAULT 'related',
+  PRIMARY KEY(post_id,linked_post_id,relation)
+);
+CREATE TABLE IF NOT EXISTS feed_comments(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id INTEGER NOT NULL,
+  parent_comment_id INTEGER,
+  creator_user_id INTEGER NOT NULL,
+  author_persona_id INTEGER,
+  author_character_id INTEGER,
+  body TEXT NOT NULL,
+  created REAL NOT NULL,
+  updated REAL NOT NULL,
+  hidden_at REAL,
+  hidden_by INTEGER,
+  hidden_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_feed_posts_public ON feed_posts(status,published_at);
+CREATE INDEX IF NOT EXISTS idx_feed_comments_post ON feed_comments(post_id,created);
+CREATE INDEX IF NOT EXISTS idx_feed_revisions ON feed_post_revisions(post_id,created);
+"""
+
+OPERATIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS character_ledger(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  character_id INTEGER NOT NULL,
+  actor_user_id INTEGER NOT NULL,
+  session_id INTEGER,
+  contract_id INTEGER,
+  category TEXT NOT NULL,
+  delta_json TEXT NOT NULL DEFAULT '{}',
+  before_json TEXT,
+  after_json TEXT,
+  reason TEXT NOT NULL DEFAULT '',
+  created REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS npc_templates(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_user_id INTEGER NOT NULL,
+  access TEXT NOT NULL DEFAULT 'private',
+  name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT '',
+  data_json TEXT NOT NULL DEFAULT '{}',
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS nc_sessions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contract_id INTEGER,
+  owner_user_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'preparing',
+  round INTEGER NOT NULL DEFAULT 0,
+  active_turn INTEGER NOT NULL DEFAULT 0,
+  player_view_config TEXT NOT NULL DEFAULT '{}',
+  notes TEXT NOT NULL DEFAULT '',
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session_combatants(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'npc',
+  character_id INTEGER,
+  template_id INTEGER,
+  name TEXT NOT NULL,
+  initiative INTEGER NOT NULL DEFAULT 0,
+  hp_current INTEGER NOT NULL DEFAULT 0,
+  hp_max INTEGER NOT NULL DEFAULT 0,
+  sp_head INTEGER NOT NULL DEFAULT 0,
+  sp_body INTEGER NOT NULL DEFAULT 0,
+  shield_current INTEGER NOT NULL DEFAULT 0,
+  ammo_current INTEGER NOT NULL DEFAULT 0,
+  move INTEGER NOT NULL DEFAULT 0,
+  conditions_json TEXT NOT NULL DEFAULT '[]',
+  injuries_json TEXT NOT NULL DEFAULT '[]',
+  death_penalty INTEGER NOT NULL DEFAULT 0,
+  visible INTEGER NOT NULL DEFAULT 1,
+  secret_json TEXT NOT NULL DEFAULT '{}',
+  sort_order INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS session_activity(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  actor_user_id INTEGER NOT NULL,
+  combatant_id INTEGER,
+  event_type TEXT NOT NULL,
+  before_json TEXT,
+  after_json TEXT,
+  note TEXT NOT NULL DEFAULT '',
+  created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_character_ledger ON character_ledger(character_id,created);
+CREATE INDEX IF NOT EXISTS idx_sessions_owner ON nc_sessions(owner_user_id,status,updated);
+CREATE INDEX IF NOT EXISTS idx_session_combatants ON session_combatants(session_id,sort_order);
+CREATE INDEX IF NOT EXISTS idx_session_activity ON session_activity(session_id,created);
+"""
+
+NOTIFICATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS notifications(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  event_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  link TEXT,
+  read_at REAL,
+  created REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS vk_oauth_states(
+  state TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  expires REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS vk_outbox(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_key TEXT UNIQUE NOT NULL,
+  event_type TEXT NOT NULL,
+  contract_id INTEGER,
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at REAL,
+  last_error TEXT,
+  created REAL NOT NULL,
+  sent_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id,read_at,created);
+CREATE INDEX IF NOT EXISTS idx_vk_outbox_pending ON vk_outbox(status,next_attempt_at);
+"""
+
 ACCOUNT_ROLES = {'player', 'gm', 'admin'}
 MIGRATION_ACCOUNT_ROLES = 1
+MIGRATION_NETWORK_CORE = 2
+MIGRATION_CITY_FEED = 3
+MIGRATION_OPERATIONS = 4
+MIGRATION_NOTIFICATIONS = 5
 DB_BACKUP_LIMIT = 5
+_RATE_LIMIT_BUCKETS = {}
+_RATE_LIMIT_LOCK = threading.Lock()
 
 
 def _row_value(row, key, default=None):
@@ -497,6 +806,20 @@ def user_is_gm(user):
 
 def user_is_admin(user):
     return user_account_role(user) == 'admin'
+
+
+def enforce_rate_limit(identifier, limit, window):
+    now = time.time()
+    with _RATE_LIMIT_LOCK:
+        bucket = [stamp for stamp in _RATE_LIMIT_BUCKETS.get(identifier, []) if stamp > now - window]
+        if len(bucket) >= limit:
+            raise ApiError(429, 'Слишком много запросов; попробуйте позже')
+        bucket.append(now)
+        _RATE_LIMIT_BUCKETS[identifier] = bucket
+        if len(_RATE_LIMIT_BUCKETS) > 5000:
+            for key in list(_RATE_LIMIT_BUCKETS)[:1000]:
+                if not _RATE_LIMIT_BUCKETS[key] or _RATE_LIMIT_BUCKETS[key][-1] <= now - 3600:
+                    _RATE_LIMIT_BUCKETS.pop(key, None)
 
 
 def configured_admin_usernames():
@@ -540,9 +863,17 @@ def apply_schema_migrations(conn, make_backup=True):
                  'actor_user_id INTEGER, role_before TEXT NOT NULL, role_after TEXT NOT NULL, '
                  'reason TEXT NOT NULL, created REAL NOT NULL)')
     applied = {row['version'] for row in conn.execute('SELECT version FROM schema_migrations')}
+    migrations = [
+        (MIGRATION_ACCOUNT_ROLES, 'account roles and privacy foundation'),
+        (MIGRATION_NETWORK_CORE, 'personas storylines and contracts'),
+        (MIGRATION_CITY_FEED, 'city feed posts comments and revisions'),
+        (MIGRATION_OPERATIONS, 'character ledger and session operations'),
+        (MIGRATION_NOTIFICATIONS, 'site notifications and VK outbox'),
+    ]
+    pending = [version for version, _ in migrations if version not in applied]
+    if make_backup and pending:
+        backup_database(conn, f'v{min(pending)}-v{max(pending)}')
     if MIGRATION_ACCOUNT_ROLES not in applied:
-        if make_backup:
-            backup_database(conn, 'roles-v1')
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(users)')}
         additions = {
             'account_role': "TEXT NOT NULL DEFAULT 'player'",
@@ -559,9 +890,25 @@ def apply_schema_migrations(conn, make_backup=True):
                      "AND account_role!='admin'")
         conn.execute("UPDATE users SET account_role='player' "
                      "WHERE account_role IS NULL OR account_role NOT IN ('player','gm','admin')")
-        conn.execute(
-            'INSERT INTO schema_migrations(version,name,applied) VALUES(?,?,?)',
-            (MIGRATION_ACCOUNT_ROLES, 'account roles and privacy foundation', time.time()))
+    if MIGRATION_NETWORK_CORE not in applied:
+        conn.executescript(NETWORK_SCHEMA)
+    if MIGRATION_CITY_FEED not in applied:
+        conn.executescript(FEED_SCHEMA)
+    if MIGRATION_OPERATIONS not in applied:
+        conn.executescript(OPERATIONS_SCHEMA)
+    if MIGRATION_NOTIFICATIONS not in applied:
+        conn.executescript(NOTIFICATION_SCHEMA)
+    # Re-run additive CREATE IF NOT EXISTS blocks so patch-level tables added to an
+    # already-applied migration remain safe during development and rolling deploys.
+    conn.executescript(NETWORK_SCHEMA)
+    conn.executescript(FEED_SCHEMA)
+    conn.executescript(OPERATIONS_SCHEMA)
+    conn.executescript(NOTIFICATION_SCHEMA)
+    for version, name in migrations:
+        if version not in applied:
+            conn.execute(
+                'INSERT INTO schema_migrations(version,name,applied) VALUES(?,?,?)',
+                (version, name, time.time()))
     conn.execute("UPDATE users SET is_gm=CASE WHEN account_role IN ('gm','admin') "
                  "THEN 1 ELSE 0 END")
     conn.execute('CREATE INDEX IF NOT EXISTS idx_role_audit_target '
@@ -592,6 +939,115 @@ def apply_admin_bootstrap(conn):
     return promoted
 
 
+PERSONA_ACCESS = {'private', 'shared', 'system'}
+PERSONA_KINDS = {'person', 'organization', 'outlet', 'gang', 'corporation', 'government', 'anonymous'}
+PERSONA_STATUSES = {'active', 'missing', 'dead', 'dissolved', 'destroyed', 'archived'}
+STORYLINE_STATUSES = {'active', 'paused', 'completed', 'archived'}
+CONTRACT_STATUSES = {'draft', 'open', 'crew_full', 'in_progress', 'completed', 'failed', 'cancelled', 'archived'}
+CONTRACT_REWARD_MODES = {'exact', 'range', 'negotiable', 'hidden'}
+CONTRACT_RISKS = {'low', 'moderate', 'high', 'extreme', 'classified'}
+FEED_FORMATS = {'short', 'article', 'blog', 'bulletin', 'statement', 'rumor'}
+FEED_TRUTH = {'true', 'partially_true', 'false', 'propaganda', 'unknown'}
+
+
+def parse_json_object(value, default=None):
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(value or '{}')
+        return parsed if isinstance(parsed, dict) else (default or {})
+    except (TypeError, ValueError):
+        return default or {}
+
+
+def parse_json_list(value):
+    if isinstance(value, list):
+        return value
+    try:
+        parsed = json.loads(value or '[]')
+        return parsed if isinstance(parsed, list) else []
+    except (TypeError, ValueError):
+        return []
+
+
+def ensure_system_persona(conn, handle, display_name, kind):
+    row = conn.execute('SELECT * FROM personas WHERE handle=? COLLATE NOCASE', (handle,)).fetchone()
+    if row:
+        return row['id']
+    owner = conn.execute('SELECT id FROM users WHERE id=1').fetchone()
+    if not owner:
+        owner = conn.execute('SELECT id FROM users ORDER BY id LIMIT 1').fetchone()
+    if not owner:
+        return None
+    now = time.time()
+    cur = conn.execute(
+        "INSERT INTO personas(owner_user_id,access,kind,handle,display_name,short_bio,"
+        "public_bio,status,created,updated) VALUES(?,'system',?,?,?,?,?,'active',?,?)",
+        (owner['id'], kind, handle, display_name,
+         'Imported NC//NET archive relay.',
+         'System relay preserving transmissions from the legacy network.', now, now))
+    return cur.lastrowid
+
+
+def migrate_legacy_network_content(conn):
+    """Copy legacy Jobs/News once; old tables remain available as compatibility APIs."""
+    contract_persona = ensure_system_persona(
+        conn, 'ncnet-contract-archive', 'NC//NET Contract Archive', 'anonymous')
+    feed_persona = ensure_system_persona(
+        conn, 'ncnet-city-archive', 'NC//NET City Archive', 'outlet')
+    if contract_persona:
+        jobs = conn.execute('SELECT * FROM jobs ORDER BY id').fetchall()
+        for job in jobs:
+            exists = conn.execute('SELECT id FROM contracts WHERE legacy_job_id=?', (job['id'],)).fetchone()
+            if exists:
+                continue
+            now = time.time()
+            status = 'open' if job['status'] == 'open' else 'archived'
+            cur = conn.execute(
+                'INSERT INTO contracts(legacy_job_id,owner_user_id,status,title,teaser,'
+                'public_brief,scheduled_at,crew_capacity,service_format,created,updated) '
+                'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                (job['id'], job['author_id'], status, job['title'],
+                 str(job['description'] or '')[:280], job['description'], None,
+                 max(0, int(job['slots'] or 0)), job['system'] or 'Cyberpunk RED',
+                 job['created'], now))
+            contract_id = cur.lastrowid
+            conn.execute(
+                "INSERT INTO contract_participants(contract_id,persona_id,role_key,role_label,"
+                "visibility,note,sort_order) VALUES(?,?,'poster','Archive Relay','public','',0)",
+                (contract_id, contract_persona))
+            signups = conn.execute(
+                'SELECT * FROM job_signups WHERE job_id=? ORDER BY created,id', (job['id'],)).fetchall()
+            capacity = max(0, int(job['slots'] or 0))
+            for index, signup in enumerate(signups):
+                character_id = None
+                if signup['char_name']:
+                    chars = conn.execute('SELECT * FROM characters WHERE owner_id=?',
+                                         (signup['user_id'],)).fetchall()
+                    for char in chars:
+                        if str(json.loads(char['data']).get('handle') or '') == signup['char_name']:
+                            character_id = char['id']; break
+                signup_status = 'crew' if capacity == 0 or index < capacity else 'waitlist'
+                conn.execute(
+                    'INSERT INTO contract_signups(contract_id,user_id,character_id,legacy_char_name,'
+                    'status,queue_position,joined_at,updated) VALUES(?,?,?,?,?,?,?,?)',
+                    (contract_id, signup['user_id'], character_id, signup['char_name'],
+                     signup_status, index + 1, signup['created'], now))
+    if feed_persona:
+        news_rows = conn.execute('SELECT * FROM news ORDER BY id').fetchall()
+        for news in news_rows:
+            if conn.execute('SELECT id FROM feed_posts WHERE legacy_news_id=?',
+                            (news['id'],)).fetchone():
+                continue
+            conn.execute(
+                "INSERT INTO feed_posts(legacy_news_id,format,status,creator_user_id,"
+                "author_persona_id,headline,lead,body,truth_status,event_at,published_at,created,updated) "
+                "VALUES(?,'article','published',?,?,?,?,?,'unknown',?,?,?,?)",
+                (news['id'], news['author_id'], feed_persona, news['title'], news['tag'],
+                 news['body'], news['created'], news['created'], news['created'], news['created']))
+    conn.commit()
+
+
 def assign_account_role(conn, actor, target_user_id, role, reason='Admin role assignment'):
     """Change access with last-Admin protection and an append-only audit record."""
     if not user_is_admin(actor):
@@ -618,6 +1074,233 @@ def assign_account_role(conn, actor, target_user_id, role, reason='Admin role as
         (target['id'], actor['id'], before, role, reason, time.time()))
     conn.commit()
     return conn.execute('SELECT * FROM users WHERE id=?', (target['id'],)).fetchone()
+
+
+def can_manage_persona(user, persona):
+    if not user or not persona or not user_is_gm(user):
+        return False
+    if user_is_admin(user):
+        return True
+    access = persona['access']
+    return access == 'shared' or (access == 'private' and persona['owner_user_id'] == user['id'])
+
+
+def persona_payload(row, include_secret=False):
+    payload = {
+        'id': row['id'], 'owner_user_id': row['owner_user_id'],
+        'access': row['access'], 'kind': row['kind'], 'handle': row['handle'],
+        'display_name': row['display_name'], 'avatar_media_id': row['avatar_media_id'],
+        'cover_media_id': row['cover_media_id'], 'accent_color': row['accent_color'],
+        'short_bio': row['short_bio'], 'public_bio': row['public_bio'],
+        'affiliation': row['affiliation'],
+        'public_connections': parse_json_object(row['public_connections']),
+        'status': row['status'], 'created': row['created'], 'updated': row['updated'],
+    }
+    if include_secret:
+        payload.update({
+            'secret_bio': row['secret_bio'], 'goals': row['goals'],
+            'voice_notes': row['voice_notes'],
+            'secret_connections': parse_json_object(row['secret_connections']),
+        })
+    return payload
+
+
+def can_edit_storyline(conn, user, storyline):
+    if not user or not storyline or not user_is_gm(user):
+        return False
+    if user_is_admin(user) or storyline['owner_user_id'] == user['id']:
+        return True
+    return bool(conn.execute(
+        'SELECT 1 FROM storyline_collaborators WHERE storyline_id=? AND user_id=? AND can_edit=1',
+        (storyline['id'], user['id'])).fetchone())
+
+
+def can_edit_contract(conn, user, contract):
+    if not user or not contract or not user_is_gm(user):
+        return False
+    if user_is_admin(user) or contract['owner_user_id'] == user['id']:
+        return True
+    if contract['storyline_id']:
+        storyline = conn.execute('SELECT * FROM storylines WHERE id=?',
+                                 (contract['storyline_id'],)).fetchone()
+        return can_edit_storyline(conn, user, storyline)
+    return False
+
+
+def has_contract_classified_access(conn, user, contract):
+    if can_edit_contract(conn, user, contract):
+        return True
+    if not user:
+        return False
+    return bool(conn.execute(
+        "SELECT 1 FROM contract_signups WHERE contract_id=? AND user_id=? AND status='crew'",
+        (contract['id'], user['id'])).fetchone())
+
+
+def clean_persona_input(body, existing=None):
+    base = dict(existing or {})
+    get = lambda key, default='': body.get(key, base.get(key, default))
+    handle = str(get('handle')).strip().lower()
+    if not re.fullmatch(r'[a-z0-9_.\-]{3,40}', handle):
+        raise ApiError(400, 'Handle персоны: 3–40 латинских символов, цифр или ._-')
+    display_name = str(get('display_name')).strip()[:100]
+    if not display_name:
+        raise ApiError(400, 'Персоне нужно отображаемое имя')
+    access = str(get('access', 'private')).lower()
+    kind = str(get('kind', 'person')).lower()
+    status = str(get('status', 'active')).lower()
+    if access not in PERSONA_ACCESS or kind not in PERSONA_KINDS or status not in PERSONA_STATUSES:
+        raise ApiError(400, 'Некорректный тип, доступ или статус персоны')
+    accent = str(get('accent_color', '#00e5ff'))
+    if not re.fullmatch(r'#[0-9a-fA-F]{6}', accent):
+        raise ApiError(400, 'Некорректный цвет персоны')
+    return {
+        'access': access, 'kind': kind, 'handle': handle,
+        'display_name': display_name,
+        'avatar_media_id': str(get('avatar_media_id'))[:64] or None,
+        'cover_media_id': str(get('cover_media_id'))[:64] or None,
+        'accent_color': accent.lower(),
+        'short_bio': str(get('short_bio'))[:500],
+        'public_bio': str(get('public_bio'))[:10000],
+        'affiliation': str(get('affiliation'))[:200],
+        'public_connections': json.dumps(parse_json_object(get('public_connections', {})), ensure_ascii=False),
+        'status': status,
+        'secret_bio': str(get('secret_bio'))[:10000],
+        'goals': str(get('goals'))[:5000],
+        'voice_notes': str(get('voice_notes'))[:5000],
+        'secret_connections': json.dumps(parse_json_object(get('secret_connections', {})), ensure_ascii=False),
+    }
+
+
+def record_persona_audit(conn, persona_id, actor_id, action, before, after):
+    conn.execute(
+        'INSERT INTO persona_audit(persona_id,actor_user_id,action,before_json,after_json,created) '
+        'VALUES(?,?,?,?,?,?)',
+        (persona_id, actor_id, action,
+         json.dumps(before, ensure_ascii=False) if before is not None else None,
+         json.dumps(after, ensure_ascii=False) if after is not None else None,
+         time.time()))
+
+
+def record_feed_revision(conn, post_id, actor_id, action, before=None, after=None, reason=''):
+    conn.execute(
+        'INSERT INTO feed_post_revisions(post_id,actor_user_id,action,before_json,after_json,reason,created) '
+        'VALUES(?,?,?,?,?,?,?)',
+        (post_id, actor_id, action,
+         json.dumps(before, ensure_ascii=False) if before is not None else None,
+         json.dumps(after, ensure_ascii=False) if after is not None else None,
+         str(reason or '')[:500] or None, time.time()))
+
+
+def record_character_changes(conn, character_id, actor_user_id, before, after,
+                             reason='Character sheet update', contract_id=None, session_id=None):
+    tracked = {
+        'cash': 'cash', 'roles': 'role', 'role': 'role', 'role_rank': 'role',
+        'skills': 'skill', 'skill_pools': 'skill', 'stats': 'stat',
+        'reputation': 'reputation', 'inventory': 'inventory',
+        'cyberware': 'cyberware', 'armor': 'armor',
+    }
+    recorded = set()
+    for key, category in tracked.items():
+        if before.get(key) == after.get(key) or category in recorded:
+            continue
+        related = [name for name, value in tracked.items() if value == category]
+        old_value = {name: before.get(name) for name in related}
+        new_value = {name: after.get(name) for name in related}
+        conn.execute(
+            'INSERT INTO character_ledger(character_id,actor_user_id,session_id,contract_id,'
+            'category,delta_json,before_json,after_json,reason,created) VALUES(?,?,?,?,?,?,?,?,?,?)',
+            (character_id, actor_user_id, session_id, contract_id, category, '{}',
+             json.dumps(old_value, ensure_ascii=False), json.dumps(new_value, ensure_ascii=False),
+             str(reason or '')[:500], time.time()))
+        recorded.add(category)
+
+
+def add_notification(conn, user_id, event_type, title, body='', link=None):
+    conn.execute(
+        'INSERT INTO notifications(user_id,event_type,title,body,link,created) VALUES(?,?,?,?,?,?)',
+        (user_id, str(event_type)[:60], str(title)[:180], str(body)[:1000],
+         str(link)[:300] if link else None, time.time()))
+
+
+def queue_vk_event(conn, event_key, event_type, contract_id, payload):
+    conn.execute(
+        "INSERT OR IGNORE INTO vk_outbox(event_key,event_type,contract_id,payload_json,status,created) "
+        "VALUES(?,?,?,?, 'pending', ?)",
+        (str(event_key)[:180], str(event_type)[:60], contract_id,
+         json.dumps(payload, ensure_ascii=False), time.time()))
+
+
+def vk_public_contract_message(conn, event):
+    payload = parse_json_object(event['payload_json'])
+    contract = conn.execute('SELECT * FROM contracts WHERE id=?',
+                            (event['contract_id'],)).fetchone() if event['contract_id'] else None
+    if not contract:
+        return payload.get('title') or 'NC//NET update'
+    poster = conn.execute(
+        "SELECT p.display_name FROM contract_participants cp JOIN personas p ON p.id=cp.persona_id "
+        "WHERE cp.contract_id=? AND cp.visibility='public' ORDER BY cp.sort_order LIMIT 1",
+        (contract['id'],)).fetchone()
+    reward = 'CLASSIFIED'
+    if contract['reward_mode'] == 'exact' and contract['reward_exact'] is not None:
+        reward = f"€$ {contract['reward_exact']:,.0f}"
+    elif contract['reward_mode'] == 'range':
+        reward = f"€$ {contract['reward_min'] or 0:,.0f}–{contract['reward_max'] or 0:,.0f}"
+    elif contract['reward_mode'] == 'negotiable':
+        reward = contract['reward_text'] or 'NEGOTIABLE'
+    event_label = event['event_type'].replace('contract_', '').replace('_', ' ').upper()
+    url = (os.environ.get('NCNET_PUBLIC_URL') or '').rstrip('/')
+    link = f'{url}/#/contracts/{contract["id"]}' if url else f'#/contracts/{contract["id"]}'
+    lines = [
+        f'NC//NET // {event_label}', '', contract['title'],
+        f'RELAY: {poster["display_name"] if poster else "NC//NET"}',
+        f'DISTRICT: {contract["district_id"] or "CLASSIFIED"}',
+        f'RISK: {contract["risk_level"].upper()}',
+        f'REWARD: {reward}',
+        f'CREW: {contract["crew_capacity"] or "UNLIMITED"}',
+        f'CONNECTION WINDOW: {datetime.fromtimestamp(contract["scheduled_at"], MOSCOW).strftime("%Y-%m-%d %H:%M MSK") if contract["scheduled_at"] else "UNSCHEDULED"}',
+    ]
+    if contract['teaser']:
+        lines.extend(['', contract['teaser']])
+    if contract['cover_media_id'] and url:
+        lines.extend(['', f'IMAGE: {url}/api/media/{contract["cover_media_id"]}'])
+    lines.extend(['', link])
+    return '\n'.join(lines)
+
+
+def deliver_vk_outbox(conn, limit=20):
+    token = os.environ.get('VK_COMMUNITY_TOKEN')
+    peer_id = os.environ.get('VK_PEER_ID')
+    if not token or not peer_id:
+        return {'configured': False, 'sent': 0, 'failed': 0}
+    version = os.environ.get('VK_API_VERSION', '5.199')
+    rows = conn.execute(
+        "SELECT * FROM vk_outbox WHERE status IN ('pending','failed') "
+        'AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY id LIMIT ?',
+        (time.time(), max(1, min(100, int(limit))))).fetchall()
+    sent = failed = 0
+    for row in rows:
+        params = {
+            'access_token': token, 'v': version, 'peer_id': peer_id,
+            'random_id': row['id'], 'message': vk_public_contract_message(conn, row),
+        }
+        try:
+            request = Request('https://api.vk.com/method/messages.send',
+                              data=urlencode(params).encode(), method='POST')
+            response = json.loads(urlopen(request, timeout=15).read().decode())
+            if response.get('error'):
+                raise RuntimeError(response['error'].get('error_msg') or 'VK API error')
+            conn.execute("UPDATE vk_outbox SET status='sent',attempts=attempts+1,sent_at=?,last_error=NULL WHERE id=?",
+                         (time.time(), row['id']))
+            sent += 1
+        except (URLError, HTTPError, RuntimeError, ValueError) as error:
+            attempts = row['attempts'] + 1
+            delay = min(3600, 30 * (2 ** min(attempts, 6)))
+            conn.execute("UPDATE vk_outbox SET status='failed',attempts=?,next_attempt_at=?,last_error=? WHERE id=?",
+                         (attempts, time.time() + delay, str(error)[:500], row['id']))
+            failed += 1
+        conn.commit()
+    return {'configured': True, 'sent': sent, 'failed': failed}
 
 
 def db():
@@ -672,6 +1355,7 @@ def init_db():
     promoted = apply_admin_bootstrap(conn)
     if promoted:
         print('NC//NET Admin bootstrap: ' + ', '.join(promoted))
+    migrate_legacy_network_content(conn)
     conn.close()
 
 
@@ -690,6 +1374,15 @@ def verify_password(pw, stored):
         return hmac.compare_digest(dk.hex(), hexdk)
     except Exception:
         return False
+
+
+def session_cookie(token, max_age=SESSION_TTL):
+    secure = (os.environ.get('CBPR_SECURE_COOKIES', '').lower() in ('1','true','yes') or
+              (os.environ.get('NCNET_PUBLIC_URL') or '').lower().startswith('https://'))
+    parts = [f'sid={token}', 'Path=/', 'HttpOnly', 'SameSite=Lax', f'Max-Age={max_age}']
+    if secure:
+        parts.append('Secure')
+    return '; '.join(parts)
 
 
 def create_session(conn, user_id):
@@ -1240,7 +1933,10 @@ def validate_theme(theme):
 
 
 MEDIA_LIMIT = 2_500_000
-MEDIA_KINDS = {'character_portrait', 'account_avatar', 'news_image', 'job_image'}
+MEDIA_KINDS = {
+    'character_portrait', 'account_avatar', 'news_image', 'job_image',
+    'persona_avatar', 'persona_cover', 'contract_image', 'feed_image',
+}
 
 def image_info(raw):
     """Return (mime, extension, width, height) from trusted file signatures."""
@@ -1283,6 +1979,27 @@ def attach_character_media(conn, user_id, character_id, data):
     if media['attached_type'] and not (media['attached_type'] == 'character' and media['attached_id'] == character_id):
         raise ApiError(409, 'Изображение уже прикреплено')
     conn.execute("UPDATE media SET attached_type='character', attached_id=? WHERE id=?", (character_id, media_id))
+
+
+def attach_network_media(conn, user_id, entity_type, entity_id, media_ids, allowed_kinds):
+    desired = {str(value or '') for value in media_ids if value}
+    attached = conn.execute('SELECT * FROM media WHERE attached_type=? AND attached_id=?',
+                            (entity_type, entity_id)).fetchall()
+    for media in attached:
+        if media['id'] not in desired:
+            conn.execute('UPDATE media SET attached_type=NULL,attached_id=NULL WHERE id=?',
+                         (media['id'],))
+    for media_id in desired:
+        media = conn.execute('SELECT * FROM media WHERE id=?', (media_id,)).fetchone()
+        if not media or media['kind'] not in allowed_kinds:
+            raise ApiError(400, 'Недопустимое изображение NC//NET')
+        already = media['attached_type'] == entity_type and media['attached_id'] == entity_id
+        if not already and media['owner_id'] != user_id:
+            raise ApiError(403, 'Изображение принадлежит другому аккаунту')
+        if media['attached_type'] and not already:
+            raise ApiError(409, 'Изображение уже прикреплено')
+        conn.execute('UPDATE media SET attached_type=?,attached_id=? WHERE id=?',
+                     (entity_type, entity_id, media_id))
 
 
 def ensure_progression(data):
@@ -1427,6 +2144,62 @@ SERVER_ERROR_EN = {
     'Пользователь не найден': 'User not found',
     'Недопустимая роль аккаунта': 'Invalid account role',
     'Нельзя снять роль с последнего администратора': 'The last Admin cannot be demoted',
+    'Handle персоны: 3–40 латинских символов, цифр или ._-': 'Persona Handle: 3–40 Latin letters, digits, or ._-',
+    'Персоне нужно отображаемое имя': 'Persona display name is required',
+    'Некорректный тип, доступ или статус персоны': 'Invalid Persona kind, access, or status',
+    'Некорректный цвет персоны': 'Invalid Persona color',
+    'Недопустимое изображение NC//NET': 'Invalid NC//NET image',
+    'Изображение принадлежит другому аккаунту': 'Image belongs to another account',
+    'VK OAuth не настроен': 'VK OAuth is not configured',
+    'Некорректный или истёкший VK OAuth state': 'Invalid or expired VK OAuth state',
+    'VK OAuth не вернул пользователя': 'VK OAuth did not return a user',
+    'VK OAuth временно недоступен': 'VK OAuth is temporarily unavailable',
+    'Только Admin создаёт системные персоны': 'Only an Admin can create System Personas',
+    'Только Admin редактирует системные персоны': 'Only an Admin can edit System Personas',
+    'Персона не найдена': 'Persona not found',
+    'Нет права редактировать эту персону': 'You cannot edit this Persona',
+    'Такой Handle персоны уже занят': 'That Persona Handle is already taken',
+    'Нужно название сюжетной линии': 'Storyline title is required',
+    'Некорректный статус сюжетной линии': 'Invalid Storyline status',
+    'Сюжетная линия не найдена': 'Storyline not found',
+    'Нет права редактировать эту сюжетную линию': 'You cannot edit this Storyline',
+    'Некорректная сюжетная линия': 'Invalid Storyline',
+    'Событие хронологии не может быть пустым': 'Timeline event cannot be empty',
+    'Контракту нужно название': 'Contract title is required',
+    'Некорректный статус, риск или награда контракта': 'Invalid Contract status, risk, or reward',
+    'Контракт не найден': 'Contract not found',
+    'Нет права редактировать этот контракт': 'You cannot edit this Contract',
+    'Контракт недоступен для записи': 'Contract is not open for signup',
+    'Этот персонаж уже записан': 'This Character is already signed up',
+    'Запись на контракт не найдена': 'Contract signup not found',
+    'Размер команды меньше уже записанного Crew': 'Crew Capacity is below the current Crew size',
+    'Недоступная персона в контракте': 'Unavailable Persona in Contract',
+    'Недоступная сюжетная линия': 'Unavailable Storyline',
+    'Выберите одного автора публикации': 'Choose exactly one post author',
+    'Некорректный формат публикации': 'Invalid post format',
+    'Публикации нужен текст и, для длинного формата, заголовок': 'Post body and, for long formats, headline are required',
+    'Публикация не найдена': 'Post not found',
+    'Нет права редактировать эту публикацию': 'You cannot edit this post',
+    'Некорректная публикация': 'Invalid post',
+    'Укажите причину скрытия': 'Provide a reason for hiding this content',
+    'Комментарий не может быть пустым': 'Comment cannot be empty',
+    'Комментарий не найден': 'Comment not found',
+    'Недоступная персона-автор': 'Unavailable author Persona',
+    'Родительский комментарий не найден': 'Parent comment not found',
+    'NPC template нужно имя': 'NPC template name is required',
+    'Некорректный NPC template': 'Invalid NPC template',
+    'Сессия не найдена': 'Session not found',
+    'Нет права редактировать сессию': 'You cannot edit this Session',
+    'Некорректный статус сессии': 'Invalid Session status',
+    'Участнику сессии нужно имя': 'Session combatant name is required',
+    'Нет права редактировать участника': 'You cannot edit this combatant',
+    'Нет доступа к экрану сессии': 'You cannot access this Session view',
+    'Нет доступа к контракту сессии': 'You cannot access the Session Contract',
+    'Нет права завершить контракт': 'You cannot complete this Contract',
+    'Результат контракта: completed/failed': 'Contract result must be completed or failed',
+    'Выберите доступную персону для Aftermath': 'Choose an available Persona for the Aftermath',
+    'Слишком много запросов; попробуйте позже': 'Too many requests; try again later',
+    'Недопустимый источник запроса': 'Invalid request origin',
 }
 
 def server_error_message(message, language):
@@ -1480,6 +2253,7 @@ def server_error_message(message, language):
         ('выберите Team Member', 'choose a Team Member'),
         ('недоступный выбор', 'unavailable choice'),
         ('уже на минимальном Level', 'is already at minimum Level'),
+        ('Некорректное число в поле контракта:', 'Invalid number in Contract field:'),
     ]
     out = str(message)
     for ru, en in replacements:
@@ -1503,6 +2277,10 @@ class Handler(BaseHTTPRequestHandler):
     # -- утилиты
     def log_message(self, fmt, *args):
         sys.stderr.write('%s - %s\n' % (self.address_string(), fmt % args))
+
+    def rate_limit(self, scope, limit, window, user_id=None):
+        identity = str(user_id) if user_id is not None else getattr(self, 'client_address', ('local',))[0]
+        enforce_rate_limit(f'{scope}:{identity}', limit, window)
 
     def send_json(self, obj, status=200, cookies=None):
         body = json.dumps(obj, ensure_ascii=False).encode()
@@ -1566,6 +2344,14 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(403, 'Только для администраторов NC//NET')
         return u
 
+    def verify_request_origin(self):
+        origin = self.headers.get('Origin')
+        if not origin:
+            return
+        expected = self.headers.get('X-Forwarded-Host') or self.headers.get('Host') or ''
+        if urlparse(origin).netloc.lower() != expected.lower():
+            raise ApiError(403, 'Недопустимый источник запроса')
+
     # -- диспетчеризация
     def do_GET(self):
         self.dispatch('GET')
@@ -1586,6 +2372,8 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith('/api/'):
             conn = db()
             try:
+                if method in ('POST', 'PUT', 'DELETE'):
+                    self.verify_request_origin()
                 for m, rx, fn in ROUTES:
                     if m != method:
                         continue
@@ -1646,6 +2434,7 @@ class Handler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------ auth api
 
     def api_register(self, conn, qs, m, body):
+        self.rate_limit('register', 5, 300)
         username = str(body.get('username') or '').strip().lower()
         password = str(body.get('password') or '')
         display = str(body.get('display_name') or '').strip()[:60] or username
@@ -1664,9 +2453,10 @@ class Handler(BaseHTTPRequestHandler):
         token = create_session(conn, cur.lastrowid)
         u = conn.execute('SELECT * FROM users WHERE id=?', (cur.lastrowid,)).fetchone()
         self.send_json(self.me_payload(u), cookies=[
-            f'sid={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL}'])
+            session_cookie(token)])
 
     def api_login(self, conn, qs, m, body):
+        self.rate_limit('login', 12, 60)
         username = str(body.get('username') or '').strip().lower()
         password = str(body.get('password') or '')
         u = conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
@@ -1674,14 +2464,14 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(401, 'Неверный логин или пароль')
         token = create_session(conn, u['id'])
         self.send_json(self.me_payload(u), cookies=[
-            f'sid={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL}'])
+            session_cookie(token)])
 
     def api_logout(self, conn, qs, m, body):
         tok = self.cookies().get('sid')
         if tok:
             conn.execute('DELETE FROM sessions WHERE token=?', (tok,))
             conn.commit()
-        self.send_json({'ok': True}, cookies=['sid=; Path=/; HttpOnly; Max-Age=0'])
+        self.send_json({'ok': True}, cookies=[session_cookie('', 0)])
 
     def me_payload(self, u):
         try:
@@ -1735,6 +2525,13 @@ class Handler(BaseHTTPRequestHandler):
         u2 = conn.execute('SELECT * FROM users WHERE id=?', (u['id'],)).fetchone()
         self.send_json(self.me_payload(u2))
 
+    def api_gm_users(self, conn, qs, m, body):
+        self.require_gm(conn)
+        rows = conn.execute(
+            "SELECT id,username,display_name,account_role FROM users "
+            "WHERE account_role IN ('gm','admin') ORDER BY display_name").fetchall()
+        self.send_json({'users': [dict(row) for row in rows]})
+
     def api_admin_users(self, conn, qs, m, body):
         self.require_admin(conn)
         rows = conn.execute(
@@ -1771,6 +2568,819 @@ class Handler(BaseHTTPRequestHandler):
             conn, actor, int(m.group(1)), (body or {}).get('account_role'),
             (body or {}).get('reason') or 'Admin role assignment')
         self.send_json(self.me_payload(updated))
+
+    # ------------------------------------------------------------ NC//NET notifications / VK
+
+    def api_notifications(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        rows = conn.execute(
+            'SELECT * FROM notifications WHERE user_id=? ORDER BY created DESC LIMIT 100',
+            (user['id'],)).fetchall()
+        self.send_json({'notifications': [dict(row) for row in rows],
+                        'unread': sum(1 for row in rows if not row['read_at'])})
+
+    def api_notification_read(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        conn.execute('UPDATE notifications SET read_at=? WHERE id=? AND user_id=?',
+                     (time.time(), int(m.group(1)), user['id']))
+        conn.commit(); self.send_json({'ok': True})
+
+    def api_admin_vk_status(self, conn, qs, m, body):
+        self.require_admin(conn)
+        counts = {row['status']: row['n'] for row in conn.execute(
+            'SELECT status,COUNT(*) n FROM vk_outbox GROUP BY status').fetchall()}
+        self.send_json({'configured': bool(os.environ.get('VK_COMMUNITY_TOKEN') and os.environ.get('VK_PEER_ID')),
+                        'counts': counts, 'peer_id': bool(os.environ.get('VK_PEER_ID'))})
+
+    def api_admin_vk_flush(self, conn, qs, m, body):
+        self.require_admin(conn)
+        self.send_json(deliver_vk_outbox(conn, _num((body or {}).get('limit')) or 20))
+
+    def api_vk_oauth_start(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        client_id = os.environ.get('VK_CLIENT_ID')
+        redirect_uri = os.environ.get('VK_REDIRECT_URI')
+        if not client_id or not redirect_uri:
+            raise ApiError(503, 'VK OAuth не настроен')
+        state = secrets.token_urlsafe(32)
+        conn.execute('INSERT INTO vk_oauth_states(state,user_id,expires) VALUES(?,?,?)',
+                     (state, user['id'], time.time() + 900))
+        conn.execute('DELETE FROM vk_oauth_states WHERE expires<?', (time.time(),))
+        conn.commit()
+        query = urlencode({'client_id': client_id, 'redirect_uri': redirect_uri,
+                           'display': 'page', 'scope': 0, 'response_type': 'code',
+                           'v': os.environ.get('VK_API_VERSION', '5.199'), 'state': state})
+        self.send_json({'url': 'https://oauth.vk.com/authorize?' + query})
+
+    def api_vk_oauth_callback(self, conn, qs, m, body):
+        state = q1(qs.get('state')); code = q1(qs.get('code'))
+        record = conn.execute('SELECT * FROM vk_oauth_states WHERE state=? AND expires>?',
+                              (state, time.time())).fetchone()
+        if not record or not code:
+            raise ApiError(400, 'Некорректный или истёкший VK OAuth state')
+        client_id = os.environ.get('VK_CLIENT_ID'); secret = os.environ.get('VK_CLIENT_SECRET')
+        redirect_uri = os.environ.get('VK_REDIRECT_URI')
+        if not client_id or not secret or not redirect_uri:
+            raise ApiError(503, 'VK OAuth не настроен')
+        query = urlencode({'client_id': client_id, 'client_secret': secret,
+                           'redirect_uri': redirect_uri, 'code': code})
+        try:
+            response = json.loads(urlopen('https://oauth.vk.com/access_token?' + query, timeout=15).read().decode())
+        except (URLError, HTTPError, ValueError) as error:
+            raise ApiError(502, 'VK OAuth временно недоступен')
+        vk_user_id = response.get('user_id')
+        if not vk_user_id:
+            raise ApiError(400, 'VK OAuth не вернул пользователя')
+        conn.execute('UPDATE users SET vk_user_id=?,vk_linked_at=? WHERE id=?',
+                     (str(vk_user_id), time.time(), record['user_id']))
+        conn.execute('DELETE FROM vk_oauth_states WHERE state=?', (state,))
+        conn.commit(); self.send_json({'ok': True, 'vk_user_id': str(vk_user_id)})
+
+    # ------------------------------------------------------------ NC//NET personas
+
+    def api_personas(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        manage = q1(qs.get('manage')) == '1' and user_is_gm(user)
+        if manage and user_is_admin(user):
+            rows = conn.execute('SELECT * FROM personas ORDER BY updated DESC').fetchall()
+        elif manage:
+            rows = conn.execute(
+                "SELECT * FROM personas WHERE access IN ('shared','system') OR owner_user_id=? "
+                'ORDER BY updated DESC', (user['id'],)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM personas WHERE access IN ('shared','system') AND status!='archived' "
+                'ORDER BY updated DESC').fetchall()
+        self.send_json({'personas': [
+            {**persona_payload(row, manage and can_manage_persona(user, row)),
+             'can_edit': can_manage_persona(user, row)} for row in rows
+        ]})
+
+    def api_persona_create(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        data = clean_persona_input(body or {})
+        if data['access'] == 'system' and not user_is_admin(user):
+            raise ApiError(403, 'Только Admin создаёт системные персоны')
+        now = time.time()
+        columns = list(data)
+        try:
+            cur = conn.execute(
+                f"INSERT INTO personas(owner_user_id,{','.join(columns)},created,updated) "
+                f"VALUES(? ,{','.join('?' for _ in columns)},?,?)",
+                (user['id'], *(data[key] for key in columns), now, now))
+        except sqlite3.IntegrityError:
+            raise ApiError(409, 'Такой Handle персоны уже занят')
+        row = conn.execute('SELECT * FROM personas WHERE id=?', (cur.lastrowid,)).fetchone()
+        attach_network_media(conn, user['id'], 'persona', row['id'],
+                             [row['avatar_media_id'], row['cover_media_id']],
+                             {'persona_avatar', 'persona_cover'})
+        record_persona_audit(conn, row['id'], user['id'], 'create', None,
+                             persona_payload(row, True))
+        conn.commit()
+        self.send_json(persona_payload(row, True), status=201)
+
+    def api_persona_detail(self, conn, qs, m, body):
+        row = conn.execute('SELECT * FROM personas WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Персона не найдена')
+        user = self.current_user(conn)
+        can_edit = can_manage_persona(user, row)
+        if row['access'] == 'private' and not can_edit:
+            raise ApiError(404, 'Персона не найдена')
+        payload = persona_payload(row, can_edit)
+        payload['can_edit'] = can_edit
+        contract_rows = conn.execute(
+            'SELECT DISTINCT c.id,c.title,c.status,c.district_id FROM contracts c '
+            'JOIN contract_participants cp ON cp.contract_id=c.id WHERE cp.persona_id=? '
+            "AND (cp.visibility='public' OR ?) AND c.status!='draft' ORDER BY c.updated DESC LIMIT 50",
+            (row['id'], 1 if can_edit else 0)).fetchall()
+        post_rows = conn.execute(
+            "SELECT id,headline,body,format,published_at FROM feed_posts "
+            "WHERE author_persona_id=? AND (status='published' OR ?) ORDER BY created DESC LIMIT 50",
+            (row['id'], 1 if can_edit else 0)).fetchall()
+        payload['contracts'] = [dict(item) for item in contract_rows]
+        payload['posts'] = [dict(item) for item in post_rows]
+        if can_edit:
+            audit = conn.execute(
+                'SELECT a.*,u.display_name actor FROM persona_audit a '
+                'JOIN users u ON u.id=a.actor_user_id WHERE persona_id=? '
+                'ORDER BY a.id DESC LIMIT 100', (row['id'],)).fetchall()
+            payload['audit'] = [dict(item) for item in audit]
+        self.send_json(payload)
+
+    def api_persona_update(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM personas WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Персона не найдена')
+        if not can_manage_persona(user, row):
+            raise ApiError(403, 'Нет права редактировать эту персону')
+        data = clean_persona_input(body or {}, dict(row))
+        if data['access'] == 'system' and not user_is_admin(user):
+            raise ApiError(403, 'Только Admin редактирует системные персоны')
+        before = persona_payload(row, True)
+        assignments = ','.join(f'{key}=?' for key in data)
+        try:
+            conn.execute(f'UPDATE personas SET {assignments},updated=? WHERE id=?',
+                         (*(data[key] for key in data), time.time(), row['id']))
+        except sqlite3.IntegrityError:
+            raise ApiError(409, 'Такой Handle персоны уже занят')
+        updated = conn.execute('SELECT * FROM personas WHERE id=?', (row['id'],)).fetchone()
+        attach_network_media(conn, user['id'], 'persona', row['id'],
+                             [updated['avatar_media_id'], updated['cover_media_id']],
+                             {'persona_avatar', 'persona_cover'})
+        record_persona_audit(conn, row['id'], user['id'], 'update', before,
+                             persona_payload(updated, True))
+        conn.commit()
+        self.send_json(persona_payload(updated, True))
+
+    def api_persona_delete(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM personas WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Персона не найдена')
+        if not can_manage_persona(user, row):
+            raise ApiError(403, 'Нет права редактировать эту персону')
+        before = persona_payload(row, True)
+        conn.execute("UPDATE personas SET status='archived',updated=? WHERE id=?",
+                     (time.time(), row['id']))
+        updated = conn.execute('SELECT * FROM personas WHERE id=?', (row['id'],)).fetchone()
+        record_persona_audit(conn, row['id'], user['id'], 'archive', before,
+                             persona_payload(updated, True))
+        conn.commit()
+        self.send_json({'ok': True})
+
+    # ------------------------------------------------------------ NC//NET storylines
+
+    def storyline_payload(self, conn, row, user):
+        editable = can_edit_storyline(conn, user, row)
+        collaborators = conn.execute(
+            'SELECT u.id,u.username,u.display_name,c.can_edit FROM storyline_collaborators c '
+            'JOIN users u ON u.id=c.user_id WHERE c.storyline_id=? ORDER BY u.display_name',
+            (row['id'],)).fetchall()
+        payload = {
+            'id': row['id'], 'owner_user_id': row['owner_user_id'],
+            'title': row['title'], 'code_name': row['code_name'],
+            'public_summary': row['public_summary'], 'status': row['status'],
+            'created': row['created'], 'updated': row['updated'],
+            'can_edit': editable,
+        }
+        if editable:
+            payload['private_summary'] = row['private_summary']
+            payload['collaborators'] = [dict(item) for item in collaborators]
+        return payload
+
+    def api_storylines(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        rows = conn.execute('SELECT * FROM storylines ORDER BY updated DESC').fetchall()
+        self.send_json({'storylines': [self.storyline_payload(conn, row, user) for row in rows
+                                       if row['status'] != 'archived' or can_edit_storyline(conn, user, row)]})
+
+    def api_storyline_create(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        title = str((body or {}).get('title') or '').strip()[:160]
+        if not title:
+            raise ApiError(400, 'Нужно название сюжетной линии')
+        status = str((body or {}).get('status') or 'active')
+        if status not in STORYLINE_STATUSES:
+            raise ApiError(400, 'Некорректный статус сюжетной линии')
+        now = time.time()
+        cur = conn.execute(
+            'INSERT INTO storylines(owner_user_id,title,code_name,public_summary,private_summary,'
+            'status,created,updated) VALUES(?,?,?,?,?,?,?,?)',
+            (user['id'], title, str((body or {}).get('code_name') or '')[:100],
+             str((body or {}).get('public_summary') or '')[:5000],
+             str((body or {}).get('private_summary') or '')[:10000], status, now, now))
+        for uid in {int(value) for value in ((body or {}).get('collaborator_ids') or []) if str(value).isdigit()}:
+            candidate = conn.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
+            if candidate and user_is_gm(candidate) and uid != user['id']:
+                conn.execute('INSERT OR IGNORE INTO storyline_collaborators(storyline_id,user_id,can_edit) VALUES(?,?,1)',
+                             (cur.lastrowid, uid))
+        conn.commit()
+        row = conn.execute('SELECT * FROM storylines WHERE id=?', (cur.lastrowid,)).fetchone()
+        self.send_json(self.storyline_payload(conn, row, user), status=201)
+
+    def api_storyline_detail(self, conn, qs, m, body):
+        row = conn.execute('SELECT * FROM storylines WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Сюжетная линия не найдена')
+        user = self.current_user(conn)
+        payload = self.storyline_payload(conn, row, user)
+        timeline = conn.execute(
+            'SELECT * FROM storyline_timeline WHERE storyline_id=? ORDER BY event_at,created',
+            (row['id'],)).fetchall()
+        payload['timeline'] = [{
+            'id': item['id'], 'event_at': item['event_at'],
+            'public_text': item['public_text'],
+            'private_text': item['private_text'] if payload['can_edit'] else None,
+            'contract_id': item['contract_id'], 'feed_post_id': item['feed_post_id'],
+        } for item in timeline]
+        self.send_json(payload)
+
+    def api_storyline_update(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM storylines WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Сюжетная линия не найдена')
+        if not can_edit_storyline(conn, user, row):
+            raise ApiError(403, 'Нет права редактировать эту сюжетную линию')
+        title = str((body or {}).get('title', row['title']) or '').strip()[:160]
+        status = str((body or {}).get('status', row['status']))
+        if not title or status not in STORYLINE_STATUSES:
+            raise ApiError(400, 'Некорректная сюжетная линия')
+        conn.execute(
+            'UPDATE storylines SET title=?,code_name=?,public_summary=?,private_summary=?,status=?,updated=? WHERE id=?',
+            (title, str((body or {}).get('code_name', row['code_name']))[:100],
+             str((body or {}).get('public_summary', row['public_summary']))[:5000],
+             str((body or {}).get('private_summary', row['private_summary']))[:10000],
+             status, time.time(), row['id']))
+        if 'collaborator_ids' in (body or {}) and (row['owner_user_id'] == user['id'] or user_is_admin(user)):
+            ids = {int(value) for value in ((body or {}).get('collaborator_ids') or [])
+                   if str(value).isdigit() and int(value) != row['owner_user_id']}
+            conn.execute('DELETE FROM storyline_collaborators WHERE storyline_id=?', (row['id'],))
+            for uid in ids:
+                candidate = conn.execute('SELECT * FROM users WHERE id=?', (uid,)).fetchone()
+                if candidate and user_is_gm(candidate):
+                    conn.execute('INSERT INTO storyline_collaborators(storyline_id,user_id,can_edit) VALUES(?,?,1)',
+                                 (row['id'], uid))
+        conn.commit()
+        updated = conn.execute('SELECT * FROM storylines WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(self.storyline_payload(conn, updated, user))
+
+    def api_storyline_timeline_create(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM storylines WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not row or not can_edit_storyline(conn, user, row):
+            raise ApiError(403, 'Нет права редактировать эту сюжетную линию')
+        public_text = str((body or {}).get('public_text') or '')[:5000] or None
+        private_text = str((body or {}).get('private_text') or '')[:10000]
+        if not public_text and not private_text:
+            raise ApiError(400, 'Событие хронологии не может быть пустым')
+        cur = conn.execute(
+            'INSERT INTO storyline_timeline(storyline_id,event_at,public_text,private_text,contract_id,'
+            'feed_post_id,created_by,created) VALUES(?,?,?,?,?,?,?,?)',
+            (row['id'], (body or {}).get('event_at'), public_text, private_text,
+             _num((body or {}).get('contract_id')), _num((body or {}).get('feed_post_id')),
+             user['id'], time.time()))
+        conn.execute('UPDATE storylines SET updated=? WHERE id=?', (time.time(), row['id']))
+        conn.commit()
+        self.send_json({'id': cur.lastrowid}, status=201)
+
+    # ------------------------------------------------------------ NC//NET contracts
+
+    def contract_payload(self, conn, row, user):
+        can_edit = can_edit_contract(conn, user, row)
+        classified = has_contract_classified_access(conn, user, row)
+        participant_rows = conn.execute(
+            'SELECT cp.*,p.handle,p.display_name,p.kind,p.avatar_media_id,p.accent_color '
+            'FROM contract_participants cp JOIN personas p ON p.id=cp.persona_id '
+            'WHERE cp.contract_id=? ORDER BY cp.sort_order,cp.id', (row['id'],)).fetchall()
+        signups = conn.execute(
+            'SELECT s.*,u.display_name user_name,u.show_display_name signup_show_name,c.data character_data FROM contract_signups s '
+            'JOIN users u ON u.id=s.user_id LEFT JOIN characters c ON c.id=s.character_id '
+            "WHERE s.contract_id=? AND s.status IN ('crew','waitlist') "
+            'ORDER BY CASE s.status WHEN \'crew\' THEN 0 ELSE 1 END,s.queue_position,s.joined_at',
+            (row['id'],)).fetchall()
+        signup_payload = []
+        for signup in signups:
+            character = parse_json_object(signup['character_data']) if signup['character_data'] else {}
+            signup_payload.append({
+                'id': signup['id'], 'user_id': signup['user_id'],
+                'character_id': signup['character_id'],
+                'character_name': character.get('handle') or signup['legacy_char_name'] or 'Unknown',
+                'status': signup['status'], 'queue_position': signup['queue_position'],
+                'joined_at': signup['joined_at'],
+                'account_name': signup['user_name'] if (can_edit or bool(signup['signup_show_name'])) else None,
+            })
+        owner = conn.execute('SELECT * FROM users WHERE id=?', (row['owner_user_id'],)).fetchone()
+        active_session = conn.execute(
+            "SELECT id,status FROM nc_sessions WHERE contract_id=? AND status IN ('preparing','active','paused') "
+            'ORDER BY id DESC LIMIT 1', (row['id'],)).fetchone()
+        payload = {
+            'id': row['id'], 'owner_user_id': row['owner_user_id'],
+            'storyline_id': row['storyline_id'], 'status': row['status'],
+            'title': row['title'], 'teaser': row['teaser'],
+            'public_brief': row['public_brief'], 'district_id': row['district_id'],
+            'risk_level': row['risk_level'], 'reward_mode': row['reward_mode'],
+            'reward_exact': row['reward_exact'], 'reward_min': row['reward_min'],
+            'reward_max': row['reward_max'], 'reward_text': row['reward_text'],
+            'scheduled_at': row['scheduled_at'], 'timezone': row['timezone'],
+            'duration_text': row['duration_text'], 'crew_capacity': row['crew_capacity'],
+            'requirements': row['requirements'], 'content_notes': row['content_notes'],
+            'service_format': row['service_format'], 'cover_media_id': row['cover_media_id'],
+            'created': row['created'], 'updated': row['updated'],
+            'active_session_id': active_session['id'] if active_session else None,
+            'active_session_status': active_session['status'] if active_session else None,
+            'participants': [{
+                'id': item['id'], 'persona_id': item['persona_id'],
+                'role_key': item['role_key'], 'role_label': item['role_label'],
+                'visibility': item['visibility'], 'note': item['note'],
+                'handle': item['handle'], 'display_name': item['display_name'],
+                'kind': item['kind'], 'avatar_media_id': item['avatar_media_id'],
+                'accent_color': item['accent_color'],
+            } for item in participant_rows if item['visibility'] == 'public' or classified],
+            'signups': signup_payload,
+            'crew_count': sum(1 for item in signup_payload if item['status'] == 'crew'),
+            'waitlist_count': sum(1 for item in signup_payload if item['status'] == 'waitlist'),
+            'my_signup': next((item for item in signup_payload if user and item['user_id'] == user['id']), None),
+            'can_edit': can_edit, 'has_classified_access': classified,
+            'gm_display_name': owner['display_name'] if owner and owner['show_display_name'] else None,
+        }
+        if classified:
+            payload.update({
+                'classified_brief': row['classified_brief'],
+                'service_contact': row['service_contact'],
+                'service_vtt_url': row['service_vtt_url'],
+                'service_notes': row['service_notes'],
+            })
+        return payload
+
+    def clean_contract_input(self, body, existing=None):
+        base = dict(existing or {})
+        get = lambda key, default='': (body or {}).get(key, base.get(key, default))
+        title = str(get('title')).strip()[:180]
+        if not title:
+            raise ApiError(400, 'Контракту нужно название')
+        status = str(get('status', 'draft')).lower()
+        reward_mode = str(get('reward_mode', 'hidden')).lower()
+        risk = str(get('risk_level', 'moderate')).lower()
+        if status not in CONTRACT_STATUSES or reward_mode not in CONTRACT_REWARD_MODES or risk not in CONTRACT_RISKS:
+            raise ApiError(400, 'Некорректный статус, риск или награда контракта')
+        capacity = max(0, min(100, _num(get('crew_capacity', 0)) or 0))
+        def optional_number(key):
+            raw = get(key)
+            if raw is None or str(raw).strip() == '':
+                return None
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                raise ApiError(400, f'Некорректное число в поле контракта: {key}')
+        return {
+            'storyline_id': _num(get('storyline_id')),
+            'status': status, 'title': title,
+            'teaser': str(get('teaser'))[:500],
+            'public_brief': str(get('public_brief'))[:30000],
+            'classified_brief': str(get('classified_brief'))[:30000],
+            'district_id': str(get('district_id'))[:80],
+            'risk_level': risk, 'reward_mode': reward_mode,
+            'reward_exact': optional_number('reward_exact'),
+            'reward_min': optional_number('reward_min'),
+            'reward_max': optional_number('reward_max'),
+            'reward_text': str(get('reward_text'))[:200] or None,
+            'scheduled_at': optional_number('scheduled_at'),
+            'timezone': str(get('timezone', 'Europe/Moscow'))[:80] or 'Europe/Moscow',
+            'duration_text': str(get('duration_text'))[:100] or None,
+            'crew_capacity': capacity,
+            'requirements': str(get('requirements'))[:5000],
+            'content_notes': str(get('content_notes'))[:5000],
+            'service_format': str(get('service_format'))[:200],
+            'service_contact': str(get('service_contact'))[:500],
+            'service_vtt_url': str(get('service_vtt_url'))[:1000],
+            'service_notes': str(get('service_notes'))[:5000],
+            'cover_media_id': str(get('cover_media_id'))[:64] or None,
+        }
+
+    def replace_contract_participants(self, conn, contract_id, user, participants):
+        conn.execute('DELETE FROM contract_participants WHERE contract_id=?', (contract_id,))
+        for index, item in enumerate(participants or []):
+            persona = conn.execute('SELECT * FROM personas WHERE id=?',
+                                   (_num(item.get('persona_id')),)).fetchone()
+            if not persona or not can_manage_persona(user, persona):
+                raise ApiError(400, 'Недоступная персона в контракте')
+            visibility = 'classified' if item.get('visibility') == 'classified' else 'public'
+            role_key = str(item.get('role_key') or 'custom')[:40]
+            conn.execute(
+                'INSERT INTO contract_participants(contract_id,persona_id,role_key,role_label,'
+                'visibility,note,sort_order) VALUES(?,?,?,?,?,?,?)',
+                (contract_id, persona['id'], role_key, str(item.get('role_label') or '')[:100],
+                 visibility, str(item.get('note') or '')[:1000], index))
+
+    def api_contracts(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        rows = conn.execute('SELECT * FROM contracts ORDER BY scheduled_at IS NULL,scheduled_at,created DESC').fetchall()
+        visible = []
+        for row in rows:
+            if row['status'] in ('draft', 'archived') and not can_edit_contract(conn, user, row):
+                continue
+            visible.append(self.contract_payload(conn, row, user))
+        self.send_json({'contracts': visible})
+
+    def api_contract_create(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        data = self.clean_contract_input(body or {})
+        if data['storyline_id']:
+            storyline = conn.execute('SELECT * FROM storylines WHERE id=?', (data['storyline_id'],)).fetchone()
+            if not storyline or not can_edit_storyline(conn, user, storyline):
+                raise ApiError(400, 'Недоступная сюжетная линия')
+        now = time.time(); columns = list(data)
+        cur = conn.execute(
+            f"INSERT INTO contracts(owner_user_id,{','.join(columns)},created,updated) "
+            f"VALUES(? ,{','.join('?' for _ in columns)},?,?)",
+            (user['id'], *(data[key] for key in columns), now, now))
+        attach_network_media(conn, user['id'], 'contract', cur.lastrowid,
+                             [data['cover_media_id']], {'contract_image'})
+        self.replace_contract_participants(conn, cur.lastrowid, user, (body or {}).get('participants') or [])
+        if data['status'] == 'open':
+            queue_vk_event(conn, f'contract:{cur.lastrowid}:published', 'contract_published',
+                           cur.lastrowid, {'contract_id': cur.lastrowid, 'title': data['title']})
+            for recipient in conn.execute('SELECT id FROM users WHERE id>1').fetchall():
+                add_notification(conn, recipient['id'], 'contract_published',
+                                 'New NC//NET Contract', data['title'],
+                                 f'#/contracts/{cur.lastrowid}')
+        conn.commit()
+        row = conn.execute('SELECT * FROM contracts WHERE id=?', (cur.lastrowid,)).fetchone()
+        self.send_json(self.contract_payload(conn, row, user), status=201)
+
+    def api_contract_detail(self, conn, qs, m, body):
+        row = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Контракт не найден')
+        user = self.current_user(conn)
+        if row['status'] in ('draft', 'archived') and not can_edit_contract(conn, user, row):
+            raise ApiError(404, 'Контракт не найден')
+        self.send_json(self.contract_payload(conn, row, user))
+
+    def api_contract_update(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not row or not can_edit_contract(conn, user, row):
+            raise ApiError(403, 'Нет права редактировать этот контракт')
+        data = self.clean_contract_input(body or {}, row)
+        crew_count = conn.execute(
+            "SELECT COUNT(*) n FROM contract_signups WHERE contract_id=? AND status='crew'",
+            (row['id'],)).fetchone()['n']
+        if data['crew_capacity'] and data['crew_capacity'] < crew_count:
+            raise ApiError(409, 'Размер команды меньше уже записанного Crew')
+        if data['status'] == 'crew_full' and (data['crew_capacity'] == 0 or crew_count < data['crew_capacity']):
+            data['status'] = 'open'
+        if data['storyline_id']:
+            storyline = conn.execute('SELECT * FROM storylines WHERE id=?', (data['storyline_id'],)).fetchone()
+            if not storyline or not can_edit_storyline(conn, user, storyline):
+                raise ApiError(400, 'Недоступная сюжетная линия')
+        assignments = ','.join(f'{key}=?' for key in data)
+        conn.execute(f'UPDATE contracts SET {assignments},updated=? WHERE id=?',
+                     (*(data[key] for key in data), time.time(), row['id']))
+        attach_network_media(conn, user['id'], 'contract', row['id'],
+                             [data['cover_media_id']], {'contract_image'})
+        if 'participants' in (body or {}):
+            self.replace_contract_participants(conn, row['id'], user, (body or {}).get('participants'))
+        if row['status'] != data['status'] or row['scheduled_at'] != data['scheduled_at']:
+            queue_vk_event(conn, f'contract:{row["id"]}:update:{int(time.time())}',
+                           f'contract_{data["status"]}', row['id'],
+                           {'contract_id': row['id'], 'title': data['title'],
+                            'status': data['status'], 'scheduled_at': data['scheduled_at']})
+            for recipient in conn.execute(
+                    "SELECT DISTINCT user_id FROM contract_signups WHERE contract_id=? "
+                    "AND status IN ('crew','waitlist')", (row['id'],)).fetchall():
+                add_notification(conn, recipient['user_id'], 'contract_updated',
+                                 'Contract updated', data['title'], f'#/contracts/{row["id"]}')
+        conn.commit()
+        updated = conn.execute('SELECT * FROM contracts WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(self.contract_payload(conn, updated, user))
+
+    def api_contract_join(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        contract = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not contract or contract['status'] not in ('open', 'crew_full'):
+            raise ApiError(409, 'Контракт недоступен для записи')
+        character = self.get_char(conn, (body or {}).get('character_id'))
+        if character['owner_id'] != user['id']:
+            raise ApiError(403, 'Это не ваш персонаж')
+        existing = conn.execute(
+            "SELECT * FROM contract_signups WHERE contract_id=? AND character_id=? AND status IN ('crew','waitlist')",
+            (contract['id'], character['id'])).fetchone()
+        if existing:
+            raise ApiError(409, 'Этот персонаж уже записан')
+        previous = conn.execute(
+            'SELECT * FROM contract_signups WHERE contract_id=? AND character_id=? ORDER BY id DESC LIMIT 1',
+            (contract['id'], character['id'])).fetchone()
+        crew_count = conn.execute(
+            "SELECT COUNT(*) n FROM contract_signups WHERE contract_id=? AND status='crew'",
+            (contract['id'],)).fetchone()['n']
+        capacity = contract['crew_capacity']
+        status = 'crew' if capacity == 0 or crew_count < capacity else 'waitlist'
+        position = conn.execute(
+            'SELECT COALESCE(MAX(queue_position),0)+1 n FROM contract_signups WHERE contract_id=?',
+            (contract['id'],)).fetchone()['n']
+        now = time.time()
+        if previous:
+            conn.execute(
+                'UPDATE contract_signups SET user_id=?,status=?,queue_position=?,joined_at=?,updated=? WHERE id=?',
+                (user['id'], status, position, now, now, previous['id']))
+        else:
+            conn.execute(
+                'INSERT INTO contract_signups(contract_id,user_id,character_id,status,queue_position,'
+                'joined_at,updated) VALUES(?,?,?,?,?,?,?)',
+                (contract['id'], user['id'], character['id'], status, position, now, now))
+        if status == 'crew' and capacity and crew_count + 1 >= capacity:
+            conn.execute("UPDATE contracts SET status='crew_full',updated=? WHERE id=?",
+                         (now, contract['id']))
+            queue_vk_event(conn, f'contract:{contract["id"]}:crew-full:{position}',
+                           'contract_crew_full', contract['id'],
+                           {'contract_id': contract['id'], 'title': contract['title']})
+        add_notification(conn, user['id'], 'contract_joined',
+                         'Contract access confirmed' if status == 'crew' else 'Added to Contract waitlist',
+                         contract['title'], f'#/contracts/{contract["id"]}')
+        conn.commit()
+        updated = conn.execute('SELECT * FROM contracts WHERE id=?', (contract['id'],)).fetchone()
+        self.send_json(self.contract_payload(conn, updated, user))
+
+    def api_contract_leave(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        contract = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
+        signup = conn.execute(
+            "SELECT * FROM contract_signups WHERE contract_id=? AND user_id=? AND status IN ('crew','waitlist') "
+            'ORDER BY id DESC LIMIT 1', (int(m.group(1)), user['id'])).fetchone()
+        if not contract or not signup:
+            raise ApiError(404, 'Запись на контракт не найдена')
+        was_crew = signup['status'] == 'crew'; now = time.time()
+        conn.execute("UPDATE contract_signups SET status='withdrawn',updated=? WHERE id=?",
+                     (now, signup['id']))
+        promoted = None
+        if was_crew:
+            promoted = conn.execute(
+                "SELECT * FROM contract_signups WHERE contract_id=? AND status='waitlist' "
+                'ORDER BY queue_position,joined_at LIMIT 1', (contract['id'],)).fetchone()
+            if promoted:
+                conn.execute("UPDATE contract_signups SET status='crew',updated=? WHERE id=?",
+                             (now, promoted['id']))
+                add_notification(conn, promoted['user_id'], 'contract_promoted',
+                                 'Promoted from waitlist', contract['title'],
+                                 f'#/contracts/{contract["id"]}')
+            else:
+                conn.execute("UPDATE contracts SET status='open',updated=? WHERE id=?",
+                             (now, contract['id']))
+                queue_vk_event(conn, f'contract:{contract["id"]}:vacancy:{signup["id"]}',
+                               'contract_vacancy', contract['id'],
+                               {'contract_id': contract['id'], 'title': contract['title']})
+        conn.commit()
+        updated = conn.execute('SELECT * FROM contracts WHERE id=?', (contract['id'],)).fetchone()
+        self.send_json(self.contract_payload(conn, updated, user))
+
+    def api_contract_delete(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        contract = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not contract or not can_edit_contract(conn, user, contract):
+            raise ApiError(403, 'Нет права редактировать этот контракт')
+        conn.execute("UPDATE contracts SET status='archived',updated=? WHERE id=?",
+                     (time.time(), contract['id']))
+        conn.commit(); self.send_json({'ok': True})
+
+    # ------------------------------------------------------------ NC//NET City Feed
+
+    def resolve_feed_author(self, conn, user, body):
+        persona_id = _num((body or {}).get('author_persona_id'))
+        character_id = _num((body or {}).get('author_character_id'))
+        if bool(persona_id) == bool(character_id):
+            raise ApiError(400, 'Выберите одного автора публикации')
+        if persona_id:
+            persona = conn.execute('SELECT * FROM personas WHERE id=?', (persona_id,)).fetchone()
+            if not persona or not can_manage_persona(user, persona):
+                raise ApiError(403, 'Недоступная персона-автор')
+            return persona_id, None
+        character = self.get_char(conn, character_id)
+        if character['owner_id'] != user['id']:
+            raise ApiError(403, 'Это не ваш персонаж')
+        return None, character['id']
+
+    def feed_post_payload(self, conn, row, user, include_comments=False):
+        persona = conn.execute('SELECT * FROM personas WHERE id=?',
+                               (row['author_persona_id'],)).fetchone() if row['author_persona_id'] else None
+        character = conn.execute('SELECT * FROM characters WHERE id=?',
+                                 (row['author_character_id'],)).fetchone() if row['author_character_id'] else None
+        char_data = parse_json_object(character['data']) if character else {}
+        can_edit = bool(user and (user['id'] == row['creator_user_id'] or user_is_admin(user) or
+                        (persona and can_manage_persona(user, persona))))
+        payload = {
+            'id': row['id'], 'format': row['format'], 'status': row['status'],
+            'creator_user_id': row['creator_user_id'],
+            'author_persona_id': row['author_persona_id'],
+            'author_character_id': row['author_character_id'],
+            'author': persona_payload(persona, False) if persona else ({
+                'id': character['id'], 'kind': 'character',
+                'display_name': char_data.get('handle') or 'Unknown Edgerunner',
+                'handle': char_data.get('handle') or 'unknown',
+                'avatar_media_id': char_data.get('portrait_media_id'),
+                'accent_color': '#ff2d78',
+            } if character else None),
+            'storyline_id': row['storyline_id'], 'contract_id': row['contract_id'],
+            'reply_to_post_id': row['reply_to_post_id'], 'district_id': row['district_id'],
+            'headline': row['headline'], 'lead': row['lead'], 'body': row['body'],
+            'image_media_id': row['image_media_id'], 'event_at': row['event_at'],
+            'published_at': row['published_at'], 'created': row['created'],
+            'updated': row['updated'], 'can_edit': can_edit,
+        }
+        if user_is_gm(user):
+            payload['truth_status'] = row['truth_status']
+            payload['hidden_reason'] = row['hidden_reason']
+        if include_comments:
+            comments = conn.execute(
+                'SELECT * FROM feed_comments WHERE post_id=? ORDER BY created,id',
+                (row['id'],)).fetchall()
+            payload['comments'] = [self.feed_comment_payload(conn, item, user) for item in comments
+                                   if not item['hidden_at'] or user_is_gm(user) or
+                                   (user and item['creator_user_id'] == user['id'])]
+        return payload
+
+    def feed_comment_payload(self, conn, row, user):
+        persona = conn.execute('SELECT * FROM personas WHERE id=?',
+                               (row['author_persona_id'],)).fetchone() if row['author_persona_id'] else None
+        character = conn.execute('SELECT * FROM characters WHERE id=?',
+                                 (row['author_character_id'],)).fetchone() if row['author_character_id'] else None
+        char_data = parse_json_object(character['data']) if character else {}
+        return {
+            'id': row['id'], 'post_id': row['post_id'],
+            'parent_comment_id': row['parent_comment_id'], 'body': row['body'],
+            'created': row['created'], 'updated': row['updated'],
+            'hidden': bool(row['hidden_at']),
+            'hidden_reason': row['hidden_reason'] if user_is_gm(user) else None,
+            'author': persona_payload(persona, False) if persona else ({
+                'id': character['id'], 'kind': 'character',
+                'display_name': char_data.get('handle') or 'Unknown Edgerunner',
+                'handle': char_data.get('handle') or 'unknown',
+                'avatar_media_id': char_data.get('portrait_media_id'),
+                'accent_color': '#ff2d78',
+            } if character else None),
+            'mine': bool(user and row['creator_user_id'] == user['id']),
+        }
+
+    def api_feed(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        rows = conn.execute('SELECT * FROM feed_posts ORDER BY published_at DESC,created DESC LIMIT 200').fetchall()
+        posts = [self.feed_post_payload(conn, row, user) for row in rows
+                 if row['status'] == 'published' or
+                 (user and (row['creator_user_id'] == user['id'] or user_is_gm(user)))]
+        self.send_json({'posts': posts})
+
+    def api_feed_create(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        self.rate_limit('feed-post', 20, 3600, user['id'])
+        persona_id, character_id = self.resolve_feed_author(conn, user, body or {})
+        fmt = str((body or {}).get('format') or 'short').lower()
+        if fmt not in FEED_FORMATS:
+            raise ApiError(400, 'Некорректный формат публикации')
+        headline = str((body or {}).get('headline') or '').strip()[:240] or None
+        text = str((body or {}).get('body') or '').strip()[:30000]
+        if not text or (fmt in ('article', 'blog', 'bulletin') and not headline):
+            raise ApiError(400, 'Публикации нужен текст и, для длинного формата, заголовок')
+        status = 'draft' if user_is_gm(user) and (body or {}).get('status') == 'draft' else 'published'
+        truth = str((body or {}).get('truth_status') or 'unknown') if user_is_gm(user) else 'unknown'
+        if truth not in FEED_TRUTH:
+            truth = 'unknown'
+        now = time.time(); published = now if status == 'published' else None
+        cur = conn.execute(
+            'INSERT INTO feed_posts(format,status,creator_user_id,author_persona_id,author_character_id,'
+            'storyline_id,contract_id,reply_to_post_id,district_id,headline,lead,body,image_media_id,'
+            'truth_status,event_at,published_at,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (fmt, status, user['id'], persona_id, character_id,
+             _num((body or {}).get('storyline_id')), _num((body or {}).get('contract_id')),
+             _num((body or {}).get('reply_to_post_id')),
+             str((body or {}).get('district_id') or '')[:80] or None,
+             headline, str((body or {}).get('lead') or '')[:500] or None, text,
+             str((body or {}).get('image_media_id') or '')[:64] or None,
+             truth, (body or {}).get('event_at'), published, now, now))
+        attach_network_media(conn, user['id'], 'feed_post', cur.lastrowid,
+                             [str((body or {}).get('image_media_id') or '')], {'feed_image'})
+        row = conn.execute('SELECT * FROM feed_posts WHERE id=?', (cur.lastrowid,)).fetchone()
+        record_feed_revision(conn, row['id'], user['id'], 'publish' if status == 'published' else 'draft',
+                             None, self.feed_post_payload(conn, row, user))
+        conn.commit()
+        self.send_json(self.feed_post_payload(conn, row, user), status=201)
+
+    def api_feed_detail(self, conn, qs, m, body):
+        row = conn.execute('SELECT * FROM feed_posts WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Публикация не найдена')
+        user = self.current_user(conn)
+        if row['status'] != 'published' and not (user and (user_is_gm(user) or row['creator_user_id'] == user['id'])):
+            raise ApiError(404, 'Публикация не найдена')
+        self.send_json(self.feed_post_payload(conn, row, user, include_comments=True))
+
+    def api_feed_update(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        row = conn.execute('SELECT * FROM feed_posts WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Публикация не найдена')
+        persona = conn.execute('SELECT * FROM personas WHERE id=?',
+                               (row['author_persona_id'],)).fetchone() if row['author_persona_id'] else None
+        allowed = row['creator_user_id'] == user['id'] or user_is_admin(user) or (persona and can_manage_persona(user, persona))
+        if not allowed:
+            raise ApiError(403, 'Нет права редактировать эту публикацию')
+        before = self.feed_post_payload(conn, row, user)
+        fmt = str((body or {}).get('format', row['format']))
+        headline = str((body or {}).get('headline', row['headline'] or '')).strip()[:240] or None
+        text = str((body or {}).get('body', row['body'])).strip()[:30000]
+        status = str((body or {}).get('status', row['status']))
+        if fmt not in FEED_FORMATS or status not in ('draft', 'published', 'archived') or not text:
+            raise ApiError(400, 'Некорректная публикация')
+        published = row['published_at'] or (time.time() if status == 'published' else None)
+        conn.execute(
+            'UPDATE feed_posts SET format=?,status=?,headline=?,lead=?,body=?,district_id=?,event_at=?,published_at=?,updated=? WHERE id=?',
+            (fmt, status, headline, str((body or {}).get('lead', row['lead'] or ''))[:500] or None,
+             text, str((body or {}).get('district_id', row['district_id'] or ''))[:80] or None,
+             (body or {}).get('event_at', row['event_at']), published, time.time(), row['id']))
+        updated = conn.execute('SELECT * FROM feed_posts WHERE id=?', (row['id'],)).fetchone()
+        after = self.feed_post_payload(conn, updated, user)
+        record_feed_revision(conn, row['id'], user['id'], 'update', before, after)
+        conn.commit(); self.send_json(after)
+
+    def api_feed_hide(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM feed_posts WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Публикация не найдена')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if not reason:
+            raise ApiError(400, 'Укажите причину скрытия')
+        before = self.feed_post_payload(conn, row, user)
+        conn.execute("UPDATE feed_posts SET status='hidden',hidden_by_user_id=?,hidden_reason=?,updated=? WHERE id=?",
+                     (user['id'], reason, time.time(), row['id']))
+        updated = conn.execute('SELECT * FROM feed_posts WHERE id=?', (row['id'],)).fetchone()
+        record_feed_revision(conn, row['id'], user['id'], 'hide', before,
+                             self.feed_post_payload(conn, updated, user), reason)
+        conn.commit(); self.send_json({'ok': True})
+
+    def api_feed_comment_create(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        self.rate_limit('feed-comment', 60, 3600, user['id'])
+        post = conn.execute("SELECT * FROM feed_posts WHERE id=? AND status='published'",
+                            (int(m.group(1)),)).fetchone()
+        if not post:
+            raise ApiError(404, 'Публикация не найдена')
+        persona_id, character_id = self.resolve_feed_author(conn, user, body or {})
+        text = str((body or {}).get('body') or '').strip()[:5000]
+        if not text:
+            raise ApiError(400, 'Комментарий не может быть пустым')
+        parent_id = _num((body or {}).get('parent_comment_id'))
+        if parent_id:
+            parent = conn.execute('SELECT * FROM feed_comments WHERE id=? AND post_id=?',
+                                  (parent_id, post['id'])).fetchone()
+            if not parent:
+                raise ApiError(400, 'Родительский комментарий не найден')
+            if parent['parent_comment_id']:
+                parent_id = parent['parent_comment_id']
+        now = time.time()
+        cur = conn.execute(
+            'INSERT INTO feed_comments(post_id,parent_comment_id,creator_user_id,author_persona_id,'
+            'author_character_id,body,created,updated) VALUES(?,?,?,?,?,?,?,?)',
+            (post['id'], parent_id, user['id'], persona_id, character_id, text, now, now))
+        if post['creator_user_id'] != user['id']:
+            add_notification(conn, post['creator_user_id'], 'feed_comment',
+                             'New reply to your transmission', text[:180], f'#/feed/{post["id"]}')
+        conn.commit(); row = conn.execute('SELECT * FROM feed_comments WHERE id=?', (cur.lastrowid,)).fetchone()
+        self.send_json(self.feed_comment_payload(conn, row, user), status=201)
+
+    def api_feed_comment_hide(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM feed_comments WHERE id=?', (int(m.group(2)),)).fetchone()
+        if not row or row['post_id'] != int(m.group(1)):
+            raise ApiError(404, 'Комментарий не найден')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if not reason:
+            raise ApiError(400, 'Укажите причину скрытия')
+        conn.execute('UPDATE feed_comments SET hidden_at=?,hidden_by=?,hidden_reason=?,updated=? WHERE id=?',
+                     (time.time(), user['id'], reason, time.time(), row['id']))
+        conn.commit(); self.send_json({'ok': True})
 
     # ------------------------------------------------------------ media
 
@@ -1818,6 +3428,19 @@ class Handler(BaseHTTPRequestHandler):
             char = conn.execute('SELECT owner_id,public FROM characters WHERE id=?', (row['attached_id'],)).fetchone()
             public_media = bool(char and char['public'])
             allowed = bool(char and (public_media or (user and user['id'] == char['owner_id'])))
+        elif row['attached_type'] == 'persona' and row['attached_id']:
+            persona = conn.execute('SELECT * FROM personas WHERE id=?', (row['attached_id'],)).fetchone()
+            public_media = bool(persona and persona['access'] in ('shared', 'system') and persona['status'] != 'archived')
+            allowed = public_media or can_manage_persona(user, persona)
+        elif row['attached_type'] == 'contract' and row['attached_id']:
+            contract = conn.execute('SELECT * FROM contracts WHERE id=?', (row['attached_id'],)).fetchone()
+            public_media = bool(contract and contract['status'] not in ('draft', 'archived'))
+            allowed = public_media or can_edit_contract(conn, user, contract)
+        elif row['attached_type'] == 'feed_post' and row['attached_id']:
+            post = conn.execute('SELECT * FROM feed_posts WHERE id=?', (row['attached_id'],)).fetchone()
+            public_media = bool(post and post['status'] == 'published')
+            allowed = bool(public_media or (post and user and
+                           (post['creator_user_id'] == user['id'] or user_is_gm(user))))
         if not allowed:
             raise ApiError(403, 'Изображение приватное')
         path = os.path.join(UPLOAD_DIR, row['filename'])
@@ -1860,6 +3483,8 @@ class Handler(BaseHTTPRequestHandler):
             'cats': cat['cats'],
             'range_table': cat['range_table'],
             'autofire_table': cat['autofire_table'],
+            'general_dv': GENERAL_DV,
+            'rule_sources': RULE_SOURCES,
         })
 
     def api_stats(self, conn, qs, m, body):
@@ -1868,8 +3493,11 @@ class Handler(BaseHTTPRequestHandler):
         u = conn.execute('SELECT COUNT(*) n FROM users WHERE id > 1').fetchone()['n']
         nw = conn.execute('SELECT COUNT(*) n FROM news').fetchone()['n']
         jb = conn.execute("SELECT COUNT(*) n FROM jobs WHERE status='open'").fetchone()['n']
+        feed = conn.execute("SELECT COUNT(*) n FROM feed_posts WHERE status='published'").fetchone()['n']
+        contracts = conn.execute("SELECT COUNT(*) n FROM contracts WHERE status IN ('open','crew_full')").fetchone()['n']
         self.send_json({'items': len(cat['items']), 'characters': c, 'users': u,
-                        'news': nw, 'open_jobs': jb})
+                        'news': nw, 'open_jobs': jb,
+                        'feed_posts': feed, 'open_contracts': contracts})
 
     def api_items(self, conn, qs, m, body):
         cat = catalog()
@@ -1932,6 +3560,7 @@ class Handler(BaseHTTPRequestHandler):
             'INSERT INTO characters(owner_id, public, data, created, updated) VALUES(?,?,?,?,?)',
             (u['id'], pub, json.dumps(data, ensure_ascii=False), now, now))
         attach_character_media(conn, u['id'], cur.lastrowid, data)
+        record_character_changes(conn, cur.lastrowid, u['id'], {}, data, 'Character created')
         conn.commit()
         row = conn.execute('SELECT * FROM characters WHERE id=?', (cur.lastrowid,)).fetchone()
         self.send_json(self.char_payload(row, u['display_name']), status=201)
@@ -1969,6 +3598,8 @@ class Handler(BaseHTTPRequestHandler):
             conn.execute("UPDATE media SET attached_type=NULL, attached_id=NULL WHERE id=? AND owner_id=? AND attached_type='character' AND attached_id=?",
                          (old_media, u['id'], row['id']))
         attach_character_media(conn, u['id'], row['id'], data)
+        record_character_changes(conn, row['id'], u['id'], old_data, data,
+                                 str((body or {}).get('reason') or 'Character sheet update'))
         conn.execute('UPDATE characters SET data=?, public=?, updated=? WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), pub, time.time(), row['id']))
         conn.commit()
@@ -1990,7 +3621,9 @@ class Handler(BaseHTTPRequestHandler):
             except FileNotFoundError: pass
         self.send_json({'ok': True})
 
-    def save_character_data(self, conn, row, data):
+    def save_character_data(self, conn, row, data, actor_id=None, reason='Character progression'):
+        if actor_id is not None:
+            record_character_changes(conn, row['id'], actor_id, json.loads(row['data']), data, reason)
         conn.execute('UPDATE characters SET data=?, public=?, updated=? WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), 1 if data.get('public') else 0,
                       time.time(), row['id']))
@@ -2025,13 +3658,42 @@ class Handler(BaseHTTPRequestHandler):
         if amount > 0: data['ip_total_earned'] += amount
         self.add_ip_ledger(conn, row['id'], user['id'], amount, before, after,
                            'adjustment', None, reason)
-        self.send_json(self.save_character_data(conn, row, data))
+        self.send_json(self.save_character_data(conn, row, data, user['id'], reason))
 
     def api_character_ip_history(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
         rows = conn.execute('SELECT l.*,u.display_name actor FROM ip_ledger l JOIN users u ON u.id=l.actor_id WHERE character_id=? ORDER BY id DESC LIMIT 500',
                             (row['id'],)).fetchall()
         self.send_json({'entries': [dict(item) for item in rows]})
+
+    def api_character_network(self, conn, qs, m, body):
+        row = self.get_char(conn, m.group(1))
+        user = self.current_user(conn)
+        if not row['public'] and (not user or (user['id'] != row['owner_id'] and not user_is_gm(user))):
+            raise ApiError(403, 'Персонаж приватный')
+        contracts = conn.execute(
+            'SELECT c.id,c.title,c.status,c.district_id,s.status signup_status,s.joined_at '
+            'FROM contract_signups s JOIN contracts c ON c.id=s.contract_id '
+            'WHERE s.character_id=? ORDER BY s.joined_at DESC', (row['id'],)).fetchall()
+        posts = conn.execute(
+            "SELECT id,headline,body,format,published_at FROM feed_posts "
+            "WHERE author_character_id=? AND status='published' ORDER BY published_at DESC",
+            (row['id'],)).fetchall()
+        comments = conn.execute(
+            'SELECT fc.id,fc.post_id,fc.body,fc.created FROM feed_comments fc '
+            'WHERE fc.author_character_id=? AND fc.hidden_at IS NULL ORDER BY fc.created DESC LIMIT 100',
+            (row['id'],)).fetchall()
+        self.send_json({'contracts': [dict(item) for item in contracts],
+                        'posts': [dict(item) for item in posts],
+                        'comments': [dict(item) for item in comments]})
+
+    def api_character_ledger(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        entries = conn.execute(
+            'SELECT l.*,u.display_name actor FROM character_ledger l '
+            'JOIN users u ON u.id=l.actor_user_id WHERE character_id=? '
+            'ORDER BY l.id DESC LIMIT 500', (row['id'],)).fetchall()
+        self.send_json({'entries': [dict(item) for item in entries]})
 
     def api_character_improve(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
@@ -2089,7 +3751,7 @@ class Handler(BaseHTTPRequestHandler):
         data['ip_available'] = before - cost; data['ip_total_spent'] += cost
         self.add_ip_ledger(conn, row['id'], user['id'], -cost, before,
                            data['ip_available'], 'improvement', subject, reason)
-        self.send_json(self.save_character_data(conn, row, data))
+        self.send_json(self.save_character_data(conn, row, data, user['id'], reason))
 
     def api_character_specialization(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
@@ -2119,7 +3781,7 @@ class Handler(BaseHTTPRequestHandler):
         reason = f'{key} {current} → {skills[key]}'
         self.add_ip_ledger(conn, row['id'], user['id'], 0, data['ip_available'],
                            data['ip_available'], 'allocation', key, reason)
-        self.send_json(self.save_character_data(conn, row, data))
+        self.send_json(self.save_character_data(conn, row, data, user['id'], reason))
 
     def api_character_resource(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
@@ -2183,6 +3845,7 @@ class Handler(BaseHTTPRequestHandler):
         row = self.get_char(conn, body.get('char_id'))
         if row['owner_id'] != u['id']:
             raise ApiError(403, 'Это не ваш персонаж')
+        before_data = json.loads(row['data'])
         data = json.loads(row['data'])
         cart = body.get('items') or []
         if not cart or not isinstance(cart, list):
@@ -2218,6 +3881,8 @@ class Handler(BaseHTTPRequestHandler):
                     'damage': it.get('damage'), 'sp': it.get('sp'), 'hl': it.get('hl'),
                 })
         data['cash'] = round(cash - total, 2)
+        record_character_changes(conn, row['id'], u['id'], before_data, data,
+                                 'Night Market purchase')
         conn.execute('UPDATE characters SET data=?, updated=? WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), time.time(), row['id']))
         conn.commit()
@@ -2231,6 +3896,7 @@ class Handler(BaseHTTPRequestHandler):
         row = self.get_char(conn, body.get('char_id'))
         if row['owner_id'] != u['id']:
             raise ApiError(403, 'Это не ваш персонаж')
+        before_data = json.loads(row['data'])
         data = json.loads(row['data'])
         key = str(body.get('key') or '')
         qty = max(1, int(body.get('qty') or 1))
@@ -2244,6 +3910,8 @@ class Handler(BaseHTTPRequestHandler):
         if ent['qty'] <= 0:
             data['inventory'] = [x for x in inv if x.get('key') != key]
         data['cash'] = round(float(data.get('cash') or 0) + back, 2)
+        record_character_changes(conn, row['id'], u['id'], before_data, data,
+                                 'Night Market resale')
         conn.execute('UPDATE characters SET data=?, updated=? WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), time.time(), row['id']))
         conn.commit()
@@ -2256,12 +3924,320 @@ class Handler(BaseHTTPRequestHandler):
         amount = float(body.get('amount') or 0)
         if abs(amount) > 1e7:
             raise ApiError(400, 'Слишком большая сумма')
+        before_data = json.loads(row['data'])
         data = json.loads(row['data'])
         data['cash'] = max(0.0, round(float(data.get('cash') or 0) + amount, 2))
+        record_character_changes(conn, row['id'], u['id'], before_data, data,
+                                 str((body or {}).get('reason') or 'GM payout'))
         conn.execute('UPDATE characters SET data=?, updated=? WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), time.time(), row['id']))
         conn.commit()
         self.send_json({'ok': True, 'cash': data['cash'], 'by': u['display_name']})
+
+    # ------------------------------------------------------------ NC//NET operations
+
+    def can_edit_nc_session(self, conn, user, session):
+        if not user or not user_is_gm(user):
+            return False
+        if user_is_admin(user) or session['owner_user_id'] == user['id']:
+            return True
+        if session['contract_id']:
+            contract = conn.execute('SELECT * FROM contracts WHERE id=?',
+                                    (session['contract_id'],)).fetchone()
+            return can_edit_contract(conn, user, contract)
+        return False
+
+    def session_payload(self, conn, row, user, player_view=False):
+        can_edit = self.can_edit_nc_session(conn, user, row)
+        config = parse_json_object(row['player_view_config'])
+        combatants = conn.execute(
+            'SELECT * FROM session_combatants WHERE session_id=? ORDER BY sort_order,id',
+            (row['id'],)).fetchall()
+        out_combatants = []
+        for item in combatants:
+            if player_view and not item['visible']:
+                continue
+            data = {
+                'id': item['id'], 'kind': item['kind'], 'character_id': item['character_id'],
+                'name': item['name'], 'initiative': item['initiative'],
+                'visible': bool(item['visible']), 'sort_order': item['sort_order'],
+            }
+            if can_edit or not player_view:
+                data.update({
+                    'hp_current': item['hp_current'], 'hp_max': item['hp_max'],
+                    'sp_head': item['sp_head'], 'sp_body': item['sp_body'],
+                    'shield_current': item['shield_current'], 'ammo_current': item['ammo_current'],
+                    'move': item['move'], 'conditions': parse_json_list(item['conditions_json']),
+                    'injuries': parse_json_list(item['injuries_json']),
+                    'death_penalty': item['death_penalty'],
+                    'secret': parse_json_object(item['secret_json']),
+                })
+            elif player_view:
+                is_character = item['kind'] == 'character'
+                if is_character and config.get('show_ally_hp', True):
+                    data.update({'hp_current': item['hp_current'], 'hp_max': item['hp_max']})
+                if config.get('show_armor', True):
+                    data.update({'sp_head': item['sp_head'], 'sp_body': item['sp_body']})
+                if config.get('show_conditions', True):
+                    data['conditions'] = parse_json_list(item['conditions_json'])
+            out_combatants.append(data)
+        payload = {
+            'id': row['id'], 'contract_id': row['contract_id'], 'title': row['title'],
+            'status': row['status'], 'round': row['round'], 'active_turn': row['active_turn'],
+            'player_view_config': config, 'combatants': out_combatants,
+            'created': row['created'], 'updated': row['updated'], 'can_edit': can_edit,
+        }
+        if can_edit:
+            payload['notes'] = row['notes']
+            activity = conn.execute(
+                'SELECT a.*,u.display_name actor FROM session_activity a '
+                'JOIN users u ON u.id=a.actor_user_id WHERE session_id=? '
+                'ORDER BY a.id DESC LIMIT 200', (row['id'],)).fetchall()
+            payload['activity'] = [dict(item) for item in activity]
+        return payload
+
+    def api_npc_templates(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        rows = conn.execute(
+            "SELECT * FROM npc_templates WHERE access='shared' OR owner_user_id=? ORDER BY updated DESC",
+            (user['id'],)).fetchall()
+        self.send_json({'templates': [{
+            'id': row['id'], 'owner_user_id': row['owner_user_id'],
+            'access': row['access'], 'name': row['name'], 'role': row['role'],
+            'data': parse_json_object(row['data_json']), 'updated': row['updated'],
+        } for row in rows]})
+
+    def api_npc_template_create(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        name = str((body or {}).get('name') or '').strip()[:120]
+        if not name:
+            raise ApiError(400, 'NPC template нужно имя')
+        access = 'shared' if (body or {}).get('access') == 'shared' else 'private'
+        data = (body or {}).get('data') or {}
+        if not isinstance(data, dict) or len(json.dumps(data)) > 20000:
+            raise ApiError(400, 'Некорректный NPC template')
+        now = time.time()
+        cur = conn.execute(
+            'INSERT INTO npc_templates(owner_user_id,access,name,role,data_json,created,updated) '
+            'VALUES(?,?,?,?,?,?,?)',
+            (user['id'], access, name, str((body or {}).get('role') or '')[:80],
+             json.dumps(data, ensure_ascii=False), now, now))
+        conn.commit(); self.send_json({'id': cur.lastrowid}, status=201)
+
+    def api_sessions(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        rows = conn.execute('SELECT * FROM nc_sessions ORDER BY updated DESC').fetchall()
+        self.send_json({'sessions': [self.session_payload(conn, row, user) for row in rows
+                                     if self.can_edit_nc_session(conn, user, row)]})
+
+    def api_session_create(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        contract_id = _num((body or {}).get('contract_id'))
+        contract = None
+        if contract_id:
+            contract = conn.execute('SELECT * FROM contracts WHERE id=?', (contract_id,)).fetchone()
+            if not contract or not can_edit_contract(conn, user, contract):
+                raise ApiError(403, 'Нет доступа к контракту сессии')
+        title = str((body or {}).get('title') or (contract['title'] if contract else 'NC//NET Session')).strip()[:180]
+        config = (body or {}).get('player_view_config') or {
+            'show_initiative': True, 'show_ally_hp': True,
+            'show_armor': True, 'show_conditions': True,
+        }
+        now = time.time()
+        cur = conn.execute(
+            'INSERT INTO nc_sessions(contract_id,owner_user_id,title,status,player_view_config,notes,created,updated) '
+            "VALUES(?,?,?,'preparing',?,?,?,?)",
+            (contract_id, user['id'], title, json.dumps(config),
+             str((body or {}).get('notes') or '')[:20000], now, now))
+        session_id = cur.lastrowid
+        if contract:
+            signups = conn.execute(
+                "SELECT s.*,c.data FROM contract_signups s JOIN characters c ON c.id=s.character_id "
+                "WHERE s.contract_id=? AND s.status='crew' ORDER BY s.queue_position",
+                (contract_id,)).fetchall()
+            for index, signup in enumerate(signups):
+                char = ensure_progression(json.loads(signup['data'])); derived = derive(char)
+                conn.execute(
+                    "INSERT INTO session_combatants(session_id,kind,character_id,name,initiative,hp_current,"
+                    "hp_max,sp_head,sp_body,shield_current,ammo_current,move,visible,sort_order) "
+                    "VALUES(?,'character',?,?,?,?,?,?,?,?,?,?,1,?)",
+                    (session_id, signup['character_id'], char.get('handle') or 'Edgerunner', 0,
+                     char.get('hp_cur') if char.get('hp_cur') is not None else (derived.get('hp_max') or 0),
+                     derived.get('hp_max') or 0, derived.get('sp_head') or 0,
+                     derived.get('sp_body') or 0, 0, 0,
+                     _num((char.get('stats') or {}).get('MOVE')) or 0, index))
+        conn.commit(); row = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (session_id,)).fetchone()
+        self.send_json(self.session_payload(conn, row, user), status=201)
+
+    def api_session_detail(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not row or not self.can_edit_nc_session(conn, user, row):
+            raise ApiError(404, 'Сессия не найдена')
+        self.send_json(self.session_payload(conn, row, user))
+
+    def api_session_update(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not row or not self.can_edit_nc_session(conn, user, row):
+            raise ApiError(403, 'Нет права редактировать сессию')
+        status = str((body or {}).get('status', row['status']))
+        if status not in ('preparing', 'active', 'paused', 'completed', 'archived'):
+            raise ApiError(400, 'Некорректный статус сессии')
+        before = self.session_payload(conn, row, user)
+        conn.execute(
+            'UPDATE nc_sessions SET title=?,status=?,round=?,active_turn=?,player_view_config=?,notes=?,updated=? WHERE id=?',
+            (str((body or {}).get('title', row['title']))[:180], status,
+             max(0, _num((body or {}).get('round', row['round'])) or 0),
+             max(0, _num((body or {}).get('active_turn', row['active_turn'])) or 0),
+             json.dumps((body or {}).get('player_view_config') or parse_json_object(row['player_view_config'])),
+             str((body or {}).get('notes', row['notes']))[:20000], time.time(), row['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,after_json,note,created) '
+            'VALUES(?,?,?,?,?,?,?)',
+            (row['id'], user['id'], 'session_update', json.dumps(before, ensure_ascii=False),
+             json.dumps(body or {}, ensure_ascii=False), str((body or {}).get('activity_note') or '')[:500], time.time()))
+        conn.commit(); updated = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(self.session_payload(conn, updated, user))
+
+    def api_session_combatant_create(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not session or not self.can_edit_nc_session(conn, user, session):
+            raise ApiError(403, 'Нет права редактировать сессию')
+        template = None
+        if _num((body or {}).get('template_id')):
+            template = conn.execute('SELECT * FROM npc_templates WHERE id=?',
+                                    (_num((body or {}).get('template_id')),)).fetchone()
+        source = parse_json_object(template['data_json']) if template else (body or {})
+        name = str((body or {}).get('name') or (template['name'] if template else '')).strip()[:120]
+        if not name:
+            raise ApiError(400, 'Участнику сессии нужно имя')
+        maximum = max(0, _num(source.get('hp_max')) or 0)
+        order = conn.execute('SELECT COALESCE(MAX(sort_order),-1)+1 n FROM session_combatants WHERE session_id=?',
+                             (session['id'],)).fetchone()['n']
+        cur = conn.execute(
+            'INSERT INTO session_combatants(session_id,kind,template_id,name,initiative,hp_current,hp_max,'
+            'sp_head,sp_body,shield_current,ammo_current,move,conditions_json,injuries_json,death_penalty,'
+            'visible,secret_json,sort_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (session['id'], 'npc', template['id'] if template else None, name,
+             _num(source.get('initiative')) or 0,
+             _num(source.get('hp_current')) if _num(source.get('hp_current')) is not None else maximum,
+             maximum, _num(source.get('sp_head')) or 0, _num(source.get('sp_body')) or 0,
+             _num(source.get('shield_current')) or 0, _num(source.get('ammo_current')) or 0,
+             _num(source.get('move')) or 0, json.dumps(source.get('conditions') or []),
+             json.dumps(source.get('injuries') or []), _num(source.get('death_penalty')) or 0,
+             0 if source.get('visible') is False else 1,
+             json.dumps(source.get('secret') or {}), order))
+        conn.commit(); self.send_json({'id': cur.lastrowid}, status=201)
+
+    def api_session_combatant_update(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
+        combatant = conn.execute('SELECT * FROM session_combatants WHERE id=? AND session_id=?',
+                                 (int(m.group(2)), int(m.group(1)))).fetchone()
+        if not session or not combatant or not self.can_edit_nc_session(conn, user, session):
+            raise ApiError(403, 'Нет права редактировать участника')
+        before = dict(combatant)
+        numeric = ['initiative','hp_current','hp_max','sp_head','sp_body','shield_current','ammo_current','move','death_penalty','sort_order']
+        values = {key: _num((body or {}).get(key, combatant[key])) or 0 for key in numeric}
+        hp_limit = values['hp_max'] if values['hp_max'] > 0 else values['hp_current']
+        values['hp_current'] = max(0, min(hp_limit, values['hp_current']))
+        conn.execute(
+            'UPDATE session_combatants SET name=?,initiative=?,hp_current=?,hp_max=?,sp_head=?,sp_body=?,'
+            'shield_current=?,ammo_current=?,move=?,conditions_json=?,injuries_json=?,death_penalty=?,visible=?,secret_json=?,sort_order=? WHERE id=?',
+            (str((body or {}).get('name', combatant['name']))[:120], values['initiative'],
+             values['hp_current'], values['hp_max'], values['sp_head'], values['sp_body'],
+             values['shield_current'], values['ammo_current'], values['move'],
+             json.dumps((body or {}).get('conditions', parse_json_list(combatant['conditions_json']))),
+             json.dumps((body or {}).get('injuries', parse_json_list(combatant['injuries_json']))),
+             values['death_penalty'], 1 if (body or {}).get('visible', bool(combatant['visible'])) else 0,
+             json.dumps((body or {}).get('secret', parse_json_object(combatant['secret_json']))),
+             values['sort_order'], combatant['id']))
+        after = dict(conn.execute('SELECT * FROM session_combatants WHERE id=?', (combatant['id'],)).fetchone())
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,combatant_id,event_type,before_json,after_json,note,created) '
+            'VALUES(?,?,?,?,?,?,?,?)',
+            (session['id'], user['id'], combatant['id'], 'combatant_update',
+             json.dumps(before, ensure_ascii=False), json.dumps(after, ensure_ascii=False),
+             str((body or {}).get('note') or '')[:500], time.time()))
+        conn.commit(); self.send_json({'ok': True})
+
+    def api_session_combatant_delete(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not session or not self.can_edit_nc_session(conn, user, session):
+            raise ApiError(403, 'Нет права редактировать сессию')
+        conn.execute('DELETE FROM session_combatants WHERE id=? AND session_id=?',
+                     (int(m.group(2)), session['id']))
+        conn.commit(); self.send_json({'ok': True})
+
+    def api_session_player_view(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not session:
+            raise ApiError(404, 'Сессия не найдена')
+        allowed = self.can_edit_nc_session(conn, user, session)
+        if not allowed and session['contract_id']:
+            allowed = bool(conn.execute(
+                "SELECT 1 FROM contract_signups WHERE contract_id=? AND user_id=? AND status='crew'",
+                (session['contract_id'], user['id'])).fetchone())
+        if not allowed:
+            raise ApiError(403, 'Нет доступа к экрану сессии')
+        self.send_json(self.session_payload(conn, session, user, player_view=True))
+
+    def api_contract_aftermath(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        contract = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not contract or not can_edit_contract(conn, user, contract):
+            raise ApiError(403, 'Нет права завершить контракт')
+        result = str((body or {}).get('result') or 'completed').lower()
+        if result not in ('completed', 'failed'):
+            raise ApiError(400, 'Результат контракта: completed/failed')
+        persona_id = _num((body or {}).get('author_persona_id'))
+        persona = conn.execute('SELECT * FROM personas WHERE id=?', (persona_id,)).fetchone()
+        if not persona or not can_manage_persona(user, persona):
+            raise ApiError(400, 'Выберите доступную персону для Aftermath')
+        headline = str((body or {}).get('headline') or f'Aftermath: {contract["title"]}')[:240]
+        text = str((body or {}).get('body') or contract['public_brief'] or contract['teaser']).strip()[:30000]
+        now = time.time()
+        cur = conn.execute(
+            "INSERT INTO feed_posts(format,status,creator_user_id,author_persona_id,storyline_id,contract_id,"
+            "headline,body,truth_status,event_at,published_at,created,updated) "
+            "VALUES('article','published',?,?,?,?,?,?,'unknown',?,?,?,?)",
+            (user['id'], persona_id, contract['storyline_id'], contract['id'], headline, text,
+             (body or {}).get('event_at') or now, now, now, now))
+        post_id = cur.lastrowid
+        conn.execute('UPDATE contracts SET status=?,updated=? WHERE id=?', (result, now, contract['id']))
+        if contract['storyline_id']:
+            conn.execute(
+                'INSERT INTO storyline_timeline(storyline_id,event_at,public_text,private_text,contract_id,'
+                'feed_post_id,created_by,created) VALUES(?,?,?,?,?,?,?,?)',
+                (contract['storyline_id'], (body or {}).get('event_at') or now,
+                 headline, str((body or {}).get('private_note') or '')[:10000],
+                 contract['id'], post_id, user['id'], now))
+        crew_ids = {row['character_id'] for row in conn.execute(
+            "SELECT character_id FROM contract_signups WHERE contract_id=? AND status='crew'",
+            (contract['id'],)).fetchall() if row['character_id']}
+        for reward in (body or {}).get('rewards') or []:
+            character_id = _num(reward.get('character_id'))
+            if character_id not in crew_ids:
+                continue
+            char_row = self.get_char(conn, character_id); before = json.loads(char_row['data']); data = ensure_progression(json.loads(char_row['data']))
+            cash = float(reward.get('cash') or 0); ip = _num(reward.get('ip')) or 0
+            data['cash'] = max(0, float(data.get('cash') or 0) + cash)
+            if ip:
+                ip_before = data['ip_available']; data['ip_available'] += ip
+                if ip > 0: data['ip_total_earned'] += ip
+                self.add_ip_ledger(conn, character_id, user['id'], ip, ip_before,
+                                   data['ip_available'], 'contract', contract['title'], 'Contract Aftermath')
+            record_character_changes(conn, character_id, user['id'], before, data,
+                                     'Contract Aftermath', contract_id=contract['id'])
+            conn.execute('UPDATE characters SET data=?,updated=? WHERE id=?',
+                         (json.dumps(data, ensure_ascii=False), now, character_id))
+        queue_vk_event(conn, f'contract:{contract["id"]}:{result}', f'contract_{result}',
+                       contract['id'], {'contract_id': contract['id'], 'title': contract['title'], 'result': result})
+        conn.commit(); self.send_json({'contract_id': contract['id'], 'post_id': post_id, 'result': result})
 
     # ------------------------------------------------------------ новости
 
@@ -2438,8 +4414,50 @@ ROUTES = [
     ('POST', rx(r'/api/logout'), Handler.api_logout),
     ('GET', rx(r'/api/me'), Handler.api_me),
     ('POST', rx(r'/api/profile'), Handler.api_profile),
+    ('GET', rx(r'/api/gm/users'), Handler.api_gm_users),
     ('GET', rx(r'/api/admin/users'), Handler.api_admin_users),
     ('POST', rx(r'/api/admin/users/(\d+)/role'), Handler.api_admin_user_role),
+    ('GET', rx(r'/api/notifications'), Handler.api_notifications),
+    ('POST', rx(r'/api/notifications/(\d+)/read'), Handler.api_notification_read),
+    ('GET', rx(r'/api/admin/vk'), Handler.api_admin_vk_status),
+    ('POST', rx(r'/api/admin/vk/flush'), Handler.api_admin_vk_flush),
+    ('POST', rx(r'/api/vk/oauth/start'), Handler.api_vk_oauth_start),
+    ('GET', rx(r'/api/vk/oauth/callback'), Handler.api_vk_oauth_callback),
+    ('GET', rx(r'/api/personas'), Handler.api_personas),
+    ('POST', rx(r'/api/personas'), Handler.api_persona_create),
+    ('GET', rx(r'/api/personas/(\d+)'), Handler.api_persona_detail),
+    ('PUT', rx(r'/api/personas/(\d+)'), Handler.api_persona_update),
+    ('DELETE', rx(r'/api/personas/(\d+)'), Handler.api_persona_delete),
+    ('GET', rx(r'/api/storylines'), Handler.api_storylines),
+    ('POST', rx(r'/api/storylines'), Handler.api_storyline_create),
+    ('GET', rx(r'/api/storylines/(\d+)'), Handler.api_storyline_detail),
+    ('PUT', rx(r'/api/storylines/(\d+)'), Handler.api_storyline_update),
+    ('POST', rx(r'/api/storylines/(\d+)/timeline'), Handler.api_storyline_timeline_create),
+    ('GET', rx(r'/api/contracts'), Handler.api_contracts),
+    ('POST', rx(r'/api/contracts'), Handler.api_contract_create),
+    ('GET', rx(r'/api/contracts/(\d+)'), Handler.api_contract_detail),
+    ('PUT', rx(r'/api/contracts/(\d+)'), Handler.api_contract_update),
+    ('DELETE', rx(r'/api/contracts/(\d+)'), Handler.api_contract_delete),
+    ('POST', rx(r'/api/contracts/(\d+)/join'), Handler.api_contract_join),
+    ('POST', rx(r'/api/contracts/(\d+)/leave'), Handler.api_contract_leave),
+    ('POST', rx(r'/api/contracts/(\d+)/aftermath'), Handler.api_contract_aftermath),
+    ('GET', rx(r'/api/feed'), Handler.api_feed),
+    ('POST', rx(r'/api/feed'), Handler.api_feed_create),
+    ('GET', rx(r'/api/feed/(\d+)'), Handler.api_feed_detail),
+    ('PUT', rx(r'/api/feed/(\d+)'), Handler.api_feed_update),
+    ('POST', rx(r'/api/feed/(\d+)/hide'), Handler.api_feed_hide),
+    ('POST', rx(r'/api/feed/(\d+)/comments'), Handler.api_feed_comment_create),
+    ('POST', rx(r'/api/feed/(\d+)/comments/(\d+)/hide'), Handler.api_feed_comment_hide),
+    ('GET', rx(r'/api/npc-templates'), Handler.api_npc_templates),
+    ('POST', rx(r'/api/npc-templates'), Handler.api_npc_template_create),
+    ('GET', rx(r'/api/sessions'), Handler.api_sessions),
+    ('POST', rx(r'/api/sessions'), Handler.api_session_create),
+    ('GET', rx(r'/api/sessions/(\d+)'), Handler.api_session_detail),
+    ('PUT', rx(r'/api/sessions/(\d+)'), Handler.api_session_update),
+    ('GET', rx(r'/api/sessions/(\d+)/player-view'), Handler.api_session_player_view),
+    ('POST', rx(r'/api/sessions/(\d+)/combatants'), Handler.api_session_combatant_create),
+    ('PUT', rx(r'/api/sessions/(\d+)/combatants/(\d+)'), Handler.api_session_combatant_update),
+    ('DELETE', rx(r'/api/sessions/(\d+)/combatants/(\d+)'), Handler.api_session_combatant_delete),
     ('POST', rx(r'/api/media'), Handler.api_media_upload),
     ('GET', rx(r'/api/media/([a-f0-9]{32})'), Handler.api_media_get),
     ('DELETE', rx(r'/api/media/([a-f0-9]{32})'), Handler.api_media_delete),
@@ -2455,6 +4473,8 @@ ROUTES = [
     ('DELETE', rx(r'/api/characters/(\d+)'), Handler.api_delete_character),
     ('POST', rx(r'/api/characters/(\d+)/ip'), Handler.api_character_ip),
     ('GET', rx(r'/api/characters/(\d+)/ip'), Handler.api_character_ip_history),
+    ('GET', rx(r'/api/characters/(\d+)/ledger'), Handler.api_character_ledger),
+    ('GET', rx(r'/api/characters/(\d+)/network'), Handler.api_character_network),
     ('POST', rx(r'/api/characters/(\d+)/improve'), Handler.api_character_improve),
     ('POST', rx(r'/api/characters/(\d+)/specialization'), Handler.api_character_specialization),
     ('POST', rx(r'/api/characters/(\d+)/resource'), Handler.api_character_resource),
@@ -2475,6 +4495,17 @@ ROUTES = [
 ]
 
 
+def vk_outbox_worker(stop_event):
+    while not stop_event.is_set():
+        try:
+            conn = db()
+            deliver_vk_outbox(conn, 20)
+            conn.close()
+        except Exception as error:  # background integration must not stop the web server
+            sys.stderr.write(f'NC//NET VK worker: {error}\n')
+        stop_event.wait(15)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--host', default='0.0.0.0')
@@ -2483,11 +4514,20 @@ def main():
     load_catalog()
     init_db()
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
+    vk_stop = threading.Event()
+    vk_thread = None
+    if os.environ.get('VK_COMMUNITY_TOKEN') and os.environ.get('VK_PEER_ID'):
+        vk_thread = threading.Thread(target=vk_outbox_worker, args=(vk_stop,), daemon=True)
+        vk_thread.start()
     print(f'NC//NET listening on http://{args.host}:{args.port}')
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        vk_stop.set()
+        if vk_thread:
+            vk_thread.join(timeout=2)
 
 
 if __name__ == '__main__':

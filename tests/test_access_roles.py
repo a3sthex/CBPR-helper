@@ -46,7 +46,7 @@ class AccessRoleMigrationTests(unittest.TestCase):
                      for row in conn.execute('SELECT * FROM users')}
             self.assertEqual(roles, {'alice': 'gm', 'bob': 'player'})
             self.assertEqual(
-                conn.execute('SELECT COUNT(*) n FROM schema_migrations').fetchone()['n'], 1)
+                conn.execute('SELECT COUNT(*) n FROM schema_migrations').fetchone()['n'], 5)
             self.assertEqual(len(list(Path(directory).glob('campaign.db.backup-*'))), 1)
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(users)')}
             self.assertTrue({'account_role', 'show_display_name', 'vk_user_id',
@@ -137,6 +137,20 @@ class AccessRoleMigrationTests(unittest.TestCase):
             self.assertEqual(response['payload']['author_id'], user['id'])
             conn.close()
 
+    def test_secure_cookie_rate_limit_and_origin_guard(self):
+        with mock.patch.dict(os.environ, {'NCNET_PUBLIC_URL': 'https://ncnet.example'}, clear=False):
+            self.assertIn('Secure', server.session_cookie('token'))
+        key = 'unit-rate-limit-unique'
+        server.enforce_rate_limit(key, 1, 60)
+        with self.assertRaises(server.ApiError) as limited:
+            server.enforce_rate_limit(key, 1, 60)
+        self.assertEqual(limited.exception.status, 429)
+        handler = object.__new__(server.Handler)
+        handler.headers = {'Origin': 'https://evil.example', 'Host': 'ncnet.example'}
+        with self.assertRaises(server.ApiError) as denied:
+            server.Handler.verify_request_origin(handler)
+        self.assertEqual(denied.exception.status, 403)
+
     def test_frontend_has_no_self_assign_gm_controls(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
         self.assertNotIn('id="rg-gm"', source)
@@ -147,6 +161,13 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertIn('NC<b>//NET</b>', shell)
         self.assertIn('#/contracts', shell)
         self.assertIn('#/feed', shell)
+        self.assertIn('/ncnet.js', shell)
+        network = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')
+        for district in ('watson', 'westbrook', 'city-center', 'heywood',
+                         'santo-domingo', 'pacifica', 'badlands'):
+            self.assertIn("id:'" + district + "'", network)
+        self.assertIn('NC_AUDIO', network)
+        self.assertIn('openSessionDashboard', network)
 
 
 if __name__ == '__main__':
