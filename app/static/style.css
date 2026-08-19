@@ -314,7 +314,50 @@ details.desc-wrap[open] summary { margin-bottom: 6px; }
 .guide-img img { max-width: 100%; border: 1px solid var(--line); border-radius: 10px; }
 .guide-img figcaption { color: var(--muted); font-size: 13px; margin-top: 6px; }
 
-/* ---------- обязательные навыки ---------- */
+/* ---------- мастер создания (wizard) ---------- */
+.wizard-wrap { max-width: 1100px; margin: 0 auto; }
+.wizard-nav { display: flex; gap: 0; margin-bottom: 18px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--panel); }
+.wiz-step { flex: 1; border: 0; border-right: 1px solid var(--line); border-radius: 0; background: transparent; padding: 12px 6px; text-align: center; cursor: pointer; transition: all .12s; }
+.wiz-step:last-child { border-right: 0; }
+.wiz-step:hover { background: var(--panel2); }
+.wiz-step.active { background: rgba(0, 229, 255, .1); color: var(--cyan); }
+.wiz-step.done { color: var(--green); }
+.wiz-step:disabled { opacity: .35; cursor: default; }
+.wiz-num { display: block; font-size: 20px; margin-bottom: 2px; }
+.wiz-label { font-size: 12px; font-weight: 600; letter-spacing: .3px; white-space: nowrap; }
+@media (max-width: 700px) { .wiz-label { font-size: 10px; white-space: normal; } }
+
+.wiz-live { margin-bottom: 16px; }
+.wiz-live .derived { justify-content: center; }
+.wiz-live .dstat { padding: 4px 10px; }
+.wiz-live .dstat .v { font-size: 15px; }
+.wiz-live .dstat .k { font-size: 10px; }
+
+.wiz-step-header { margin-bottom: 16px; }
+.wiz-step-header h2 { margin: 0 0 4px; }
+
+.wiz-footer { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--line); }
+.wiz-content { min-height: 300px; }
+
+/* role cards */
+.role-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.role-card { background: var(--panel); border: 2px solid var(--line); border-radius: 10px; padding: 14px; cursor: pointer; transition: all .12s; }
+.role-card:hover { border-color: var(--cyan); }
+.role-card.selected { border-color: var(--yellow); background: rgba(255, 213, 0, .06); box-shadow: 0 0 20px rgba(255, 213, 0, .15); }
+.role-card h3 { margin: 0 0 6px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.role-card .chip.role { font-size: 12px; }
+
+/* lifepath */
+.lp-grid { display: flex; flex-direction: column; gap: 10px; }
+.lp-item { border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: var(--panel); display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.lp-label { font-weight: 700; min-width: 200px; flex: 1; }
+.lp-result { flex: 2; min-width: 200px; }
+.lp-result .dice-face { min-width: 32px; font-size: 14px; }
+.lp-actions { flex: 0; }
+.lp-events { display: flex; flex-wrap: wrap; gap: 4px; flex: 2; min-width: 200px; }
+
+/* summary warnings */
+.green { color: var(--green); }
 .must-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .must-chip {
   font-size: 12.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line);
