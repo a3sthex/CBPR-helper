@@ -57,8 +57,8 @@ NC//NET — внутриигровая городская сеть для общ
 - Хранятся отдельно event time и publication time.
 - Лента сортируется по publication time.
 - Публикации после выхода публичны для всех.
-- Игрок отправляет публикацию от лица собственного Character на модерацию.
-- GM может одобрить, отредактировать, отклонить или вернуть материал автору.
+- Игрок публикует материал от лица собственного Character сразу, без ожидания одобрения GM.
+- Владелец может редактировать или архивировать собственную публикацию; GM/Admin могут скрыть её после публикации с обязательной причиной в audit log.
 - Комментарии полноценные, появляются сразу и публикуются только от лица Character или доступной GM-персоны.
 - Вложенность комментариев ограничивается одним уровнем; более глубокий ответ хранит ссылку/цитату.
 - GM и Admin могут скрывать комментарии.
@@ -185,7 +185,7 @@ Legacy route должен продолжать открываться по со�
 | Читать public Contracts/Feed | ✓ | ✓ | ✓ |
 | Записаться Character на Contract | ✓ | ✓ | ✓ |
 | Комментировать своим Character | ✓ | ✓ | ✓ |
-| Предложить Feed post своим Character | ✓ | ✓ | ✓ |
+| Сразу опубликовать Feed post своим Character | ✓ | ✓ | ✓ |
 | Создать Persona | — | ✓ | ✓ |
 | Использовать Shared Persona | — | ✓ | ✓ |
 | Создать Contract | — | ✓ | ✓ |
@@ -373,9 +373,10 @@ contract_signups
 feed_posts
 ├── id
 ├── format       short | article | blog | bulletin | statement | rumor
-├── status       draft | pending | published | rejected | archived
-├── proposer_user_id
-├── moderator_user_id nullable
+├── status       draft | published | hidden | archived
+├── creator_user_id
+├── hidden_by_user_id nullable
+├── hidden_reason nullable
 ├── author_persona_id nullable
 ├── author_character_id nullable
 ├── storyline_id nullable
@@ -522,13 +523,16 @@ Draft → Preview → Publish → Published → Archive
 ### 7.2 Player post
 
 ```text
-Pending Transmission
-  ├── GM approve/edit → Published
-  ├── GM return → Pending Revision
-  └── GM reject → Rejected
+Draft (optional local/server draft)
+  └── Player publish as owned Character → Published
+
+Published
+  ├── Owner edit → Published + revision entry
+  ├── Owner archive → Archived
+  └── GM/Admin hide with reason → Hidden
 ```
 
-После GM-редактирования сохраняются исходный текст и audit entry.
+Предварительное одобрение GM не требуется. История редакций и post-publication moderation сохраняются в audit log.
 
 ### 7.3 Comments
 
@@ -720,8 +724,8 @@ Player View управляется конфигурацией GM и никогд
 ### Phase 2 — City Feed
 
 - post formats;
-- player moderation flow;
-- comments and hide moderation;
+- direct Character publishing without pre-moderation;
+- post revisions, comments and hide moderation;
 - truth status;
 - legacy News migration;
 - Persona/Character author pages.

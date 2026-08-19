@@ -181,9 +181,17 @@ function blankChar() {
 
 /* ============================== роутер ============================== */
 
+const routeAliases = {
+  codex: 'database', calc: 'quick-reference', characters: 'dossiers',
+  roster: 'crew', news: 'feed', jobs: 'contracts',
+};
 const routes = {
-  '': viewHome, codex: viewCodex, guides: viewGuides, market: viewMarket, calc: viewCalc,
-  characters: viewCharacters, roster: viewRoster, news: viewNews, jobs: viewJobs,
+  '': viewHome, database: viewCodex, guides: viewGuides, market: viewMarket,
+  'quick-reference': viewCalc, dossiers: viewCharacters, crew: viewRoster,
+  feed: viewNews, contracts: viewJobs, admin: viewAdmin,
+  // Compatibility aliases keep old bookmarks and links working during migration.
+  codex: viewCodex, calc: viewCalc, characters: viewCharacters,
+  roster: viewRoster, news: viewNews, jobs: viewJobs,
   login: viewLogin, register: viewRegister, profile: viewProfile,
 };
 
@@ -191,7 +199,8 @@ async function route() {
   const hash = location.hash.replace(/^#\/?/, '');
   const [seg0, seg1] = hash.split('/');
   const view = $('#view');
-  $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.route === seg0));
+  const activeRoute = routeAliases[seg0] || seg0;
+  $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.route === activeRoute));
   window.scrollTo(0, 0);
   closeModal();
   try {
@@ -227,7 +236,7 @@ function renderUserbox() {
     <span class="userchip" id="userchip" title="${T('Profile','Профиль')}">
       <span class="avatar">${esc(ini)}</span>
       <span>${esc(state.me.display_name)}</span>
-      ${state.me.is_gm ? `<span class="gm-badge">${T('GM','ГМ')}</span>` : ''}
+      ${state.me.is_admin ? '<span class="gm-badge">ADMIN</span>' : (state.me.is_gm ? `<span class="gm-badge">${T('GM','ГМ')}</span>` : '')}
     </span>
     <button class="btn-sm" id="logout-btn">${T('Sign out','Выйти')}</button>`;
   $('#userchip').onclick = () => go('/profile');
@@ -250,13 +259,14 @@ async function viewHome(view) {
   const lastNews = news.news.slice(0, 3);
   const openJobs = jobs.jobs.filter(j => j.status === 'open').slice(0, 3);
   view.innerHTML = `
-  <div class="hero">
-    <h1>${T('Night City <span class="accent">online</span>','Ночной город <span class="accent">онлайн</span>')}</h1>
-    <p>${T('Create edgerunners, shop the Night Market, manage the whole crew roster, read street reports, and find Jobs. Everything your Cyberpunk RED campaign needs.','Создавай эджраннеров, закупайся на чёрном рынке, веди ростер всей партии, читай сводки с улиц и находи заказы. Всё для твоей кампании по Cyberpunk RED.')}</p>
+  <div class="hero ncnet-hero">
+    <div class="small muted">NC//NET · 2070s · ${T('SECURE CITY RELAY','ЗАЩИЩЁННЫЙ ГОРОДСКОЙ КАНАЛ')}</div>
+    <h1>NC//NET <span class="accent">${T('connected','подключено')}</span></h1>
+    <p>${T('Encrypted contracts, street transmissions, crew dossiers, and the databases that keep Night City moving. What happens at the table becomes part of the city.','Зашифрованные контракты, городские передачи, досье команд и базы данных, поддерживающие жизнь Найт-Сити. События за игровым столом становятся частью города.')}</p>
     <div class="row">
-      <button class="btn-primary" onclick="location.hash='#/characters'">${T('Create Character','Создать персонажа')}</button>
-      <button onclick="location.hash='#/market'">${T('Night Market','Чёрный рынок')}</button>
-      <button onclick="location.hash='#/codex'">${T('Codex','Справочник')}</button>
+      <button class="btn-primary" onclick="location.hash='#/contracts'">${T('Browse Contracts','Открыть контракты')}</button>
+      <button onclick="location.hash='#/feed'">${T('Open City Feed','Открыть City Feed')}</button>
+      <button onclick="location.hash='#/dossiers'">${T('Access Dossiers','Открыть досье')}</button>
     </div>
     <div class="statbar mt">
       <span class="sb"><span class="v">${nf.format(stats.items)}</span><span class="k">${T('items','предметов')}</span></span>
@@ -269,37 +279,37 @@ async function viewHome(view) {
   <div class="grid cols-2">
     <div class="panel">
       <div class="row" style="justify-content:space-between">
-        <h2 style="margin:0">📡 ${T('Street Reports','Сводки с улиц')}</h2>
-        <a href="#/news" class="small">${T('all reports →','все новости →')}</a>
+        <h2 style="margin:0">📡 ${T('City Feed','Городская лента')}</h2>
+        <a href="#/feed" class="small">${T('open feed →','открыть ленту →')}</a>
       </div>
       ${lastNews.length ? lastNews.map(n => `
         <div class="post mt">
           <div class="meta user-content">${n.tag ? `<span class="tag">${esc(n.tag)}</span>` : ''}<span>${esc(n.author)}</span>·<span>${timeAgo(n.created)}</span></div>
           <div class="title user-content">${esc(n.title)}</div>
           <div class="desc user-content" style="max-height:70px;overflow:hidden">${esc(n.body)}</div>
-        </div>`).join('') : `<div class="empty mt">${T('Quiet for now. Be the first to ','Пока тихо. Стань первым — ')}<a href="#/news">${T('publish a report','опубликуй сводку')}</a>.</div>`}
+        </div>`).join('') : `<div class="empty mt">${T('No city transmissions yet. ','Городских передач пока нет. ')}<a href="#/feed">${T('Publish from your Character','Опубликовать от лица персонажа')}</a>.</div>`}
     </div>
     <div class="panel">
       <div class="row" style="justify-content:space-between">
-        <h2 style="margin:0">🎯 ${T('Hot Jobs','Горячие заказы')}</h2>
-        <a href="#/jobs" class="small">${T('full board →','вся доска →')}</a>
+        <h2 style="margin:0">🎯 ${T('Active Contracts','Активные контракты')}</h2>
+        <a href="#/contracts" class="small">${T('all contracts →','все контракты →')}</a>
       </div>
       ${openJobs.length ? openJobs.map(j => `
-        <div class="card job mt" style="cursor:pointer" onclick="location.hash='#/jobs'">
+        <div class="card job mt" style="cursor:pointer" onclick="location.hash='#/contracts'">
           <div class="meta"><span class="tag user-content">${esc(j.system || 'Cyberpunk RED')}</span>${j.when_text ? `<span class="user-content">⏱ ${esc(j.when_text)}</span>` : ''}<span>${T('GM:','ГМ:')} <span class="user-content">${esc(j.author)}</span></span></div>
           <h3 class="user-content" style="margin:4px 0">${esc(j.title)}</h3>
           <div class="small muted">${j.slots ? `${T('slots:','слотов:')} ${j.signups}/${j.slots}` : T('unlimited','без ограничений')} · ${T('signed up:','записалось:')} ${j.signups}</div>
-        </div>`).join('') : `<div class="empty mt">${T('No Jobs yet. GM, ','Заказов нет. ГМ, ')}<a href="#/jobs">${T('post a game announcement','размещи анонс партии')}</a>!</div>`}
+        </div>`).join('') : `<div class="empty mt">${T('No active Contracts. ','Активных контрактов нет. ')}${state.me && state.me.is_gm ? `<a href="#/contracts">${T('Open the GM relay','Открыть канал GM')}</a>.` : ''}</div>`}
     </div>
   </div>
   <div class="feature-cards mt">
-    <a class="card" href="#/characters"><div class="ico">🧬</div><h3>${T('Character Creation','Создание персонажа')}</h3><div class="muted small">${T('A complete sheet: Characteristics, Skills, Cyberware, Armor, and Gear.','Полный лист: статы, навыки, хром, броня, снаряжение.')}</div></a>
-    <a class="card" href="#/guides"><div class="ico">📖</div><h3>${T('Mini Guides · Russian only','Мини-гайды')}</h3><div class="muted small">${T('Original Russian reference guides for creation, FNFF combat, and Netrunning.','Создание персонажа, боёвка FNFF и нетраннинг — кратко и по делу.')}</div></a>
-    <a class="card" href="#/market"><div class="ico">🕶️</div><h3>${T('Night Market','Чёрный рынок')}</h3><div class="muted small">${T('A new sale every night, with shopping and resale.','Ночная распродажа каждый день, покупки и продажа хлама.')}</div></a>
-    <a class="card" href="#/codex"><div class="ico">📚</div><h3>${T('Codex','Справочник')}</h3><div class="muted small">${T('1,092 items from the books, including sources and pages.','1092 предмета из книг с источниками и страницами.')}</div></a>
-    <a class="card" href="#/calc"><div class="ico">🎲</div><h3>${T('Calculator','Калькулятор')}</h3><div class="muted small">${T('Damage, Critical Injuries, Autofire, DV tables, and dice rolls.','Урон, крит. травмы, автоогонь, DV-таблицы, броски костей.')}</div></a>
-    <a class="card" href="#/roster"><div class="ico">📋</div><h3>${T('Campaign Roster','Ростер партии')}</h3><div class="muted small">${T('Every player’s public characters in one place.','Все публичные персонажи всех игроков вместе.')}</div></a>
-    <a class="card" href="#/jobs"><div class="ico">📞</div><h3>${T('Job Board','Доска заказов')}</h3><div class="muted small">${T('Game announcements from GMs and crew signups.','Анонсы партий от ГМ-ов и запись в группу.')}</div></a>
+    <a class="card" href="#/contracts"><div class="ico">🎯</div><h3>${T('Contracts','Контракты')}</h3><div class="muted small">${T('Operations posted by Night City contacts. The full Contract system is the next foundation milestone.','Операции от контактов Найт-Сити. Полная система Contracts — следующий этап фундамента.')}</div></a>
+    <a class="card" href="#/feed"><div class="ico">📡</div><h3>${T('City Feed','Городская лента')}</h3><div class="muted small">${T('Direct transmissions publish without pre-approval; Character identities are the next milestone.','Передачи выходят без предварительного одобрения; авторство Characters — следующий этап.')}</div></a>
+    <a class="card" href="#/dossiers"><div class="ico">🧬</div><h3>${T('Dossiers','Досье')}</h3><div class="muted small">${T('Create and maintain the edgerunners who enter the network.','Создание и ведение эджраннеров, подключённых к сети.')}</div></a>
+    <a class="card" href="#/market"><div class="ico">🕶️</div><h3>${T('Night Market','Чёрный рынок')}</h3><div class="muted small">${T('A new sale every night, with canonical purchases and resale.','Ночная витрина, каноничные покупки и продажа снаряжения.')}</div></a>
+    <a class="card" href="#/database"><div class="ico">📚</div><h3>${T('Database','База данных')}</h3><div class="muted small">${T('1,092 sourced items from Night City databases.','1092 предмета с источниками в базах Найт-Сити.')}</div></a>
+    <a class="card" href="#/quick-reference"><div class="ico">🎲</div><h3>${T('Quick Reference','Быстрые правила')}</h3><div class="muted small">${T('Damage, Critical Injuries, Autofire, DV tables, and dice rolls.','Урон, критические травмы, Autofire, таблицы DV и броски.')}</div></a>
+    <a class="card" href="#/crew"><div class="ico">📋</div><h3>${T('Crew Registry','Реестр команд')}</h3><div class="muted small">${T('Public edgerunner dossiers from across the network.','Публичные досье эджраннеров со всей сети.')}</div></a>
   </div>`;
 }
 
@@ -2592,7 +2602,7 @@ async function viewSheet(id) {
   const portraitInput=$('#sheet-portrait-file');if(portraitInput)portraitInput.onchange=()=>openImageCrop(portraitInput.files[0],'character_portrait',async media=>{try{ch.portrait_media_id=media.id;await api('/api/characters/'+c.id,{method:'PUT',body:{data:ch}});viewSheet(c.id);}catch(e){toast(e.message,true);}});
   $('#sheet-print').onclick = () => window.print();
   $('#sheet-json').onclick = () => { const blob = new Blob([JSON.stringify(ch, null, 2)], {type:'application/json'}), a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${(ch.handle || 'character').replace(/[^a-z0-9_-]+/gi,'-')}.json`; a.click(); URL.revokeObjectURL(a.href); };
-  $('#sheet-back').onclick = () => go('/characters');
+  $('#sheet-back').onclick = () => go('/dossiers');
   const editBtn = $('#sheet-edit');
   if (editBtn) editBtn.onclick = () => { location.hash = '#/char/' + c.id + '?edit'; };
   const delBtn = $('#sheet-del');
@@ -2601,7 +2611,7 @@ async function viewSheet(id) {
     try {
       await api('/api/characters/' + c.id, { method: 'DELETE' });
       toast('Персонаж удалён');
-      go('/characters');
+      go('/dossiers');
     } catch (e) { toast(e.message, true); }
   };
 }
@@ -3172,7 +3182,7 @@ async function showRosterModal(id) {
 
 async function viewNews(view) {
   view.innerHTML = `
-  <div class="page-head"><div><h1>📡 ${T('Street Reports','Сводки с улиц')}</h1><div class="sub">${T('Campaign reports from different sources.','События партий от разных источников.')}</div></div></div>
+  <div class="page-head"><div><h1>📡 ${T('City Feed','Городская лента')}</h1><div class="sub">${T('Posts publish immediately without GM pre-approval. Character identities, Persona formats, and threaded comments arrive in the next phase.','Посты публикуются сразу, без предварительного одобрения GM. Characters, форматы Personas и ветки комментариев появятся на следующем этапе.')}</div></div></div>
   <div id="news-compose"></div>
   <div id="news-list">${spinner()}</div>`;
   const composeBox = $('#news-compose');
@@ -3222,10 +3232,10 @@ async function viewNews(view) {
 async function viewJobs(view) {
   view.innerHTML = `
   <div class="page-head">
-    <div><h1>📞 ${T('Job Board','Доска заказов')}</h1><div class="sub">${T('GMs post sessions; Edgerunners sign up.','ГМ публикует партии; Эджраннеры записываются.')}</div></div>
-    ${state.me && state.me.is_gm ? `<button class="btn-primary" id="jb-new">＋ ${T('Post a Job','Разместить заказ')}</button>` : ''}
+    <div><h1>📞 ${T('Contracts','Контракты')}</h1><div class="sub">${T('Operations relayed by Night City contacts. Legacy announcements remain available during migration.','Операции от контактов Найт-Сити. Старые объявления доступны во время миграции.')}</div></div>
+    ${state.me && state.me.is_gm ? `<button class="btn-primary" id="jb-new">＋ ${T('Post a Contract','Разместить контракт')}</button>` : ''}
   </div>
-  ${state.me && !state.me.is_gm ? '<div class="muted small mb">Размещать заказы могут пользователи с ролью ГМ (включается в профиле).</div>' : ''}
+  ${state.me && !state.me.is_gm ? `<div class="muted small mb">${T('Only accounts assigned GM access by an NC//NET Admin can post Contracts.','Размещать контракты могут только аккаунты, которым Admin NC//NET назначил доступ GM.')}</div>` : ''}
   <div id="jb-list">${spinner()}</div>`;
   const nb = $('#jb-new');
   if (nb) nb.onclick = jobComposeModal;
@@ -3355,7 +3365,7 @@ function viewLogin(view) {
       <label class="f"><span>${T('Username (Latin letters)','Логин (латиница)')}</span><input id="rg-u" autocomplete="username"></label>
       <label class="f"><span>${T('Display name','Отображаемое имя')}</span><input id="rg-d" placeholder="${T('How Night City knows you','Как тебя знают в городе')}"></label>
       <label class="f"><span>${T('Password','Пароль')}</span><input id="rg-p" type="password" autocomplete="new-password"></label>
-      <label class="checkbox mb"><input type="checkbox" id="rg-gm"> ${T('I am a GM (can post Jobs and issue payouts)','Я ГМ (могу размещать заказы и вести выплаты)')}</label>
+      <p class="small muted">${T('New accounts receive Player access. NC//NET Admins assign GM permissions.','Новые аккаунты получают доступ Player. Права GM назначают администраторы NC//NET.')}</p>
       <button class="btn-primary" id="rg-go">${T('Create account','Создать аккаунт')}</button>
     </div>
   </div>`;
@@ -3365,7 +3375,7 @@ function viewLogin(view) {
       if(state.me.theme)APP_THEME.setFromProfile(state.me.theme);
       renderUserbox();
       toast(T('Welcome back, ','С возвращением, ') + state.me.display_name);
-      go('/characters');
+      go('/dossiers');
     } catch (e) { toast(e.message, true); }
   };
   $('#lg-go').onclick = doLogin;
@@ -3374,11 +3384,11 @@ function viewLogin(view) {
     try {
       state.me = await api('/api/register', { method: 'POST', body: {
         username: $('#rg-u').value, display_name: $('#rg-d').value,
-        password: $('#rg-p').value, is_gm: $('#rg-gm').checked } });
+        password: $('#rg-p').value } });
       if(state.me.theme)APP_THEME.setFromProfile(state.me.theme);
       renderUserbox();
       toast(T('Welcome to Night City.','Добро пожаловать в Ночной город.'));
-      go('/characters');
+      go('/dossiers');
     } catch (e) { toast(e.message, true); }
   };
 }
@@ -3387,21 +3397,61 @@ function viewRegister(view) { viewLogin(view); }
 
 async function viewProfile(view) {
   if (!state.me) { view.innerHTML = `<div class="empty">${T('Sign in required.','Нужен вход.')} <a href="#/login">${T('Sign in','Войти')}</a></div>`; return; }
+  const role = String(state.me.account_role || (state.me.is_gm ? 'gm' : 'player')).toUpperCase();
   view.innerHTML = `
-  <div class="panel" style="max-width:560px;margin:0 auto">
-    <h2>${T('Profile','Профиль')}</h2>
+  <div class="panel" style="max-width:620px;margin:0 auto">
+    <div class="row" style="justify-content:space-between"><h2>${T('NC//NET Profile','Профиль NC//NET')}</h2><span class="tag role">${esc(role)}</span></div>
     <label class="f"><span>${T('Display name','Отображаемое имя')}</span><input id="pf-d" value="${esc(state.me.display_name)}"></label>
-    <label class="checkbox mb"><input type="checkbox" id="pf-gm" ${state.me.is_gm ? 'checked' : ''}> ${T('GM role: post Jobs and issue character payouts','Роль ГМ: размещение заказов на доске, выплаты персонажам')}</label>
-    <button class="btn-primary" id="pf-save">${T('Save','Сохранить')}</button>
+    <label class="f"><span>${T('Network access','Доступ к сети')}</span><input value="${esc(role)}" disabled></label>
+    <label class="checkbox mb"><input type="checkbox" id="pf-show-name" ${state.me.show_display_name ? 'checked' : ''}> ${T('Show my account display name to other members of my Contracts','Показывать display name аккаунта другим участникам моих контрактов')}</label>
+    <div class="panel mb"><b>VK</b><div class="small muted">${state.me.vk_linked ? T('Connected','Подключён') : T('Not connected · OAuth integration is planned for a later phase.','Не подключён · OAuth-интеграция запланирована на следующий этап.')}</div></div>
+    <div class="row"><button class="btn-primary" id="pf-save">${T('Save','Сохранить')}</button>${state.me.is_admin ? `<a class="btn-sm" href="#/admin">${T('Admin Console','Панель Admin')}</a>` : ''}</div>
   </div>`;
   $('#pf-save').onclick = async () => {
     try {
       state.me = await api('/api/profile', { method: 'POST', body: {
-        display_name: $('#pf-d').value, is_gm: $('#pf-gm').checked } });
+        display_name: $('#pf-d').value,
+        show_display_name: $('#pf-show-name').checked,
+      } });
       renderUserbox();
       toast(T('Profile updated','Профиль обновлён'));
     } catch (e) { toast(e.message, true); }
   };
+}
+
+async function viewAdmin(view) {
+  if (!state.me || !state.me.is_admin) {
+    view.innerHTML = `<div class="empty">⛔ ${T('NC//NET Admin access required.','Требуется доступ Admin NC//NET.')}</div>`;
+    return;
+  }
+  view.innerHTML = spinner();
+  const data = await api('/api/admin/users');
+  view.innerHTML = `
+    <div class="page-head"><div><h1>⚙️ ${T('NC//NET Administration','Администрирование NC//NET')}</h1><div class="sub">${T('Only Admins can grant or revoke GM and Admin access. Every change is recorded.','Только Admin может назначать и снимать права GM и Admin. Все изменения записываются.')}</div></div></div>
+    <div class="panel table-scroll"><table class="rtable admin-users"><tr><th>${T('Account','Аккаунт')}</th><th>${T('Characters','Персонажи')}</th><th>${T('Privacy','Приватность')}</th><th>${T('Network access','Доступ к сети')}</th><th>${T('Reason','Причина')}</th><th></th></tr>
+    ${data.users.map(user => `<tr data-admin-user="${user.id}"><td><b class="user-content">${esc(user.display_name)}</b><div class="small muted">@${esc(user.username)} · #${user.id}</div></td><td>${user.character_count}</td><td>${user.show_display_name ? T('Name visible','Имя видно') : T('Hidden','Скрыто')}</td><td><select data-admin-role>${['player','gm','admin'].map(role => `<option value="${role}" ${user.account_role===role?'selected':''}>${role.toUpperCase()}</option>`).join('')}</select></td><td><input data-admin-reason maxlength="500" placeholder="${T('Access change','Изменение доступа')}"></td><td><button class="btn-sm" data-admin-apply>${T('Apply','Применить')}</button></td></tr>`).join('')}
+    </table></div>
+    ${(data.role_audit||[]).length ? `<div class="panel mt"><h2>${T('Access Audit','Журнал доступа')}</h2><div class="table-scroll"><table class="rtable"><tr><th>${T('Target','Цель')}</th><th>${T('Change','Изменение')}</th><th>${T('Admin','Администратор')}</th><th>${T('Reason','Причина')}</th><th>${T('Time','Время')}</th></tr>${data.role_audit.map(entry=>`<tr><td class="user-content">@${esc(entry.target_username)}</td><td>${esc(entry.role_before.toUpperCase())} → ${esc(entry.role_after.toUpperCase())}</td><td class="user-content">@${esc(entry.actor_username)}</td><td class="user-content">${esc(entry.reason)}</td><td>${timeAgo(entry.created)}</td></tr>`).join('')}</table></div></div>` : ''}`;
+  $$('[data-admin-apply]', view).forEach(button => button.onclick = async () => {
+    const row = button.closest('[data-admin-user]');
+    const userId = Number(row.dataset.adminUser);
+    button.disabled = true;
+    try {
+      const updated = await api(`/api/admin/users/${userId}/role`, { method: 'POST', body: {
+        account_role: $('[data-admin-role]', row).value,
+        reason: $('[data-admin-reason]', row).value,
+      } });
+      if (state.me.id === userId) {
+        state.me = updated;
+        renderUserbox();
+      }
+      toast(T('Network access updated.','Доступ к сети обновлён.'));
+      await viewAdmin(view);
+    } catch (e) {
+      button.disabled = false;
+      toast(e.message, true);
+    }
+  });
 }
 
 /* ============================== запуск ============================== */

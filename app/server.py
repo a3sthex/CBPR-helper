@@ -21,7 +21,8 @@ from urllib.parse import urlparse, parse_qs, unquote
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE, 'data')
-DB_PATH = os.path.join(DATA_DIR, 'cbpr.db')
+DB_PATH = os.path.abspath(os.path.expanduser(
+    os.environ.get('CBPR_DB_PATH') or os.path.join(DATA_DIR, 'cbpr.db')))
 STATIC_DIR = os.path.join(BASE, 'static')
 ITEMS_PATH = os.path.join(DATA_DIR, 'items.json')
 UPLOAD_DIR = os.path.join(DATA_DIR, 'uploads')
@@ -372,6 +373,12 @@ CREATE TABLE IF NOT EXISTS users(
   display_name TEXT NOT NULL,
   pass_hash TEXT NOT NULL,
   is_gm INTEGER NOT NULL DEFAULT 0,
+  account_role TEXT NOT NULL DEFAULT 'player',
+  show_display_name INTEGER NOT NULL DEFAULT 0,
+  vk_user_id TEXT,
+  vk_linked_at REAL,
+  notification_prefs TEXT NOT NULL DEFAULT '{}',
+  theme_json TEXT NOT NULL DEFAULT '{}',
   created REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions(
@@ -441,12 +448,176 @@ CREATE TABLE IF NOT EXISTS ip_ledger(
   reason TEXT NOT NULL,
   created REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS schema_migrations(
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS account_role_audit(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_user_id INTEGER NOT NULL,
+  actor_user_id INTEGER,
+  role_before TEXT NOT NULL,
+  role_after TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  created REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_char_owner ON characters(owner_id);
 CREATE INDEX IF NOT EXISTS idx_news_created ON news(created);
 CREATE INDEX IF NOT EXISTS idx_media_owner ON media(owner_id);
 CREATE INDEX IF NOT EXISTS idx_media_attached ON media(attached_type, attached_id);
 CREATE INDEX IF NOT EXISTS idx_ip_character ON ip_ledger(character_id, created);
+CREATE INDEX IF NOT EXISTS idx_role_audit_target ON account_role_audit(target_user_id, created);
 """
+
+ACCOUNT_ROLES = {'player', 'gm', 'admin'}
+MIGRATION_ACCOUNT_ROLES = 1
+DB_BACKUP_LIMIT = 5
+
+
+def _row_value(row, key, default=None):
+    if row is None:
+        return default
+    try:
+        return row[key] if key in row.keys() else default
+    except (AttributeError, KeyError, TypeError):
+        return row.get(key, default) if isinstance(row, dict) else default
+
+
+def user_account_role(user):
+    role = str(_row_value(user, 'account_role', '') or '').lower()
+    if role in ACCOUNT_ROLES:
+        return role
+    return 'gm' if bool(_row_value(user, 'is_gm', 0)) else 'player'
+
+
+def user_is_gm(user):
+    return user_account_role(user) in ('gm', 'admin')
+
+
+def user_is_admin(user):
+    return user_account_role(user) == 'admin'
+
+
+def configured_admin_usernames():
+    raw = os.environ.get('CBPR_ADMIN_USERS', '')
+    return {part.strip().lower() for part in raw.split(',') if part.strip()}
+
+
+def backup_database(conn, label):
+    """Create a bounded SQLite backup before a destructive-capable schema migration."""
+    if not os.path.isfile(DB_PATH) or os.path.getsize(DB_PATH) == 0:
+        return None
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    path = f'{DB_PATH}.backup-{label}-{stamp}'
+    target = sqlite3.connect(path)
+    try:
+        conn.backup(target)
+    finally:
+        target.close()
+    prefix = os.path.basename(DB_PATH) + '.backup-'
+    backups = sorted(
+        (os.path.join(os.path.dirname(DB_PATH), name)
+         for name in os.listdir(os.path.dirname(DB_PATH) or '.')
+         if name.startswith(prefix)),
+        key=os.path.getmtime,
+        reverse=True,
+    )
+    for stale in backups[DB_BACKUP_LIMIT:]:
+        try:
+            os.remove(stale)
+        except FileNotFoundError:
+            pass
+    return path
+
+
+def apply_schema_migrations(conn, make_backup=True):
+    """Idempotently upgrade legacy databases without resetting campaign data."""
+    conn.execute('CREATE TABLE IF NOT EXISTS schema_migrations('
+                 'version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied REAL NOT NULL)')
+    conn.execute('CREATE TABLE IF NOT EXISTS account_role_audit('
+                 'id INTEGER PRIMARY KEY AUTOINCREMENT, target_user_id INTEGER NOT NULL, '
+                 'actor_user_id INTEGER, role_before TEXT NOT NULL, role_after TEXT NOT NULL, '
+                 'reason TEXT NOT NULL, created REAL NOT NULL)')
+    applied = {row['version'] for row in conn.execute('SELECT version FROM schema_migrations')}
+    if MIGRATION_ACCOUNT_ROLES not in applied:
+        if make_backup:
+            backup_database(conn, 'roles-v1')
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(users)')}
+        additions = {
+            'account_role': "TEXT NOT NULL DEFAULT 'player'",
+            'show_display_name': 'INTEGER NOT NULL DEFAULT 0',
+            'vk_user_id': 'TEXT',
+            'vk_linked_at': 'REAL',
+            'notification_prefs': "TEXT NOT NULL DEFAULT '{}'",
+            'theme_json': "TEXT NOT NULL DEFAULT '{}'",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                conn.execute(f'ALTER TABLE users ADD COLUMN {name} {definition}')
+        conn.execute("UPDATE users SET account_role='gm' WHERE is_gm=1 "
+                     "AND account_role!='admin'")
+        conn.execute("UPDATE users SET account_role='player' "
+                     "WHERE account_role IS NULL OR account_role NOT IN ('player','gm','admin')")
+        conn.execute(
+            'INSERT INTO schema_migrations(version,name,applied) VALUES(?,?,?)',
+            (MIGRATION_ACCOUNT_ROLES, 'account roles and privacy foundation', time.time()))
+    conn.execute("UPDATE users SET is_gm=CASE WHEN account_role IN ('gm','admin') "
+                 "THEN 1 ELSE 0 END")
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_role_audit_target '
+                 'ON account_role_audit(target_user_id, created)')
+    conn.commit()
+
+
+def apply_admin_bootstrap(conn):
+    """Promote only explicitly configured existing users; never auto-promote registration."""
+    usernames = configured_admin_usernames()
+    if not usernames:
+        return []
+    promoted = []
+    for username in sorted(usernames):
+        row = conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
+        if not row:
+            continue
+        before = user_account_role(row)
+        if before == 'admin':
+            continue
+        conn.execute("UPDATE users SET account_role='admin', is_gm=1 WHERE id=?", (row['id'],))
+        conn.execute(
+            'INSERT INTO account_role_audit(target_user_id,actor_user_id,role_before,'
+            'role_after,reason,created) VALUES(?,NULL,?,?,?,?)',
+            (row['id'], before, 'admin', 'CBPR_ADMIN_USERS bootstrap', time.time()))
+        promoted.append(username)
+    conn.commit()
+    return promoted
+
+
+def assign_account_role(conn, actor, target_user_id, role, reason='Admin role assignment'):
+    """Change access with last-Admin protection and an append-only audit record."""
+    if not user_is_admin(actor):
+        raise ApiError(403, 'Только для администраторов NC//NET')
+    target = conn.execute('SELECT * FROM users WHERE id=?', (int(target_user_id),)).fetchone()
+    if not target:
+        raise ApiError(404, 'Пользователь не найден')
+    role = str(role or '').lower()
+    if role not in ACCOUNT_ROLES:
+        raise ApiError(400, 'Недопустимая роль аккаунта')
+    before = user_account_role(target)
+    if before == role:
+        return target
+    if before == 'admin' and role != 'admin':
+        admins = conn.execute("SELECT COUNT(*) n FROM users WHERE account_role='admin'").fetchone()['n']
+        if admins <= 1:
+            raise ApiError(409, 'Нельзя снять роль с последнего администратора')
+    reason = str(reason or 'Admin role assignment').strip()[:500]
+    conn.execute('UPDATE users SET account_role=?, is_gm=? WHERE id=?',
+                 (role, 1 if role in ('gm', 'admin') else 0, target['id']))
+    conn.execute(
+        'INSERT INTO account_role_audit(target_user_id,actor_user_id,role_before,'
+        'role_after,reason,created) VALUES(?,?,?,?,?,?)',
+        (target['id'], actor['id'], before, role, reason, time.time()))
+    conn.commit()
+    return conn.execute('SELECT * FROM users WHERE id=?', (target['id'],)).fetchone()
 
 
 def db():
@@ -458,11 +629,12 @@ def db():
 
 def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
     conn = db()
+    had_users_table = bool(conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone())
     conn.executescript(SCHEMA)
-    user_columns = {row['name'] for row in conn.execute('PRAGMA table_info(users)').fetchall()}
-    if 'theme_json' not in user_columns:
-        conn.execute("ALTER TABLE users ADD COLUMN theme_json TEXT DEFAULT '{}'")
+    apply_schema_migrations(conn, make_backup=had_users_table)
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     stale = conn.execute('SELECT * FROM media WHERE attached_type IS NULL AND created < ?', (time.time() - 7 * 86400,)).fetchall()
     for media in stale:
@@ -497,6 +669,9 @@ def init_db():
                     'VALUES(1, 1, ?, ?, ?)', (json.dumps(data, ensure_ascii=False), now, now))
             conn.commit()
             print(f'Сид: {len(folio)} персонажей Folio для пользователя «Архив кампании».')
+    promoted = apply_admin_bootstrap(conn)
+    if promoted:
+        print('NC//NET Admin bootstrap: ' + ', '.join(promoted))
     conn.close()
 
 
@@ -1246,6 +1421,12 @@ SERVER_ERROR_EN = {
     'Формат изображения не подтверждён содержимым': 'The image content does not match a supported format',
     'Экипированный щит отсутствует в стартовой закупке': 'The equipped shield is missing from starting purchases',
     'Это не ваш персонаж': 'This is not your character',
+    'Только для администраторов NC//NET': 'NC//NET Admin role required',
+    'Роли аккаунтов назначает только администратор NC//NET': 'Only an NC//NET Admin can assign account roles',
+    'Некорректные настройки уведомлений': 'Invalid notification settings',
+    'Пользователь не найден': 'User not found',
+    'Недопустимая роль аккаунта': 'Invalid account role',
+    'Нельзя снять роль с последнего администратора': 'The last Admin cannot be demoted',
 }
 
 def server_error_message(message, language):
@@ -1375,8 +1556,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def require_gm(self, conn):
         u = self.require_user(conn)
-        if not u['is_gm']:
+        if not user_is_gm(u):
             raise ApiError(403, 'Только для пользователей с ролью ГМ')
+        return u
+
+    def require_admin(self, conn):
+        u = self.require_user(conn)
+        if not user_is_admin(u):
+            raise ApiError(403, 'Только для администраторов NC//NET')
         return u
 
     # -- диспетчеризация
@@ -1462,16 +1649,15 @@ class Handler(BaseHTTPRequestHandler):
         username = str(body.get('username') or '').strip().lower()
         password = str(body.get('password') or '')
         display = str(body.get('display_name') or '').strip()[:60] or username
-        is_gm = 1 if body.get('is_gm') else 0
         if not re.fullmatch(r'[a-z0-9_.\-]{3,24}', username):
             raise ApiError(400, 'Логин: 3–24 символа, латиница/цифры/._-')
         if len(password) < 4:
             raise ApiError(400, 'Пароль: минимум 4 символа')
         try:
             cur = conn.execute(
-                'INSERT INTO users(username, display_name, pass_hash, is_gm, created) '
-                'VALUES(?,?,?,?,?)',
-                (username, display, hash_password(password), is_gm, time.time()))
+                'INSERT INTO users(username, display_name, pass_hash, is_gm, account_role, created) '
+                "VALUES(?,?,?,0,'player',?)",
+                (username, display, hash_password(password), time.time()))
             conn.commit()
         except sqlite3.IntegrityError:
             raise ApiError(409, 'Такой логин уже занят')
@@ -1499,11 +1685,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def me_payload(self, u):
         try:
-            theme = json.loads(u['theme_json'] or '{}') if 'theme_json' in u.keys() else {}
+            theme = json.loads(_row_value(u, 'theme_json', '{}') or '{}')
         except (TypeError, ValueError):
             theme = {}
-        return {'id': u['id'], 'username': u['username'], 'display_name': u['display_name'],
-                'is_gm': bool(u['is_gm']), 'theme': theme}
+        try:
+            notification_prefs = json.loads(_row_value(u, 'notification_prefs', '{}') or '{}')
+        except (TypeError, ValueError):
+            notification_prefs = {}
+        role = user_account_role(u)
+        return {
+            'id': u['id'], 'username': u['username'], 'display_name': u['display_name'],
+            'account_role': role, 'is_gm': role in ('gm', 'admin'),
+            'is_admin': role == 'admin',
+            'show_display_name': bool(_row_value(u, 'show_display_name', 0)),
+            'vk_linked': bool(_row_value(u, 'vk_user_id')),
+            'notification_prefs': notification_prefs,
+            'theme': theme,
+        }
 
     def api_me(self, conn, qs, m, body):
         u = self.current_user(conn)
@@ -1515,9 +1713,17 @@ class Handler(BaseHTTPRequestHandler):
             dn = str(body['display_name'] or '').strip()[:60]
             if dn:
                 conn.execute('UPDATE users SET display_name=? WHERE id=?', (dn, u['id']))
-        if 'is_gm' in (body or {}):
-            conn.execute('UPDATE users SET is_gm=? WHERE id=?',
-                         (1 if body['is_gm'] else 0, u['id']))
+        if 'is_gm' in (body or {}) or 'account_role' in (body or {}):
+            raise ApiError(403, 'Роли аккаунтов назначает только администратор NC//NET')
+        if 'show_display_name' in (body or {}):
+            conn.execute('UPDATE users SET show_display_name=? WHERE id=?',
+                         (1 if body['show_display_name'] else 0, u['id']))
+        if 'notification_prefs' in (body or {}):
+            prefs = body.get('notification_prefs') or {}
+            if not isinstance(prefs, dict) or len(json.dumps(prefs)) > 5000:
+                raise ApiError(400, 'Некорректные настройки уведомлений')
+            conn.execute('UPDATE users SET notification_prefs=? WHERE id=?',
+                         (json.dumps(prefs, separators=(',', ':')), u['id']))
         if 'theme' in (body or {}):
             theme = body.get('theme') or {}
             if not isinstance(theme, dict) or len(json.dumps(theme)) > 5000:
@@ -1528,6 +1734,43 @@ class Handler(BaseHTTPRequestHandler):
         conn.commit()
         u2 = conn.execute('SELECT * FROM users WHERE id=?', (u['id'],)).fetchone()
         self.send_json(self.me_payload(u2))
+
+    def api_admin_users(self, conn, qs, m, body):
+        self.require_admin(conn)
+        rows = conn.execute(
+            'SELECT u.*, COUNT(c.id) character_count FROM users u '
+            'LEFT JOIN characters c ON c.owner_id=u.id GROUP BY u.id ORDER BY u.created, u.id'
+        ).fetchall()
+        audit_rows = conn.execute(
+            'SELECT a.*, target.username target_username, actor.username actor_username '
+            'FROM account_role_audit a JOIN users target ON target.id=a.target_user_id '
+            'LEFT JOIN users actor ON actor.id=a.actor_user_id '
+            'ORDER BY a.created DESC, a.id DESC LIMIT 50'
+        ).fetchall()
+        self.send_json({
+            'users': [{
+                'id': row['id'], 'username': row['username'],
+                'display_name': row['display_name'],
+                'account_role': user_account_role(row),
+                'show_display_name': bool(_row_value(row, 'show_display_name', 0)),
+                'vk_linked': bool(_row_value(row, 'vk_user_id')),
+                'character_count': row['character_count'],
+                'created': row['created'],
+            } for row in rows],
+            'role_audit': [{
+                'id': row['id'], 'target_username': row['target_username'],
+                'actor_username': row['actor_username'] or 'system',
+                'role_before': row['role_before'], 'role_after': row['role_after'],
+                'reason': row['reason'], 'created': row['created'],
+            } for row in audit_rows],
+        })
+
+    def api_admin_user_role(self, conn, qs, m, body):
+        actor = self.require_admin(conn)
+        updated = assign_account_role(
+            conn, actor, int(m.group(1)), (body or {}).get('account_role'),
+            (body or {}).get('reason') or 'Admin role assignment')
+        self.send_json(self.me_payload(updated))
 
     # ------------------------------------------------------------ media
 
@@ -1758,7 +2001,7 @@ class Handler(BaseHTTPRequestHandler):
     def require_character_editor(self, conn, cid, allow_gm=False):
         user = self.require_user(conn)
         row = self.get_char(conn, cid)
-        if row['owner_id'] != user['id'] and not (allow_gm and user['is_gm']):
+        if row['owner_id'] != user['id'] and not (allow_gm and user_is_gm(user)):
             raise ApiError(403, 'Нет права изменять этого персонажа')
         return user, row
 
@@ -2061,7 +2304,7 @@ class Handler(BaseHTTPRequestHandler):
         r = conn.execute('SELECT * FROM news WHERE id=?', (int(m.group(1)),)).fetchone()
         if not r:
             raise ApiError(404, 'Новость не найдена')
-        if r['author_id'] != u['id'] and not u['is_gm']:
+        if r['author_id'] != u['id'] and not user_is_gm(u):
             raise ApiError(403, 'Можно удалять только свои посты')
         conn.execute('DELETE FROM news WHERE id=?', (r['id'],))
         conn.commit()
@@ -2163,7 +2406,7 @@ class Handler(BaseHTTPRequestHandler):
         r = conn.execute('SELECT * FROM jobs WHERE id=?', (int(m.group(1)),)).fetchone()
         if not r:
             raise ApiError(404, 'Заказ не найден')
-        if r['author_id'] != u['id'] and not u['is_gm']:
+        if r['author_id'] != u['id'] and not user_is_gm(u):
             raise ApiError(403, 'Только автор может менять статус')
         status = body.get('status')
         if status not in ('open', 'closed'):
@@ -2177,7 +2420,7 @@ class Handler(BaseHTTPRequestHandler):
         r = conn.execute('SELECT * FROM jobs WHERE id=?', (int(m.group(1)),)).fetchone()
         if not r:
             raise ApiError(404, 'Заказ не найден')
-        if r['author_id'] != u['id'] and not u['is_gm']:
+        if r['author_id'] != u['id'] and not user_is_gm(u):
             raise ApiError(403, 'Только автор может удалить заказ')
         conn.execute('DELETE FROM job_signups WHERE job_id=?', (r['id'],))
         conn.execute('DELETE FROM jobs WHERE id=?', (r['id'],))
@@ -2195,6 +2438,8 @@ ROUTES = [
     ('POST', rx(r'/api/logout'), Handler.api_logout),
     ('GET', rx(r'/api/me'), Handler.api_me),
     ('POST', rx(r'/api/profile'), Handler.api_profile),
+    ('GET', rx(r'/api/admin/users'), Handler.api_admin_users),
+    ('POST', rx(r'/api/admin/users/(\d+)/role'), Handler.api_admin_user_role),
     ('POST', rx(r'/api/media'), Handler.api_media_upload),
     ('GET', rx(r'/api/media/([a-f0-9]{32})'), Handler.api_media_get),
     ('DELETE', rx(r'/api/media/([a-f0-9]{32})'), Handler.api_media_delete),
@@ -2238,7 +2483,7 @@ def main():
     load_catalog()
     init_db()
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f'CBPR Helper слушает http://{args.host}:{args.port}')
+    print(f'NC//NET listening on http://{args.host}:{args.port}')
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
