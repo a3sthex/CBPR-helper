@@ -83,6 +83,33 @@ def valid_merged_character(role='Solo'):
     return char
 
 
+class MediaAndProgressionTests(unittest.TestCase):
+    def test_png_signature_and_dimensions(self):
+        raw = b'\x89PNG\r\n\x1a\n' + b'\x00' * 8 + (1000).to_bytes(4, 'big') + (1250).to_bytes(4, 'big')
+        self.assertEqual(server.image_info(raw), ('image/png', 'png', 1000, 1250))
+
+    def test_role_art_is_valid_webp(self):
+        raw = (ROOT / 'app/static/role-art/nomad.webp').read_bytes()
+        info = server.image_info(raw)
+        self.assertIsNotNone(info)
+        self.assertEqual(info[0], 'image/webp')
+        self.assertGreater(info[2], 100)
+        self.assertGreater(info[3], 300)
+
+    def test_theme_contrast_is_server_validated(self):
+        server.validate_theme({'bg': '#000000', 'panel': '#111111', 'text': '#ffffff'})
+        with self.assertRaisesRegex(server.ApiError, '4.5:1'):
+            server.validate_theme({'bg': '#111111', 'panel': '#111111', 'text': '#222222'})
+
+    def test_legacy_character_gets_progression_schema(self):
+        data = server.ensure_progression({'role': 'Solo', 'role_rank': 4,
+                                          'role_setup': {}, 'stats': {'LUCK': 6}})
+        self.assertEqual(data['luck_cur'], 6)
+        self.assertEqual(data['active_role'], 'Solo')
+        self.assertEqual(data['roles'][0]['rank'], 4)
+        self.assertEqual(data['schema_version'], 4)
+
+
 class LocalizationTests(unittest.TestCase):
     def test_server_errors_follow_requested_language(self):
         message = 'Требуется вход в систему'
@@ -141,6 +168,15 @@ class CreationValidationTests(unittest.TestCase):
         char['skills']['Language (Streetslang)'] = 3
         with self.assertRaisesRegex(server.ApiError, 'parent-pool'):
             server.validate_creation(char)
+
+    def test_specialized_parent_pool_can_exceed_six(self):
+        char = valid_merged_character()
+        char['skill_pools']['Language'] = 7
+        donor = next(name for name, level in char['skills'].items()
+                     if level == 6 and server.skill_base(name) not in server.SPECIALIZED_SKILLS)
+        char['skills'][donor] = 1
+        self.assertEqual(server.creation_skill_cost(char), 86)
+        server.validate_creation(char)
 
     def test_parent_pool_may_keep_unallocated_levels(self):
         char = valid_merged_character()
@@ -258,6 +294,16 @@ class CreationValidationTests(unittest.TestCase):
         # The authoritative catalog price is covered by the 1,500eb chrome-only fund.
         char['cash'] = 2550
         server.validate_creation(char)
+
+    def test_paired_cyberware_uses_two_different_hosts(self):
+        left = {'key': 'cyberware-65', 'instance_id': 'eye-left', 'name': 'Cybereye'}
+        right = {'key': 'cyberware-65', 'instance_id': 'eye-right', 'name': 'Cybereye'}
+        anti = {'key': 'cyberware-66', 'instance_id': 'anti-dazzle', 'name': 'Anti-Dazzle',
+                'host_instance': 'eye-left', 'host_instances': ['eye-left', 'eye-right']}
+        server.validate_cyberware_slots({'cyberware': [left, right, anti]})
+        anti['host_instances'] = ['eye-left']
+        with self.assertRaisesRegex(server.ApiError, 'hosts: 2'):
+            server.validate_cyberware_slots({'cyberware': [left, right, anti]})
 
     def test_explicit_cyberware_foundation_requirement_is_checked(self):
         char = valid_character()

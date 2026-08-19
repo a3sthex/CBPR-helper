@@ -31,7 +31,7 @@ class FrontendV3Contracts(unittest.TestCase):
 global.__store = new Map();
 global.document = {
   querySelector: () => null, querySelectorAll: () => [], addEventListener: () => {},
-  documentElement: {}, createElement: () => ({ click() {} }),
+  documentElement: { style: { setProperty() {} }, classList: { toggle() {} } }, createElement: () => ({ click() {} }),
 };
 global.window = {
   addEventListener: () => {}, dispatchEvent: () => {}, scrollTo: () => {},
@@ -56,6 +56,7 @@ state.meta = {json.dumps(meta, ensure_ascii=False)};
 state.me = {{ id: 9, display_name: 'Player' }};
 initWizard();
 if (WIZARD_STEPS.length !== 6) throw new Error('expected six wizard steps');
+if (MERGED_LIFEPATH_FIELDS.find(field => field.key === 'region').options.length !== 10) throw new Error('expected ten canonical cultural regions');
 if (state.wizard.role !== '') throw new Error('new draft must not preselect a Role');
 if (state.wizard.public !== false) throw new Error('new character must default to Private');
 if (wizStatSpent() !== 50 || wizSkillSpent() !== 26) throw new Error('invalid defaults');
@@ -74,6 +75,7 @@ console.log('ok');
         script = '\n'.join([
             stub,
             (ROOT / 'app/static/i18n.js').read_text(encoding='utf-8'),
+            (ROOT / 'app/static/theme.js').read_text(encoding='utf-8'),
             (ROOT / 'app/static/creation-data.js').read_text(encoding='utf-8'),
             app,
             test,

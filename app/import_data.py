@@ -219,8 +219,9 @@ def structured_requirements(cat, row, desc):
         slot_count = 1
     total_match = re.search(r'has\s+(\d+)\s+option slots?', low)
     slots_total = int(total_match.group(1)) if total_match else 0
+    hosts_required = 2 if ('requires two cybereyes' in low or 'requires two cyberlegs' in low or 'must be paired' in low) else (1 if host else 0)
     unique = bool(re.search(r'only one|cannot be installed more than once|only be installed once|multiple installations.+no additional benefit', low))
-    return requirements, {'host': host, 'slots_used': slot_count, 'slots_total': slots_total, 'unique': unique}
+    return requirements, {'host': host, 'hosts_required': hosts_required, 'slots_used': slot_count, 'slots_total': slots_total, 'unique': unique}
 
 
 def item_mechanics(cat, row, desc):
@@ -337,6 +338,7 @@ def main():
             if any(capacity.values()):
                 it['capacity'] = capacity
             if cat == 'cyberware':
+                it['cyberware_class'] = 'foundation' if capacity.get('slots_total') else ('option' if capacity.get('host') else 'standalone')
                 it['hl'] = parse_hl(r.get('HL'))
             if cat == 'armor':
                 it['sp'] = parse_sp(r.get('SP'))

@@ -4,7 +4,9 @@
 
 const CULTURAL_LANGUAGES = {
   'Северная Америка': ['Английский', 'Испанский', 'Навахо', 'Кри', 'Креольский', 'Французский'],
+  'Латинская Америка': ['Испанский', 'Португальский', 'Гуарани', 'Кечуа', 'Майя', 'Науатль', 'Английский', 'Креольский'],
   'Южная / Центральная Америка': ['Испанский', 'Португальский', 'Гуарани', 'Кечуа', 'Майя', 'Науатль'],
+
   'Центральная Америка': ['Испанский', 'Английский', 'Креольский', 'Майя', 'Науатль'],
   'Южная Америка': ['Испанский', 'Португальский', 'Гуарани', 'Кечуа'],
   'Западная Европа': ['Английский', 'Французский', 'Немецкий', 'Итальянский', 'Испанский', 'Норвежский'],
@@ -307,6 +309,31 @@ const LIFEPATH_KEY_ALIASES = {
   hair_style: 'hair',
 };
 
+const LIFEPATH_VALUE_ALIASES = {
+  region: {
+    'Южная / Центральная Америка': 'Латинская Америка', 'Центральная Америка': 'Латинская Америка', 'Южная Америка': 'Латинская Америка',
+  },
+  clothing: {
+    'Nomad Leathers — грубый дорожный стиль': 'Nomad Leathers', 'High Fashion — актуальные дорогие бренды': 'High Fashion',
+  },
+  hair: {
+    'Классический ирокез': 'Ирокез', 'Бритые или лысина': 'Бритая голова', 'Короткие и уложенные': 'Аккуратные и короткие', 'Длинные и неухоженные': 'Длинные и растрёпанные',
+  },
+  people: {
+    'Нравятся почти все': 'Я люблю почти всех', 'Ненавижу почти всех': 'Я ненавижу почти всех', 'Люди — инструменты': 'Люди — инструменты для моих целей',
+    'Всякая жизнь имеет значение': 'Каждая жизнь ценна', 'Люди — препятствия': 'Люди — препятствия, которые нужно сокрушать',
+  },
+  family: {'Гангеры': 'Банда вместо семьи', 'Жители мегабашни': 'Жители мегаструктуры'},
+  environment: {'Улица почти без присмотра взрослых': 'Улица без присмотра взрослых'},
+  crisis: {
+    'Предательство лишило тебя или семью всего': 'Семья потеряла всё из-за предательства', 'Изгнание из родного дома': 'Семью изгнали из дома, страны или корпорации',
+    'Ты унаследовал вражду': 'Семью преследует наследственная вражда', 'Ты или семья погрязли в долгах': 'Ты унаследовал семейный долг, который обязан выплатить',
+  },
+  goal: {'Получить власть и контроль': 'Обрести власть и контроль'},
+};
+function canonicalLifepathValue(key, value) { return (LIFEPATH_VALUE_ALIASES[key] || {})[value] || value; }
+function stableLifepathId(key, value) { let hash=5381;for(const char of `${key}:${value}`)hash=((hash<<5)+hash)^char.charCodeAt(0);return `${key}_${(hash>>>0).toString(16)}`; }
+
 function mergeLifepathSources() {
   const order = ['region', 'personality', 'clothing', 'hair', 'hair_color', 'affectation',
     'value', 'people', 'person', 'possession', 'family', 'environment', 'crisis', 'goal'];
@@ -318,12 +345,14 @@ function mergeLifepathSources() {
       if (!fields.has(key)) fields.set(key, { key, label, options: [] });
       const field = fields.get(key);
       if (!field.label) field.label = label.replace(/\s*\(2d6\)/, '');
-      for (const value of options) {
+      for (const rawValue of options) {
+        const value = canonicalLifepathValue(key, rawValue);
         const existing = field.options.find(o => o.value === value);
         if (existing) {
           if (!existing.sources.includes(source)) existing.sources.push(source);
+          if (!existing.aliases.includes(rawValue)) existing.aliases.push(rawValue);
         } else {
-          field.options.push({ value, sources: [source] });
+          field.options.push({ id: stableLifepathId(key, value), value, sources: [source], aliases: rawValue === value ? [] : [rawValue] });
         }
       }
     }
@@ -579,3 +608,14 @@ const LEGACY_DISPLAY_EN = {
   'Японский':'Japanese','Корейский':'Korean','Монгольский':'Mongolian','Маори':'Maori','Гавайский':'Hawaiian','Самоанский':'Samoan','Таитянский':'Tahitian',
   'Свой район':'Your Home',
 };
+
+REGION_NAME_POOLS['Латинская Америка'] = {
+  first: ['Santiago','Camila','Mateo','Valentina','Diego','Lucía','Rafael','Marisol','Thiago','Beatriz','Joaquín','Marina'],
+  last: ['García','Santos','Navarro','Rojas','Mendoza','Castillo','Vega','Silva','Ferreira','Pereira'],
+};
+const REGION_GENDERED_NAME_POOLS = Object.fromEntries(Object.entries(REGION_NAME_POOLS).map(([region,pool]) => [region, {
+  masculine: pool.first.filter((_,index)=>index%2===0),
+  feminine: pool.first.filter((_,index)=>index%2===1),
+  neutral: pool.first.filter((_,index)=>index<4),
+  surnames: pool.last,
+}]));

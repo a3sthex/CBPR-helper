@@ -33,6 +33,10 @@ function toast(msg, isErr) {
   setTimeout(() => el.remove(), 3700);
 }
 
+function toastUndo(message, undo) {
+  const root=$('#toast-root'),el=document.createElement('div');el.className='toast';el.innerHTML=`<span>${esc(message)}</span> <button class="btn-sm">Undo</button>`;root.appendChild(el);$('button',el).onclick=()=>{undo();el.remove();};setTimeout(()=>el.remove(),7000);
+}
+
 function openModal(html, wide) {
   const root = $('#modal-root');
   root.innerHTML = `<div class="modal${wide ? ' wide' : ''}"><button class="close" title="Закрыть">✕</button>${html}</div>`;
@@ -43,6 +47,32 @@ function openModal(html, wide) {
 }
 function closeModal() { const r = $('#modal-root'); r.classList.remove('open'); r.innerHTML = ''; }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
+async function openThemeSettings() {
+  const current=APP_THEME.get(), labels={bg:'Background',bg2:'Secondary Background',panel:'Panel',panel2:'Raised Panel',line:'Borders',text:'Text',muted:'Muted Text',primary:'Primary Accent',secondary:'Secondary Accent',accent:'Accent',success:'Success',danger:'Danger',warning:'Warning'};
+  const modal=openModal(`<h2>🎨 ${T('Appearance','Оформление')}</h2><div class="theme-grid mb">${Object.keys(APP_THEME.presets).map(name=>`<button class="theme-preset ${current.preset===name?'active':''}" data-theme-preset="${name}"><b>${name[0].toUpperCase()+name.slice(1)}</b></button>`).join('')}</div><h3>Custom Theme</h3><div class="theme-grid">${Object.entries(labels).map(([key,label])=>`<label class="theme-color"><span>${label}</span><input type="color" data-theme-color="${key}" value="${esc(current[key])}"></label>`).join('')}</div><div class="grid cols-3 mt"><label class="f"><span>Font Scale</span><input type="range" id="theme-font" min=".85" max="1.3" step=".05" value="${current.fontScale}"></label><label class="f"><span>Density</span><select id="theme-density"><option value="comfortable">Comfortable</option><option value="compact" ${current.density==='compact'?'selected':''}>Compact</option></select></label><label class="f"><span>Glow</span><input type="range" id="theme-glow" min="0" max="1" step=".1" value="${current.glow}"></label></div><label class="checkbox mt"><input id="theme-motion" type="checkbox" ${current.reducedMotion?'checked':''}> Reduced motion</label><div id="theme-contrast" class="mt"></div><div class="row mt"><button id="theme-reset">Reset</button><button class="btn-primary" id="theme-save">Save Theme</button></div>`,true);
+  let draft={...current};
+  const preview=()=>{draft.fontScale=Number($('#theme-font',modal).value);draft.density=$('#theme-density',modal).value;draft.glow=Number($('#theme-glow',modal).value);draft.reducedMotion=$('#theme-motion',modal).checked;APP_THEME.apply(draft);const ratio=Math.min(APP_THEME.contrast(draft.bg,draft.text),APP_THEME.contrast(draft.panel,draft.text));const out=$('#theme-contrast',modal);out.className=ratio>=4.5?'contrast-ok mt':'contrast-bad mt';out.textContent=`Contrast ${ratio.toFixed(2)}:1 · ${ratio>=4.5?'AA ✓':'Too low'}`;};
+  $$('[data-theme-preset]',modal).forEach(btn=>btn.onclick=()=>{draft=APP_THEME.choosePreset(btn.dataset.themePreset);closeModal();openThemeSettings();});
+  $$('[data-theme-color]',modal).forEach(input=>input.oninput=()=>{draft[input.dataset.themeColor]=input.value;draft.preset='custom';preview();});
+  ['#theme-font','#theme-density','#theme-glow','#theme-motion'].forEach(sel=>$(sel,modal).oninput=preview);
+  $('#theme-reset',modal).onclick=()=>{draft={...APP_THEME.defaults};APP_THEME.apply(draft);closeModal();openThemeSettings();};
+  $('#theme-save',modal).onclick=async()=>{if(!APP_THEME.valid(draft)){toast(T('Text contrast must be at least 4.5:1.','Контраст текста должен быть минимум 4.5:1.'),true);return;}APP_THEME.apply(draft);if(state.me){try{state.me=await api('/api/profile',{method:'POST',body:{theme:draft}});}catch(e){toast(e.message,true);return;}}closeModal();toast(T('Theme saved.','Тема сохранена.'));};
+  preview();
+}
+
+function openImageCrop(file, kind, onUploaded) {
+  if (!file || !/^image\/(jpeg|png|webp)$/.test(file.type) || file.size > 10_000_000) { toast(T('Choose a JPEG, PNG, or WebP file up to 10 MB.','Выберите JPEG, PNG или WebP до 10 MB.'),true); return; }
+  const reader=new FileReader();reader.onload=()=>{const image=new Image();image.onload=()=>{
+    let aspect='4:5',zoom=1,rotation=0,dx=0,dy=0,drag=null;
+    const modal=openModal(`<h2>${T('Crop Image','Обрезка изображения')}</h2><div class="image-crop-stage"><canvas id="crop-canvas" width="400" height="500"></canvas></div><div class="segmented mt"><button data-aspect="4:5" class="active">Portrait 4:5</button><button data-aspect="1:1">Square 1:1</button><button id="crop-rotate">↻ 90°</button></div><label class="f mt"><span>Zoom</span><input id="crop-zoom" type="range" min="1" max="3" step=".01" value="1"></label><p class="small muted">${T('Drag the image to reposition it.','Перетаскивайте изображение для позиционирования.')}</p><div class="row"><button id="crop-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="crop-upload">${T('Upload','Загрузить')}</button></div>`,true),canvas=$('#crop-canvas',modal),ctx=canvas.getContext('2d');
+    const draw=(target=canvas)=>{const square=aspect==='1:1',w=target.width,h=square?target.width:Math.round(target.width*1.25);if(target.height!==h)target.height=h;const c=target.getContext('2d');c.clearRect(0,0,w,h);c.save();c.translate(w/2+dx*(w/400),h/2+dy*(h/(square?400:500)));c.rotate(rotation*Math.PI/180);const rotated=rotation%180!==0,iw=rotated?image.height:image.width,ih=rotated?image.width:image.height,base=Math.max(w/iw,h/ih)*zoom;c.drawImage(image,-image.width*base/2,-image.height*base/2,image.width*base,image.height*base);c.restore();};
+    draw();canvas.onpointerdown=e=>{drag={x:e.clientX,y:e.clientY,dx,dy};canvas.setPointerCapture(e.pointerId);};canvas.onpointermove=e=>{if(!drag)return;dx=drag.dx+e.clientX-drag.x;dy=drag.dy+e.clientY-drag.y;draw();};canvas.onpointerup=()=>drag=null;
+    $$('[data-aspect]',modal).forEach(btn=>btn.onclick=()=>{aspect=btn.dataset.aspect;$$('[data-aspect]',modal).forEach(x=>x.classList.toggle('active',x===btn));dx=dy=0;draw();});
+    $('#crop-zoom',modal).oninput=e=>{zoom=Number(e.target.value);draw();};$('#crop-rotate',modal).onclick=()=>{rotation=(rotation+90)%360;dx=dy=0;draw();};$('#crop-cancel',modal).onclick=closeModal;
+    $('#crop-upload',modal).onclick=async()=>{const out=document.createElement('canvas');out.width=1000;out.height=aspect==='1:1'?1000:1250;draw(out);const button=$('#crop-upload',modal);button.disabled=true;button.textContent=T('Uploading…','Загрузка…');try{const media=await api('/api/media',{method:'POST',body:{kind,data_url:out.toDataURL('image/webp',.85)}});closeModal();onUploaded(media);}catch(e){button.disabled=false;button.textContent=T('Upload','Загрузить');toast(e.message,true);}};
+  };image.src=reader.result;};reader.readAsDataURL(file);
+}
 
 async function api(path, opts) {
   const o = Object.assign({ headers: {} }, opts);
@@ -1099,11 +1129,11 @@ function normalizeWizard(w) {
     if (skills[base] == null) skills[base] = subSkills.filter(x => x.base === base && !x.native).reduce((a, x) => a + x.lvl, 0);
   }
   const out = Object.assign({
-    step: 1, role, handle: '', firstName: '', lastName: '', stats, skills, subSkills,
+    step: 1, role, handle: '', firstName: '', lastName: '', portraitMedia: null, stats, skills, subSkills,
     nativeLanguage: '', cyberware: [], fashionware: [], gear: [], fashion: [],
     armor: { body: null, head: null, shield: null }, chromeCost: 0, gearCost: 0, fashionCost: 0,
     fashionBurned: false, soldSoul: false, freeNeuroport: true,
-    lifepath: lp, roleLifepath: {}, roleSetup: defaultRoleSetup(role), roleBenefits: [],
+    lifepath: lp, lifepathIds: {}, roleLifepath: {}, roleSetup: defaultRoleSetup(role), roleBenefits: [],
     shopTab: 'weapons', shopQ: '', shopFilters: {}, shopState: {}, styleQ: '', shopType: 'all', styleType: 'all',
     scrolls: {}, statLocks: {}, lifepathOpen: { identity: true, origin: true },
     skillOpen: {}, skillFilter: 'all', skillQ: '', compareItems: [],
@@ -1116,6 +1146,8 @@ function normalizeWizard(w) {
   out.skills = skills;
   out.subSkills = subSkills;
   out.lifepath = lp;
+  out.lifepathIds = Object.assign({}, (w && w.lifepathIds) || {});
+  for (const field of MERGED_LIFEPATH_FIELDS) { const value=canonicalLifepathValue(field.key,lp[field.key]); if(value){lp[field.key]=value;const option=field.options.find(item=>item.value===value||(item.aliases||[]).includes(lp[field.key]));if(option)out.lifepathIds[field.key]=option.id;} }
   out.roleSetup = Object.assign(defaultRoleSetup(role), (w && w.roleSetup) || {});
   out.roleLifepath = Object.assign({}, (w && w.roleLifepath) || {});
   out.armor = Object.assign({ body: null, head: null, shield: null }, (w && w.armor) || {});
@@ -1157,7 +1189,7 @@ function initWizard() {
   state.wizard = normalizeWizard({
     step: 1,
     role: '',
-    handle: '', firstName: '', lastName: '',
+    handle: '', firstName: '', lastName: '', portraitMedia: null,
     stats,
     skills: {},
     subSkills: [
@@ -1170,7 +1202,7 @@ function initWizard() {
     gear: [], fashion: [], armor: { body: null, head: null, shield: null },
     chromeCost: 0, gearCost: 0, fashionCost: 0,
     fashionBurned: false, soldSoul: false, freeNeuroport: true,
-    lifepathMode: 'merged', lifepath: {}, roleLifepath: {},
+    lifepathMode: 'merged', lifepath: {}, lifepathIds: {}, roleLifepath: {},
     roleSetup: defaultRoleSetup(''), roleBenefits: [],
     shopTab: 'weapons', shopQ: '', shopFilters: {}, shopState: {}, styleQ: '', shopType: 'all', styleType: 'all',
     scrolls: {}, statLocks: {}, lifepathOpen: { identity: true, origin: true },
@@ -1196,7 +1228,7 @@ function wizChar() {
     key: c.id, name: c.name, hl: c.hl || 0, price: c.price, type: c.type || '',
     desc: c.desc || '', source: c.source || '', fields: c.fields || {},
     mechanics: c.mechanics || {}, requirements: c.requirements || [], capacity: c.capacity || {},
-    instance_id: c.instance_id || c.id, host_instance: c.host_instance || '',
+    instance_id: c.instance_id || c.id, host_instance: c.host_instance || '', host_instances: c.host_instances || (c.host_instance ? [c.host_instance] : []),
   }));
   const hasPaidNeuroport = purchasedChrome.some(c => String(c.name).toLowerCase() === 'neuroport');
   const cyberware = w.freeNeuroport && !hasPaidNeuroport
@@ -1207,9 +1239,10 @@ function wizChar() {
   return {
     handle: w.handle || 'Unnamed-07',
     first_name: w.firstName || '', last_name: w.lastName || '',
+    portrait_media_id: w.portraitMedia ? w.portraitMedia.id : '',
     role: w.role, role_rank: 4, role_setup: Object.assign({}, w.roleSetup),
     stats: Object.assign({}, w.stats),
-    hp_cur: null, humanity_cur: null,
+    hp_cur: null, humanity_cur: null, luck_cur: w.stats.LUCK,
     skills, skill_pools: skillPools,
     skill_specializations: w.subSkills.map(sub => ({ base: sub.base, name: sub.name, lvl: sub.lvl || 0, native: !!sub.native })),
     native_language: w.nativeLanguage,
@@ -1220,7 +1253,7 @@ function wizChar() {
     appearance: [lp.clothing, lp.hair, lp.hair_color, lp.affectation].filter(Boolean).join(' · '),
     background: lpText,
     lifepath_mode: 'merged',
-    lifepath: lp, role_lifepath: Object.assign({}, w.roleLifepath),
+    lifepath: lp, lifepath_ids: Object.assign({}, w.lifepathIds || {}), role_lifepath: Object.assign({}, w.roleLifepath),
     creation: { sold_soul: !!w.soldSoul, free_neuroport: !!w.freeNeuroport,
       patron: w.patron || '', obligation: w.obligation || '',
       gear_spent: w.gearCost, chrome_spent: w.chromeCost, fashion_spent: w.fashionCost },
@@ -1282,7 +1315,7 @@ function renderWizard() {
         </button>`).join('')}
     </div>
 
-    <div class="wiz-live" id="wiz-live">${wizLiveHtml()}</div>
+    <details class="wiz-live panel" id="wiz-live-panel" ${wiz.liveOpen!==false?'open':''}><summary>${T('Character Snapshot','Сводка персонажа')}</summary><div id="wiz-live">${wizLiveHtml()}</div></details>
 
     <div class="wiz-body" id="wiz-body">
       ${renderWizStep()}
@@ -1308,6 +1341,7 @@ function renderWizard() {
   const crt = $('#wiz-create');
   if (crt) { const blocking = wizValidationErrors(); crt.disabled = blocking.length > 0; crt.title = blocking[0] || ''; crt.onclick = wizCreate; }
   $('#wiz-restart').onclick = wizReset;
+  const livePanel=$('#wiz-live-panel');if(livePanel)livePanel.ontoggle=()=>{wiz.liveOpen=livePanel.open;saveWizardDraft();};
   bindWizStep();
   saveWizardDraft();
 }
@@ -1466,30 +1500,28 @@ function lifepathFieldsHtml(fields, values, attr, diceAttr, roleSpecific) {
 }
 
 function matchingNamePool(region) {
-  const text = String(region || '');
-  const direct = REGION_NAME_POOLS[text];
+  const text = canonicalLifepathValue('region', String(region || ''));
+  const direct = REGION_GENDERED_NAME_POOLS[text];
   if (direct) return direct;
-  const key = Object.keys(REGION_NAME_POOLS).find(regionKey => text.startsWith(regionKey) || regionKey.startsWith(text));
-  return key ? REGION_NAME_POOLS[key] : null;
+  const key = Object.keys(REGION_GENDERED_NAME_POOLS).find(regionKey => text.startsWith(regionKey) || regionKey.startsWith(text));
+  return key ? REGION_GENDERED_NAME_POOLS[key] : null;
 }
 function randomFrom(list) { return list[Math.floor(Math.random() * list.length)]; }
-function genderedNames(pool, gender) {
-  if (!pool) return [];
-  if (gender === 'neutral') return pool.first;
-  const parity = gender === 'feminine' ? 1 : 0;
-  const selected = pool.first.filter((_, index) => index % 2 === parity);
-  return selected.length ? selected : pool.first;
-}
+function genderedNames(pool, gender) { return pool ? (pool[gender] || pool.neutral || []) : []; }
 function generateWizardHandle() {
-  const pools = Object.values(HANDLE_POOLS);
+  const style=state.wizard.handleStyle||'any',pools=style==='any'?Object.values(HANDLE_POOLS):[HANDLE_POOLS[style]||HANDLE_POOLS.street];
   state.wizard.handle = randomFrom(randomFrom(pools));
 }
 function generateWizardName(part) {
   const wiz = state.wizard, pool = matchingNamePool(wiz.lifepath.region);
   if (!pool) { toast(T('Choose a cultural region first.','Сначала выберите культурный регион.'), true); return; }
   if (part !== 'last') wiz.firstName = randomFrom(genderedNames(pool, wiz.nameGender || 'neutral'));
-  if (part !== 'first') wiz.lastName = randomFrom(pool.last);
+  if (part !== 'first') wiz.lastName = randomFrom(pool.surnames);
 }
+function setLifepathValue(key,value) {
+  const wiz=state.wizard,canonical=canonicalLifepathValue(key,value);wiz.lifepath[key]=canonical;wiz.lifepathIds=wiz.lifepathIds||{};const field=MERGED_LIFEPATH_FIELDS.find(item=>item.key===key),option=field&&field.options.find(item=>item.value===canonical||(item.aliases||[]).includes(value));if(option)wiz.lifepathIds[key]=option.id;if(key==='region')syncNativeLanguage();
+}
+
 function wizRollHybrid(key, roleSpecific) {
   const fields = roleSpecific ? lpRoleField(state.wizard.role) : lpAllFields();
   const field = fields.find(row => row[0] === key);
@@ -1505,12 +1537,11 @@ function wizRollHybrid(key, roleSpecific) {
     const index = source === 'CEMK' && original[2].length >= 11
       ? (1 + Math.floor(Math.random() * 6)) + (1 + Math.floor(Math.random() * 6)) - 2
       : Math.floor(Math.random() * original[2].length);
-    state.wizard.lifepath[key] = original[2][Math.min(index, original[2].length - 1)];
+    setLifepathValue(key, original[2][Math.min(index, original[2].length - 1)]);
   } else {
     const candidates = options.filter(option => (option.sources || []).includes(source));
-    state.wizard.lifepath[key] = randomFrom(candidates).value;
+    setLifepathValue(key, randomFrom(candidates).value);
   }
-  if (key === 'region') syncNativeLanguage();
 }
 function lifepathProgress(fields, values) { return fields.filter(([key]) => String(values[key] || '').trim()).length; }
 function lifepathSectionHtml(id, en, ru, keys, fields, values, roleSpecific) {
@@ -1525,9 +1556,10 @@ function wizStepLifepathHtml() {
   const langs = languagesForRegion(wiz.lifepath.region);
   const commonDone = lifepathProgress(fields, wiz.lifepath), roleDone = lifepathProgress(roleFields, wiz.roleLifepath);
   wiz.nameGender = wiz.nameGender || 'neutral';
-  return `<div class="lifepath-progress panel accent mb"><b>${T('Common Lifepath','Общий Lifepath')}: ${commonDone}/${fields.length}</b><b>${T('Role-Based','Ролевой')}: ${wiz.role ? roleDone+'/'+roleFields.length : T('choose a Role','выберите роль')}</b><button class="btn-primary btn-sm" id="lp-gen-all">🎲 ${T('Generate Hybrid Lifepath','Сгенерировать Hybrid Lifepath')}</button></div>
+  return `<div class="lifepath-progress panel accent mb"><b>${T('Common Lifepath','Общий Lifepath')}: ${commonDone}/${fields.length}</b><b>${T('Role-Based','Ролевой')}: ${wiz.role ? roleDone+'/'+roleFields.length : T('choose a Role','выберите роль')}</b><div class="row"><button class="btn-sm" id="lp-fill-missing">🎲 ${T('Fill Missing','Заполнить пустые')}</button><button class="btn-primary btn-sm" id="lp-gen-all">🎲 ${T('Reroll All','Перебросить всё')}</button></div></div>
     <details class="creation-section" data-lp-section="identity" ${(wiz.lifepathOpen||{}).identity?'open':''}><summary><span>Identity</span><span class="section-progress ${wiz.handle?'ok':''}">${wiz.handle?'✓':'0/1'}</span></summary><div class="section-body">
-      <div class="grid cols-3"><label class="f"><span>Handle *</span><div class="input-action"><input id="wiz-handle" maxlength="60" value="${esc(wiz.handle)}"><button class="btn-sm" data-generate-handle>🎲</button></div></label>
+      <div class="portrait-editor mb">${wiz.portraitMedia?`<img src="${esc(wiz.portraitMedia.url)}" alt="Character Portrait"><div class="row"><label class="btn-sm">${T('Replace','Заменить')}<input type="file" id="wiz-portrait-file" accept="image/jpeg,image/png,image/webp" hidden></label><button class="btn-sm btn-danger" id="wiz-portrait-remove">${T('Remove','Удалить')}</button></div>`:`<label class="portrait-empty"><span>🖼️</span><b>${T('Upload Character Portrait','Загрузить портрет персонажа')}</b><small>JPEG · PNG · WebP · 10 MB</small><input type="file" id="wiz-portrait-file" accept="image/jpeg,image/png,image/webp" hidden></label>`}</div>
+      <div class="grid cols-3"><label class="f"><span>Handle *</span><select id="wiz-handle-style">${[['any','Any'],['street','Street'],['combat','Combat'],['net','Netrunner'],['stage','Stage'],['speed','Speed'],['neon','Neon']].map(([id,label])=>`<option value="${id}" ${(wiz.handleStyle||'any')===id?'selected':''}>${label}</option>`).join('')}</select><div class="input-action"><input id="wiz-handle" maxlength="60" value="${esc(wiz.handle)}"><button class="btn-sm" data-generate-handle>🎲</button></div></label>
       <label class="f"><span>${T('First name (optional)','Имя (необязательно)')}</span><div class="input-action"><input id="wiz-first-name" maxlength="60" value="${esc(wiz.firstName)}"><button class="btn-sm" data-generate-name="first" ${wiz.lifepath.region?'':'disabled'}>🎲</button></div></label>
       <label class="f"><span>${T('Last name (optional)','Фамилия (необязательно)')}</span><div class="input-action"><input id="wiz-last-name" maxlength="60" value="${esc(wiz.lastName)}"><button class="btn-sm" data-generate-name="last" ${wiz.lifepath.region?'':'disabled'}>🎲</button></div></label></div>
       <div class="segmented mt" role="group">${[['masculine','Masculine','Мужское'],['feminine','Feminine','Женское'],['neutral','Neutral','Нейтральное']].map(([id,en,ru])=>`<button data-name-gender="${id}" class="${wiz.nameGender===id?'active':''}">${T(en,ru)}</button>`).join('')}<button data-generate-name="both" ${wiz.lifepath.region?'':'disabled'}>🎲 ${T('Generate full name','Сгенерировать имя')}</button></div>
@@ -1566,18 +1598,21 @@ function randomizeWizardStats() {
   let remaining=(state.meta.stat_points||62)-lockedTotal-unlocked.length*2;
   if (!unlocked.length || remaining<0 || remaining>unlocked.length*6) { toast(T('Unlock more Characteristics: an exact 62-point spread is impossible.','Разблокируйте характеристики: распределение на 62 невозможно.'),true); return; }
   unlocked.forEach(key=>wiz.stats[key]=2);
-  while(remaining>0){const candidates=unlocked.filter(key=>wiz.stats[key]<8);const key=randomFrom(candidates);wiz.stats[key]++;remaining--;}
+  const mode=wiz.statRandomMode||'any';let focus=null;
+  while(remaining>0){let candidates=unlocked.filter(key=>wiz.stats[key]<8);let key;if(mode==='balanced'){const min=Math.min(...candidates.map(k=>wiz.stats[k]));key=randomFrom(candidates.filter(k=>wiz.stats[k]<=min+1));}else if(mode==='wide'){if(!focus||wiz.stats[focus]>=8||Math.random()<.22)focus=randomFrom(candidates);key=focus;}else key=randomFrom(candidates);wiz.stats[key]++;remaining--;}
 }
 function showStatInfo(stat) {
   const row=STAT_DETAILS_V3[stat]; if(!row)return;
-  openModal(`<h2>${stat} · ${esc(T(row[0],row[1]))}</h2><p>${esc(T(row[2],row[3]))}</p><div class="tag source">${esc(row[4])}</div>`);
+  const related=(state.meta.skills||[]).filter(skill=>skill[2]===stat).map(skill=>skill[1]);
+  const base=state.wizard?state.wizard.stats[stat]:null,penalty=state.wizard?(wizDerived().armor_penalties||{})[stat]||0:0;
+  openModal(`<h2>${stat} · ${esc(T(row[0],row[1]))}</h2><div class="chips mb"><span class="chip">Base ${base??'—'}</span>${penalty?`<span class="chip warn-text">Armor ${penalty}</span><span class="chip">Effective ${(base||0)+penalty}</span>`:''}<span class="tag source">${esc(row[4])}</span></div><p>${esc(T(row[2],row[3]))}</p><div class="panel"><b>${T('Related Skills','Связанные навыки')}</b><div class="chips mt">${related.map(name=>`<span class="chip">${esc(name)}</span>`).join('')||'—'}</div></div>${stat==='LUCK'?`<p class="guide-note">${T('LUCK is a spendable pool. Current LUCK is tracked separately from the maximum STAT after character creation.','LUCK — расходуемый пул. После создания текущее значение хранится отдельно от максимума.')}</p>`:''}`);
 }
 function wizStepStatsHtml() {
-  const wiz=state.wizard, spent=wizStatSpent(), budget=state.meta.stat_points||62, remaining=budget-spent;
+  const wiz=state.wizard, spent=wizStatSpent(), budget=state.meta.stat_points||62, remaining=budget-spent, derived=wizDerived();
   const priorities=ROLE_STAT_PRIORITIES[wiz.role]||[];
-  return `<div class="sticky-budget panel accent mb"><div><b>${T('Allocated','Распределено')}: <span id="wiz-st-spent">${spent}</span> / ${budget}</b><span class="budget-remaining ${remaining===0?'ok':remaining<0?'bad':''}">${T('Points remaining','Осталось')}: ${remaining}</span></div><div class="row"><button class="btn-sm" id="wiz-st-roll">🎲 ${T('Randomize unlocked','Сгенерировать незакреплённые')}</button><button class="btn-sm" id="wiz-st-reset">${T('Reset all to 5','Сбросить все на 5')}</button></div></div>
+  return `<div class="sticky-budget panel accent mb"><div><b>${T('Allocated','Распределено')}: <span id="wiz-st-spent">${spent}</span> / ${budget}</b><span class="budget-remaining ${remaining===0?'ok':remaining<0?'bad':''}">${T('Points remaining','Осталось')}: ${remaining}</span></div><div class="row"><select id="wiz-st-mode"><option value="balanced" ${wiz.statRandomMode==='balanced'?'selected':''}>Balanced</option><option value="wide" ${wiz.statRandomMode==='wide'?'selected':''}>Wide</option><option value="any" ${!wiz.statRandomMode||wiz.statRandomMode==='any'?'selected':''}>Any legal spread</option></select><button class="btn-sm" id="wiz-st-roll">🎲 ${T('Randomize unlocked','Сгенерировать незакреплённые')}</button><button class="btn-sm" id="wiz-st-reset">${T('Reset all to 5','Сбросить все на 5')}</button></div></div>
     ${wiz.role?`<div class="panel mb"><b>${T('Suggested priorities for','Рекомендуемые приоритеты для')} ${esc(wiz.role)}:</b> ${priorities.map(stat=>`<span class="chip">${stat}</span>`).join('')}</div>`:''}
-    <div class="stat-cards">${state.meta.stats.map(stat=>{const value=num(wiz.stats[stat])||5,locked=!!wiz.statLocks[stat],info=STAT_DETAILS_V3[stat];return `<article class="stat-card ${priorities.includes(stat)?'recommended':''}"><button class="skill-name-btn stat-name" data-stat-info="${stat}"><b>${stat}</b><span>${esc(T(info[0],info[1]))}</span></button><button class="stat-lock ${locked?'locked':''}" data-stat-lock="${stat}" title="${T('Preserve during random generation','Сохранить при генерации')}">${locked?'🔒':'🔓'}</button><div class="stat-stepper"><button class="mini-step" data-stat-step="${stat}|-1" ${value<=2?'disabled':''}>−</button><strong>${value}</strong><button class="mini-step" data-stat-step="${stat}|1" ${value>=8||spent>=budget?'disabled':''}>＋</button></div><small>${T('Range','Диапазон')} 2–8</small></article>`;}).join('')}</div>
+    <div class="stat-cards">${state.meta.stats.map(stat=>{const value=num(wiz.stats[stat])||5,locked=!!wiz.statLocks[stat],info=STAT_DETAILS_V3[stat];return `<article class="stat-card ${priorities.includes(stat)?'recommended':''}"><button class="skill-name-btn stat-name" data-stat-info="${stat}"><b>${stat}</b><span>${esc(T(info[0],info[1]))}</span></button><button class="stat-lock ${locked?'locked':''}" data-stat-lock="${stat}" title="${T('Preserve during random generation','Сохранить при генерации')}">${locked?'🔒':'🔓'}</button><div class="stat-stepper"><button class="mini-step" data-stat-step="${stat}|-1" ${value<=2?'disabled':''}>−</button><strong>${value}</strong><button class="mini-step" data-stat-step="${stat}|1" ${value>=8||spent>=budget?'disabled':''}>＋</button></div><small>${T('Range','Диапазон')} 2–8${['REF','DEX','MOVE'].includes(stat)&&((derived.armor_penalties||{})[stat]||0)?` · Effective ${value+derived.armor_penalties[stat]}`:''}</small>${stat==='LUCK'?`<span class="luck-pips preview">${Array.from({length:value},()=>'<i class="filled"></i>').join('')}</span>`:''}</article>`;}).join('')}</div>
     <p class="small muted">${T('Locks only affect random generation. BODY and WILL determine HP; EMP determines starting Humanity.','Замки влияют только на генерацию. BODY и WILL определяют HP; EMP определяет начальную Humanity.')}</p>`;
 }
 
@@ -1662,9 +1697,9 @@ function wizSubRowsHtml(base, presets, stat, is2) {
 
 const SKILL_CATEGORY_EN = {'Осознание':'Awareness','Тело':'Body','Управление':'Control','Образование':'Education','Бой':'Fighting','Выступление':'Performance','Стрелковое':'Ranged Weapon','Социальные':'Social','Технические':'Technique'};
 function skillCategoryLabel(category) { return APP_I18N.current() === 'en' ? (SKILL_CATEGORY_EN[category] || category) : category; }
-function skillLevelStepper(name, lvl, is2, allocatedFloor) {
+function skillLevelStepper(name, lvl, is2, allocatedFloor, isParent) {
   const remaining=(state.meta.skill_points||86)-wizSkillSpent(), cost=is2?2:1;
-  return `<span class="slvl skill-stepper"><button class="mini-step" data-wiz-skill-step="${esc(name)}|-1" ${lvl<=Math.max(0,allocatedFloor||0)?'disabled':''}>−</button><b>${lvl}</b><button class="mini-step" data-wiz-skill-step="${esc(name)}|1" ${lvl>=6||remaining<cost?'disabled':''}>＋</button></span>`;
+  return `<span class="slvl skill-stepper"><button class="mini-step" data-wiz-skill-step="${esc(name)}|-1" ${lvl<=Math.max(0,allocatedFloor||0)?'disabled':''}>−</button><b>${lvl}</b><button class="mini-step" data-wiz-skill-step="${esc(name)}|1" ${(!isParent&&lvl>=6)||remaining<cost?'disabled':''}>＋</button></span>`;
 }
 function wizStepSkillsHtml() {
   const wiz=state.wizard, budget=state.meta.skill_points||86, spent=wizSkillSpent(), remaining=budget-spent;
@@ -1688,7 +1723,7 @@ function wizStepSkillsHtml() {
     const content=rows.map(([_,name,stat,is2])=>{
       const lvl=num(wiz.skills[name])||0, statValue=stat==='EMP'?(derived.emp_cur??wiz.stats.EMP):wiz.stats[stat];
       const sub=specialized[name], allocated=sub?wizSubAllocated(name):0, ok=!required.has(name)||wizMustOk(name);
-      return `<div class="skill-row ${sub?'skill-parent':''} ${recommended.has(name)?'recommended':''} ${ok?'':'requirement-missing'}"><button class="skill-name-btn sname" data-skill-info="${esc(name)}">${esc(name)} ${is2?'<span class="tag">×2</span>':'<span class="muted small">×1</span>'}${required.has(name)?` <span class="tag ${ok?'ok':'bad'}">${ok?'Required ✓':'Required 2'}</span>`:''}${recommended.has(name)?` <span class="tag recommended-tag">${T('Recommended','Рекомендуется')}</span>`:''}</button><span class="sstat">${stat} <b>${statValue}</b></span>${skillLevelStepper(name,lvl,is2,allocated)}<span class="sbase"><b>${(num(statValue)||0)+lvl}</b></span><span></span></div>${sub?wizSubRowsHtml(name,sub[2],stat,is2):''}`;
+      return `<div class="skill-row ${sub?'skill-parent':''} ${recommended.has(name)?'recommended':''} ${ok?'':'requirement-missing'}"><button class="skill-name-btn sname" data-skill-info="${esc(name)}">${esc(name)} ${is2?'<span class="tag">×2</span>':'<span class="muted small">×1</span>'}${required.has(name)?` <span class="tag ${ok?'ok':'bad'}">${ok?'Required ✓':'Required 2'}</span>`:''}${recommended.has(name)?` <span class="tag recommended-tag">${T('Recommended','Рекомендуется')}</span>`:''}</button><span class="sstat">${stat} <b>${statValue}</b></span>${skillLevelStepper(name,lvl,is2,allocated,!!sub)}<span class="sbase"><b>${(num(statValue)||0)+lvl}</b></span><span></span></div>${sub?wizSubRowsHtml(name,sub[2],stat,is2):''}`;
     }).join('');
     return `<details class="skill-category creation-section" data-skill-category="${esc(cat)}" ${open?'open':''}><summary><span>${esc(skillCategoryLabel(cat))}</span><span>${rows.length}</span></summary><div class="section-body"><div class="skill-table-head"><span>Skill</span><span>STAT</span><span>LVL</span><span>BASE</span><span></span></div>${content}</div></details>`;
   }).join('');
@@ -1904,27 +1939,27 @@ function cyberFoundationNames(host) {
   const map={Cyberarm:['cyberarm','neo-soviet cyberarm'],Cyberleg:['cyberleg','romanova cyberlegs'],Cybereye:['cybereye','sponsored cybereye'],'Cyberaudio Suite':['cyberaudio suite','discount cyberaudio suite'],'Neural Link or Neuroport':['neural link','neuroport']};
   return map[host]||[];
 }
+function cyberHostIds(item){return item.host_instances&&item.host_instances.length?item.host_instances:(item.host_instance?[item.host_instance]:[]);}
 function availableCyberHosts(wiz,item) {
   const host=item.capacity&&item.capacity.host;if(!host)return [];
   const accepted=cyberFoundationNames(host), all=[...wiz.cyberware];
   if(wiz.freeNeuroport)all.unshift({id:'creation-neuroport',instance_id:'creation-neuroport',name:'Neuroport',capacity:{slots_total:5}});
   return all.filter(candidate=>accepted.includes(String(candidate.name||'').toLowerCase())).filter(candidate=>{
     const total=num(candidate.capacity&&candidate.capacity.slots_total)||4;
-    const used=wiz.cyberware.filter(option=>option.host_instance===(candidate.instance_id||candidate.id)).reduce((sum,option)=>sum+(num(option.capacity&&option.capacity.slots_used)||0),0);
+    const used=wiz.cyberware.filter(option=>cyberHostIds(option).includes(candidate.instance_id||candidate.id)).reduce((sum,option)=>sum+(num(option.capacity&&option.capacity.slots_used)||0),0);
     return total-used>=(num(item.capacity&&item.capacity.slots_used)||0);
   });
 }
-function chooseCyberHost(hosts, item) {
-  if (!hosts.length) return null;
-  if (hosts.length === 1) return hosts[0];
-  const lines = hosts.map((host, index) => `${index + 1}. ${host.name} (${host.instance_id || host.id})`).join('\n');
-  const answer = window.prompt(`${T('Choose a host for','Выберите host для')} ${item.name}:\n${lines}`, '1');
-  const index = Math.max(0, Math.min(hosts.length - 1, (num(answer) || 1) - 1));
-  return hosts[index];
+async function chooseCyberHost(hosts, item) {
+  const required=item.capacity?.hosts_required||1;
+  if (hosts.length < required) return null;
+  if (hosts.length === required) return required===1?hosts[0]:hosts.slice(0,required);
+  return new Promise(resolve=>{const selected=new Set(),modal=openModal(`<h2>${T('Choose host','Выберите host')} · ${esc(item.name)}</h2><p>${T(`Select ${required} different foundations.`,`Выберите разные foundations: ${required}.`)}</p><div class="choice-card-grid">${hosts.map((host,index)=>{const id=host.instance_id||host.id,total=num(host.capacity?.slots_total)||4,used=state.wizard.cyberware.filter(option=>(option.host_instances||[option.host_instance]).includes(id)).reduce((sum,option)=>sum+(num(option.capacity?.slots_used)||0),0),after=used+(num(item.capacity?.slots_used)||0);return `<button class="choice-card" data-host-index="${index}"><b>${esc(host.custom_name||host.name)} #${index+1}</b><span>Slots ${used}/${total} → ${after}/${total}</span></button>`;}).join('')}</div><div class="row mt"><button id="host-cancel">${T('Cancel','Отмена')}</button><button id="host-confirm" class="btn-primary" disabled>${T('Install','Установить')}</button></div>`,true);$$('[data-host-index]',modal).forEach(button=>button.onclick=()=>{const index=Number(button.dataset.hostIndex);if(selected.has(index))selected.delete(index);else if(selected.size<required)selected.add(index);button.classList.toggle('selected',selected.has(index));$('#host-confirm',modal).disabled=selected.size!==required;});$('#host-confirm',modal).onclick=()=>{const result=[...selected].map(index=>hosts[index]);closeModal();resolve(required===1?result[0]:result);};$('#host-cancel',modal).onclick=()=>{closeModal();resolve(null);};});
 }
+
 function catalogRequirementStatus(wiz,item) {
   const failures=[];
-  if(item.capacity&&item.capacity.host&&!availableCyberHosts(wiz,item).length)failures.push(`${T('Requires available','Требуется доступный')} ${item.capacity.host}`);
+  if(item.capacity&&item.capacity.host&&availableCyberHosts(wiz,item).length<(item.capacity.hosts_required||1))failures.push(`${T('Requires available','Требуется доступный')} ${(item.capacity.hosts_required||1)}× ${item.capacity.host}`);
   const names=[...wiz.cyberware.map(x=>x.name.toLowerCase()),...(wiz.freeNeuroport?['neuroport']:[])];
   for(const req of item.requirements||[]){if(req.kind==='stat'&&(num(wiz.stats[req.stat])||0)<req.minimum)failures.push(`${req.stat} ${req.minimum}`);if(req.kind==='item'){const wanted=req.value.toLowerCase().replace(/^2×\s*/,'');if(!names.some(name=>wanted.includes(name)||name.includes(wanted)))failures.push(req.value);}}
   return failures;
@@ -1940,7 +1975,7 @@ async function wizLoadShopList() {
   box.innerHTML=spinner();wiz._shopCache=wiz._shopCache||{};
   for(const cat of tab[3])if(!wiz._shopCache[cat]){const response=await api('/api/items?'+new URLSearchParams({cat,limit:500}));wiz._shopCache[cat]=response.items;}
   let items=tab[3].flatMap(cat=>wiz._shopCache[cat]||[]).filter(item=>item.price!=null);
-  if(tab[0]==='chrome')items=items.filter(item=>!String(item.fields?.Type||'').toLowerCase().includes('fashionware'));
+  if(tab[0]==='chrome'){items=items.filter(item=>!String(item.fields?.Type||'').toLowerCase().includes('fashionware'));const mode=wiz.cyberFilter||'all';if(['foundation','option','standalone'].includes(mode))items=items.filter(item=>item.cyberware_class===mode);if(mode==='installed')items=items.filter(item=>wiz.cyberware.some(selected=>selected.id===item.id));if(mode==='missing')items=items.filter(item=>catalogRequirementStatus(wiz,item).length>0);}
   if(tab[0]==='fashionware')items=items.filter(item=>String(item.fields?.Type||'').toLowerCase().includes('fashionware'));
   if(tab[0]==='fashion')items=items.filter(item=>item.cat==='fashion');
   if(tab[0]==='armor')items=armorPurchaseVariants(items);
@@ -1953,6 +1988,7 @@ async function wizLoadShopList() {
   if(num(filters.maxPrice)!=null)items=items.filter(item=>(item.price||0)<=num(filters.maxPrice));
   const sort = filters.sort || 'name';
   items.sort((a,b) => {
+    if(tab[0]==='chrome'){const rank={foundation:0,option:1,standalone:2},diff=(rank[a.cyberware_class]??3)-(rank[b.cyberware_class]??3);if(diff)return diff;}
     if (sort === 'price') return (a.price||0)-(b.price||0) || byNameRu(a,b);
     if (sort === 'damage') return ((b.mechanics?.damage?.average)||0)-((a.mechanics?.damage?.average)||0) || byNameRu(a,b);
     if (sort === 'rof') return (num(b.mechanics?.rof)||0)-(num(a.mechanics?.rof)||0) || byNameRu(a,b);
@@ -1964,16 +2000,17 @@ async function wizLoadShopList() {
   const typeSelect=$('#wiz-shop-type');if(typeSelect&&typeSelect.options.length<=1){typeSelect.insertAdjacentHTML('beforeend',selectedTypes.map(type=>`<option value="${esc(type)}" ${filters.type===type?'selected':''}>${esc(type)}</option>`).join(''));}
   const sources=[...new Set(items.flatMap(item=>String(item.source||'').split(/\n/).map(source=>source.split(/\s+\d/)[0]).filter(Boolean)))].sort();
   const sourceSelect=$('#wiz-shop-source');if(sourceSelect&&sourceSelect.options.length<=1)sourceSelect.insertAdjacentHTML('beforeend',sources.map(source=>`<option value="${esc(source)}" ${filters.source===source?'selected':''}>${esc(source)}</option>`).join(''));
-  const rowHtml=item=>{const duplicate=isForbiddenDuplicate(wiz,item),affordable=canAffordShopItem(wiz,item,tab),requirements=tab[0]==='chrome'?catalogRequirementStatus(wiz,item):[],disabled=duplicate||!affordable||requirements.length>0,suggested=tab[0]==='fashion'&&String(wiz.lifepath.clothing||'')&&[item.name,item.mechanics?.fashion_style].some(value=>String(value||'').toLowerCase().includes(String(wiz.lifepath.clothing).toLowerCase()));const compatible=(tab[0]==='ammo'||item.cat==='gun_upgrades')?ammoCompatibility(item,wiz):(item.cat==='vehicles_upgrades'&&wiz.gear.some(selected=>selected.cat==='vehicles')?[T('selected vehicle','выбранный транспорт')]:(item.cat==='programs'&&wiz.gear.some(selected=>selected.cat==='net_stuff'&&String(selected.name).toLowerCase().includes('cyberdeck'))?[T('selected Cyberdeck','выбранный Cyberdeck')]:[]));const compared=(wiz.compareItems||[]).includes(item.id);return `<article class="catalog-card ${disabled?'unaffordable':''} ${compatible.length?'compatible':''} ${suggested?'recommended':''}"><div class="catalog-card-main"><label class="compare-check"><input type="checkbox" data-compare-id="${esc(item.id)}" ${compared?'checked':''}> ${T('Compare','Сравнить')}</label><h4>${esc(item.variant_name||item.name)}${suggested?` <span class="tag recommended-tag">${T('Lifepath Style','Стиль Lifepath')}</span>`:''}</h4><div class="mechanic-chips">${itemMechanicChips(item)}${item.mechanics?.skill?(()=>{const meta=state.meta.skills.find(row=>row[1]===item.mechanics.skill),stat=meta&&meta[2],statValue=stat==='EMP'?(wizDerived().emp_cur??wiz.stats.EMP):wiz.stats[stat];return `<span class="chip character-aware"><b>${esc(item.mechanics.skill)} BASE</b> ${(num(statValue)||0)+(num(wiz.skills[item.mechanics.skill])||0)}</span>`;})():''}</div>${compatible.length?`<div class="compatibility-ok">✓ ${T('Compatible with selected loadout','Совместимо с выбранным снаряжением')}: ${compatible.map(esc).join(', ')}</div>`:''}${requirements.length?`<div class="requirement-fail">⛔ ${requirements.map(esc).join(' · ')}</div>`:''}<div class="small muted">${esc(item.source||'')}</div></div><div class="catalog-card-actions"><span class="price">${money(item.price)}</span><button class="info-btn" data-shop-info="${esc(item.variant_id||item.id)}">i</button><button class="btn-sm" data-shop-add="${esc(item.variant_id||item.id)}" ${disabled?'disabled':''}>＋</button></div></article>`;};
+  const rowHtml=item=>{const duplicate=isForbiddenDuplicate(wiz,item),affordable=canAffordShopItem(wiz,item,tab),requirements=tab[0]==='chrome'?catalogRequirementStatus(wiz,item):[],disabled=duplicate||!affordable||requirements.length>0,suggested=tab[0]==='fashion'&&String(wiz.lifepath.clothing||'')&&[item.name,item.mechanics?.fashion_style].some(value=>String(value||'').toLowerCase().includes(String(wiz.lifepath.clothing).toLowerCase()));const compatible=(tab[0]==='ammo'||item.cat==='gun_upgrades')?ammoCompatibility(item,wiz):(item.cat==='vehicles_upgrades'&&wiz.gear.some(selected=>selected.cat==='vehicles')?[T('selected vehicle','выбранный транспорт')]:(item.cat==='programs'&&wiz.gear.some(selected=>selected.cat==='net_stuff'&&String(selected.name).toLowerCase().includes('cyberdeck'))?[T('selected Cyberdeck','выбранный Cyberdeck')]:[]));const compared=(wiz.compareItems||[]).includes(item.id);return `<article class="catalog-card ${disabled?'unaffordable':''} ${compatible.length?'compatible':''} ${suggested?'recommended':''}"><div class="catalog-card-main"><label class="compare-check"><input type="checkbox" data-compare-id="${esc(item.id)}" ${compared?'checked':''}> ${T('Compare','Сравнить')}</label><h4>${esc(item.variant_name||item.name)}${suggested?` <span class="tag recommended-tag">${T('Lifepath Style','Стиль Lifepath')}</span>`:''}</h4><div class="mechanic-chips">${itemMechanicChips(item)}${item.mechanics?.skill?(()=>{const meta=state.meta.skills.find(row=>row[1]===item.mechanics.skill),stat=meta&&meta[2],statValue=stat==='EMP'?(wizDerived().emp_cur??wiz.stats.EMP):wiz.stats[stat];return `<span class="chip character-aware"><b>${esc(item.mechanics.skill)} BASE</b> ${(num(statValue)||0)+(num(wiz.skills[item.mechanics.skill])||0)}</span>`;})():''}</div>${compatible.length?`<div class="compatibility-ok">✓ ${T('Compatible with selected loadout','Совместимо с выбранным снаряжением')}: ${compatible.map(esc).join(', ')}</div>`:''}${requirements.length?`<div class="requirement-fail">⛔ ${requirements.map(esc).join(' · ')}${item.capacity?.host?` <button class="btn-sm" data-show-foundation="${esc(item.capacity.host)}">${T('View Foundations','Показать Foundations')}</button>`:''}</div>`:''}<div class="small muted">${esc(item.source||'')}</div></div><div class="catalog-card-actions"><span class="price">${money(item.price)}</span><button class="info-btn" data-shop-info="${esc(item.variant_id||item.id)}">i</button><button class="btn-sm" data-shop-add="${esc(item.variant_id||item.id)}" ${disabled?'disabled':''}>＋</button></div></article>`;};
   box.innerHTML=items.length?groupedItemsHtml(items,rowHtml,shopCategoryLabel(tab)):`<div class="empty">${T('Nothing matches these filters.','Ничего не найдено.')}</div>`;
   requestAnimationFrame(()=>box.scrollTop=(wiz.scrolls||{})[scrollKey]||0);box.onscroll=()=>{wiz.scrolls[scrollKey]=box.scrollTop;};
   $$('[data-compare-id]',box).forEach(input=>input.onchange=()=>{wiz.compareItems=wiz.compareItems||[];if(input.checked&&!wiz.compareItems.includes(input.dataset.compareId)){if(wiz.compareItems.length>=3){input.checked=false;toast(T('Compare supports up to three items.','Можно сравнить не более трёх предметов.'),true);return;}wiz.compareItems.push(input.dataset.compareId);}if(!input.checked)wiz.compareItems=wiz.compareItems.filter(id=>id!==input.dataset.compareId);saveWizardDraft();const count=$('#compare-count');if(count)count.textContent=wiz.compareItems.length;});
+  $$('[data-show-foundation]',box).forEach(btn=>btn.onclick=()=>{wiz.cyberFilter='foundation';wiz.shopQ=btn.dataset.showFoundation;renderWizard();});
   $$('[data-shop-info]',box).forEach(btn=>btn.onclick=()=>{const item=items.find(x=>(x.variant_id||x.id)===btn.dataset.shopInfo);if(item)showCreationItemInfo(item);});
-  $$('[data-shop-add]',box).forEach(btn=>btn.onclick=()=>{const item=items.find(x=>(x.variant_id||x.id)===btn.dataset.shopAdd);if(!item)return;const price=item.price||0;if(isForbiddenDuplicate(wiz,item)||!canAffordShopItem(wiz,item,tab))return;
+  $$('[data-shop-add]',box).forEach(btn=>btn.onclick=async()=>{const item=items.find(x=>(x.variant_id||x.id)===btn.dataset.shopAdd);if(!item)return;const price=item.price||0;if(isForbiddenDuplicate(wiz,item)||!canAffordShopItem(wiz,item,tab))return;
     const shared={desc:item.desc||'',fields:item.fields||{},source:item.source||'',mechanics:item.mechanics||{},requirements:item.requirements||[],capacity:item.capacity||{}};
     if(tab[0]==='fashion'){const existing=wiz.fashion.find(x=>x.key===item.id);if(existing)existing.qty=(existing.qty||1)+1;else wiz.fashion.push({key:item.id,cat:item.cat,name:item.name,price,qty:1,type:itemVisibleType(item,'Fashion'),...shared});wiz.fashionCost+=price;}
     else if(tab[0]==='fashionware'){const existing=wiz.fashionware.find(x=>x.id===item.id);if(existing)existing.qty=(existing.qty||1)+1;else wiz.fashionware.push({id:item.id,name:item.name,hl:item.hl||0,price,qty:1,type:String(item.fields?.Type||'Fashionware'),...shared});wiz.fashionCost+=price;}
-    else if(item.cat==='cyberware'){const hosts=availableCyberHosts(wiz,item),host=chooseCyberHost(hosts,item);if((item.capacity||{}).host&&!host)return;const instance=`${item.id}:${Date.now()}:${Math.random().toString(16).slice(2)}`;wiz.cyberware.push({id:item.id,instance_id:instance,name:item.name,hl:item.hl||0,price,type:String(item.fields?.Type||'Cyberware'),host_instance:host?(host.instance_id||host.id):'',...shared});wiz.chromeCost+=price;}
+    else if(item.cat==='cyberware'){const hosts=availableCyberHosts(wiz,item),host=await chooseCyberHost(hosts,item);if((item.capacity||{}).host&&!host)return;const instance=`${item.id}:${Date.now()}:${Math.random().toString(16).slice(2)}`;wiz.cyberware.push({id:item.id,instance_id:instance,name:item.name,hl:item.hl||0,price,type:String(item.fields?.Type||'Cyberware'),host_instance:host?(Array.isArray(host)?(host[0].instance_id||host[0].id):(host.instance_id||host.id)):'',host_instances:host?(Array.isArray(host)?host.map(value=>value.instance_id||value.id):[host.instance_id||host.id]):[],...shared});wiz.chromeCost+=price;}
     else if(item.cat==='armor'){wiz.gear.push({key:item.variant_id,source_key:item.id,cat:'armor',name:item.name,display_name:item.variant_name,location:item.purchase_location,price,qty:1,sp:item.sp,penalties:{...(item.penalties||{})},armor_bundled:!!item.armor_bundled,type:itemVisibleType(item,'Armor'),...shared});wiz.gearCost+=price;}
     else{const existing=wiz.gear.find(x=>x.key===item.id);if(existing)existing.qty=(existing.qty||1)+1;else wiz.gear.push({key:item.id,cat:item.cat,name:item.name,price,qty:1,damage:item.damage||null,sp:item.sp,type:itemVisibleType(item,shopCategoryLabel(tab)),...shared});wiz.gearCost+=price;}
     renderWizard();toast(`${T('Added','Добавлено')}: ${item.variant_name||item.name}`);});
@@ -1993,7 +2030,7 @@ function combinedCartHtml(wiz){const rows=[];for(const item of roleBenefitItems(
 function wizStepShoppingHtml(){const wiz=state.wizard,d=wizDerived(),remaining=creationMainRemaining(wiz),styleRemaining=FASHION_BUDGET-wiz.fashionCost,warnings=equipmentWarnings(wiz),paidPort=hasPaidNeuroport(wiz);return `<div class="shopping-budgets sticky-budget panel accent mb"><div><b>Main</b><span>${money(remaining)} ${T('remaining','осталось')}</span></div><div><b>Style</b><span>${money(styleRemaining)} ${T('remaining','осталось')}</span></div><div><b>Humanity</b><span>${d.humanity_cur??'—'} / ${d.humanity_max??'—'} · EMP ${d.emp_cur??'—'}</span></div></div>
   <div class="neuroport-choices mb"><article class="choice-card ${wiz.freeNeuroport?'selected':''} ${paidPort?'disabled':''}"><h3>CEMK Starting Neuroport</h3><p>0eb · 0 HL · Humanity exempt</p><button data-neuro-choice="free" ${paidPort?'disabled':''}>${wiz.freeNeuroport?T('Selected','Выбран'):T('Select','Выбрать')}</button></article><article class="choice-card ${paidPort?'selected':''} ${wiz.freeNeuroport?'disabled':''}"><h3>Standard Neuroport</h3><p>1,000eb · 7 HL</p><button data-shop-tab-jump="chrome">${paidPort?T('Purchased','Куплен'):T('Find in Cyberware','Найти в Cyberware')}</button></article></div>
   <details class="panel mb sold-soul" ${wiz.soldSoul?'open':''}><summary><label class="checkbox"><input type="checkbox" id="wiz-soul" ${wiz.soldSoul?'checked':''}> Sell Your Soul · +1,500eb Cyberware-only</label></summary><div class="grid cols-2 mt"><label class="f"><span>Patron *</span><select id="wiz-patron"><option value="">${T('Choose…','Выберите…')}</option>${['Corporation','Military','Gang','Government Agency','Other Organization'].map(value=>`<option ${wiz.patron===value?'selected':''}>${value}</option>`).join('')}</select></label><label class="f"><span>Obligation *</span><input id="wiz-obligation" value="${esc(wiz.obligation||'')}" placeholder="${T('What do you owe them?','Что вы им должны?')}"></label></div></details>
-  <div class="shopping-layout"><div class="shopping-catalog"><div class="tabs mb" id="wiz-shop-tabs">${WIZ_SHOP_CATS.map(tab=>`<button data-shop-tab="${tab[0]}" class="${wiz.shopTab===tab[0]?'active':''}">${shopCategoryLabel(tab)}</button>`).join('')}</div><div class="shop-tools"><input id="wiz-shop-q" value="${esc(wiz.shopQ||'')}" placeholder="${T('Search name, description, or Type…','Поиск по названию, описанию или Type…')}"><select id="wiz-shop-type"><option value="all">All Types</option></select><select id="wiz-shop-source"><option value="all">All Sources</option></select><input id="wiz-shop-max-price" type="number" min="0" step="50" value="${esc(wiz.shopFilters?.maxPrice||'')}" placeholder="Max eb" style="width:100px"><select id="wiz-shop-sort"><option value="name">Name</option><option value="price" ${wiz.shopFilters?.sort==='price'?'selected':''}>Price</option><option value="damage" ${wiz.shopFilters?.sort==='damage'?'selected':''}>Damage</option><option value="rof" ${wiz.shopFilters?.sort==='rof'?'selected':''}>ROF</option><option value="sp" ${wiz.shopFilters?.sort==='sp'?'selected':''}>SP</option><option value="hl" ${wiz.shopFilters?.sort==='hl'?'selected':''}>HL</option></select><label><input type="checkbox" id="shop-affordable" ${wiz.shopFilters?.affordable?'checked':''}> ${T('Affordable','Доступные')}</label><label><input type="checkbox" id="shop-selected" ${wiz.shopFilters?.selected?'checked':''}> ${T('Selected','Выбранные')}</label><button class="btn-sm" id="compare-items">${T('Compare','Сравнить')} (<span id="compare-count">${(wiz.compareItems||[]).length}</span>)</button>${wiz.shopTab==='fashion'?`<select id="outfit-style"><option value="">${T('Lifepath Style','Стиль Lifepath')}</option>${['Bag Lady Chic','Generic Chic','Leisurewear','Urban Flash','Businesswear','High Fashion','Bohemian','Asia Pop','Gang Colors','Nomad Leathers'].map(style=>`<option value="${style}" ${wiz.outfitStyle===style?'selected':''}>${style}</option>`).join('')}</select><button class="btn-sm" id="random-outfit">🎲 ${T('Generate Outfit','Создать комплект')}</button>`:''}</div><div id="wiz-shop-results" class="catalog-scroll shop-scroll">${spinner()}</div></div>
+  <div class="shopping-layout"><div class="shopping-catalog"><div class="tabs mb" id="wiz-shop-tabs">${WIZ_SHOP_CATS.map(tab=>`<button data-shop-tab="${tab[0]}" class="${wiz.shopTab===tab[0]?'active':''}">${shopCategoryLabel(tab)}</button>`).join('')}</div>${wiz.shopTab==='chrome'?`<div class="segmented cyber-filters mb">${[['all','All'],['foundation','Foundations'],['option','Options'],['standalone','Standalone'],['installed','Installed'],['missing','Requirements Missing']].map(([id,label])=>`<button data-cyber-filter="${id}" class="${(wiz.cyberFilter||'all')===id?'active':''}">${label}</button>`).join('')}</div>`:''}<div class="shop-tools"><input id="wiz-shop-q" value="${esc(wiz.shopQ||'')}" placeholder="${T('Search name, description, or Type…','Поиск по названию, описанию или Type…')}"><select id="wiz-shop-type"><option value="all">All Types</option></select><select id="wiz-shop-source"><option value="all">All Sources</option></select><input id="wiz-shop-max-price" type="number" min="0" step="50" value="${esc(wiz.shopFilters?.maxPrice||'')}" placeholder="Max eb" style="width:100px"><select id="wiz-shop-sort"><option value="name">Name</option><option value="price" ${wiz.shopFilters?.sort==='price'?'selected':''}>Price</option><option value="damage" ${wiz.shopFilters?.sort==='damage'?'selected':''}>Damage</option><option value="rof" ${wiz.shopFilters?.sort==='rof'?'selected':''}>ROF</option><option value="sp" ${wiz.shopFilters?.sort==='sp'?'selected':''}>SP</option><option value="hl" ${wiz.shopFilters?.sort==='hl'?'selected':''}>HL</option></select><label><input type="checkbox" id="shop-affordable" ${wiz.shopFilters?.affordable?'checked':''}> ${T('Affordable','Доступные')}</label><label><input type="checkbox" id="shop-selected" ${wiz.shopFilters?.selected?'checked':''}> ${T('Selected','Выбранные')}</label><button class="btn-sm" id="compare-items">${T('Compare','Сравнить')} (<span id="compare-count">${(wiz.compareItems||[]).length}</span>)</button>${wiz.shopTab==='fashion'?`<select id="outfit-style"><option value="">${T('Lifepath Style','Стиль Lifepath')}</option>${['Bag Lady Chic','Generic Chic','Leisurewear','Urban Flash','Businesswear','High Fashion','Bohemian','Asia Pop','Gang Colors','Nomad Leathers'].map(style=>`<option value="${style}" ${wiz.outfitStyle===style?'selected':''}>${style}</option>`).join('')}</select><button class="btn-sm" id="random-outfit">🎲 ${T('Generate Outfit','Создать комплект')}</button>`:''}</div><div id="wiz-shop-results" class="catalog-scroll shop-scroll">${spinner()}</div></div>
   <aside class="shopping-cart"><h3>${T('Selected Starting Gear','Выбранное снаряжение')}</h3><div class="equipped-summary"><span><b>Body:</b> ${wiz.armor.body?esc(wiz.armor.body.name):'—'}</span><span><b>Head:</b> ${wiz.armor.head?esc(wiz.armor.head.name):'—'}</span></div>${warnings.length?`<div class="readiness-warnings">${warnings.map(w=>`<div>⚠ ${esc(w)}</div>`).join('')}${warnings.some(w=>w.includes('ammunition')||w.includes('боеприпасы'))?`<button class="btn-sm mt" data-shop-tab="ammo">${T('Find compatible ammunition','Найти совместимые боеприпасы')}</button>`:''}</div>`:''}<div id="wiz-shop-cart">${combinedCartHtml(wiz)}</div></aside></div>`;}
 
 /* ---------- Шаг 7: Итог ---------- */
@@ -2051,7 +2088,7 @@ function cyberSlotErrors(wiz) {
   const errors=[];
   for(const item of wiz.cyberware){if(item.capacity&&item.capacity.host&&!item.host_instance)errors.push(`${item.name}: ${T('no compatible cyberware host','нет совместимого host')}`);}
   const hosts=[...wiz.cyberware];if(wiz.freeNeuroport)hosts.push({instance_id:'creation-neuroport',name:'Neuroport',capacity:{slots_total:5}});
-  for(const host of hosts){const id=host.instance_id||host.id,total=num(host.capacity&&host.capacity.slots_total)||0;if(!total)continue;const used=wiz.cyberware.filter(item=>item.host_instance===id).reduce((sum,item)=>sum+(num(item.capacity&&item.capacity.slots_used)||0),0);if(used>total)errors.push(`${host.name}: Option Slots ${used}/${total}`);}
+  for(const host of hosts){const id=host.instance_id||host.id,total=num(host.capacity&&host.capacity.slots_total)||0;if(!total)continue;const used=wiz.cyberware.filter(item=>cyberHostIds(item).includes(id)).reduce((sum,item)=>sum+(num(item.capacity&&item.capacity.slots_used)||0),0);if(used>total)errors.push(`${host.name}: Option Slots ${used}/${total}`);}
   return errors;
 }
 function wizValidationErrors() {
@@ -2093,12 +2130,22 @@ function specializedChildren(char, base) {
   return children.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
 }
 
+function paidSpecializationLevel(char, base, child) { return base==='Language'&&child.name===char.native_language?Math.max(0,child.lvl-4):child.lvl; }
+
 function characterSkillPool(char, base) {
   if (char.skill_pools && char.skill_pools[base] != null) return num(char.skill_pools[base]) || 0;
   return specializedChildren(char, base).filter(child => !(base === 'Language' && child.name === char.native_language && child.lvl === 4)).reduce((a, child) => a + child.lvl, 0);
 }
 
-function fullSkillsTableHtml(char, derived) {
+function rollD10Exploding() {
+  const first=1+Math.floor(Math.random()*10);let total=first,detail=`${first}`;
+  if(first===10){const extra=1+Math.floor(Math.random()*10);total+=extra;detail+=` + ${extra}`;}
+  if(first===1){const extra=1+Math.floor(Math.random()*10);total-=extra;detail+=` − ${extra}`;}
+  return {total,detail};
+}
+function showCheckRoll(name,base){const roll=rollD10Exploding(),total=roll.total+base;openModal(`<h2>🎲 ${esc(name)}</h2><div class="roll-result"><b>${total}</b><span>1d10 (${esc(roll.detail)}) + BASE ${base}</span></div>`);}
+
+function fullSkillsTableHtml(char, derived, interactive) {
   const specialized = new Set(SUB_SKILL_BASES.map(row => row[0]));
   let lastCat = null;
   const rows = [];
@@ -2108,10 +2155,10 @@ function fullSkillsTableHtml(char, derived) {
     const statValue = stat === 'EMP' ? (derived.emp_cur ?? (char.stats || {}).EMP) : (char.stats || {})[stat];
     rows.push(`<div class="skill-row ${specialized.has(name) ? 'skill-parent' : ''} ${lvl === 0 ? 'zero-level' : ''}">
       <button class="skill-name-btn sname" data-skill-info="${esc(name)}">${esc(name)} ${is2 ? '<span class="muted small">(×2)</span>' : '<span class="muted small">(×1)</span>'}</button>
-      <span class="sstat">${esc(stat)} <b>${num(statValue) ?? 0}</b></span><span class="slvl"><b>${lvl}</b></span><span class="sbase"><b>${(num(statValue) || 0) + lvl}</b></span><span></span></div>`);
+      <span class="sstat">${esc(stat)} <b>${num(statValue) ?? 0}</b></span><span class="slvl"><b>${lvl}</b></span>${specialized.has(name)?`<span class="sbase"><small>Allocated ${specializedChildren(char,name).reduce((sum,child)=>sum+paidSpecializationLevel(char,name,child),0)} · Free ${Math.max(0,lvl-specializedChildren(char,name).reduce((sum,child)=>sum+paidSpecializationLevel(char,name,child),0))}</small></span><span></span>`:`<span class="sbase"><b>${(num(statValue)||0)+lvl}</b></span>${interactive?`<button class="mini-step" data-roll-check="${esc(name)}|${(num(statValue)||0)+lvl}">🎲</button>`:'<span></span>'}`}</div>`);
     if (specialized.has(name)) {
       for (const child of specializedChildren(char, name)) {
-        rows.push(`<div class="skill-row subskill-row ${child.lvl === 0 ? 'zero-level' : ''}"><span class="sname subskill-name">↳ ${esc(child.name)}${name === 'Language' && child.name === char.native_language && child.lvl === 4 ? ' <span class="chip">культурный</span>' : ''}</span><span class="sstat">${esc(stat)} <b>${num(statValue) ?? 0}</b></span><span class="slvl"><b>${child.lvl}</b></span><span class="sbase"><b>${(num(statValue) || 0) + child.lvl}</b></span><span></span></div>`);
+        rows.push(`<div class="skill-row subskill-row ${child.lvl === 0 ? 'zero-level' : ''}"><span class="sname subskill-name">↳ ${esc(child.name)}${name === 'Language' && child.name === char.native_language && child.lvl === 4 ? ' <span class="chip">культурный</span>' : ''}</span><span class="sstat">${esc(stat)} <b>${num(statValue) ?? 0}</b></span><span class="slvl"><b>${child.lvl}</b></span><span class="sbase"><b>${(num(statValue) || 0) + child.lvl}</b></span>${interactive?`<button class="mini-step" data-roll-check="${esc(name+' ('+child.name+')')}|${(num(statValue)||0)+child.lvl}">🎲</button>`:'<span></span>'}</div>`);
       }
     }
   }
@@ -2143,13 +2190,13 @@ function wizStepSummaryHtml() {
   if(d.emp_cur!=null&&d.emp_cur<=2)warnings.push(T('EMP is 2 or lower','EMP не выше 2'));
   if(wiz.fashionCost < FASHION_BUDGET) warnings.push(`${T('Unused Style Budget will be lost','Неиспользованный Style Budget сгорит')}: ${money(FASHION_BUDGET-wiz.fashionCost)}`);
   for(const [base] of SUB_SKILL_BASES){const free=wizSubFree(base);if(free)warnings.push(`${base}: ${free} ${T('parent levels remain unallocated','уровней parent-pool не распределено')}`);}
-  const slotHosts=[...wiz.cyberware];if(wiz.freeNeuroport)slotHosts.push({instance_id:'creation-neuroport',name:'Neuroport',capacity:{slots_total:5}});for(const host of slotHosts){const total=num(host.capacity?.slots_total)||0;if(!total)continue;const used=wiz.cyberware.filter(item=>item.host_instance===(host.instance_id||host.id)).reduce((sum,item)=>sum+(num(item.capacity?.slots_used)||0),0);if(total>used)warnings.push(`${host.name}: ${total-used} Option Slots ${T('unused','свободно')}`);}
+  const slotHosts=[...wiz.cyberware];if(wiz.freeNeuroport)slotHosts.push({instance_id:'creation-neuroport',name:'Neuroport',capacity:{slots_total:5}});for(const host of slotHosts){const total=num(host.capacity?.slots_total)||0;if(!total)continue;const used=wiz.cyberware.filter(item=>cyberHostIds(item).includes(host.instance_id||host.id)).reduce((sum,item)=>sum+(num(item.capacity?.slots_used)||0),0);if(total>used)warnings.push(`${host.name}: ${total-used} Option Slots ${T('unused','свободно')}`);}
   const lpRows=lifepathNarrative(wiz.lifepath,wiz.role,wiz.roleLifepath),roleSource=ROLE_COREBOOK_V3[wiz.role];
   const statBlock=state.meta.stats.map(stat=>`<button class="chip skill-name-btn" data-stat-info="${stat}"><b>${stat}</b> ${wiz.stats[stat]}</button>`).join('');
   const weaponRows=wiz.gear.filter(item=>['guns','melee'].includes(item.cat)).map(item=>`<div class="inv-row"><span class="iname">${esc(item.name)}</span>${itemMechanicChips(item)}${item.mechanics?.skill?`<span class="chip">${esc(item.mechanics.skill)} BASE ${characterSkillLevel(c,item.mechanics.skill)+(num(c.stats[state.meta.skills.find(row=>row[1]===item.mechanics.skill)?.[2]])||0)}</span>`:''}</div>`).join('');
   return `<div class="summary-status panel accent mb"><div><h2>${errors.length?`⛔ ${errors.length} ${T('blocking issues','блокирующих ошибок')}`:`✅ ${T('Ready to create','Готов к созданию')}`}</h2><p>⚠ ${warnings.length} ${T('warnings','предупреждений')}</p></div><div class="row"><button class="btn-sm" id="summary-print">🖨️ Print</button><button class="btn-sm" id="summary-json">⬇ JSON</button></div></div>
   <details class="creation-section validation-section" open><summary><span>Validation</span><span>${errors.length+warnings.length}</span></summary><div class="section-body">${errors.map(error=>`<button class="validation-row error" data-validation-step="${validationTarget(error)}">⛔ <span>${esc(error)}</span><b>${T('Fix','Исправить')} →</b></button>`).join('')}${warnings.map(warning=>`<div class="validation-row warning">⚠ <span>${esc(warning)}</span></div>`).join('')}${!errors.length&&!warnings.length?`<div class="green">✓ ${T('All checks passed.','Все проверки пройдены.')}</div>`:''}</div></details>
-  <details class="creation-section" open><summary><span>Identity & Role</span></summary><div class="section-body summary-identity"><div><h2>${esc(wiz.handle||'—')}</h2><p>${esc([wiz.firstName,wiz.lastName].filter(Boolean).join(' ')||'—')}</p><div class="chips"><span class="tag role">${esc(wiz.role||T('No Role','Роль не выбрана'))}${wiz.role?' · Rank 4':''}</span>${roleSource?`<span class="tag source">${esc(roleSource.pages)}</span>`:''}</div></div>${wiz.role?`<div><h3>${ROLE_COREBOOK_V3[wiz.role].icon} ${esc(state.meta.roles[wiz.role])}</h3><p>${esc(ROLE_COREBOOK_V3[wiz.role][APP_I18N.current()].rank4)}</p><div>${esc(roleSetupSummary(wiz.role,wiz.roleSetup))}</div></div>`:''}<button class="btn-sm" onclick="wizGoTo(1)">${T('Edit Role','Изменить роль')}</button></div></details>
+  <details class="creation-section" open><summary><span>Identity & Role</span></summary><div class="section-body summary-identity">${wiz.portraitMedia?`<img class="sheet-portrait" src="${esc(wiz.portraitMedia.url)}" alt="${esc(wiz.handle)}">`:''}<div><h2>${esc(wiz.handle||'—')}</h2><p>${esc([wiz.firstName,wiz.lastName].filter(Boolean).join(' ')||'—')}</p><div class="chips"><span class="tag role">${esc(wiz.role||T('No Role','Роль не выбрана'))}${wiz.role?' · Rank 4':''}</span>${roleSource?`<span class="tag source">${esc(roleSource.pages)}</span>`:''}</div></div>${wiz.role?`<div><h3>${ROLE_COREBOOK_V3[wiz.role].icon} ${esc(state.meta.roles[wiz.role])}</h3><p>${esc(ROLE_COREBOOK_V3[wiz.role][APP_I18N.current()].rank4)}</p><div>${esc(roleSetupSummary(wiz.role,wiz.roleSetup))}</div></div>`:''}<button class="btn-sm" onclick="wizGoTo(1)">${T('Edit Role','Изменить роль')}</button></div></details>
   <details class="creation-section"><summary><span>Lifepath</span><span>${lpRows.length}</span></summary><div class="section-body">${lpRows.length?`<div class="kv">${lpRows.map(([key,value])=>`<b>${esc(key)}</b><span>${esc(displayKnownValue(value))}</span>`).join('')}</div>`:`<div class="empty">${T('Not completed','Не заполнен')}</div>`}<button class="btn-sm mt" onclick="wizGoTo(2)">${T('Edit Lifepath','Изменить Lifepath')}</button></div></details>
   <details class="creation-section" open><summary><span>Characteristics</span><span>${wizStatSpent()}/62</span></summary><div class="section-body"><div class="statgrid mb">${statBlock}</div><div class="derived"><span class="dstat"><b>${d.hp_max??'—'}</b><small>Max HP</small></span><span class="dstat"><b>${d.death_save??'—'}</b><small>Death Save</small></span><span class="dstat"><b>${d.humanity_cur??'—'} / ${d.humanity_max??'—'}</b><small>Humanity</small></span><span class="dstat"><b>${d.emp_cur??'—'}</b><small>Current EMP</small></span></div></div></details>
   <details class="creation-section"><summary><span>Skills</span><span>${wizSkillSpent()}/86</span></summary><div class="section-body"><label class="checkbox mb"><input type="checkbox" id="summary-zero-skills" checked> ${T('Show zero-level Skills','Показывать навыки уровня 0')}</label>${fullSkillsTableHtml(c,d)}</div></details>
@@ -2199,7 +2246,7 @@ function clearArmorForEntry(wiz, item) {
   for (const location of ['body', 'head', 'shield']) if (wiz.armor[location] && wiz.armor[location].key === item.key) wiz.armor[location] = null;
 }
 
-function adjustShopCart(kind, index, delta) {
+async function adjustShopCart(kind, index, delta) {
   const wiz = state.wizard;
   if (kind === 'chrome') {
     const sample = wiz.cyberware[index];
@@ -2209,14 +2256,14 @@ function adjustShopCart(kind, index, delta) {
       const hosts = availableCyberHosts(wiz, sample);
       if ((sample.capacity || {}).host && !hosts.length) { toast(T('No compatible host has enough Option Slots.','У совместимых hosts нет свободных Option Slots.'), true); return; }
       if (!canAffordCreationItem(wiz, { cat: 'cyberware' }, sample.price || 0)) { toast(T('Not enough Main Budget.','Недостаточно основного бюджета.'), true); return; }
-      const host = chooseCyberHost(hosts, sample); if ((sample.capacity || {}).host && !host) return;
-      wiz.cyberware.push({ ...sample, instance_id: `${sample.id}:${Date.now()}:${Math.random().toString(16).slice(2)}`, host_instance: host ? (host.instance_id || host.id) : '' }); wiz.chromeCost += sample.price || 0;
+      const host = await chooseCyberHost(hosts, sample); if ((sample.capacity || {}).host && !host) return;
+      wiz.cyberware.push({ ...sample, instance_id: `${sample.id}:${Date.now()}:${Math.random().toString(16).slice(2)}`, host_instance: host ? (Array.isArray(host) ? (host[0].instance_id || host[0].id) : (host.instance_id || host.id)) : '', host_instances: host ? (Array.isArray(host) ? host.map(value => value.instance_id || value.id) : [host.instance_id || host.id]) : [] }); wiz.chromeCost += sample.price || 0;
     } else {
       const removeIndex = wiz.cyberware.findIndex(x => x.id === sample.id);
       const removed = wiz.cyberware[removeIndex];
       if (removed) {
         const hostId = removed.instance_id || removed.id;
-        const dependents = wiz.cyberware.filter(item => item.host_instance === hostId);
+        const dependents = wiz.cyberware.filter(item => cyberHostIds(item).includes(hostId));
         if (dependents.length && !window.confirm(T(`Remove ${removed.name} and ${dependents.length} installed options?`,`Удалить ${removed.name} и установленные опции (${dependents.length})?`))) return;
         const removedIds = new Set([hostId]);
         wiz.cyberware = wiz.cyberware.filter(item => item !== removed && !removedIds.has(item.host_instance));
@@ -2251,28 +2298,29 @@ function bindWizStep() {
   }
   if(step===2){
     $$('[data-lp-section]',body).forEach(details=>details.ontoggle=()=>{wiz.lifepathOpen[details.dataset.lpSection]=details.open;saveWizardDraft();});
+    const portrait=$('#wiz-portrait-file');if(portrait)portrait.onchange=()=>openImageCrop(portrait.files[0],'character_portrait',media=>{wiz.portraitMedia=media;renderWizard();});const removePortrait=$('#wiz-portrait-remove');if(removePortrait)removePortrait.onclick=async()=>{if(wiz.portraitMedia){try{await api('/api/media/'+wiz.portraitMedia.id,{method:'DELETE'});}catch(e){}wiz.portraitMedia=null;renderWizard();}};
     const handle=$('#wiz-handle'),first=$('#wiz-first-name'),last=$('#wiz-last-name');if(handle)handle.oninput=()=>wiz.handle=handle.value;if(first)first.oninput=()=>wiz.firstName=first.value;if(last)last.oninput=()=>wiz.lastName=last.value;
-    $('[data-generate-handle]',body).onclick=()=>{generateWizardHandle();renderWizard();};
+    const handleStyle=$('#wiz-handle-style');if(handleStyle)handleStyle.onchange=()=>{wiz.handleStyle=handleStyle.value;saveWizardDraft();};$('[data-generate-handle]',body).onclick=()=>{generateWizardHandle();renderWizard();};
     $$('[data-name-gender]',body).forEach(button=>button.onclick=()=>{wiz.nameGender=button.dataset.nameGender;renderWizard();});
     $$('[data-generate-name]',body).forEach(button=>button.onclick=()=>{generateWizardName(button.dataset.generateName);renderWizard();});
-    $$('[data-lp]',body).forEach(select=>select.onchange=()=>{wiz.lifepath[select.dataset.lp]=select.value;if(select.dataset.lp==='region')syncNativeLanguage();renderWizard();});
+    $$('[data-lp]',body).forEach(select=>select.onchange=()=>{setLifepathValue(select.dataset.lp,select.value);renderWizard();});
     $$('[data-role-lp]',body).forEach(select=>select.onchange=()=>{wiz.roleLifepath[select.dataset.roleLp]=select.value;renderWizard();});
     $$('[data-lp-dice]',body).forEach(button=>button.onclick=()=>{wizRollHybrid(button.dataset.lpDice,false);renderWizard();});
     $$('[data-role-lp-dice]',body).forEach(button=>button.onclick=()=>{wizRollHybrid(button.dataset.roleLpDice,true);renderWizard();});
     const native=$('#lp-native');if(native)native.onchange=()=>{wiz.nativeLanguage=native.value;syncNativeLanguage();renderWizard();};
-    $('#lp-gen-all').onclick=()=>{lpAllFields().forEach(([key])=>wizRollHybrid(key,false));if(wiz.role)lpRoleField(wiz.role).forEach(([key])=>wizRollHybrid(key,true));syncNativeLanguage();renderWizard();toast(T('Hybrid Lifepath generated.','Hybrid Lifepath сгенерирован.'));};
+    $('#lp-fill-missing').onclick=()=>{lpAllFields().forEach(([key])=>{if(!wiz.lifepath[key])wizRollHybrid(key,false);});if(wiz.role)lpRoleField(wiz.role).forEach(([key])=>{if(!wiz.roleLifepath[key])wizRollHybrid(key,true);});syncNativeLanguage();renderWizard();toast(T('Missing Lifepath fields filled.','Пустые поля Lifepath заполнены.'));};$('#lp-gen-all').onclick=()=>{if(Object.keys(wiz.lifepath||{}).length&&!window.confirm(T('Replace every Lifepath result?','Заменить все результаты Lifepath?')))return;lpAllFields().forEach(([key])=>wizRollHybrid(key,false));if(wiz.role)lpRoleField(wiz.role).forEach(([key])=>wizRollHybrid(key,true));syncNativeLanguage();renderWizard();toast(T('Hybrid Lifepath generated.','Hybrid Lifepath сгенерирован.'));};
   }
   if(step===3){
     $$('[data-stat-step]',body).forEach(button=>button.onclick=()=>{const [stat,raw]=button.dataset.statStep.split('|'),delta=Number(raw),current=num(wiz.stats[stat])||5;if(delta>0&&wizStatSpent()>=62)return;wiz.stats[stat]=Math.max(2,Math.min(8,current+delta));renderWizard();});
     $$('[data-stat-lock]',body).forEach(button=>button.onclick=()=>{wiz.statLocks[button.dataset.statLock]=!wiz.statLocks[button.dataset.statLock];renderWizard();});
     $$('[data-stat-info]',body).forEach(button=>button.onclick=()=>showStatInfo(button.dataset.statInfo));
-    $('#wiz-st-roll').onclick=()=>{randomizeWizardStats();renderWizard();};$('#wiz-st-reset').onclick=()=>{state.meta.stats.forEach(stat=>wiz.stats[stat]=5);renderWizard();};
+    const statMode=$('#wiz-st-mode');if(statMode)statMode.onchange=()=>{wiz.statRandomMode=statMode.value;saveWizardDraft();};$('#wiz-st-roll').onclick=()=>{randomizeWizardStats();renderWizard();};$('#wiz-st-reset').onclick=()=>{const previous={...wiz.stats};state.meta.stats.forEach(stat=>wiz.stats[stat]=5);renderWizard();toastUndo(T('Characteristics reset.','Характеристики сброшены.'),()=>{state.wizard.stats=previous;renderWizard();});};
   }
   if(step===4){
     const query=$('#wiz-skill-q');if(query)query.oninput=()=>{wiz.skillQ=query.value;renderWizard();};
     $$('[data-skill-filter]',body).forEach(button=>button.onclick=()=>{wiz.skillFilter=button.dataset.skillFilter;renderWizard();});
     $$('[data-skill-category]',body).forEach(details=>details.ontoggle=()=>{wiz.skillOpen[details.dataset.skillCategory]=details.open;saveWizardDraft();});
-    $$('[data-wiz-skill-step]',body).forEach(button=>button.onclick=()=>{const [name,raw]=button.dataset.wizSkillStep.split('|'),delta=Number(raw),meta=state.meta.skills.find(row=>row[1]===name),cost=meta&&meta[3]?2:1,current=num(wiz.skills[name])||0,floor=WIZ_SUB_HIDDEN.has(name)?wizSubAllocated(name):0;if(delta>0&&((state.meta.skill_points||86)-wizSkillSpent()<cost||current>=6))return;if(delta<0&&current<=floor)return;wiz.skills[name]=Math.max(floor,Math.min(6,current+delta));renderWizard();});
+    $$('[data-wiz-skill-step]',body).forEach(button=>button.onclick=()=>{const [name,raw]=button.dataset.wizSkillStep.split('|'),delta=Number(raw),meta=state.meta.skills.find(row=>row[1]===name),cost=meta&&meta[3]?2:1,current=num(wiz.skills[name])||0,floor=WIZ_SUB_HIDDEN.has(name)?wizSubAllocated(name):0;if(delta>0&&((state.meta.skill_points||86)-wizSkillSpent()<cost||(!WIZ_SUB_HIDDEN.has(name)&&current>=6)))return;if(delta<0&&current<=floor)return;wiz.skills[name]=Math.max(floor,WIZ_SUB_HIDDEN.has(name)?current+delta:Math.min(6,current+delta));renderWizard();});
     $$('[data-sub-add]',body).forEach(button=>button.onclick=()=>{if(wizSubFree(button.dataset.subAdd)<=0)return;wiz.subSkills.push({base:button.dataset.subAdd,name:'',lvl:1});renderWizard();});
     $$('[data-sub-del]',body).forEach(button=>button.onclick=()=>{const item=wiz.subSkills[Number(button.dataset.subDel)];if(item&&!item.native)wiz.subSkills.splice(Number(button.dataset.subDel),1);renderWizard();});
     $$('[data-sub-name]',body).forEach(input=>input.oninput=()=>{const item=wiz.subSkills[Number(input.dataset.subName)];if(item&&!item.native)item.name=input.value;});
@@ -2280,9 +2328,10 @@ function bindWizStep() {
     $$('[data-sub-plus]',body).forEach(button=>button.onclick=()=>{const item=wiz.subSkills[Number(button.dataset.subPlus)];if(item&&!item.native&&item.lvl<6&&wizSubFree(item.base)>0)item.lvl++;renderWizard();});
   }
   if(step===5){
+    $$('[data-cyber-filter]',body).forEach(button=>button.onclick=()=>{wiz.cyberFilter=button.dataset.cyberFilter;renderWizard();});
     $$('[data-shop-tab]',body).forEach(button=>button.onclick=()=>{captureWizardScrolls();wiz.shopState=wiz.shopState||{};wiz.shopState[wiz.shopTab]={q:wiz.shopQ,filters:{...(wiz.shopFilters||{})}};wiz.shopTab=button.dataset.shopTab;const saved=wiz.shopState[wiz.shopTab]||{};wiz.shopQ=saved.q||'';wiz.shopFilters={...(saved.filters||{})};renderWizard();});
-    $$('[data-shop-tab-jump]',body).forEach(button=>button.onclick=()=>{const dependents=wiz.cyberware.filter(item=>item.host_instance==='creation-neuroport');if(dependents.length&&!window.confirm(T('Removing the free Neuroport will also remove its installed options. Continue?','Удаление бесплатного Neuroport также удалит его опции. Продолжить?')))return;wiz.cyberware=wiz.cyberware.filter(item=>item.host_instance!=='creation-neuroport');wiz.chromeCost=Math.max(0,wiz.chromeCost-dependents.reduce((sum,item)=>sum+(item.price||0),0));wiz.shopTab=button.dataset.shopTabJump;wiz.freeNeuroport=false;renderWizard();});
-    $$('[data-neuro-choice]',body).forEach(button=>button.onclick=()=>{if(button.dataset.neuroChoice!=='free'||hasPaidNeuroport(wiz))return;if(wiz.freeNeuroport){const dependents=wiz.cyberware.filter(item=>item.host_instance==='creation-neuroport');if(dependents.length&&!window.confirm(T(`Remove the free Neuroport and ${dependents.length} installed options?`,`Удалить бесплатный Neuroport и установленные опции (${dependents.length})?`)))return;wiz.cyberware=wiz.cyberware.filter(item=>item.host_instance!=='creation-neuroport');wiz.chromeCost=Math.max(0,wiz.chromeCost-dependents.reduce((sum,item)=>sum+(item.price||0),0));}wiz.freeNeuroport=!wiz.freeNeuroport;renderWizard();});
+    $$('[data-shop-tab-jump]',body).forEach(button=>button.onclick=()=>{const dependents=wiz.cyberware.filter(item=>cyberHostIds(item).includes('creation-neuroport'));if(dependents.length&&!window.confirm(T('Removing the free Neuroport will also remove its installed options. Continue?','Удаление бесплатного Neuroport также удалит его опции. Продолжить?')))return;wiz.cyberware=wiz.cyberware.filter(item=>!cyberHostIds(item).includes('creation-neuroport'));wiz.chromeCost=Math.max(0,wiz.chromeCost-dependents.reduce((sum,item)=>sum+(item.price||0),0));wiz.shopTab=button.dataset.shopTabJump;wiz.freeNeuroport=false;renderWizard();});
+    $$('[data-neuro-choice]',body).forEach(button=>button.onclick=()=>{if(button.dataset.neuroChoice!=='free'||hasPaidNeuroport(wiz))return;if(wiz.freeNeuroport){const dependents=wiz.cyberware.filter(item=>cyberHostIds(item).includes('creation-neuroport'));if(dependents.length&&!window.confirm(T(`Remove the free Neuroport and ${dependents.length} installed options?`,`Удалить бесплатный Neuroport и установленные опции (${dependents.length})?`)))return;wiz.cyberware=wiz.cyberware.filter(item=>!cyberHostIds(item).includes('creation-neuroport'));wiz.chromeCost=Math.max(0,wiz.chromeCost-dependents.reduce((sum,item)=>sum+(item.price||0),0));}wiz.freeNeuroport=!wiz.freeNeuroport;renderWizard();});
     const soul=$('#wiz-soul');if(soul)soul.onchange=()=>{wiz.soldSoul=soul.checked;renderWizard();};const patron=$('#wiz-patron');if(patron)patron.onchange=()=>wiz.patron=patron.value;const obligation=$('#wiz-obligation');if(obligation)obligation.oninput=()=>wiz.obligation=obligation.value;
     const query=$('#wiz-shop-q');if(query)query.oninput=()=>{captureWizardScrolls();wiz.shopQ=query.value;wiz.scrolls[`shop:${wiz.shopTab}`]=0;wizLoadShopList();};
     const type=$('#wiz-shop-type');if(type)type.onchange=()=>{wiz.shopFilters.type=type.value;wizLoadShopList();};const source=$('#wiz-shop-source');if(source)source.onchange=()=>{wiz.shopFilters.source=source.value;wizLoadShopList();};const maxPrice=$('#wiz-shop-max-price');if(maxPrice)maxPrice.onchange=()=>{wiz.shopFilters.maxPrice=maxPrice.value;wizLoadShopList();};const sort=$('#wiz-shop-sort');if(sort)sort.onchange=()=>{wiz.shopFilters.sort=sort.value;wizLoadShopList();};const affordable=$('#shop-affordable');if(affordable)affordable.onchange=()=>{wiz.shopFilters.affordable=affordable.checked;wizLoadShopList();};const selected=$('#shop-selected');if(selected)selected.onchange=()=>{wiz.shopFilters.selected=selected.checked;wizLoadShopList();};
@@ -2356,6 +2405,50 @@ async function wizCreate() {
 
 /* ============================== лист персонажа (просмотр) ============================== */
 
+async function sheetResource(characterId, resource, value) {
+  const action=value==='reset'?'reset':'delta';
+  try { await api(`/api/characters/${characterId}/resource`,{method:'POST',body:{resource,action,value:value==='reset'?0:Number(value)}}); await viewSheet(characterId); }
+  catch(e){toast(e.message,true);}
+}
+function improvementCost(kind,subject,ch){
+  if(kind==='skill'){const current=num((ch.skills||{})[subject])||0,meta=state.meta.skills.find(row=>row[1]===subject);return (current+1)*(meta&&meta[3]?40:20);}
+  if(kind==='parent'){const current=num((ch.skill_pools||{})[subject])||0,meta=state.meta.skills.find(row=>row[1]===subject);return (current+1)*(meta&&meta[3]?40:20);}
+  if(kind==='role'){const role=(ch.roles||[]).find(row=>row.name===subject);return ((role?role.rank:0)+1)*60;}return 0;
+}
+async function progressionRoleSetup(role, rank, existing) {
+  existing=JSON.parse(JSON.stringify(existing||{}));
+  if(!['Tech','Medtech','Nomad','Exec'].includes(role))return existing;
+  return new Promise(resolve=>{let content='';
+    if(role==='Tech')content=`<p>Allocate ${rank*2} Maker Points; maximum ${rank} per specialty.</p><div class="grid cols-4">${[['field','Field'],['upgrade','Upgrade'],['fabrication','Fabrication'],['invention','Invention']].map(([key,label])=>`<label class="f"><span>${label}</span><input type="number" min="0" max="${rank}" data-progress-setup="${key}" value="${num(existing[key])||0}"></label>`).join('')}</div>`;
+    if(role==='Medtech')content=`<p>Allocate ${rank} Medicine Points.</p><div class="grid cols-3">${[['surgery','Surgery'],['pharma','Pharmaceuticals'],['cryo','Cryosystems']].map(([key,label])=>`<label class="f"><span>${label}</span><input type="number" min="0" max="${rank}" data-progress-setup="${key}" value="${num(existing[key])||0}"></label>`).join('')}</div>`;
+    if(role==='Nomad'){const choices=existing.moto_choices||[];content=`<p>Complete ${rank} sequential Moto choices.</p>${Array.from({length:rank},(_,i)=>`<label class="f"><span>Rank ${i+1}</span><select data-progress-moto="${i}"><option value="">Choose…</option>${NOMAD_MOTO_CHOICES.filter(([,access])=>access<=i+1).map(([name,access])=>`<option value="${esc(name)}" ${choices[i]===name?'selected':''}>${esc(name)} · Access ${access}</option>`).join('')}</select></label>`).join('')}`;}
+    if(role==='Exec')content=`<p>Select at least one Team Member.</p><select id="progress-exec"><option value="">Choose…</option>${EXEC_TEAM_MEMBERS.map(([en])=>`<option value="${en}" ${(existing.team_members||[existing.team_member]).includes(en)?'selected':''}>${en}</option>`).join('')}</select>`;
+    const modal=openModal(`<h2>${role} · Rank ${rank} Setup</h2>${content}<div id="progress-setup-error" class="warn-text mt"></div><div class="row mt"><button id="progress-setup-cancel">Cancel</button><button id="progress-setup-ok" class="btn-primary">Continue</button></div>`);
+    $('#progress-setup-cancel',modal).onclick=()=>{closeModal();resolve(null);};$('#progress-setup-ok',modal).onclick=()=>{let setup={...existing},valid=true;if(role==='Tech'||role==='Medtech'){$$('[data-progress-setup]',modal).forEach(input=>setup[input.dataset.progressSetup]=Number(input.value)||0);const keys=role==='Tech'?['field','upgrade','fabrication','invention']:['surgery','pharma','cryo'],needed=role==='Tech'?rank*2:rank;valid=keys.reduce((sum,key)=>sum+setup[key],0)===needed;}if(role==='Nomad'){setup.moto_choices=Array.from($$('[data-progress-moto]',modal)).map(input=>input.value);valid=setup.moto_choices.length===rank&&setup.moto_choices.every(Boolean);}if(role==='Exec'){const value=$('#progress-exec',modal).value;setup.team_member=value;setup.team_members=value?[value]:[];valid=!!value;}if(!valid){$('#progress-setup-error',modal).textContent='Complete the required Rank setup.';return;}closeModal();resolve(setup);};
+  });
+}
+
+function openIpAdjustment(characterId, onDone) { const modal=openModal(`<h2>Adjust Improvement Points</h2><label class="f"><span>Amount (+ or −)</span><input id="quick-ip-amount" type="number"></label><label class="f"><span>Reason *</span><input id="quick-ip-reason" maxlength="500"></label><button class="btn-primary" id="quick-ip-save">Record immutable entry</button>`);$('#quick-ip-save',modal).onclick=async()=>{try{await api(`/api/characters/${characterId}/ip`,{method:'POST',body:{amount:Number($('#quick-ip-amount',modal).value),reason:$('#quick-ip-reason',modal).value}});closeModal();onDone();}catch(e){toast(e.message,true);}}; }
+
+async function openImprovementModal(characterPayload){
+  const ch=characterPayload.data,id=characterPayload.id,roles=ch.roles||[],active=roles.find(role=>role.name===ch.active_role),canMulticlass=!active||active.rank>=4;
+  const ordinary=state.meta.skills.filter(row=>!WIZ_SUB_HIDDEN.has(row[1]));
+  const modal=openModal(`<h2>Improvement</h2><div class="ip-summary"><b>${ch.ip_available||0} IP available</b><span>Total earned ${ch.ip_total_earned||0}</span><span>Total spent ${ch.ip_total_spent||0}</span></div><details class="creation-section" open><summary>Adjust IP</summary><div class="section-body grid cols-3"><input id="ip-amount" type="number" placeholder="+80 or -20"><input id="ip-reason" placeholder="Reason" maxlength="500"><button id="ip-adjust">Record Adjustment</button></div></details><details class="creation-section" open><summary>Skills</summary><div class="section-body improvement-list">${ordinary.map(row=>{const current=num((ch.skills||{})[row[1]])||0,cost=improvementCost('skill',row[1],ch);return `<div><span><b>${esc(row[1])}</b> ${current} → ${current+1}</span><button data-improve="skill|${esc(row[1])}" ${current>=10||cost>(ch.ip_available||0)?'disabled':''}>${cost} IP</button></div>`;}).join('')}</div></details><details class="creation-section"><summary>Specialized Parent Pools</summary><div class="section-body improvement-list">${SUB_SKILL_BASES.map(([base])=>{const current=num((ch.skill_pools||{})[base])||0,cost=improvementCost('parent',base,ch);return `<div><span><b>${esc(base)} Pool</b> ${current} → ${current+1}</span><button data-improve="parent|${esc(base)}" ${cost>(ch.ip_available||0)?'disabled':''}>${cost} IP</button></div>`;}).join('')}</div></details><details class="creation-section"><summary>Allocate Specializations</summary><div class="section-body">${SUB_SKILL_BASES.map(([base])=>{const pool=num((ch.skill_pools||{})[base])||0,children=specializedChildren(ch,base),allocated=children.reduce((sum,child)=>sum+paidSpecializationLevel(ch,base,child),0);return `<div class="panel mb"><div class="row" style="justify-content:space-between"><b>${esc(base)} Pool ${pool}</b><span>Allocated ${allocated} · Free ${Math.max(0,pool-allocated)}</span></div>${children.map(child=>`<div class="inv-row"><span class="iname">${esc(child.name)}</span><button data-spec-change="${esc(base)}|${esc(child.name)}|-1" ${child.lvl<=0?'disabled':''}>−</button><b>${child.lvl}</b><button data-spec-change="${esc(base)}|${esc(child.name)}|1" ${child.lvl>=10||allocated>=pool?'disabled':''}>＋</button></div>`).join('')}<div class="row"><input data-new-spec="${esc(base)}" placeholder="New specialization"><button data-add-spec="${esc(base)}" ${allocated>=pool?'disabled':''}>Add at Level 1</button></div></div>`;}).join('')}</div></details><details class="creation-section"><summary>Roles & Multiclass</summary><div class="section-body improvement-list">${roles.map(role=>{const cost=(role.rank+1)*60;return `<div><span><b>${esc(role.name)}</b> Rank ${role.rank}${role.name===ch.active_role?' · Active':''}</span><span class="row"><button data-improve="role|${role.name}" ${role.name!==ch.active_role||role.rank>=10||cost>(ch.ip_available||0)?'disabled':''}>Rank ${role.rank+1} · ${cost} IP</button>${role.name!==ch.active_role&&canMulticlass?`<button data-improve="activate_role|${role.name}">Make Active</button>`:''}</span></div>`;}).join('')}${canMulticlass?Object.keys(state.meta.roles).filter(name=>!roles.some(role=>role.name===name)).map(name=>`<div><span><b>New Role: ${name}</b> Rank 1</span><button data-improve="role|${name}" ${(ch.ip_available||0)<60?'disabled':''}>60 IP</button></div>`).join(''):`<p class="muted">Active Role must reach Rank 4 before multiclassing.</p>`}</div></details><button id="ip-history">View immutable IP History</button>`,true);
+  $('#ip-adjust',modal).onclick=async()=>{try{const result=await api(`/api/characters/${id}/ip`,{method:'POST',body:{amount:Number($('#ip-amount',modal).value),reason:$('#ip-reason',modal).value}});closeModal();toast('IP ledger updated.');viewSheet(id);}catch(e){toast(e.message,true);}};
+  $$('[data-improve]',modal).forEach(button=>button.onclick=async()=>{const [kind,subject]=button.dataset.improve.split('|');const existingRole=(ch.roles||[]).find(role=>role.name===subject),targetRank=kind==='role'?(existingRole?existingRole.rank+1:1):0;let setup=null;if(kind==='role'){setup=await progressionRoleSetup(subject,targetRank,existingRole&&existingRole.setup);if(setup===null)return;}if(!confirm(`Spend ${improvementCost(kind,subject,ch)} IP to improve ${subject}?`))return;try{await api(`/api/characters/${id}/improve`,{method:'POST',body:{kind,subject,setup}});closeModal();toast('Improvement purchased.');viewSheet(id);}catch(e){toast(e.message,true);}});
+  $$('[data-spec-change]',modal).forEach(button=>button.onclick=async()=>{const [parent,name,delta]=button.dataset.specChange.split('|');try{await api(`/api/characters/${id}/specialization`,{method:'POST',body:{parent,name,delta:Number(delta)}});closeModal();viewSheet(id);}catch(e){toast(e.message,true);}});$$('[data-add-spec]',modal).forEach(button=>button.onclick=async()=>{const parent=button.dataset.addSpec,input=$(`[data-new-spec="${parent}"]`,modal),name=input&&input.value.trim();if(!name)return;try{await api(`/api/characters/${id}/specialization`,{method:'POST',body:{parent,name,delta:1}});closeModal();viewSheet(id);}catch(e){toast(e.message,true);}});
+  $('#ip-history',modal).onclick=async()=>{try{const data=await api(`/api/characters/${id}/ip`);openModal(`<h2>IP History</h2>${data.entries.length?data.entries.map(entry=>`<div class="ledger-row"><b class="${entry.amount>=0?'green':'warn-text'}">${entry.amount>=0?'+':''}${entry.amount} IP</b><span>${esc(entry.reason)}</span><small>${esc(entry.actor)} · ${new Date(entry.created*1000).toLocaleString()}</small></div>`).join(''):'<div class="empty">No entries.</div>'}`,true);}catch(e){toast(e.message,true);}};
+}
+
+function combatSheetHtml(ch, derived, mine) {
+  const weapons=(ch.inventory||[]).filter(item=>['guns','melee'].includes(item.cat)),states=ch.weapon_state||{};
+  const weaponRows=weapons.map(item=>{const key=String(item.key||item.source_key||item.name),state=states[key]||{},skill=item.mechanics?.skill||'',meta=stateMetaSkill(skill),stat=meta&&meta[2],statValue=stat==='EMP'?(derived.emp_cur??ch.stats.EMP):(ch.stats||{})[stat],base=(num(statValue)||0)+(num((ch.skills||{})[skill])||0),damage=item.mechanics?.damage;return `<article class="weapon-sheet-card"><div><h3>${esc(item.name)}</h3><div class="mechanic-chips">${itemMechanicChips(item)}${skill?`<span class="chip">${esc(skill)} BASE ${base}</span>`:''}</div></div><div class="weapon-controls">${state.magazine_max?`<b>Mag ${state.magazine}/${state.magazine_max}</b><span>Reserve ${state.reserve||0}</span>${mine?`<button data-weapon-action="${esc(key)}|fire">Fire</button><button data-weapon-action="${esc(key)}|reload">Reload</button>`:''}`:''}${mine&&skill?`<button data-attack-roll="${esc(item.name)}|${base}">Attack 🎲</button>`:''}${damage?`<button data-damage-roll="${esc(item.name)}|${damage.dice}|${damage.sides}|${damage.multiplier||1}">Damage 🎲</button>`:''}</div></article>`;}).join('');
+  const armor=['head','body','shield'].map(location=>{const piece=(ch.armor||{})[location];if(!piece)return '';return `<div class="armor-resource"><b>${location[0].toUpperCase()+location.slice(1)} · ${esc(piece.name)}</b><span>${piece.current??piece.sp??piece.sdp} / ${piece.maximum??piece.sp??piece.sdp} ${location==='shield'?'SDP':'SP'}</span>${mine?`<div><button data-armor-action="${location}|-1">Ablate</button><button data-armor-action="${location}|1">Repair 1</button><button data-armor-action="${location}|reset">Reset</button></div>`:''}</div>`;}).join('');
+  return `<div class="combat-sheet-grid"><section><h2>Weapons</h2>${weaponRows||'<div class="empty">No weapons.</div>'}</section><section><h2>Armor</h2>${armor||'<div class="empty">No equipped armor.</div>'}</section></div>`;
+}
+function stateMetaSkill(name){return (state.meta.skills||[]).find(row=>row[1]===name);}
+function rollDamage(name,dice,sides,multiplier){const rolls=Array.from({length:dice},()=>1+Math.floor(Math.random()*sides)),total=rolls.reduce((a,b)=>a+b,0)*multiplier;openModal(`<h2>💥 ${esc(name)}</h2><div class="roll-result"><b>${total}</b><span>${rolls.join(' + ')}${multiplier>1?' × '+multiplier:''}</span></div>`);}
+
 async function viewSheet(id) {
   const view = $('#view');
   view.innerHTML = spinner();
@@ -2380,55 +2473,57 @@ async function viewSheet(id) {
   ].filter(([piece]) => piece);
 
   view.innerHTML = `
-  <div class="page-head">
+  <div class="page-head official-sheet-head">
+    ${ch.portrait_media_id?`<img class="sheet-portrait" src="/api/media/${esc(ch.portrait_media_id)}" alt="${esc(ch.handle||'Character')}">`:''}
     <div><h1>📄 ${esc(ch.handle || 'Безымянный')}${ch.first_name || ch.last_name ? ` · ${esc([ch.first_name, ch.last_name].filter(Boolean).join(' '))}` : ''}</h1>
-      <div class="sub">Лист персонажа · ${esc(ch.role || '—')} ${ch.role_rank || 4} · владелец: ${esc(c.owner_name || '—')}${ch.player ? ' · игрок: ' + esc(ch.player) : ''}</div></div>
+      <div class="sub">Character Sheet · ${(ch.roles||[]).map(role=>`${esc(role.name)} ${role.rank}${role.name===ch.active_role?' ★':''}`).join(' · ')||`${esc(ch.role||'—')} ${ch.role_rank||4}`} · ${T('owner','владелец')}: ${esc(c.owner_name||'—')}${ch.player?' · '+T('player','игрок')+': '+esc(ch.player):''}</div></div>
     <div class="row">
       <button id="sheet-back">← ${T('Characters','Персонажи')}</button>
       <button class="btn-sm" id="sheet-print">🖨️ Print</button><button class="btn-sm" id="sheet-json">⬇ JSON</button>
-      ${mine ? `<button class="btn-primary" id="sheet-edit">✏️ ${T('Edit','Редактировать')}</button>
+      ${mine ? `<label class="btn-sm">🖼️ Portrait<input id="sheet-portrait-file" type="file" accept="image/jpeg,image/png,image/webp" hidden></label><button class="btn-primary" id="sheet-edit">✏️ ${T('Edit','Редактировать')}</button>
                 <button class="btn-danger" id="sheet-del">🗑️ Удалить</button>` : ''}
     </div>
   </div>
 
+  <nav class="sheet-tabs"><button data-sheet-jump="sheet-overview">Overview</button><button data-sheet-jump="sheet-skills">Skills</button><button data-sheet-jump="sheet-combat">Combat</button><button data-sheet-jump="sheet-gear">Gear</button><button data-sheet-jump="sheet-cyberware">Cyberware</button><button data-sheet-jump="sheet-lifepath">Lifepath</button></nav>
   <div class="panel accent mb">
     <div class="derived">
-      <span class="dstat"><span class="v">${d.hp_max != null ? hpCur + ' / ' + d.hp_max : '—'}</span><span class="k">HP</span></span>
+      <span class="dstat resource-stat"><span class="v">${d.hp_max != null ? hpCur + ' / ' + d.hp_max : '—'}</span><span class="k">HP</span>${mine?`<span class="resource-actions"><button data-resource="hp|-5">−5</button><button data-resource="hp|-1">−1</button><button data-resource="hp|1">+1</button><button data-resource="hp|5">+5</button></span>`:''}</span>
+      <span class="dstat resource-stat"><span class="v">${ch.luck_cur} / ${(ch.stats||{}).LUCK||0}</span><span class="k">LUCK</span><span class="luck-pips">${Array.from({length:(ch.stats||{}).LUCK||0},(_,i)=>`<i class="${i<ch.luck_cur?'filled':''}"></i>`).join('')}</span>${mine?`<span class="resource-actions"><button data-resource="luck|-1">Spend</button><button data-resource="luck|1">+1</button><button data-resource="luck|reset">Reset</button></span>`:''}</span>
       <span class="dstat"><span class="v">${d.seriously_wounded != null ? '≤ ' + d.seriously_wounded : '—'}</span><span class="k">Серьёзная рана</span></span>
       <span class="dstat ${d.humanity_max != null && d.humanity_cur <= 20 ? 'warn' : ''}"><span class="v">${d.humanity_max != null ? d.humanity_cur + ' / ' + d.humanity_max : '—'}</span><span class="k">Человечность</span></span>
       <span class="dstat ${d.emp_cur != null && d.emp_cur <= 2 ? 'warn' : ''}"><span class="v">${d.emp_cur != null ? d.emp_cur : '—'}</span><span class="k">EMP</span></span>
       <span class="dstat"><span class="v">${d.sp_body != null ? d.sp_body : '—'}</span><span class="k">Броня SP тело</span></span>
       <span class="dstat"><span class="v">${d.sp_head != null ? d.sp_head : '—'}</span><span class="k">Броня SP голова</span></span>
       <span class="dstat"><span class="v">${d.death_save != null ? d.death_save : '—'}</span><span class="k">Death Save</span></span>
-      <span class="dstat"><span class="v">${money(ch.cash || 0)}</span><span class="k">Наличные</span></span>
+      <span class="dstat resource-stat"><span class="v">${money(ch.cash || 0)}</span><span class="k">Cash</span>${mine?`<span class="resource-actions"><button data-resource="cash|-100">−100</button><button data-resource="cash|-10">−10</button><button data-resource="cash|10">+10</button><button data-resource="cash|100">+100</button></span>`:''}</span>
+      <span class="dstat"><span class="v">${ch.ip_available||0}</span><span class="k">Improvement Points</span>${mine?`<button class="btn-sm" id="sheet-improve">Improve</button>`:(state.me&&state.me.is_gm?`<button class="btn-sm" id="sheet-ip-gm">Adjust IP</button>`:'')}</span>
+      <span class="dstat resource-stat"><span class="v">${ch.reputation||0}</span><span class="k">Reputation</span>${mine?`<span class="resource-actions"><button data-resource="reputation|-1">−1</button><button data-resource="reputation|1">+1</button></span>`:''}</span>
     </div>
   </div>
 
-  <div class="grid cols-2" style="gap:18px">
+  <div class="panel mb" id="sheet-combat">${combatSheetHtml(ch,d,mine)}</div>
+  <div class="grid cols-2 sheet-layout" style="gap:18px">
     <div>
-      <div class="panel mb">
-        <h2>🎭 ${esc(ch.role || '—')} — ${esc(state.meta.role_ru[ch.role] || '')}</h2>
-        <div class="small muted mb">${esc(state.meta.role_desc[ch.role] || '')}</div>
-        ${ab.name ? `<div class="tag mb" style="display:inline-block;color:var(--yellow);border-color:rgba(255,213,0,.4)">⚡ ${esc(ab.name)} · ранг ${ch.role_rank || 4}</div>` : ''}
-        ${roleSetupSummary(ch.role, ch.role_setup) ? `<div class="chip mb">${esc(roleSetupSummary(ch.role, ch.role_setup))}</div>` : ''}
-        ${ab.desc ? `<div class="small mt">${esc(ab.desc)}</div>` : ''}
+      <div class="panel mb" id="sheet-overview">
+        <h2>🎭 Roles & Abilities</h2>${(ch.roles||[]).map(role=>{const ability=ROLE_ABILITIES[role.name]||{name:state.meta.roles[role.name],desc:''};return `<div class="role-sheet-entry ${role.name===ch.active_role?'active':''}"><div class="row"><span class="tag role">${esc(role.name)} · Rank ${role.rank}</span>${role.primary?'<span class="chip">Primary</span>':''}${role.name===ch.active_role?'<span class="chip">Active</span>':''}</div><h3>⚡ ${esc(ability.name)}</h3>${roleSetupSummary(role.name,role.setup)?`<div class="chip">${esc(roleSetupSummary(role.name,role.setup))}</div>`:''}<p class="small muted">${esc(ability.desc)}</p></div>`;}).join('')}
       </div>
       <div class="panel mb">
         <h2>📊 Характеристики</h2>
         <div class="statgrid">${state.meta.stats.map(s => `
           <div class="stat"><div class="v">${(ch.stats || {})[s] != null ? ch.stats[s] : '—'}</div><div class="k">${s}</div></div>`).join('')}</div>
       </div>
-      <div class="panel mb">
-        <h2>🎯 Все навыки Corebook</h2>
+      <div class="panel mb" id="sheet-skills">
+        <h2>🎯 Skills</h2>
         <div class="small muted mb">STAT · LVL · BASE = текущий STAT + LVL; EMP учитывает Humanity Loss.</div>
-        ${fullSkillsTableHtml(ch, d)}
+        ${fullSkillsTableHtml(ch, d, true)}
       </div>
-      <div class="panel mb">
-        <h2>🦾 Хром по категориям (HL ${cw.reduce((a, x) => a + (num(x.hl) || 0), 0)})</h2>
+      <div class="panel mb" id="sheet-cyberware">
+        <h2>🦾 Cyberware (HL ${cw.reduce((a, x) => a + (num(x.hl) || 0), 0)})</h2>
         ${cyberwareTreeHtml(cw)}
       </div>
-      <div class="panel mb">
-        <h2>🎒 Инвентарь (${inv.length})</h2>
+      <div class="panel mb" id="sheet-gear">
+        <h2>🎒 Inventory (${inv.length})</h2>
         ${inv.length ? groupedItemsHtml(inv.map((item, index) => ({ ...item, _sheetIndex: index })), i => `
           <div class="inv-row"><span class="iname">${esc(i.display_name || i.name)} ×${i.qty || 1}</span>
             ${itemMechanicChips(i)}
@@ -2443,7 +2538,7 @@ async function viewSheet(id) {
       </div>
     </div>
     <div>
-      <div class="panel mb">
+      <div class="panel mb" id="sheet-lifepath">
         <h2>🧬 Lifepath</h2>
         ${lpRows.length ? `<div class="kv">${lpRows.map(([k, v]) => `<b>${esc(k)}</b><span>${esc(displayKnownValue(v))}</span>`).join('')}</div>`
           : (ch.background ? `<div class="desc" style="white-space:pre-wrap">${esc(ch.background)}</div>` : '<div class="muted small">Lifepath не заполнен.</div>')}
@@ -2452,13 +2547,20 @@ async function viewSheet(id) {
       ${ch.languages ? `<div class="panel mb"><h2>🗣️ Языки</h2><div class="desc">${esc(ch.languages)}</div></div>` : ''}
       ${(ch.lifestyle || ch.housing) ? `<div class="panel mb"><h2>🏠 Жизнь</h2><div class="kv"><b>Lifestyle</b><span>${esc(ch.lifestyle || '—')}</span><b>Жильё</b><span>${esc(ch.housing || '—')}</span></div></div>` : ''}
       ${lpRows.length && ch.background ? `<div class="panel mb"><h2>📖 Предыстория</h2><div class="desc" style="white-space:pre-wrap">${esc(ch.background)}</div></div>` : ''}
-      ${ch.notes ? `<div class="panel mb"><h2>📝 Заметки</h2><div class="desc" style="white-space:pre-wrap">${esc(ch.notes)}</div></div>` : ''}
+      <div class="panel mb"><h2>📝 Notes</h2>${mine?`<textarea id="sheet-notes" maxlength="20000" rows="8">${esc(ch.notes||'')}</textarea><div class="small muted" id="sheet-notes-status">Autosaves after typing</div>`:`<div class="desc" style="white-space:pre-wrap">${esc(ch.notes||'—')}</div>`}</div>
     </div>
   </div>`;
 
   $$('[data-skill-info]', view).forEach(btn => btn.onclick = () => showSkillInfo(btn.dataset.skillInfo));
   $$('[data-owned-chrome]', view).forEach(btn => btn.onclick = () => showCreationItemInfo(cw[Number(btn.dataset.ownedChrome)]));
   $$('[data-owned-item]', view).forEach(btn => btn.onclick = () => showCreationItemInfo(inv[Number(btn.dataset.ownedItem)]));
+  $$('[data-sheet-jump]',view).forEach(button=>button.onclick=()=>document.getElementById(button.dataset.sheetJump)?.scrollIntoView({behavior:'smooth',block:'start'}));
+  $$('[data-attack-roll]',view).forEach(button=>button.onclick=()=>{const split=button.dataset.attackRoll.lastIndexOf('|');showCheckRoll(button.dataset.attackRoll.slice(0,split),Number(button.dataset.attackRoll.slice(split+1)));});$$('[data-damage-roll]',view).forEach(button=>button.onclick=()=>{const [name,dice,sides,multiplier]=button.dataset.damageRoll.split('|');rollDamage(name,Number(dice),Number(sides),Number(multiplier));});$$('[data-weapon-action]',view).forEach(button=>button.onclick=async()=>{const [subject,action]=button.dataset.weaponAction.split('|');try{await api(`/api/characters/${c.id}/resource`,{method:'POST',body:{resource:'weapon',subject,action,value:1}});viewSheet(c.id);}catch(e){toast(e.message,true);}});$$('[data-armor-action]',view).forEach(button=>button.onclick=async()=>{const [subject,value]=button.dataset.armorAction.split('|');try{await api(`/api/characters/${c.id}/resource`,{method:'POST',body:{resource:'armor',subject,action:value==='reset'?'reset':'delta',value:value==='reset'?0:Number(value)}});viewSheet(c.id);}catch(e){toast(e.message,true);}});
+  $$('[data-roll-check]', view).forEach(button => button.onclick = () => { const split=button.dataset.rollCheck.lastIndexOf('|');showCheckRoll(button.dataset.rollCheck.slice(0,split),Number(button.dataset.rollCheck.slice(split+1))); });
+  $$('[data-resource]', view).forEach(button => button.onclick = () => { const [resource,value]=button.dataset.resource.split('|'); sheetResource(c.id,resource,value); });
+  const improveBtn=$('#sheet-improve');if(improveBtn)improveBtn.onclick=()=>openImprovementModal(c);const gmIp=$('#sheet-ip-gm');if(gmIp)gmIp.onclick=()=>openIpAdjustment(c.id,()=>viewSheet(c.id));
+  const notes=$('#sheet-notes');if(notes){let timer;notes.oninput=()=>{clearTimeout(timer);$('#sheet-notes-status').textContent='Saving…';timer=setTimeout(async()=>{try{ch.notes=notes.value;await api('/api/characters/'+c.id,{method:'PUT',body:{data:ch}});$('#sheet-notes-status').textContent='Saved';}catch(e){$('#sheet-notes-status').textContent=e.message;}},700);};}
+  const portraitInput=$('#sheet-portrait-file');if(portraitInput)portraitInput.onchange=()=>openImageCrop(portraitInput.files[0],'character_portrait',async media=>{try{ch.portrait_media_id=media.id;await api('/api/characters/'+c.id,{method:'PUT',body:{data:ch}});viewSheet(c.id);}catch(e){toast(e.message,true);}});
   $('#sheet-print').onclick = () => window.print();
   $('#sheet-json').onclick = () => { const blob = new Blob([JSON.stringify(ch, null, 2)], {type:'application/json'}), a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${(ch.handle || 'character').replace(/[^a-z0-9_-]+/gi,'-')}.json`; a.click(); URL.revokeObjectURL(a.href); };
   $('#sheet-back').onclick = () => go('/characters');
@@ -3231,6 +3333,7 @@ function viewLogin(view) {
   const doLogin = async () => {
     try {
       state.me = await api('/api/login', { method: 'POST', body: { username: $('#lg-u').value, password: $('#lg-p').value } });
+      if(state.me.theme)APP_THEME.setFromProfile(state.me.theme);
       renderUserbox();
       toast(T('Welcome back, ','С возвращением, ') + state.me.display_name);
       go('/characters');
@@ -3243,6 +3346,7 @@ function viewLogin(view) {
       state.me = await api('/api/register', { method: 'POST', body: {
         username: $('#rg-u').value, display_name: $('#rg-d').value,
         password: $('#rg-p').value, is_gm: $('#rg-gm').checked } });
+      if(state.me.theme)APP_THEME.setFromProfile(state.me.theme);
       renderUserbox();
       toast(T('Welcome to Night City.','Добро пожаловать в Ночной город.'));
       go('/characters');
@@ -3277,6 +3381,8 @@ async function viewProfile(view) {
   window.addEventListener('hashchange', route);
   window.addEventListener('beforeunload', saveWizardDraft);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveWizardDraft(); });
+  const themeToggle = $('#theme-toggle');
+  if (themeToggle) themeToggle.onclick = openThemeSettings;
   const languageToggle = $('#language-toggle');
   if (languageToggle) languageToggle.onclick = () => APP_I18N.toggle();
   window.addEventListener('app-language-change', () => { APP_I18N.apply(); route(); });
@@ -3284,6 +3390,7 @@ async function viewProfile(view) {
   try {
     const [me, meta] = await Promise.all([api('/api/me'), api('/api/meta')]);
     state.me = me.user;
+    if (state.me && state.me.theme) APP_THEME.setFromProfile(state.me.theme);
     state.meta = meta;
     state.meta._total = meta.cats.reduce((a, c) => a + c.count, 0);
   } catch (e) {

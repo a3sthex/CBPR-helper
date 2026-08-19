@@ -8,7 +8,7 @@
 
 | Раздел | Описание |
 | --- | --- |
-| 🧬 **Мои персонажи** | Шестишаговый мастер с EN/RU-интерфейсом, persistent draft, Corebook-ролями, Hybrid Lifepath, генераторами имён, строгой проверкой 62/86, parent-pool специализаций, единым Shopping, Cyberware hosts/Option Slots, совместимыми боеприпасами и подробным Summary/Character Sheet. |
+| 🧬 **Мои персонажи** | Шестишаговый мастер и интерактивный официальный-inspired Character Sheet: Portrait upload/crop, Corebook role art, EN/RU, persistent draft, Hybrid Lifepath, 62/86, parent-pools, Shopping compatibility, Cyberware hosts/paired slots, HP/LUCK/Armor/ammo trackers, dice rolls, IP progression, multiclass и JSON/Print. |
 | 📖 **Гайды** | Мини-гайды из «Spes Desperata»: пошаговое создание персонажа (роли, 62 очка статов, 86 очков навыков, стартовая закупка), боёвка FNFF (действия, DV-таблицы, крит. травмы, укрытия, транспорт) и нетраннинг (СЕТевые действия, Interface-способности). |
 | 📋 **Ростер** | Все публичные персонажи всех игроков. При старте импортируется ростер вашей партии из Folio (13 эджраннеров). |
 | 🕶️ **Чёрный рынок** | Ночная витрина (обновляется ежедневно в 00:00 МСК, уличные цены ±50%), полный каталог на 1092 предмета, скупка хлама за 50%, выплаты от ГМ. |
@@ -74,6 +74,7 @@ cd CBPR-helper && git pull && systemctl restart cbpr   # обновить до �
 ```bash
 systemctl stop cbpr
 cp CBPR-helper/app/data/cbpr.db ~/cbpr-backup-$(date +%F).db
+tar -czf ~/cbpr-uploads-$(date +%F).tar.gz -C CBPR-helper/app/data uploads 2>/dev/null || true
 systemctl start cbpr
 ```
 
@@ -98,7 +99,10 @@ certbot --nginx -d твой-домен.ru
 - Создание: все характеристики начинают с 5, но итог должен содержать ровно **62 очка** (каждая 2–8); навыки — ровно **86 очков** (минимум 2 в 13 обязательных, максимум 6, ×2-навыки стоят 2 очка). Language, Local Expert, Martial Arts, Science и Play Instrument используют покупаемый parent-pool, распределяемый между специализациями; культурный язык 4 бесплатен, Streetslang 2 оплачивается. Старт: **2550€$** на снаряжение + **800€$** на Fashion/Fashionware. Бесплатный и платный Neuroport взаимоисключающие.
 - Draft мастера версионирован и автоматически хранится в `localStorage` отдельно для каждого пользователя до успешного создания или подтверждённого полного сброса. Draft v2 автоматически мигрирует на шестишаговую v3-схему; старые персонажи и старые Lifepath-значения остаются читаемыми.
 - Интерфейс по умолчанию английский, переключатель `EN/RU` сохраняется локально; гайды намеренно остаются на русском. Новые персонажи по умолчанию приватные.
-- Каталог содержит нормализованные `mechanics`, `requirements`, `capacity` и совместимость: Damage notation/dice/average, ROF, Hands, Magazine, ammo links, Cyberware hosts и Option Slots. Клиентские ограничения повторно проверяются сервером.
+- Каталог содержит нормализованные `mechanics`, `requirements`, `capacity` и совместимость: Damage notation/dice/average, ROF, Hands, Magazine, ammo links, Cyberware foundations, paired hosts и Option Slots. Клиентские ограничения повторно проверяются сервером.
+- Character Portrait обрабатывается в браузере (crop/zoom/rotate), хранится вне Git в `app/data/uploads/` и наследует приватность персонажа. Неиспользованные draft uploads очищаются через 7 дней.
+- После создания доступны расход LUCK, HP, Armor/Shield, магазины и reserve ammo, Skill/Attack/Damage rolls, immutable IP ledger, parent-pool progression, свободное перераспределение children и multiclass с active Role Rank 4 gate.
+- Appearance Settings содержат presets и Custom Theme для всех основных цветов, font scale, density, glow и reduced motion; сервер хранит настройки профиля, localStorage используется как fallback.
 - HP = `10 + 5×⌈(BODY+WILL)/2⌉`; серьёзная рана — половина HP (вверх); смертельное ранение — HP < 1 (−4 ко всем действиям, −6 MOVE, спасброски смерти); спасбросок смерти = `1d10 ≤ BODY − штраф` (10 — всегда провал).
 - Текущая человечность после установки = `EMP×10 − Σ HL`; максимум человечности = `EMP×10 − 2 за каждый обычный хром − 4 за Borgware`. Fashionware и бесплатный стартовый Neuroport CEMK исключены; текущий EMP = человечность ÷ 10 (вниз).
 - Критические травмы: 2+ шестёрки на кубах урона = 2d6 по таблице + 5 HP (броня не снижает).

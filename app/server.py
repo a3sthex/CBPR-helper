@@ -5,6 +5,7 @@
     python3 app/server.py [--port 8000]
 """
 import argparse
+import base64
 import hashlib
 import hmac
 import json
@@ -23,6 +24,7 @@ DATA_DIR = os.path.join(BASE, 'data')
 DB_PATH = os.path.join(DATA_DIR, 'cbpr.db')
 STATIC_DIR = os.path.join(BASE, 'static')
 ITEMS_PATH = os.path.join(DATA_DIR, 'items.json')
+UPLOAD_DIR = os.path.join(DATA_DIR, 'uploads')
 
 MOSCOW = timezone(timedelta(hours=3))
 SESSION_TTL = 30 * 24 * 3600
@@ -174,6 +176,7 @@ START_CASH_GEAR = 2550    # стартовые €$ на оружие/броню
 START_CASH_FASHION = 800  # отдельный бюджет на Fashion и Fashionware
 CULTURAL_LANGUAGES = {
     'Северная Америка': {'Английский', 'Испанский', 'Навахо', 'Кри', 'Креольский', 'Французский'},
+    'Латинская Америка': {'Испанский', 'Португальский', 'Гуарани', 'Кечуа', 'Майя', 'Науатль', 'Английский', 'Креольский'},
     'Южная / Центральная Америка': {'Испанский', 'Португальский', 'Гуарани', 'Кечуа', 'Майя', 'Науатль'},
     'Центральная Америка': {'Испанский', 'Английский', 'Креольский', 'Майя', 'Науатль'},
     'Южная Америка': {'Испанский', 'Португальский', 'Гуарани', 'Кечуа'},
@@ -368,8 +371,36 @@ CREATE TABLE IF NOT EXISTS job_signups(
   created REAL NOT NULL,
   UNIQUE(job_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS media(
+  id TEXT PRIMARY KEY,
+  owner_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  filename TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  width INTEGER NOT NULL,
+  height INTEGER NOT NULL,
+  attached_type TEXT,
+  attached_id INTEGER,
+  created REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ip_ledger(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  character_id INTEGER NOT NULL,
+  actor_id INTEGER NOT NULL,
+  amount INTEGER NOT NULL,
+  balance_before INTEGER NOT NULL,
+  balance_after INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  subject TEXT,
+  reason TEXT NOT NULL,
+  created REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_char_owner ON characters(owner_id);
 CREATE INDEX IF NOT EXISTS idx_news_created ON news(created);
+CREATE INDEX IF NOT EXISTS idx_media_owner ON media(owner_id);
+CREATE INDEX IF NOT EXISTS idx_media_attached ON media(attached_type, attached_id);
+CREATE INDEX IF NOT EXISTS idx_ip_character ON ip_ledger(character_id, created);
 """
 
 
@@ -384,6 +415,15 @@ def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
     conn = db()
     conn.executescript(SCHEMA)
+    user_columns = {row['name'] for row in conn.execute('PRAGMA table_info(users)').fetchall()}
+    if 'theme_json' not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN theme_json TEXT DEFAULT '{}'")
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    stale = conn.execute('SELECT * FROM media WHERE attached_type IS NULL AND created < ?', (time.time() - 7 * 86400,)).fetchall()
+    for media in stale:
+        try: os.remove(os.path.join(UPLOAD_DIR, media['filename']))
+        except FileNotFoundError: pass
+    conn.execute('DELETE FROM media WHERE attached_type IS NULL AND created < ?', (time.time() - 7 * 86400,))
     conn.commit()
     # сид: архивный пользователь + ростер из Folio
     has = conn.execute('SELECT COUNT(*) c FROM users WHERE id=1').fetchone()['c']
@@ -528,7 +568,11 @@ def clean_character(data):
         out['cash'] = max(0.0, min(9_999_999.0, float(out.get('cash') or 0)))
     except (TypeError, ValueError):
         raise ApiError(400, 'cash должен быть числом')
-    return out
+    out['portrait_media_id'] = str(out.get('portrait_media_id') or '')[:64]
+    progressed = ensure_progression(out)
+    if any(role.get('role_lifepath') for role in progressed.get('roles', []) if not role.get('primary')):
+        raise ApiError(400, 'Role-Based Lifepath разрешён только primary Role')
+    return progressed
 
 
 def skill_base(name):
@@ -552,8 +596,8 @@ def creation_skill_cost(data):
             raise ApiError(400, 'skill_pools содержит неизвестный специализированный навык')
         for base in SPECIALIZED_SKILLS:
             level = _num(pools.get(base)) or 0
-            if level < 0 or level > SKILL_MAX_CREATION:
-                raise ApiError(400, f'{base}: parent-pool должен быть 0–{SKILL_MAX_CREATION}')
+            if level < 0 or level > SKILL_POINTS:
+                raise ApiError(400, f'{base}: некорректный parent-pool')
             total += level * (2 if SKILL_BY_NAME[base][3] else 1)
 
     allocated = {base: 0 for base in SPECIALIZED_SKILLS}
@@ -705,12 +749,15 @@ def validate_cyberware_slots(data):
         slots = _num(capacity.get('slots_used')) or 0
         if not expected:
             continue
-        host_id = str(entry.get('host_instance') or '')
-        if not host_id or host_id not in hosts:
-            raise ApiError(400, f'{item["name"]}: не выбран совместимый host')
-        if hosts[host_id]['name'].lower() not in accepted.get(expected, set()):
-            raise ApiError(400, f'{item["name"]}: несовместимый host {hosts[host_id]["name"]}')
-        used[host_id] += slots
+        host_ids = entry.get('host_instances') or ([entry.get('host_instance')] if entry.get('host_instance') else [])
+        host_ids = [str(value) for value in host_ids if value]
+        required = _num(capacity.get('hosts_required')) or 1
+        if len(set(host_ids)) != required or any(host_id not in hosts for host_id in host_ids):
+            raise ApiError(400, f'{item["name"]}: требуется совместимых hosts: {required}')
+        for host_id in host_ids:
+            if hosts[host_id]['name'].lower() not in accepted.get(expected, set()):
+                raise ApiError(400, f'{item["name"]}: несовместимый host {hosts[host_id]["name"]}')
+            used[host_id] += slots
     for iid, amount in used.items():
         if amount > hosts[iid]['total']:
             raise ApiError(400, f'{hosts[iid]["name"]}: Option Slots {amount}/{hosts[iid]["total"]}')
@@ -828,6 +875,26 @@ def validate_creation_budget(data):
         raise ApiError(400, 'Остаток стартового бюджета рассчитан неверно')
 
 
+def validate_role_rank_setup(role, rank, setup):
+    setup = setup or {}
+    if role == 'Tech':
+        values = [_num(setup.get(key)) or 0 for key in ('field','upgrade','fabrication','invention')]
+        if sum(values) != rank * 2 or any(value < 0 or value > rank for value in values):
+            raise ApiError(400, f'Tech Rank {rank}: распределите {rank * 2} Maker Points, максимум {rank} в specialty')
+    elif role == 'Medtech':
+        values = [_num(setup.get(key)) or 0 for key in ('surgery','pharma','cryo')]
+        if sum(values) != rank or any(value < 0 or value > rank for value in values):
+            raise ApiError(400, f'Medtech Rank {rank}: распределите {rank} Medicine Points')
+    elif role == 'Nomad':
+        choices = setup.get('moto_choices')
+        if not isinstance(choices, list) or len(choices) != rank or any(not str(value or '').strip() for value in choices):
+            raise ApiError(400, f'Nomad Rank {rank}: заполните {rank} Moto choices')
+    elif role == 'Exec' and rank >= 3:
+        members = setup.get('team_members') or ([setup.get('team_member')] if setup.get('team_member') else [])
+        if not members:
+            raise ApiError(400, f'Exec Rank {rank}: выберите Team Member')
+
+
 def validate_creation(data):
     """Серверная проверка Complete Package, не применяемая к последующему росту."""
     role = data.get('role')
@@ -935,6 +1002,112 @@ def validate_creation(data):
 
 # ---------------------------------------------------------------- http
 
+def theme_contrast(a, b):
+    def lum(color):
+        values=[int(color[index:index+2],16)/255 for index in (1,3,5)]
+        values=[value/12.92 if value<=.03928 else ((value+.055)/1.055)**2.4 for value in values]
+        return .2126*values[0]+.7152*values[1]+.0722*values[2]
+    x,y=lum(a),lum(b);return (max(x,y)+.05)/(min(x,y)+.05)
+
+def validate_theme(theme):
+    color_keys={'bg','bg2','panel','panel2','line','text','muted','primary','secondary','accent','success','danger','warning'}
+    for key in color_keys:
+        if key in theme and not re.fullmatch(r'#[0-9a-fA-F]{6}', str(theme[key])):
+            raise ApiError(400, f'Некорректный цвет темы: {key}')
+    bg=str(theme.get('bg') or '#0b0e14');panel=str(theme.get('panel') or '#141a2a');text=str(theme.get('text') or '#d7e3f4')
+    if theme_contrast(bg,text)<4.5 or theme_contrast(panel,text)<4.5:
+        raise ApiError(400, 'Контраст текста темы должен быть не ниже 4.5:1')
+
+
+MEDIA_LIMIT = 2_500_000
+MEDIA_KINDS = {'character_portrait', 'account_avatar', 'news_image', 'job_image'}
+
+def image_info(raw):
+    """Return (mime, extension, width, height) from trusted file signatures."""
+    if raw.startswith(b'\x89PNG\r\n\x1a\n') and len(raw) >= 24:
+        return 'image/png', 'png', int.from_bytes(raw[16:20], 'big'), int.from_bytes(raw[20:24], 'big')
+    if raw.startswith(b'\xff\xd8'):
+        pos = 2
+        while pos + 9 < len(raw):
+            if raw[pos] != 0xff:
+                pos += 1; continue
+            marker = raw[pos + 1]; pos += 2
+            if marker in (0xd8, 0xd9): continue
+            if pos + 2 > len(raw): break
+            size = int.from_bytes(raw[pos:pos + 2], 'big')
+            if marker in tuple(range(0xc0, 0xc4)) + tuple(range(0xc5, 0xc8)) + tuple(range(0xc9, 0xcc)) + tuple(range(0xcd, 0xd0)):
+                return 'image/jpeg', 'jpg', int.from_bytes(raw[pos + 5:pos + 7], 'big'), int.from_bytes(raw[pos + 3:pos + 5], 'big')
+            pos += size
+    if raw.startswith(b'RIFF') and raw[8:12] == b'WEBP' and len(raw) >= 30:
+        chunk = raw[12:16]
+        if chunk == b'VP8X':
+            return 'image/webp', 'webp', 1 + int.from_bytes(raw[24:27], 'little'), 1 + int.from_bytes(raw[27:30], 'little')
+        if chunk == b'VP8 ' and len(raw) >= 30:
+            return 'image/webp', 'webp', int.from_bytes(raw[26:28], 'little') & 0x3fff, int.from_bytes(raw[28:30], 'little') & 0x3fff
+        if chunk == b'VP8L' and len(raw) >= 25:
+            bits = int.from_bytes(raw[21:25], 'little')
+            return 'image/webp', 'webp', (bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1
+    return None
+
+def media_payload(row):
+    return {'id': row['id'], 'kind': row['kind'], 'mime': row['mime'], 'size': row['size'],
+            'width': row['width'], 'height': row['height'], 'url': f'/api/media/{row["id"]}'}
+
+def attach_character_media(conn, user_id, character_id, data):
+    media_id = str(data.get('portrait_media_id') or '')
+    if not media_id:
+        return
+    media = conn.execute('SELECT * FROM media WHERE id=?', (media_id,)).fetchone()
+    if not media or media['owner_id'] != user_id or media['kind'] != 'character_portrait':
+        raise ApiError(400, 'Недопустимое изображение персонажа')
+    if media['attached_type'] and not (media['attached_type'] == 'character' and media['attached_id'] == character_id):
+        raise ApiError(409, 'Изображение уже прикреплено')
+    conn.execute("UPDATE media SET attached_type='character', attached_id=? WHERE id=?", (character_id, media_id))
+
+
+def ensure_progression(data):
+    """Lazy backward-compatible progression schema."""
+    if not isinstance(data.get('roles'), list) or not data['roles']:
+        role = str(data.get('role') or '')
+        data['roles'] = [{'name': role, 'rank': _num(data.get('role_rank')) or 4,
+                          'setup': dict(data.get('role_setup') or {}), 'primary': True}] if role else []
+    if data['roles']:
+        primary = next((row for row in data['roles'] if row.get('primary')), data['roles'][0])
+        primary['primary'] = True
+        data['primary_role'] = str(data.get('primary_role') or primary.get('name') or '')
+        data['active_role'] = str(data.get('active_role') or data['roles'][-1].get('name') or data['primary_role'])
+    data['luck_cur'] = max(0, min(_num((data.get('stats') or {}).get('LUCK')) or 0,
+                                  _num(data.get('luck_cur')) if _num(data.get('luck_cur')) is not None else (_num((data.get('stats') or {}).get('LUCK')) or 0)))
+    data['ip_available'] = max(0, _num(data.get('ip_available')) or 0)
+    data['ip_total_earned'] = max(data['ip_available'], _num(data.get('ip_total_earned')) or data['ip_available'])
+    data['ip_total_spent'] = max(0, _num(data.get('ip_total_spent')) or 0)
+    data['reputation'] = max(0, min(10, _num(data.get('reputation')) or 0))
+    armor = data.get('armor') or {}
+    for location in ('head','body','shield'):
+        piece = armor.get(location)
+        if isinstance(piece, dict):
+            maximum = _num(piece.get('sp')) or _num(piece.get('sdp')) or 0
+            piece['current'] = max(0, min(maximum, _num(piece.get('current')) if _num(piece.get('current')) is not None else maximum))
+            piece['maximum'] = maximum
+    states = data.setdefault('weapon_state', {})
+    inventory = data.get('inventory') or []
+    ammo = [item for item in inventory if item.get('cat') in ('ammo','grenades')]
+    for weapon in [item for item in inventory if item.get('cat') in ('guns','melee')]:
+        key = str(weapon.get('key') or weapon.get('source_key') or weapon.get('name'))
+        magazine = _num((weapon.get('mechanics') or {}).get('magazine')) or 0
+        if key not in states:
+            weapon_type = str((weapon.get('mechanics') or {}).get('type') or '').lower()
+            reserve = 0
+            for pack in ammo:
+                suitable = str((pack.get('mechanics') or {}).get('compatible_weapons') or '').lower()
+                compatible = weapon_type and (weapon_type in suitable or ('all except' in suitable and not any(token in weapon_type for token in ('grenade','rocket'))))
+                if compatible:
+                    reserve += (_num(pack.get('qty')) or 1) * (_num((pack.get('mechanics') or {}).get('quantity_per_purchase')) or 1)
+            states[key] = {'magazine': magazine, 'magazine_max': magazine, 'reserve': reserve}
+    data['schema_version'] = max(4, _num(data.get('schema_version')) or 0)
+    return data
+
+
 SERVER_ERROR_EN = {
     'Требуется вход в систему': 'Authentication required',
     'Нужен псевдоним (Handle) персонажа': 'Character Handle is required',
@@ -1021,7 +1194,7 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get('Content-Length') or 0)
         if n <= 0:
             raise ApiError(400, 'Пустое тело запроса')
-        if n > 1_000_000:
+        if n > 4_000_000:
             raise ApiError(413, 'Тело запроса слишком большое')
         try:
             return json.loads(self.rfile.read(n).decode('utf-8'))
@@ -1177,8 +1350,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({'ok': True}, cookies=['sid=; Path=/; HttpOnly; Max-Age=0'])
 
     def me_payload(self, u):
+        try:
+            theme = json.loads(u['theme_json'] or '{}') if 'theme_json' in u.keys() else {}
+        except (TypeError, ValueError):
+            theme = {}
         return {'id': u['id'], 'username': u['username'], 'display_name': u['display_name'],
-                'is_gm': bool(u['is_gm'])}
+                'is_gm': bool(u['is_gm']), 'theme': theme}
 
     def api_me(self, conn, qs, m, body):
         u = self.current_user(conn)
@@ -1193,9 +1370,87 @@ class Handler(BaseHTTPRequestHandler):
         if 'is_gm' in (body or {}):
             conn.execute('UPDATE users SET is_gm=? WHERE id=?',
                          (1 if body['is_gm'] else 0, u['id']))
+        if 'theme' in (body or {}):
+            theme = body.get('theme') or {}
+            if not isinstance(theme, dict) or len(json.dumps(theme)) > 5000:
+                raise ApiError(400, 'Некорректная тема')
+            validate_theme(theme)
+            conn.execute('UPDATE users SET theme_json=? WHERE id=?',
+                         (json.dumps(theme, separators=(',', ':')), u['id']))
         conn.commit()
         u2 = conn.execute('SELECT * FROM users WHERE id=?', (u['id'],)).fetchone()
         self.send_json(self.me_payload(u2))
+
+    # ------------------------------------------------------------ media
+
+    def api_media_upload(self, conn, qs, m, body):
+        u = self.require_user(conn)
+        kind = str((body or {}).get('kind') or '')
+        if kind not in MEDIA_KINDS:
+            raise ApiError(400, 'Недопустимый тип изображения')
+        data_url = str((body or {}).get('data_url') or '')
+        match = re.fullmatch(r'data:image/(?:png|jpeg|webp);base64,([A-Za-z0-9+/=\r\n]+)', data_url)
+        if not match:
+            raise ApiError(400, 'Ожидается JPEG, PNG или WebP')
+        try:
+            raw = base64.b64decode(match.group(1), validate=True)
+        except Exception:
+            raise ApiError(400, 'Повреждённые данные изображения')
+        if not raw or len(raw) > MEDIA_LIMIT:
+            raise ApiError(413, f'Изображение должно быть не больше {MEDIA_LIMIT // 1_000_000} MB')
+        info = image_info(raw)
+        if not info:
+            raise ApiError(400, 'Формат изображения не подтверждён содержимым')
+        mime, ext, width, height = info
+        if width < 32 or height < 32 or width > 6000 or height > 6000 or width * height > 24_000_000:
+            raise ApiError(400, 'Недопустимое разрешение изображения')
+        total = conn.execute('SELECT COALESCE(SUM(size),0) n FROM media WHERE owner_id=?', (u['id'],)).fetchone()['n']
+        if total + len(raw) > 50_000_000:
+            raise ApiError(413, 'Достигнут лимит хранилища изображений')
+        media_id = secrets.token_hex(16)
+        filename = f'{media_id}.{ext}'
+        with open(os.path.join(UPLOAD_DIR, filename), 'wb') as handle:
+            handle.write(raw)
+        conn.execute('INSERT INTO media(id,owner_id,kind,mime,filename,size,width,height,created) VALUES(?,?,?,?,?,?,?,?,?)',
+                     (media_id, u['id'], kind, mime, filename, len(raw), width, height, time.time()))
+        conn.commit()
+        row = conn.execute('SELECT * FROM media WHERE id=?', (media_id,)).fetchone()
+        self.send_json(media_payload(row), status=201)
+
+    def api_media_get(self, conn, qs, m, body):
+        row = conn.execute('SELECT * FROM media WHERE id=?', (m.group(1),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Изображение не найдено')
+        user = self.current_user(conn)
+        allowed = bool(user and user['id'] == row['owner_id']); public_media = False
+        if row['attached_type'] == 'character' and row['attached_id']:
+            char = conn.execute('SELECT owner_id,public FROM characters WHERE id=?', (row['attached_id'],)).fetchone()
+            public_media = bool(char and char['public'])
+            allowed = bool(char and (public_media or (user and user['id'] == char['owner_id'])))
+        if not allowed:
+            raise ApiError(403, 'Изображение приватное')
+        path = os.path.join(UPLOAD_DIR, row['filename'])
+        if not os.path.isfile(path):
+            raise ApiError(404, 'Файл изображения не найден')
+        raw = open(path, 'rb').read()
+        self.send_response(200)
+        self.send_header('Content-Type', row['mime'])
+        self.send_header('Content-Length', str(len(raw)))
+        self.send_header('Cache-Control', 'public, max-age=86400' if public_media else 'private, no-store')
+        self.end_headers(); self.wfile.write(raw)
+
+    def api_media_delete(self, conn, qs, m, body):
+        u = self.require_user(conn)
+        row = conn.execute('SELECT * FROM media WHERE id=?', (m.group(1),)).fetchone()
+        if not row or row['owner_id'] != u['id']:
+            raise ApiError(404, 'Изображение не найдено')
+        if row['attached_type']:
+            raise ApiError(409, 'Сначала отсоедините изображение')
+        try: os.remove(os.path.join(UPLOAD_DIR, row['filename']))
+        except FileNotFoundError: pass
+        conn.execute('DELETE FROM media WHERE id=?', (row['id'],)); conn.commit()
+        self.send_json({'ok': True})
+
 
     # ------------------------------------------------------------ мета/справочник
 
@@ -1255,7 +1510,7 @@ class Handler(BaseHTTPRequestHandler):
     CHAR_LIST_FIELDS = ('id', 'owner_id', 'public', 'created', 'updated')
 
     def char_payload(self, row, owner_name=None):
-        data = json.loads(row['data'])
+        data = ensure_progression(json.loads(row['data']))
         return {
             'id': row['id'], 'owner_id': row['owner_id'], 'public': bool(row['public']),
             'owner_name': owner_name, 'created': row['created'], 'updated': row['updated'],
@@ -1282,6 +1537,7 @@ class Handler(BaseHTTPRequestHandler):
         cur = conn.execute(
             'INSERT INTO characters(owner_id, public, data, created, updated) VALUES(?,?,?,?,?)',
             (u['id'], pub, json.dumps(data, ensure_ascii=False), now, now))
+        attach_character_media(conn, u['id'], cur.lastrowid, data)
         conn.commit()
         row = conn.execute('SELECT * FROM characters WHERE id=?', (cur.lastrowid,)).fetchone()
         self.send_json(self.char_payload(row, u['display_name']), status=201)
@@ -1310,8 +1566,15 @@ class Handler(BaseHTTPRequestHandler):
         row = self.get_char(conn, m.group(1))
         if row['owner_id'] != u['id']:
             raise ApiError(403, 'Это не ваш персонаж')
+        old_data = json.loads(row['data'])
         data = clean_character(body.get('data') if isinstance(body, dict) else body)
         pub = 1 if data.get('public', False) else 0
+        old_media = str(old_data.get('portrait_media_id') or '')
+        new_media = str(data.get('portrait_media_id') or '')
+        if old_media and old_media != new_media:
+            conn.execute("UPDATE media SET attached_type=NULL, attached_id=NULL WHERE id=? AND owner_id=? AND attached_type='character' AND attached_id=?",
+                         (old_media, u['id'], row['id']))
+        attach_character_media(conn, u['id'], row['id'], data)
         conn.execute('UPDATE characters SET data=?, public=?, updated=? WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), pub, time.time(), row['id']))
         conn.commit()
@@ -1323,9 +1586,184 @@ class Handler(BaseHTTPRequestHandler):
         row = self.get_char(conn, m.group(1))
         if row['owner_id'] != u['id']:
             raise ApiError(403, 'Это не ваш персонаж')
+        media_rows = conn.execute("SELECT * FROM media WHERE attached_type='character' AND attached_id=?", (row['id'],)).fetchall()
+        conn.execute("DELETE FROM media WHERE attached_type='character' AND attached_id=?", (row['id'],))
+        conn.execute('DELETE FROM ip_ledger WHERE character_id=?', (row['id'],))
         conn.execute('DELETE FROM characters WHERE id=?', (row['id'],))
         conn.commit()
+        for media in media_rows:
+            try: os.remove(os.path.join(UPLOAD_DIR, media['filename']))
+            except FileNotFoundError: pass
         self.send_json({'ok': True})
+
+    def save_character_data(self, conn, row, data):
+        conn.execute('UPDATE characters SET data=?, public=?, updated=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), 1 if data.get('public') else 0,
+                      time.time(), row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        return self.char_payload(fresh, fresh['owner'])
+
+    def require_character_editor(self, conn, cid, allow_gm=False):
+        user = self.require_user(conn)
+        row = self.get_char(conn, cid)
+        if row['owner_id'] != user['id'] and not (allow_gm and user['is_gm']):
+            raise ApiError(403, 'Нет права изменять этого персонажа')
+        return user, row
+
+    def add_ip_ledger(self, conn, character_id, actor_id, amount, before, after,
+                      kind, subject, reason):
+        conn.execute('INSERT INTO ip_ledger(character_id,actor_id,amount,balance_before,balance_after,kind,subject,reason,created) VALUES(?,?,?,?,?,?,?,?,?)',
+                     (character_id, actor_id, amount, before, after, kind,
+                      str(subject or '')[:120] or None, str(reason or '')[:500], time.time()))
+
+    def api_character_ip(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        data = ensure_progression(json.loads(row['data']))
+        amount = _num((body or {}).get('amount')) or 0
+        reason = str((body or {}).get('reason') or '').strip()
+        if not amount or abs(amount) > 10_000 or not reason:
+            raise ApiError(400, 'Укажите ненулевое изменение IP и причину')
+        before = data['ip_available']; after = before + amount
+        if after < 0:
+            raise ApiError(400, 'Баланс IP не может быть отрицательным')
+        data['ip_available'] = after
+        if amount > 0: data['ip_total_earned'] += amount
+        self.add_ip_ledger(conn, row['id'], user['id'], amount, before, after,
+                           'adjustment', None, reason)
+        self.send_json(self.save_character_data(conn, row, data))
+
+    def api_character_ip_history(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        rows = conn.execute('SELECT l.*,u.display_name actor FROM ip_ledger l JOIN users u ON u.id=l.actor_id WHERE character_id=? ORDER BY id DESC LIMIT 500',
+                            (row['id'],)).fetchall()
+        self.send_json({'entries': [dict(item) for item in rows]})
+
+    def api_character_improve(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        data = ensure_progression(json.loads(row['data']))
+        kind = str((body or {}).get('kind') or '')
+        subject = str((body or {}).get('subject') or '').strip()
+        before = data['ip_available']; cost = 0; reason = ''
+        if kind == 'skill':
+            base = skill_base(subject)
+            if not base or base in SPECIALIZED_SKILLS or subject != base:
+                raise ApiError(400, 'Для специализированного навыка повышайте parent-pool')
+            current = _num((data.get('skills') or {}).get(subject)) or 0
+            if current >= 10: raise ApiError(400, 'Skill уже достиг Level 10')
+            target = current + 1; cost = target * (40 if SKILL_BY_NAME[base][3] else 20)
+            data.setdefault('skills', {})[subject] = target
+            reason = f'{subject} {current} → {target}'
+        elif kind == 'parent':
+            if subject not in SPECIALIZED_SKILLS:
+                raise ApiError(400, 'Неизвестный parent Skill')
+            pools = data.setdefault('skill_pools', {})
+            current = _num(pools.get(subject)) or 0; target = current + 1
+            cost = target * (40 if SKILL_BY_NAME[subject][3] else 20)
+            pools[subject] = target; reason = f'{subject} Pool {current} → {target}'
+        elif kind == 'activate_role':
+            if subject not in ROLES or not any(item.get('name') == subject for item in data['roles']):
+                raise ApiError(400, 'Role не принадлежит персонажу')
+            active = next((item for item in data['roles'] if item.get('name') == data.get('active_role')), None)
+            if active and (_num(active.get('rank')) or 0) < 4:
+                raise ApiError(400, 'Active Role должна достичь Rank 4 перед переключением')
+            previous = data.get('active_role'); data['active_role'] = subject
+            reason = f'Active Role: {previous} → {subject}'
+        elif kind == 'role':
+            if subject not in ROLES: raise ApiError(400, 'Неизвестная Role')
+            roles = data['roles']; existing = next((item for item in roles if item.get('name') == subject), None)
+            active = next((item for item in roles if item.get('name') == data.get('active_role')), None)
+            if existing:
+                if subject != data.get('active_role'): raise ApiError(400, 'Повышать можно только active Role')
+                current = _num(existing.get('rank')) or 0
+                if current >= 10: raise ApiError(400, 'Role Ability уже достигла Rank 10')
+                target = current + 1; cost = target * 60; existing['rank'] = target
+                if isinstance((body or {}).get('setup'), dict): existing['setup'] = body['setup']
+                validate_role_rank_setup(subject, target, existing.get('setup') or {})
+                reason = f'{subject} {current} → {target}'
+            else:
+                if active and (_num(active.get('rank')) or 0) < 4:
+                    raise ApiError(400, 'Active Role должна достичь Rank 4 перед multiclass')
+                cost = 60
+                setup = dict((body or {}).get('setup') or {})
+                validate_role_rank_setup(subject, 1, setup)
+                roles.append({'name': subject, 'rank': 1, 'setup': setup, 'primary': False})
+                data['active_role'] = subject; reason = f'New Role: {subject} 1'
+        else:
+            raise ApiError(400, 'Неизвестный тип улучшения')
+        if before < cost: raise ApiError(400, f'Недостаточно IP: требуется {cost}')
+        data['ip_available'] = before - cost; data['ip_total_spent'] += cost
+        self.add_ip_ledger(conn, row['id'], user['id'], -cost, before,
+                           data['ip_available'], 'improvement', subject, reason)
+        self.send_json(self.save_character_data(conn, row, data))
+
+    def api_character_specialization(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        data = ensure_progression(json.loads(row['data']))
+        parent = str((body or {}).get('parent') or '')
+        name = str((body or {}).get('name') or '').strip()[:80]
+        delta = 1 if (_num((body or {}).get('delta')) or 0) > 0 else -1
+        if parent not in SPECIALIZED_SKILLS or not name:
+            raise ApiError(400, 'Укажите parent и specialization')
+        key = f'{parent} ({name})'; skills = data.setdefault('skills', {})
+        current = _num(skills.get(key)) or 0
+        native_key = f'Language ({data.get("native_language")})' if data.get('native_language') else None
+        children = 0
+        for skill, raw in skills.items():
+            if skill_base(skill) != parent or skill == parent: continue
+            level = _num(raw) or 0
+            children += max(0, level - 4) if skill == native_key else level
+        pool = _num((data.get('skill_pools') or {}).get(parent)) or 0
+        if delta > 0:
+            if current >= 10: raise ApiError(400, 'Specialization уже достигла Level 10')
+            if children >= pool: raise ApiError(400, 'Нет свободных parent points')
+            skills[key] = current + 1
+        else:
+            minimum = 4 if key == native_key else 0
+            if current <= minimum: raise ApiError(400, f'Specialization уже на минимальном Level {minimum}')
+            skills[key] = current - 1
+        reason = f'{key} {current} → {skills[key]}'
+        self.add_ip_ledger(conn, row['id'], user['id'], 0, data['ip_available'],
+                           data['ip_available'], 'allocation', key, reason)
+        self.send_json(self.save_character_data(conn, row, data))
+
+    def api_character_resource(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        data = ensure_progression(json.loads(row['data']))
+        resource = str((body or {}).get('resource') or '')
+        action = str((body or {}).get('action') or 'delta')
+        value = _num((body or {}).get('value')) or 0
+        derived = derive(data)
+        if resource == 'luck':
+            maximum = _num((data.get('stats') or {}).get('LUCK')) or 0
+            data['luck_cur'] = maximum if action == 'reset' else max(0, min(maximum, data['luck_cur'] + value))
+        elif resource == 'hp':
+            maximum = derived.get('hp_max') or 0
+            current = _num(data.get('hp_cur')) if _num(data.get('hp_cur')) is not None else maximum
+            data['hp_cur'] = max(-maximum, min(maximum, current + value))
+        elif resource == 'cash':
+            data['cash'] = max(0, min(9_999_999, (float(data.get('cash') or 0) + value) if action == 'delta' else value))
+        elif resource == 'reputation':
+            data['reputation'] = max(0, min(10, data['reputation'] + value))
+        elif resource == 'armor':
+            location = str((body or {}).get('subject') or '')
+            piece = (data.get('armor') or {}).get(location)
+            if not isinstance(piece, dict): raise ApiError(400, 'Локация брони не экипирована')
+            maximum = _num(piece.get('maximum')) or _num(piece.get('sp')) or _num(piece.get('sdp')) or 0
+            piece['current'] = maximum if action == 'reset' else max(0, min(maximum, (_num(piece.get('current')) or 0) + value))
+        elif resource == 'weapon':
+            key = str((body or {}).get('subject') or '')
+            state = (data.get('weapon_state') or {}).get(key)
+            if not state: raise ApiError(400, 'Оружие не найдено')
+            if action == 'fire': state['magazine'] = max(0, (_num(state.get('magazine')) or 0) - max(1, abs(value) or 1))
+            elif action == 'reload':
+                need = max(0, (_num(state.get('magazine_max')) or 0) - (_num(state.get('magazine')) or 0)); moved = min(need, _num(state.get('reserve')) or 0)
+                state['magazine'] = (_num(state.get('magazine')) or 0) + moved; state['reserve'] = (_num(state.get('reserve')) or 0) - moved
+            else: raise ApiError(400, 'Weapon action: fire/reload')
+        else:
+            raise ApiError(400, 'Неизвестный ресурс')
+        self.send_json(self.save_character_data(conn, row, data))
+
 
     def api_roster(self, conn, qs, m, body):
         rows = conn.execute(
@@ -1606,6 +2044,9 @@ ROUTES = [
     ('POST', rx(r'/api/logout'), Handler.api_logout),
     ('GET', rx(r'/api/me'), Handler.api_me),
     ('POST', rx(r'/api/profile'), Handler.api_profile),
+    ('POST', rx(r'/api/media'), Handler.api_media_upload),
+    ('GET', rx(r'/api/media/([a-f0-9]{32})'), Handler.api_media_get),
+    ('DELETE', rx(r'/api/media/([a-f0-9]{32})'), Handler.api_media_delete),
     ('GET', rx(r'/api/meta'), Handler.api_meta),
     ('GET', rx(r'/api/stats'), Handler.api_stats),
     ('GET', rx(r'/api/items'), Handler.api_items),
@@ -1616,6 +2057,11 @@ ROUTES = [
     ('GET', rx(r'/api/characters/(\d+)'), Handler.api_get_character),
     ('PUT', rx(r'/api/characters/(\d+)'), Handler.api_save_character),
     ('DELETE', rx(r'/api/characters/(\d+)'), Handler.api_delete_character),
+    ('POST', rx(r'/api/characters/(\d+)/ip'), Handler.api_character_ip),
+    ('GET', rx(r'/api/characters/(\d+)/ip'), Handler.api_character_ip_history),
+    ('POST', rx(r'/api/characters/(\d+)/improve'), Handler.api_character_improve),
+    ('POST', rx(r'/api/characters/(\d+)/specialization'), Handler.api_character_specialization),
+    ('POST', rx(r'/api/characters/(\d+)/resource'), Handler.api_character_resource),
     ('GET', rx(r'/api/roster'), Handler.api_roster),
     ('POST', rx(r'/api/buy'), Handler.api_buy),
     ('POST', rx(r'/api/sell'), Handler.api_sell),
