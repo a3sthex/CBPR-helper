@@ -68,6 +68,21 @@ def valid_character(role='Solo'):
     }
 
 
+def valid_merged_character(role='Solo'):
+    char = valid_character(role)
+    char['first_name'] = 'Ирина'
+    char['last_name'] = 'Волкова'
+    char['lifepath_mode'] = 'merged'
+    char['lifepath'] = {key: ('Восточная Европа' if key == 'region' else 'тест') for key in (
+        'region', 'personality', 'clothing', 'hair', 'hair_color', 'affectation',
+        'value', 'people', 'person', 'possession', 'family', 'environment', 'crisis', 'goal')}
+    char['skill_pools'] = {
+        'Language': 2, 'Local Expert': 2, 'Martial Arts': 0,
+        'Science': 0, 'Play Instrument': 0,
+    }
+    return char
+
+
 class DerivedRulesTests(unittest.TestCase):
     def test_humanity_current_and_maximum_are_separate(self):
         result = server.derive({
@@ -107,7 +122,28 @@ class CreationValidationTests(unittest.TestCase):
     def test_all_ten_role_setups_and_lifepaths_validate(self):
         for role in server.ROLES:
             with self.subTest(role=role):
-                server.validate_creation(valid_character(role))
+                server.validate_creation(valid_merged_character(role))
+
+    def test_merged_lifepath_does_not_require_removed_social_rolls(self):
+        char = valid_merged_character()
+        self.assertFalse({'friends', 'enemies', 'love'} & set(char['lifepath']))
+        server.validate_creation(char)
+
+    def test_parent_pool_must_equal_specialization_allocation(self):
+        char = valid_merged_character()
+        char['skills']['Language (Streetslang)'] = 3
+        with self.assertRaisesRegex(server.ApiError, 'parent-pool'):
+            server.validate_creation(char)
+
+    def test_only_one_neuroport_is_allowed(self):
+        char = valid_merged_character()
+        char['cyberware'].append({
+            'key': 'cyberware-0', 'name': 'Neuroport', 'hl': 7,
+            'price': 1000, 'type': 'Neuralware',
+        })
+        char['cash'] = 1550
+        with self.assertRaisesRegex(server.ApiError, 'только один Neuroport'):
+            server.validate_creation(char)
 
     def test_requires_exact_stat_budget(self):
         char = valid_character()

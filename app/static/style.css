@@ -374,3 +374,64 @@ select.over-max { border-color: var(--red); color: var(--red); }
   border-left: 3px solid var(--red); background: rgba(255, 82, 82, .08);
   padding: 6px 10px; border-radius: 0 8px 8px 0; margin: 6px 0; font-size: 15px;
 }
+
+/* ---------- мастер v2: карусель, parent-pool и каталоги ---------- */
+.role-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 4px 2px 8px; scrollbar-width: thin; }
+.role-tabs button { flex: 0 0 auto; padding: 7px 11px; }
+.role-tabs button.active { color: var(--yellow); border-color: var(--yellow); background: rgba(255,213,0,.08); }
+.role-carousel { display: grid; grid-template-columns: 48px minmax(0, 760px) 48px; align-items: stretch; justify-content: center; gap: 12px; touch-action: pan-y; }
+.role-focus { cursor: default; min-height: 290px; padding: 24px; position: relative; }
+.role-focus h2 { margin-top: 4px; }
+.role-focus p { line-height: 1.55; }
+.role-index { position: absolute; top: 12px; right: 14px; color: var(--muted); font: 12px 'Orbitron', sans-serif; }
+.role-arrow { font-size: 36px; color: var(--cyan); border-color: rgba(0,229,255,.35); background: rgba(0,229,255,.04); }
+.ability-box { margin-top: 18px; border-left: 3px solid var(--yellow); padding: 10px 14px; background: rgba(255,213,0,.04); }
+
+.identity-panel h3 { margin-top: 0; }
+.input-action { display: flex; gap: 6px; }
+.input-action input { min-width: 0; flex: 1; }
+.lp-item { display: block; }
+.lp-label { margin-bottom: 3px; }
+.lp-question-info { line-height: 1.45; margin-bottom: 8px; }
+.lp-result-info { margin-top: 9px; padding: 9px 11px; border-left: 2px solid var(--cyan); border-radius: 0 6px 6px 0; background: rgba(0,229,255,.04); color: var(--muted); font-size: 13px; line-height: 1.4; }
+.lp-result-info b { color: var(--text); }
+
+.skill-table-head, .skill-row { display: grid; grid-template-columns: minmax(210px, 1fr) 90px 108px 72px 32px; align-items: center; gap: 8px; }
+.skill-table-head { padding: 7px 0; color: var(--muted); font: 11px 'Orbitron', sans-serif; letter-spacing: .6px; border-bottom: 1px solid var(--line); }
+.skill-list { display: block; overflow-x: auto; }
+.skill-row { min-width: 570px; padding: 5px 0; }
+.skill-row .sname { min-width: 0; }
+.skill-row .sstat, .skill-row .slvl, .skill-row .sbase { width: auto; font-size: 12.5px; }
+.skill-row .sstat b { color: var(--text); margin-left: 3px; }
+.skill-name-btn { border: 0; background: none; padding: 1px 0; text-align: left; border-radius: 0; color: var(--text); font: inherit; }
+.skill-name-btn:hover { background: none; color: var(--cyan); }
+.skill-parent { background: rgba(255,213,0,.035); }
+.subskill-pool { min-width: 570px; margin: 0 0 7px 18px; border-left: 2px solid rgba(255,213,0,.3); padding-left: 10px; }
+.subskill-pool-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 5px 0; color: var(--muted); font-size: 12px; }
+.subskill-row { background: rgba(0,229,255,.025); }
+.subskill-name input { width: calc(100% - 24px); padding: 4px 7px; }
+.mini-step { width: 29px; height: 29px; padding: 0; border-radius: 6px; }
+.slvl { display: flex; align-items: center; justify-content: flex-start; gap: 5px; }
+.qty-control { display: inline-flex; align-items: center; gap: 7px; }
+
+.catalog-scroll { max-height: 340px; overflow: auto; padding-right: 3px; scrollbar-gutter: stable; }
+.shop-scroll { max-height: 420px; }
+.catalog-group { margin-bottom: 12px; }
+.catalog-type { position: sticky; top: 0; z-index: 2; display: flex; justify-content: space-between; margin: 0 0 6px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; color: var(--yellow); background: var(--panel2); }
+.catalog-type span { color: var(--muted); font-size: 12px; }
+.catalog-row.unaffordable { opacity: .55; }
+.info-btn { flex: 0 0 auto; width: 28px; height: 28px; padding: 0; border-radius: 50%; color: var(--cyan); border-color: rgba(0,229,255,.45); font-weight: 800; font-family: Georgia, serif; }
+.preserve-lines { white-space: pre-wrap; }
+.style-catalogs { grid-template-columns: 1fr 1fr; gap: 18px; }
+
+@media (max-width: 760px) {
+  .wizard-nav { overflow-x: auto; }
+  .wiz-step { min-width: 82px; }
+  .role-carousel { grid-template-columns: 36px minmax(0, 1fr) 36px; gap: 6px; }
+  .role-focus { padding: 18px 14px; min-height: 340px; }
+  .role-arrow { padding: 0; }
+  .style-catalogs { grid-template-columns: 1fr; }
+  .catalog-scroll { max-height: 300px; }
+  .skill-table-head { min-width: 570px; }
+  .full-skill-list { max-height: none; }
+}

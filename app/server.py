@@ -494,6 +494,8 @@ def clean_character(data):
     out['handle'] = str(out.get('handle') or '').strip()[:60]
     if not out['handle']:
         raise ApiError(400, 'Нужен псевдоним (Handle) персонажа')
+    out['first_name'] = str(out.get('first_name') or '').strip()[:60]
+    out['last_name'] = str(out.get('last_name') or '').strip()[:60]
     for k in ('notes', 'appearance', 'background', 'player'):
         if out.get(k) is not None:
             out[k] = str(out[k])[:4000]
@@ -515,6 +517,8 @@ def clean_character(data):
             raise ApiError(400, f'{k}: ожидается список (до 300 записей)')
     if not isinstance(out.get('skills') or {}, dict):
         out['skills'] = {}
+    if out.get('skill_pools') is not None and not isinstance(out.get('skill_pools'), dict):
+        raise ApiError(400, 'skill_pools должен быть объектом')
     if not isinstance(out.get('armor') or {}, dict):
         out['armor'] = {}
     try:
@@ -533,11 +537,23 @@ def skill_base(name):
 
 
 def creation_skill_cost(data):
-    """Стоимость навыков с бесплатными 4 уровнями культурного языка."""
+    """Стоимость навыков; в новой схеме специализации оплачиваются parent-pool."""
     skills = data.get('skills') or {}
-    total = 0
+    pools = data.get('skill_pools')
     native = str(data.get('native_language') or '').strip()
     native_key = f'Language ({native})' if native else None
+    total = 0
+
+    if pools is not None:
+        if set(pools) - SPECIALIZED_SKILLS:
+            raise ApiError(400, 'skill_pools содержит неизвестный специализированный навык')
+        for base in SPECIALIZED_SKILLS:
+            level = _num(pools.get(base)) or 0
+            if level < 0 or level > SKILL_MAX_CREATION:
+                raise ApiError(400, f'{base}: parent-pool должен быть 0–{SKILL_MAX_CREATION}')
+            total += level * (2 if SKILL_BY_NAME[base][3] else 1)
+
+    allocated = {base: 0 for base in SPECIALIZED_SKILLS}
     for name, raw_level in skills.items():
         base = skill_base(name)
         if not base:
@@ -547,10 +563,21 @@ def creation_skill_cost(data):
         level = _num(raw_level)
         if level is None or level < 0 or level > SKILL_MAX_CREATION:
             raise ApiError(400, f'{name}: при создании допустим уровень 0–{SKILL_MAX_CREATION}')
-        cost = 2 if SKILL_BY_NAME[base][3] else 1
-        total += level * cost
-        if name == native_key and base == 'Language':
-            total -= min(4, level)
+        if base in SPECIALIZED_SKILLS:
+            free_native = name == native_key and base == 'Language'
+            allocated[base] += max(0, level - 4) if free_native else level
+            if pools is None:
+                total += level * (2 if SKILL_BY_NAME[base][3] else 1)
+                if free_native:
+                    total -= min(4, level)
+        else:
+            total += level * (2 if SKILL_BY_NAME[base][3] else 1)
+
+    if pools is not None:
+        for base in SPECIALIZED_SKILLS:
+            pool = _num(pools.get(base)) or 0
+            if allocated[base] != pool:
+                raise ApiError(400, f'{base}: распределено {allocated[base]} из parent-pool {pool}')
     return total
 
 
@@ -682,21 +709,26 @@ def validate_creation_budget(data):
 
     chrome_total = 0.0
     has_neuroport = False
+    neuroport_count = 0
     for entry in data.get('cyberware') or []:
         if entry.get('creation_free') and entry.get('key') == 'creation-neuroport':
             has_neuroport = True
+            neuroport_count += 1
             continue
         item = item_by_id(str(entry.get('key') or ''))
         if not item or item.get('cat') != 'cyberware' or item.get('price') is None:
             raise ApiError(400, f'Неизвестный имплант стартовой закупки: {entry.get("key")}')
         if item['name'].lower() == 'neuroport':
             has_neuroport = True
+            neuroport_count += 1
         ctype = str((item.get('fields') or {}).get('Type') or '').lower()
         if 'fashionware' in ctype:
             fashion_total += float(item['price'])
         else:
             chrome_total += float(item['price'])
 
+    if neuroport_count > 1:
+        raise ApiError(400, 'Одновременно допустим только один Neuroport')
     if fashion_total > START_CASH_FASHION + 1e-9:
         raise ApiError(400, f'Fashion/Fashionware превышает бюджет {START_CASH_FASHION}€$')
     creation = data.get('creation') or {}
@@ -747,19 +779,21 @@ def validate_creation(data):
 
     mode = data.get('lifepath_mode')
     lifepath = data.get('lifepath') or {}
+    # friends/enemies/tragic love остаются читаемыми у старых листов, но больше
+    # не являются обязательной частью создания. Новый мастер объединяет источники.
     common = {
-        'core': ('region', 'personality', 'clothing', 'hair', 'affectation', 'value',
-                 'people', 'person', 'possession', 'family', 'environment', 'crisis',
-                 'friends', 'enemies', 'enemy_cause', 'enemy_wronged',
-                 'enemy_resources', 'enemy_revenge', 'love', 'goal'),
+        'merged': ('region', 'personality', 'clothing', 'hair', 'hair_color',
+                   'affectation', 'value', 'people', 'person', 'possession',
+                   'family', 'environment', 'crisis', 'goal'),
+        'core': ('region', 'personality', 'clothing', 'hair', 'affectation',
+                 'value', 'people', 'person', 'possession', 'family',
+                 'environment', 'crisis', 'goal'),
         'cemk': ('region', 'personality', 'wardrobe', 'hair_style', 'hair_color',
-                 'value', 'people', 'family', 'environment', 'crisis', 'friends',
-                 'friend_role', 'friend_circle', 'enemies', 'enemy_role',
-                 'enemy_circle', 'love', 'goal'),
+                 'value', 'people', 'family', 'environment', 'crisis', 'goal'),
     }
     if mode not in common or any(not str(lifepath.get(key) or '').strip()
                                  for key in common[mode]):
-        raise ApiError(400, 'Заполните общий Lifepath выбранного источника')
+        raise ApiError(400, 'Заполните общий Lifepath')
     region = str(lifepath.get('region') or '')
     region_key = next((key for key in CULTURAL_LANGUAGES if region.startswith(key)), None)
     if not region_key or native not in CULTURAL_LANGUAGES[region_key]:
