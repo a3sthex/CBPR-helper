@@ -486,3 +486,96 @@ const SKILL_DETAILS = {
   'Sea Vehicle Tech': ['Ремонт водного транспорта.', 'Починить катер.'],
   'Weaponstech': ['Диагностика, ремонт и обслуживание оружия.', 'Устранить поломку винтовки.'],
 };
+
+/* ===================== creation wizard v3 source metadata ===================== */
+
+const ROLE_COREBOOK_V3 = {
+  Rockerboy: { icon: '🎤', pages: 'CP:R pp. 29, 144–145',
+    en: { identity: 'A performer, agitator, or public figure who turns attention into influence.', play: 'Build an audience, move fans to action, and use public pressure where weapons cannot solve the problem.', rank4: 'Charismatic Impact Rank 4 is added to Impact checks and determines the size and dedication of the audience you can influence.' },
+    ru: { identity: 'Исполнитель, агитатор или публичная фигура, превращающая внимание во влияние.', play: 'Собирает аудиторию, побуждает фанатов действовать и использует общественное давление там, где оружие не решает проблему.', rank4: 'Charismatic Impact Rank 4 добавляется к проверкам способности и определяет размер и преданность аудитории.' } },
+  Solo: { icon: '🎯', pages: 'CP:R pp. 30, 146',
+    en: { identity: 'A combat professional trained to read threats and survive lethal engagements.', play: 'Redistribute Combat Awareness whenever the tactical situation changes to improve initiative, attacks, damage, defense, or perception.', rank4: 'Combat Awareness provides 4 points that can be reassigned among its combat options.' },
+    ru: { identity: 'Боевой профессионал, умеющий читать угрозы и выживать в смертельных столкновениях.', play: 'Перераспределяет Combat Awareness при изменении ситуации, усиливая инициативу, атаки, урон, защиту или восприятие.', rank4: 'Combat Awareness даёт 4 очка для распределения между боевыми опциями.' } },
+  Netrunner: { icon: '💻', pages: 'CP:R pp. 31, 147, 195–218',
+    en: { identity: 'A specialist who enters NET Architectures and fights programs, Black ICE, and enemy Netrunners.', play: 'Operate in physical space and the NET at the same time, using Interface actions to explore, control, attack, and leave viruses.', rank4: 'Interface Rank 4 grants 3 NET Actions on each Turn while actively Netrunning.' },
+    ru: { identity: 'Специалист по проникновению в NET Architectures и борьбе с программами, Black ICE и вражескими Нетраннерами.', play: 'Одновременно действует в физическом пространстве и NET, исследуя, управляя, атакуя и создавая вирусы.', rank4: 'Interface Rank 4 даёт 3 NET Actions в ход во время активного Нетраннинга.' } },
+  Tech: { icon: '🛠️', pages: 'CP:R pp. 32, 147–149',
+    en: { identity: 'An engineer who repairs, fabricates, upgrades, and invents technology.', play: 'Turn downtime, tools, and materials into repaired equipment and unique technical advantages for the crew.', rank4: 'Maker Rank 4 supplies 8 Specialty Points, with no more than 4 assigned to one specialty at creation.' },
+    ru: { identity: 'Инженер, ремонтирующий, производящий, улучшающий и изобретающий технологии.', play: 'Превращает время, инструменты и материалы в рабочее снаряжение и уникальные преимущества команды.', rank4: 'Maker Rank 4 даёт 8 Specialty Points, не более 4 в одну специализацию при создании.' } },
+  Medtech: { icon: '⚕️', pages: 'CP:R pp. 33, 149–151',
+    en: { identity: 'A medical specialist with access to surgery, pharmaceuticals, and cryosystems.', play: 'Treat injuries beyond First Aid, install cyberware, formulate drugs, and preserve critically injured patients.', rank4: 'Medicine Rank 4 supplies 4 Specialty Points distributed among Surgery, Pharmaceuticals, and Cryosystem Operation.' },
+    ru: { identity: 'Медицинский специалист с доступом к хирургии, препаратам и криосистемам.', play: 'Лечит травмы за пределами First Aid, устанавливает хром, создаёт препараты и сохраняет критически раненых.', rank4: 'Medicine Rank 4 даёт 4 Specialty Points для Surgery, Pharmaceuticals и Cryosystem Operation.' } },
+  Media: { icon: '📰', pages: 'CP:R pp. 34, 151–153',
+    en: { identity: 'An investigator and storyteller whose reporting can change reputations and events.', play: 'Cultivate sources, collect rumors and evidence, then publish a story credible enough to produce consequences.', rank4: 'Credibility Rank 4 improves rumor checks and determines the reach and believability of published stories.' },
+    ru: { identity: 'Расследователь и рассказчик, чьи публикации меняют репутации и события.', play: 'Развивает источники, собирает слухи и доказательства, затем публикует историю с реальными последствиями.', rank4: 'Credibility Rank 4 усиливает работу со слухами и определяет охват и убедительность публикаций.' } },
+  Exec: { icon: '🏢', pages: 'CP:R pp. 35, 153–157',
+    en: { identity: 'A corporate operator backed by housing, personnel, and organizational resources.', play: 'Direct a loyal Team Member, use corporate access, and balance personal goals against the demands of the organization.', rank4: 'Teamwork Rank 4 includes the role benefits and Team Member access shown on the Corebook Teamwork table.' },
+    ru: { identity: 'Корпоративный специалист с жильём, персоналом и ресурсами организации.', play: 'Руководит Team Member, использует корпоративный доступ и балансирует личные цели с требованиями организации.', rank4: 'Teamwork Rank 4 включает преимущества и Team Member из таблицы Teamwork Corebook.' } },
+  Lawman: { icon: '🚨', pages: 'CP:R pp. 36, 158–159',
+    en: { identity: 'An authorized agent able to call trained allies into a dangerous situation.', play: 'Use Backup when a situation escalates, while protecting your standing with the organization that answers the call.', rank4: 'Backup Rank 4 determines the check and the level of responding backup from the Corebook table.' },
+    ru: { identity: 'Уполномоченный агент, способный вызвать обученных союзников в опасную ситуацию.', play: 'Использует Backup при эскалации, сохраняя доверие организации, отвечающей на вызов.', rank4: 'Backup Rank 4 определяет проверку и уровень подкрепления по таблице Corebook.' } },
+  Fixer: { icon: '🤝', pages: 'CP:R pp. 37, 159–161',
+    en: { identity: 'A broker of goods, introductions, information, and access.', play: 'Find markets and clients, negotiate prices, navigate cultures, and connect the crew to people they could not reach alone.', rank4: 'Operator Rank 4 determines your contacts, reach, cultural familiarity, and access to goods on the Operator tables.' },
+    ru: { identity: 'Посредник в товарах, знакомствах, информации и доступе.', play: 'Находит рынки и клиентов, торгуется, понимает культуры и связывает команду с недоступными людьми.', rank4: 'Operator Rank 4 определяет контакты, охват, культурное знакомство и доступ к товарам.' } },
+  Nomad: { icon: '🏎️', pages: 'CP:R pp. 38, 161–163',
+    en: { identity: 'A member of a mobile family whose strength is transport, logistics, and mutual support.', play: 'Use family vehicles and upgrades, keep the crew moving, and maintain the machines that make long-distance work possible.', rank4: 'Moto Rank 4 provides four sequential vehicle or upgrade choices and adds to relevant driving and vehicle repair checks.' },
+    ru: { identity: 'Член мобильной семьи, чья сила — транспорт, логистика и взаимная поддержка.', play: 'Использует семейные машины и улучшения, перевозит команду и поддерживает технику в рабочем состоянии.', rank4: 'Moto Rank 4 даёт четыре последовательных выбора транспорта или улучшений и добавляется к связанным проверкам.' } },
+};
+
+const STAT_DETAILS_V3 = {
+  INT: ['Intelligence', 'Интеллект', 'Problem solving, awareness, memory, and learning.', 'Решение задач, внимательность, память и обучение.', 'CP:R p. 72'],
+  REF: ['Reflexes', 'Рефлексы', 'Reaction time, ranged combat, and initiative. REF 8 enables attempts to evade ranged attacks.', 'Скорость реакции, дистанционный бой и инициатива. REF 8 позволяет пытаться уклоняться от выстрелов.', 'CP:R pp. 72, 173'],
+  DEX: ['Dexterity', 'Ловкость', 'Physical coordination, melee combat, evasion, and precise movement.', 'Координация, ближний бой, уклонение и точные движения.', 'CP:R p. 72'],
+  TECH: ['Technique', 'Техника', 'Using, repairing, and understanding technology as well as medical procedures.', 'Использование, ремонт и понимание техники, а также медицинские процедуры.', 'CP:R p. 72'],
+  COOL: ['Cool', 'Хладнокровие', 'Presence, composure, persuasion, and resistance to pressure.', 'Уверенность, самообладание, убеждение и устойчивость к давлению.', 'CP:R p. 72'],
+  WILL: ['Willpower', 'Воля', 'Determination, endurance, and part of the calculation for Hit Points.', 'Решимость, выносливость и часть расчёта Hit Points.', 'CP:R pp. 72, 79'],
+  LUCK: ['Luck', 'Удача', 'A renewable pool spent to improve important checks.', 'Возобновляемый пул для усиления важных проверок.', 'CP:R pp. 72, 130'],
+  MOVE: ['Movement', 'Движение', 'How quickly the character can move during combat.', 'Скорость перемещения персонажа в бою.', 'CP:R pp. 72, 169'],
+  BODY: ['Body', 'Телосложение', 'Physical power, Death Save, and part of the calculation for Hit Points.', 'Физическая мощь, Death Save и часть расчёта Hit Points.', 'CP:R pp. 72, 79'],
+  EMP: ['Empathy', 'Эмпатия', 'Reading people, relating to others, and determining starting Humanity.', 'Понимание людей, отношения с окружающими и начальная Humanity.', 'CP:R pp. 72, 80'],
+};
+
+const LIFEPATH_SECTIONS_V3 = [
+  ['origin', 'Origin', 'Происхождение', ['region', 'family', 'environment']],
+  ['appearance', 'Appearance', 'Внешность', ['clothing', 'hair', 'hair_color', 'affectation']],
+  ['values', 'Personality and Values', 'Характер и ценности', ['personality', 'value', 'people', 'person', 'possession']],
+  ['future', 'Past and Future', 'Прошлое и будущее', ['crisis', 'goal']],
+];
+
+const LIFEPATH_LABEL_EN = {
+  region:'Cultural Region', personality:'Personality', clothing:'Clothing Style', hair:'Hairstyle', hair_color:'Hair Color',
+  affectation:'Affectation', value:'What do you value most?', people:'How do you feel about most people?',
+  person:'Most valued person', possession:'Most valued possession', family:'Family Background', environment:'Childhood Environment',
+  crisis:'Family Crisis', goal:'Life Goal', kind:'Professional Type', act:'Group or Solo?', venue:'Primary Venue', moral:'Moral Code',
+  enemy:'Professional Enemy', territory:'Operating Territory', partner:'Partner', workspace:'Workspace', clients:'Clients', supplies:'Suppliers',
+  channel:'Distribution Channel', ethics:'Professional Ethics', stories:'Type of Stories', division:'Corporate Division', base:'Organization Base',
+  boss:'Relationship with Boss', position:'Position', jurisdiction:'Jurisdiction', corruption:'Department Ethics', target:'Primary Target',
+  office:'Office', size:'Family Size', domain:'Transport Domain', activity:'Family Work', duty:'Family Duty', philosophy:'Family Philosophy',
+};
+const LIFEPATH_QUESTION_EN = {
+  region:'Defines cultural roots and the list available for the free Cultural Language at Level 4.',
+  personality:'Describes the character’s usual manner and a useful baseline for roleplay, not an absolute restriction.',
+  clothing:'Sets the dominant visual style. Individual items are purchased separately in Shopping.',
+  hair:'Defines a recognizable hairstyle that can be adapted for biosculpting or cyberware.',
+  hair_color:'Adds color and decoration to the hairstyle in the visual language of the Time of the RED or the 2070s.',
+  affectation:'A signature detail other people use to recognize the character.', value:'Identifies the value that drives risky choices and personal conflicts.',
+  people:'Sets the character’s starting attitude toward strangers.', person:'Identifies a person or group that remains an emotional bond or vulnerability.',
+  possession:'An emotionally important object tied to the past, a promise, or a loss.', family:'Describes the family’s social circumstances before the character took to The Street.',
+  environment:'Describes the surroundings that shaped early skills, fears, and expectations.', crisis:'The event that destroyed the family’s previous stability.',
+  goal:'A long-term objective that can drive jobs and personal stories.',
+};
+
+const LEGACY_DISPLAY_EN = {
+  'Северная Америка':'North America','Южная / Центральная Америка':'South/Central America','Центральная Америка':'Central America','Южная Америка':'South America',
+  'Западная Европа':'Western Europe','Восточная Европа':'Eastern Europe','Ближний Восток / Северная Африка':'Middle East/North Africa',
+  'Африка южнее Сахары':'Sub-Saharan Africa','Южная Азия':'South Asia','Юго-Восточная Азия':'Southeast Asia','Восточная Азия':'East Asia',
+  'Океания / Тихоокеанские острова':'Oceania/Pacific Islands',
+  'Английский':'English','Испанский':'Spanish','Навахо':'Navajo','Кри':'Cree','Креольский':'Creole','Французский':'French','Португальский':'Portuguese',
+  'Гуарани':'Guarani','Кечуа':'Quechua','Майя':'Mayan','Науатль':'Nahuatl','Немецкий':'German','Итальянский':'Italian','Норвежский':'Norwegian',
+  'Русский':'Russian','Украинский':'Ukrainian','Польский':'Polish','Финский':'Finnish','Румынский':'Romanian','Арабский':'Arabic','Иврит':'Hebrew',
+  'Персидский':'Persian','Турецкий':'Turkish','Берберский':'Berber','Суахили':'Swahili','Хауса':'Hausa','Лингала':'Lingala','Зулу':'Zulu',
+  'Эве':'Ewe','Амхарский':'Amharic','Хинди':'Hindi','Бенгальский':'Bengali','Урду':'Urdu','Тамильский':'Tamil','Непальский':'Nepali',
+  'Вьетнамский':'Vietnamese','Тайский':'Thai','Индонезийский':'Indonesian','Тагальский':'Tagalog','Кхмерский':'Khmer','Китайский':'Chinese',
+  'Японский':'Japanese','Корейский':'Korean','Монгольский':'Mongolian','Маори':'Maori','Гавайский':'Hawaiian','Самоанский':'Samoan','Таитянский':'Tahitian',
+  'Свой район':'Your Home',
+};

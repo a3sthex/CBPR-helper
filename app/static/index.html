@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -16,25 +16,27 @@
     <span class="brand-name">CBPR<b>helper</b></span>
   </a>
   <nav id="nav">
-    <a href="#/" data-route="">Главная</a>
-    <a href="#/codex" data-route="codex">Справочник</a>
-    <a href="#/guides" data-route="guides">Гайды</a>
-    <a href="#/market" data-route="market">Чёрный рынок</a>
-    <a href="#/calc" data-route="calc">Калькулятор</a>
-    <a href="#/characters" data-route="characters">Мои персонажи</a>
-    <a href="#/roster" data-route="roster">Ростер</a>
-    <a href="#/news" data-route="news">Новости</a>
-    <a href="#/jobs" data-route="jobs">Доска заказов</a>
+    <a href="#/" data-route="" data-en="Home" data-ru="Главная">Home</a>
+    <a href="#/codex" data-route="codex" data-en="Codex" data-ru="Справочник">Codex</a>
+    <a href="#/guides" data-route="guides" data-en="Guides" data-ru="Гайды">Guides</a>
+    <a href="#/market" data-route="market" data-en="Night Market" data-ru="Чёрный рынок">Night Market</a>
+    <a href="#/calc" data-route="calc" data-en="Calculator" data-ru="Калькулятор">Calculator</a>
+    <a href="#/characters" data-route="characters" data-en="Characters" data-ru="Персонажи">Characters</a>
+    <a href="#/roster" data-route="roster" data-en="Roster" data-ru="Ростер">Roster</a>
+    <a href="#/news" data-route="news" data-en="News" data-ru="Новости">News</a>
+    <a href="#/jobs" data-route="jobs" data-en="Jobs" data-ru="Заказы">Jobs</a>
   </nav>
+  <button id="language-toggle" class="btn-sm language-toggle" type="button">RU</button>
   <div id="userbox" class="userbox"></div>
 </header>
 <main id="view" class="container"></main>
 <footer class="footer">
-  <span>CBPR helper — неофициальный фанатский инструмент для <b>Cyberpunk RED</b> (R. Talsorian Games).</span>
-  <span>Ночной город не спит. Данные — из Data Pool.xlsx.</span>
+  <span data-en="CBPR Helper — an unofficial fan tool for Cyberpunk RED." data-ru="CBPR Helper — неофициальный фанатский инструмент для Cyberpunk RED.">CBPR Helper — an unofficial fan tool for Cyberpunk RED.</span>
+  <span data-en="Night City never sleeps. Data: Data Pool.xlsx." data-ru="Ночной город не спит. Данные — из Data Pool.xlsx.">Night City never sleeps. Data: Data Pool.xlsx.</span>
 </footer>
 <div id="modal-root"></div>
 <div id="toast-root"></div>
+<script src="/i18n.js"></script>
 <script src="/guides-data.js"></script>
 <script src="/creation-data.js"></script>
 <script src="/app.js"></script>

@@ -519,6 +519,9 @@ def clean_character(data):
         out['skills'] = {}
     if out.get('skill_pools') is not None and not isinstance(out.get('skill_pools'), dict):
         raise ApiError(400, 'skill_pools должен быть объектом')
+    specializations = out.get('skill_specializations')
+    if specializations is not None and (not isinstance(specializations, list) or len(specializations) > 100):
+        raise ApiError(400, 'skill_specializations должен быть списком до 100 записей')
     if not isinstance(out.get('armor') or {}, dict):
         out['armor'] = {}
     try:
@@ -576,8 +579,8 @@ def creation_skill_cost(data):
     if pools is not None:
         for base in SPECIALIZED_SKILLS:
             pool = _num(pools.get(base)) or 0
-            if allocated[base] != pool:
-                raise ApiError(400, f'{base}: распределено {allocated[base]} из parent-pool {pool}')
+            if allocated[base] > pool:
+                raise ApiError(400, f'{base}: распределено {allocated[base]} при parent-pool {pool}')
     return total
 
 
@@ -660,6 +663,74 @@ def validate_cyberware_requirements(data):
             raise ApiError(400, f'{item["name"]} требует: {missing}')
 
 
+def validate_cyberware_slots(data):
+    """Проверяет host assignment, Option Slots и явные запреты дубликатов."""
+    raw = data.get('cyberware') or []
+    hosts = {}
+    catalog_items = []
+    for index, entry in enumerate(raw):
+        if entry.get('creation_free') and entry.get('key') == 'creation-neuroport':
+            iid = str(entry.get('instance_id') or 'creation-neuroport')
+            hosts[iid] = {'name': 'Neuroport', 'total': 5}
+            catalog_items.append((entry, None))
+            continue
+        item = item_by_id(str(entry.get('key') or ''))
+        catalog_items.append((entry, item))
+        if not item:
+            continue
+        capacity = item.get('capacity') or {}
+        total = _num(capacity.get('slots_total')) or 0
+        iid = str(entry.get('instance_id') or f'{entry.get("key")}:{index}')
+        if total:
+            hosts[iid] = {'name': item['name'], 'total': total}
+
+    accepted = {
+        'Cyberarm': {'cyberarm', 'neo-soviet cyberarm'},
+        'Cyberleg': {'cyberleg', 'romanova cyberlegs'},
+        'Cybereye': {'cybereye', 'sponsored cybereye'},
+        'Cyberaudio Suite': {'cyberaudio suite', 'discount cyberaudio suite'},
+        'Neural Link or Neuroport': {'neural link', 'neuroport'},
+    }
+    used = {iid: 0 for iid in hosts}
+    unique_counts = {}
+    for entry, item in catalog_items:
+        if not item:
+            continue
+        capacity = item.get('capacity') or {}
+        if capacity.get('unique'):
+            unique_counts[item['id']] = unique_counts.get(item['id'], 0) + 1
+            if unique_counts[item['id']] > 1:
+                raise ApiError(400, f'{item["name"]}: допустима только одна установка')
+        expected = capacity.get('host')
+        slots = _num(capacity.get('slots_used')) or 0
+        if not expected:
+            continue
+        host_id = str(entry.get('host_instance') or '')
+        if not host_id or host_id not in hosts:
+            raise ApiError(400, f'{item["name"]}: не выбран совместимый host')
+        if hosts[host_id]['name'].lower() not in accepted.get(expected, set()):
+            raise ApiError(400, f'{item["name"]}: несовместимый host {hosts[host_id]["name"]}')
+        used[host_id] += slots
+    for iid, amount in used.items():
+        if amount > hosts[iid]['total']:
+            raise ApiError(400, f'{hosts[iid]["name"]}: Option Slots {amount}/{hosts[iid]["total"]}')
+
+
+def validate_role_benefits(data):
+    role = data.get('role')
+    setup = data.get('role_setup') or {}
+    for entry in data.get('inventory') or []:
+        if not entry.get('role_benefit'):
+            continue
+        key = str(entry.get('key') or '')
+        name = str(entry.get('name') or '')
+        if key == 'role-exec-businesswear' and role == 'Exec':
+            continue
+        if key.startswith('role-nomad-') and role == 'Nomad' and name in (setup.get('moto_choices') or []):
+            continue
+        raise ApiError(400, f'Недопустимое стартовое преимущество роли: {name or key}')
+
+
 def validate_creation_equipment(data):
     """Не позволяет подменить HL, тип, SP или локацию купленного предмета."""
     inventory_keys = {str(entry.get('key') or '') for entry in data.get('inventory') or []}
@@ -689,6 +760,14 @@ def validate_creation_equipment(data):
             raise ApiError(400, f'Штрафы брони {item["name"]} не совпадают с Data Pool')
         if str(piece.get('key') or '') not in inventory_keys:
             raise ApiError(400, f'Надетая броня {item["name"]} отсутствует в стартовой закупке')
+    shield = armor.get('shield')
+    if shield:
+        raw_key = str(shield.get('source_key') or shield.get('key') or '')
+        item = item_by_id(raw_key.split('@', 1)[0])
+        if not item or item.get('cat') != 'armor' or 'shield' not in (item.get('armor_locations') or []):
+            raise ApiError(400, 'Недопустимый щит')
+        if str(shield.get('key') or '') not in inventory_keys:
+            raise ApiError(400, 'Экипированный щит отсутствует в стартовой закупке')
 
 
 def validate_creation_budget(data):
@@ -696,6 +775,8 @@ def validate_creation_budget(data):
     gear_total = 0.0
     fashion_total = 0.0
     for entry in data.get('inventory') or []:
+        if entry.get('role_benefit'):
+            continue
         raw_key = str(entry.get('source_key') or entry.get('key') or '')
         item = item_by_id(raw_key.split('@', 1)[0])
         if not item or item.get('price') is None:
@@ -733,6 +814,9 @@ def validate_creation_budget(data):
         raise ApiError(400, f'Fashion/Fashionware превышает бюджет {START_CASH_FASHION}€$')
     creation = data.get('creation') or {}
     sold_soul = bool(creation.get('sold_soul'))
+    if sold_soul and (not str(creation.get('patron') or '').strip() or
+                      not str(creation.get('obligation') or '').strip()):
+        raise ApiError(400, 'Sell Your Soul требует покровителя и обязательство')
     if (chrome_total > 0 or fashion_total > 0 or sold_soul) and not has_neuroport:
         raise ApiError(400, 'В 2070-х хром при создании требует Neuroport')
     chrome_bonus = 1500 if sold_soul else 0
@@ -832,15 +916,74 @@ def validate_creation(data):
         if (not isinstance(choices, list) or len(choices) != 4 or
                 any(not str(choice or '').strip() for choice in choices)):
             raise ApiError(400, 'Nomad должен заполнить 4 стартовых выбора Moto')
+        vehicle_items = {item['name']: item for item in catalog()['items']
+                         if item.get('cat') in ('vehicles', 'vehicles_upgrades')}
+        for rank, choice in enumerate(choices, start=1):
+            item = vehicle_items.get(str(choice))
+            access = _num((item.get('mechanics') or {}).get('nomad_access')) if item else None
+            if not item or access is None or access > rank:
+                raise ApiError(400, f'Nomad Moto Rank {rank}: недоступный выбор {choice}')
 
+    validate_role_benefits(data)
     validate_creation_equipment(data)
     validate_cyberware_requirements(data)
+    validate_cyberware_slots(data)
     if (derive(data).get('humanity_cur') or 0) < 0:
         raise ApiError(400, 'Нельзя завершить создание с Humanity ниже 0')
     validate_creation_budget(data)
 
 
 # ---------------------------------------------------------------- http
+
+SERVER_ERROR_EN = {
+    'Требуется вход в систему': 'Authentication required',
+    'Нужен псевдоним (Handle) персонажа': 'Character Handle is required',
+    'Новый персонаж должен иметь одну роль с рангом 4': 'A new character must have one Role at Rank 4',
+    'Нужно заполнить все 10 характеристик': 'All 10 Characteristics are required',
+    'При создании каждая характеристика должна быть от 2 до 8': 'Each Characteristic must be between 2 and 8 at creation',
+    'Нужно распределить ровно 62 очка характеристик': 'Allocate exactly 62 Characteristic Points',
+    'Нужно распределить ровно 86 очков навыков': 'Allocate exactly 86 Skill Points',
+    'Выберите культурный язык с бесплатным уровнем 4': 'Choose a Cultural Language at free Level 4',
+    'Культурный язык должен соответствовать происхождению Lifepath': 'Cultural Language must match Lifepath origin',
+    'Заполните общий Lifepath': 'Complete the Common Lifepath',
+    'Заполните все поля Lifepath выбранной роли': 'Complete every Role-Based Lifepath field',
+    'Одновременно допустим только один Neuroport': 'Only one Neuroport is allowed',
+    'В 2070-х хром при создании требует Neuroport': 'Cyberware at creation requires a Neuroport',
+    'Sell Your Soul требует покровителя и обязательство': 'Sell Your Soul requires a Patron and an Obligation',
+    'Нельзя завершить создание с Humanity ниже 0': 'Creation cannot finish below 0 Humanity',
+    'Лист персонажа должен быть объектом': 'Character data must be an object',
+    'Лист персонажа слишком большой': 'Character data is too large',
+    'Некорректный JSON': 'Invalid JSON',
+    'Пустое тело запроса': 'Empty request body',
+}
+
+def server_error_message(message, language):
+    if str(language or '').lower().startswith('ru'):
+        return message
+    if message in SERVER_ERROR_EN:
+        return SERVER_ERROR_EN[message]
+    replacements = [
+        ('Неизвестный навык:', 'Unknown Skill:'),
+        ('Обязательный навык', 'Required Skill'),
+        ('должен быть минимум', 'must be at least'),
+        ('при создании допустим уровень', 'allowed Level at creation is'),
+        ('укажите конкретную специализацию в скобках', 'provide a specialization in parentheses'),
+        ('Неизвестный имплант:', 'Unknown Cyberware:'),
+        ('Неизвестный предмет стартовой закупки:', 'Unknown starting item:'),
+        ('Неизвестный имплант стартовой закупки:', 'Unknown starting Cyberware:'),
+        ('требует:', 'requires:'),
+        ('не выбран совместимый host', 'no compatible host selected'),
+        ('несовместимый host', 'incompatible host'),
+        ('допустима только одна установка', 'only one installation is allowed'),
+        ('Закупка превышает основной бюджет', 'Shopping exceeds Main Budget'),
+        ('Fashion/Fashionware превышает бюджет', 'Fashion/Fashionware exceeds Style Budget'),
+        ('Остаток стартового бюджета рассчитан неверно', 'Starting cash was calculated incorrectly'),
+    ]
+    out = str(message)
+    for ru, en in replacements:
+        out = out.replace(ru, en)
+    return out
+
 
 class ApiError(Exception):
     def __init__(self, status, message):
@@ -871,7 +1014,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def send_error_json(self, status, message):
-        self.send_json({'error': message}, status)
+        language = self.headers.get('Accept-Language') or 'en'
+        self.send_json({'error': server_error_message(message, language)}, status)
 
     def read_json(self):
         n = int(self.headers.get('Content-Length') or 0)
@@ -979,7 +1123,8 @@ class Handler(BaseHTTPRequestHandler):
         ctype = {
             '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
             '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
-            '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon',
+            '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.ico': 'image/x-icon',
         }.get(ext, 'application/octet-stream')
         with open(fp, 'rb') as f:
             body = f.read()
@@ -1133,7 +1278,7 @@ class Handler(BaseHTTPRequestHandler):
         if count >= 50:
             raise ApiError(400, 'Слишком много персонажей (максимум 50)')
         now = time.time()
-        pub = 1 if data.get('public', True) else 0
+        pub = 1 if data.get('public', False) else 0
         cur = conn.execute(
             'INSERT INTO characters(owner_id, public, data, created, updated) VALUES(?,?,?,?,?)',
             (u['id'], pub, json.dumps(data, ensure_ascii=False), now, now))
@@ -1166,7 +1311,7 @@ class Handler(BaseHTTPRequestHandler):
         if row['owner_id'] != u['id']:
             raise ApiError(403, 'Это не ваш персонаж')
         data = clean_character(body.get('data') if isinstance(body, dict) else body)
-        pub = 1 if data.get('public', True) else 0
+        pub = 1 if data.get('public', False) else 0
         conn.execute('UPDATE characters SET data=?, public=?, updated=? WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), pub, time.time(), row['id']))
         conn.commit()

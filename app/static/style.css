@@ -435,3 +435,103 @@ select.over-max { border-color: var(--red); color: var(--red); }
   .skill-table-head { min-width: 570px; }
   .full-skill-list { max-height: none; }
 }
+
+/* ---------- creation wizard v3 ---------- */
+.language-toggle { flex: 0 0 auto; color: var(--yellow); font-family: 'Orbitron'; }
+.center { text-align: center; }
+.big-icon { font-size: 56px; }
+.role-empty { min-height: 320px; display: grid; place-content: center; text-align: center; }
+.role-v3 { display: grid; grid-template-columns: 180px 1fr; gap: 24px; max-width: 850px; }
+.role-art { min-height: 280px; border-radius: 10px; overflow: hidden; display: grid; place-items: center; background: radial-gradient(circle,rgba(0,229,255,.18),transparent 65%),var(--bg2); font-size: 70px; }
+.role-art img { width: 100%; height: 100%; object-fit: cover; }
+.role-art img:not([hidden]) + span { display: none; }
+.role-v3 section h3 { margin-bottom: 4px; }
+.role-setup .allocation-grid,.allocation-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(190px,1fr)); gap: 8px; margin: 12px 0; }
+.allocation-card { display: flex; justify-content: space-between; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg2); }
+.choice-card-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(170px,1fr)); gap: 8px; }
+.choice-card { text-align: left; display: flex; flex-direction: column; gap: 3px; padding: 12px; }
+.choice-card.selected { border-color: var(--yellow); background: rgba(255,213,0,.08); }
+.choice-card.disabled { opacity: .55; }
+.choice-card span { color: var(--muted); font-size: 12px; }
+.creation-section { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); margin-bottom: 10px; overflow: hidden; }
+.creation-section > summary { display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 13px 15px; color: var(--cyan); font-family: 'Orbitron'; font-size: 14px; background: var(--panel2); }
+.creation-section[open] > summary { color: var(--yellow); border-bottom: 1px solid var(--line); }
+.creation-section .section-body { padding: 14px; }
+.section-progress { color: var(--muted); font-family: 'Rajdhani'; }
+.section-progress.ok { color: var(--green); }
+.lifepath-progress { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.segmented { display: flex; flex-wrap: wrap; gap: 5px; }
+.segmented button.active { color: var(--yellow); border-color: var(--yellow); background: rgba(255,213,0,.08); }
+.sticky-budget { position: sticky; top: 8px; z-index: 8; display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; box-shadow: 0 8px 24px rgba(0,0,0,.28); }
+.sticky-budget > div { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.budget-remaining { color: var(--yellow); }
+.budget-remaining.ok { color: var(--green); }
+.budget-remaining.bad { color: var(--red); }
+.stat-cards { display: grid; grid-template-columns: repeat(auto-fit,minmax(155px,1fr)); gap: 10px; }
+.stat-card { position: relative; display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+.stat-card.recommended { border-color: rgba(255,213,0,.55); }
+.stat-name { display: flex; flex-direction: column; }
+.stat-name b { color: var(--cyan); font: 18px 'Orbitron'; }
+.stat-name span { color: var(--muted); font-size: 12px; }
+.stat-lock { position: absolute; top: 7px; right: 7px; padding: 3px 6px; border: 0; background: transparent; }
+.stat-lock.locked { color: var(--yellow); }
+.stat-stepper { display: flex; justify-content: center; align-items: center; gap: 10px; }
+.stat-stepper strong { min-width: 28px; text-align: center; font: 22px 'Orbitron'; }
+.skill-tools,.shop-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.skill-tools > input,.shop-tools > input { flex: 1; min-width: 220px; }
+.skill-category .skill-row.recommended { background: rgba(255,213,0,.045); }
+.recommended-tag { color: var(--yellow); }
+.requirement-missing { border-left: 2px solid var(--red); padding-left: 6px; }
+.role-ability-banner { display: flex; justify-content: space-between; align-items: center; }
+.role-ability-banner h3 { margin: 3px 0; }
+.shopping-budgets > div { flex-direction: column; align-items: flex-start; gap: 2px; }
+.neuroport-choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.shopping-layout { display: grid; grid-template-columns: minmax(0,1fr) minmax(320px,38%); gap: 16px; align-items: start; }
+.shopping-cart { position: sticky; top: 95px; max-height: calc(100vh - 115px); overflow: auto; border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--panel); }
+.catalog-card { display: flex; justify-content: space-between; gap: 12px; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg2); margin-bottom: 6px; }
+.catalog-card.compatible { border-left: 3px solid var(--green); }
+.catalog-card h4 { margin: 3px 0 7px; }
+.catalog-card-main { min-width: 0; flex: 1; }
+.catalog-card-actions { display: flex; align-items: center; gap: 7px; }
+.mechanic-chips { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+.compare-check { color: var(--muted); font-size: 11px; }
+.compatibility-ok { color: var(--green); font-size: 12px; margin-top: 6px; }
+.requirement-fail { color: var(--red); font-size: 12px; margin-top: 6px; }
+.readiness-warnings { border-left: 3px solid var(--orange); padding: 7px 9px; margin-bottom: 10px; background: rgba(255,157,69,.05); font-size: 12px; }
+.equipped-summary { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 9px; }
+.role-benefit { border-color: rgba(255,213,0,.4); }
+.summary-status { display: flex; justify-content: space-between; align-items: center; }
+.summary-status h2 { margin: 0; }
+.summary-identity { display: grid; grid-template-columns: 1fr 1.5fr auto; gap: 16px; align-items: center; }
+.validation-row { width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 9px; margin-bottom: 5px; border: 1px solid var(--line); border-radius: 7px; text-align: left; background: var(--bg2); }
+.validation-row span { flex: 1; }
+.validation-row.error { color: var(--red); }
+.validation-row.warning { color: var(--orange); }
+.finance-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; }
+.finance-grid > div { display: flex; flex-direction: column; gap: 5px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.humanity-breakdown { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.hide-zero-skills .skill-row.zero-level { display: none; }
+.draft-status { color: var(--green); }
+
+@media(max-width:800px){
+  .role-v3 { grid-template-columns: 1fr; }
+  .role-art { min-height: 180px; }
+  .shopping-layout { grid-template-columns: 1fr; }
+  .shopping-cart { position: static; max-height: none; }
+  .neuroport-choices,.finance-grid { grid-template-columns: 1fr; }
+  .summary-identity { grid-template-columns: 1fr; }
+  .catalog-card { flex-direction: column; }
+  .catalog-card-actions { justify-content: flex-end; }
+}
+
+@media print {
+  .topbar,.footer,.wizard-nav,.wiz-live,.wiz-footer,.summary-status button,.validation-section { display:none!important; }
+  body,.creation-section,.panel { background:#fff!important; color:#000!important; }
+  .creation-section { break-inside:avoid; border-color:#aaa; }
+  .creation-section > summary { color:#000; background:#eee; }
+  .creation-section:not([open]) > .section-body { display:block; }
+}
+.cyber-tree-row { display:flex; align-items:center; gap:8px; padding:9px; border:1px solid var(--line); border-radius:7px; margin-bottom:5px; background:var(--bg2); }
+.cyber-tree-row .iname { flex:1; font-weight:600; }
+.cyber-tree-row.nested { margin-left:24px; border-left:3px solid var(--cyan); }
+.character-aware { color:var(--cyan); border-color:rgba(0,229,255,.4); }

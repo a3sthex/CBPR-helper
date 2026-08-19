@@ -33,7 +33,7 @@ def valid_character(role='Solo'):
     elif role == 'Exec':
         setup = {'team_member': 'Телохранитель'}
     elif role == 'Nomad':
-        setup = {'moto_choices': ['Roadbike', 'Стекло', 'Тяжёлое шасси', 'Жилой модуль']}
+        setup = {'moto_choices': ['Roadbike', 'Bulletproof Glass', 'Heavy Chassis', 'Housing Capacity']}
     role_fields = {
         'Rockerboy': ('kind', 'act', 'venue', 'enemy'),
         'Solo': ('kind', 'moral', 'enemy', 'territory'),
@@ -83,6 +83,13 @@ def valid_merged_character(role='Solo'):
     return char
 
 
+class LocalizationTests(unittest.TestCase):
+    def test_server_errors_follow_requested_language(self):
+        message = 'Требуется вход в систему'
+        self.assertEqual(server.server_error_message(message, 'en'), 'Authentication required')
+        self.assertEqual(server.server_error_message(message, 'ru'), message)
+
+
 class DerivedRulesTests(unittest.TestCase):
     def test_humanity_current_and_maximum_are_separate(self):
         result = server.derive({
@@ -129,11 +136,34 @@ class CreationValidationTests(unittest.TestCase):
         self.assertFalse({'friends', 'enemies', 'love'} & set(char['lifepath']))
         server.validate_creation(char)
 
-    def test_parent_pool_must_equal_specialization_allocation(self):
+    def test_parent_pool_rejects_child_overallocation(self):
         char = valid_merged_character()
         char['skills']['Language (Streetslang)'] = 3
         with self.assertRaisesRegex(server.ApiError, 'parent-pool'):
             server.validate_creation(char)
+
+    def test_parent_pool_may_keep_unallocated_levels(self):
+        char = valid_merged_character()
+        char['skill_pools']['Language'] = 3
+        # Move one point from an already purchased ordinary Skill into the parent pool.
+        donor = next(name for name, level in char['skills'].items()
+                     if level == 6 and server.skill_base(name) not in server.SPECIALIZED_SKILLS)
+        char['skills'][donor] = 5
+        self.assertEqual(server.creation_skill_cost(char), 86)
+        server.validate_creation(char)
+
+    def test_cyberware_options_require_a_host_and_respect_slots(self):
+        arm = {'key': 'cyberware-109', 'instance_id': 'arm-1', 'name': 'Cyberarm'}
+        launcher = {'key': 'cyberware-117', 'instance_id': 'launcher-1',
+                    'host_instance': 'arm-1', 'name': 'Popup Grenade Launcher'}
+        server.validate_cyberware_slots({'cyberware': [arm, launcher]})
+        broken = copy.deepcopy(launcher)
+        broken['host_instance'] = ''
+        with self.assertRaisesRegex(server.ApiError, 'host'):
+            server.validate_cyberware_slots({'cyberware': [arm, broken]})
+        with self.assertRaisesRegex(server.ApiError, 'Option Slots'):
+            server.validate_cyberware_slots({'cyberware': [arm, launcher, copy.deepcopy(launcher),
+                                                           copy.deepcopy(launcher)]})
 
     def test_only_one_neuroport_is_allowed(self):
         char = valid_merged_character()
@@ -177,6 +207,17 @@ class CreationValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(server.ApiError, 'конкретную специализацию'):
             server.validate_creation(char)
 
+    def test_role_benefits_are_free_but_role_locked(self):
+        char = valid_merged_character('Exec')
+        char['inventory'].append({'key': 'role-exec-businesswear', 'name': 'Businesswear (Teamwork)',
+                                  'role_benefit': True, 'price': 0, 'qty': 1})
+        server.validate_creation(char)
+        char['role'] = 'Solo'
+        char['role_setup'] = {}
+        char['role_lifepath'] = {key: 'test' for key in ('kind', 'moral', 'enemy', 'territory')}
+        with self.assertRaisesRegex(server.ApiError, 'преимущество роли'):
+            server.validate_creation(char)
+
     def test_role_setup_is_checked(self):
         char = valid_character('Tech')
         char['role_setup']['field'] = 1
@@ -208,7 +249,8 @@ class CreationValidationTests(unittest.TestCase):
 
     def test_selling_soul_bonus_can_only_cover_chrome(self):
         char = valid_character()
-        char['creation']['sold_soul'] = True
+        char['creation'].update({'sold_soul': True, 'patron': 'Corporation',
+                                 'obligation': 'Three deniable operations'})
         char['cyberware'].append({
             'key': 'cyberware-3', 'name': 'Borgware Hardened Shielding',
             'hl': 14, 'price': 1000, 'type': 'Borgware',
@@ -252,6 +294,19 @@ class CatalogArmorTests(unittest.TestCase):
         count = sum(1 if item['armor_bundled'] else len(item['armor_locations'])
                     for item in self.armor.values())
         self.assertEqual(count, 42)
+
+    def test_catalog_contains_structured_mechanics_and_compatibility(self):
+        by_name = {item['name']: item for item in self.items}
+        pistol = by_name['Medium Pistol']
+        self.assertEqual(pistol['mechanics']['damage'], {
+            'notation': '2d6', 'dice': 2, 'sides': 6,
+            'multiplier': 1, 'average': 7.0,
+        })
+        self.assertEqual(pistol['mechanics']['rof'], '2.0')
+        self.assertIn('compatible_weapons', by_name['Basic']['mechanics'])
+        self.assertEqual(by_name['Cyberarm']['capacity']['slots_total'], 4)
+        self.assertEqual(by_name['Popup Grenade Launcher']['capacity']['host'], 'Cyberarm')
+        self.assertEqual(by_name['Popup Grenade Launcher']['capacity']['slots_used'], 2)
 
 
 if __name__ == '__main__':

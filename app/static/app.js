@@ -16,11 +16,11 @@ const nf = new Intl.NumberFormat('ru-RU');
 const money = (n) => '€$ ' + nf.format(Math.round(Number(n) || 0));
 
 function timeAgo(ts) {
-  const d = (Date.now() / 1000 - ts);
-  if (d < 60) return 'только что';
-  if (d < 3600) return Math.floor(d / 60) + ' мин назад';
-  if (d < 86400) return Math.floor(d / 3600) + ' ч назад';
-  return new Date(ts * 1000).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+  const d = (Date.now() / 1000 - ts), isRu = typeof APP_I18N !== 'undefined' && APP_I18N.current() === 'ru';
+  if (d < 60) return isRu ? 'только что' : 'just now';
+  if (d < 3600) return Math.floor(d / 60) + (isRu ? ' мин назад' : ' min ago');
+  if (d < 86400) return Math.floor(d / 3600) + (isRu ? ' ч назад' : ' hr ago');
+  return new Date(ts * 1000).toLocaleDateString(isRu ? 'ru-RU' : 'en-US', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
 }
 
 function toast(msg, isErr) {
@@ -46,6 +46,7 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal
 
 async function api(path, opts) {
   const o = Object.assign({ headers: {} }, opts);
+  o.headers = Object.assign({ 'Accept-Language': typeof APP_I18N !== 'undefined' ? APP_I18N.current() : 'en' }, o.headers || {});
   if (o.body && typeof o.body !== 'string') {
     o.body = JSON.stringify(o.body);
     o.headers['Content-Type'] = 'application/json';
@@ -143,7 +144,7 @@ function blankChar() {
     stats: { INT: 5, REF: 5, DEX: 5, TECH: 5, COOL: 5, WILL: 5, LUCK: 5, MOVE: 5, BODY: 5, EMP: 5 },
     humanity_cur: null, hp_cur: null, cash: 2550,
     skills: {}, inventory: [], cyberware: [], armor: { head: null, body: null },
-    public: true,
+    public: false,
   };
 }
 
@@ -185,24 +186,24 @@ function go(path) { location.hash = path; }
 function renderUserbox() {
   const box = $('#userbox');
   if (!state.me) {
-    box.innerHTML = `<a class="btn-primary" style="padding:7px 14px;border-radius:8px;color:#041018" href="#/login">Войти</a>`;
+    box.innerHTML = `<a class="btn-primary" style="padding:7px 14px;border-radius:8px;color:#041018" href="#/login">${T('Sign in','Войти')}</a>`;
     return;
   }
   const ini = (state.me.display_name || state.me.username || '?').slice(0, 1).toUpperCase();
   box.innerHTML = `
-    <span class="userchip" id="userchip" title="Профиль">
+    <span class="userchip" id="userchip" title="${T('Profile','Профиль')}">
       <span class="avatar">${esc(ini)}</span>
       <span>${esc(state.me.display_name)}</span>
-      ${state.me.is_gm ? '<span class="gm-badge">ГМ</span>' : ''}
+      ${state.me.is_gm ? `<span class="gm-badge">${T('GM','ГМ')}</span>` : ''}
     </span>
-    <button class="btn-sm" id="logout-btn">Выйти</button>`;
+    <button class="btn-sm" id="logout-btn">${T('Sign out','Выйти')}</button>`;
   $('#userchip').onclick = () => go('/profile');
   $('#logout-btn').onclick = async () => {
     try { await api('/api/logout', { method: 'POST' }); } catch (e) {}
     state.me = null;
     renderUserbox();
     route();
-    toast('Вы вышли из системы');
+    toast(T('Signed out.','Вы вышли из системы.'));
   };
 }
 
@@ -217,7 +218,7 @@ async function viewHome(view) {
   const openJobs = jobs.jobs.filter(j => j.status === 'open').slice(0, 3);
   view.innerHTML = `
   <div class="hero">
-    <h1>Ночной город <span class="accent">онлайн</span></h1>
+    <h1>${T('Night City <span class="accent">online</span>','Ночной город <span class="accent">онлайн</span>')}</h1>
     <p>Создавай эджраннеров, закупайся на чёрном рынке, веди ростер всей партии,
        читай сводки с улиц и находи заказы. Всё для твоей кампании по Cyberpunk RED.</p>
     <div class="row">
@@ -272,18 +273,19 @@ async function viewHome(view) {
 
 /* ============================== справочник ============================== */
 
+function catalogCategoryName(category) { return APP_I18N.current() === 'en' ? (category.en || category.sheet || category.id) : category.ru; }
 const codexState = { cat: '', q: '', offset: 0, limit: 30 };
 
 async function viewCodex(view) {
   const cats = state.meta.cats;
   view.innerHTML = `
-  <div class="page-head"><div><h1>📚 Справочник</h1><div class="sub">Всё снаряжение из Data Pool: ${nf.format(state.meta._total || '')}</div></div></div>
+  <div class="page-head"><div><h1>📚 ${T('Codex','Справочник')}</h1><div class="sub">${T('All equipment from Data Pool','Всё снаряжение из Data Pool')}: ${nf.format(state.meta._total || '')}</div></div></div>
   <div class="codex-layout">
     <div class="cat-list panel" style="padding:10px">
       <a href="javascript:void(0)" data-cat="" class="${codexState.cat === '' ? 'active' : ''}">🌐 Всё подряд</a>
       ${cats.map(c => `
         <a href="javascript:void(0)" data-cat="${c.id}" class="${codexState.cat === c.id ? 'active' : ''}">
-          <span>${c.emoji} ${esc(c.ru)}</span><span class="cnt">${c.count}</span></a>`).join('')}
+          <span>${c.emoji} ${esc(catalogCategoryName(c))}</span><span class="cnt">${c.count}</span></a>`).join('')}
     </div>
     <div>
       <div class="searchbar">
@@ -374,7 +376,7 @@ async function loadCodexItems() {
   box.innerHTML = spinner();
   const p = new URLSearchParams({ q: codexState.q, cat: codexState.cat, offset: codexState.offset, limit: codexState.limit });
   const data = await api('/api/items?' + p);
-  const catName = (id) => { const c = state.meta.cats.find(x => x.id === id); return c ? c.emoji + ' ' + c.ru : id; };
+  const catName = (id) => { const c = state.meta.cats.find(x => x.id === id); return c ? c.emoji + ' ' + catalogCategoryName(c) : id; };
   box.innerHTML = `
     <div class="muted small mb">Найдено: ${nf.format(data.total)}</div>
     <div class="item-grid">
@@ -424,7 +426,7 @@ async function showItemModal(id) {
   const m = openModal(`
     <h2>${esc(it.name)}</h2>
     <div class="chips mb">
-      <span class="chip">${c ? c.emoji + ' ' + esc(c.ru) : it.cat}</span>
+      <span class="chip">${c ? c.emoji + ' ' + esc(catalogCategoryName(c)) : it.cat}</span>
       ${it.price != null ? `<span class="tag price">${money(it.price)}</span>` : ''}
       ${it.source ? `<span class="chip">📖 ${esc(it.source)}</span>` : ''}
       ${it.hl ? `<span class="chip hl-badge">HL ${it.hl}</span>` : ''}
@@ -444,7 +446,7 @@ const marketState = { tab: 'nm', q: '', cat: '', offset: 0, limit: 30 };
 async function viewMarket(view) {
   view.innerHTML = `
   <div class="page-head">
-    <div><h1>🕶️ Чёрный рынок</h1>
+    <div><h1>🕶️ ${T('Night Market','Чёрный рынок')}</h1>
     <div class="sub">Ночная витрина обновляется каждый день в 00:00 МСК. Уличные цены гуляют ±50%.</div></div>
     ${state.me && state.me.is_gm ? '<button id="payroll-btn">💰 Выплата (ГМ)</button>' : ''}
   </div>
@@ -506,7 +508,7 @@ async function loadMarketCatalog(box) {
       <input id="mk-q" placeholder="Поиск по каталогу…" value="${esc(marketState.q)}">
       <select id="mk-cat">
         <option value="">Все категории</option>
-        ${state.meta.cats.map(c => `<option value="${c.id}" ${marketState.cat === c.id ? 'selected' : ''}>${c.emoji} ${esc(c.ru)}</option>`).join('')}
+        ${state.meta.cats.map(c => `<option value="${c.id}" ${marketState.cat === c.id ? 'selected' : ''}>${c.emoji} ${esc(catalogCategoryName(c))}</option>`).join('')}
       </select>
       <button id="mk-search">Найти</button>
     </div>
@@ -529,7 +531,7 @@ async function loadMarketCatalogItems() {
   box.innerHTML = spinner();
   const p = new URLSearchParams({ q: marketState.q, cat: marketState.cat, offset: marketState.offset, limit: marketState.limit });
   const data = await api('/api/items?' + p);
-  const catName = (id) => { const c = state.meta.cats.find(x => x.id === id); return c ? c.emoji + ' ' + c.ru : id; };
+  const catName = (id) => { const c = state.meta.cats.find(x => x.id === id); return c ? c.emoji + ' ' + catalogCategoryName(c) : id; };
   box.innerHTML = `
     <div class="muted small mb">Найдено: ${nf.format(data.total)} · цены каталожные</div>
     <div class="item-grid">
@@ -553,7 +555,7 @@ async function loadMarketCatalogItems() {
 }
 
 async function loadSellTab(box) {
-  if (!state.me) { box.innerHTML = '<div class="empty">Войдите, чтобы продавать хлам со склада своих персонажей. <a href="#/login">Войти</a></div>'; return; }
+  if (!state.me) { box.innerHTML = `<div class="empty">Войдите, чтобы продавать хлам со склада своих персонажей. <a href="#/login">${T('Sign in','Войти')}</a></div>`; return; }
   box.innerHTML = spinner();
   const data = await api('/api/characters');
   const chars = data.characters;
@@ -674,7 +676,7 @@ function rollDice(expr) {
 async function viewCalc(view) {
   const [range, auto] = [state.meta.range_table, state.meta.autofire_table];
   view.innerHTML = `
-  <div class="page-head"><div><h1>🎲 Калькулятор</h1><div class="sub">Урон против брони, броски костей, крит. травмы, автоогонь и таблицы DV.</div></div></div>
+  <div class="page-head"><div><h1>🎲 ${T('Calculator','Калькулятор')}</h1><div class="sub">${T('Damage, Armor, dice, Critical Injuries, Autofire, and Range DVs.','Урон, броня, кости, критические травмы, автоогонь и DV дистанции.')}</div></div></div>
   <div class="grid cols-2">
     <div class="panel">
       <h2>💥 Расчёт урона</h2>
@@ -897,14 +899,16 @@ function tableHtml(rows) {
 /* ============================== мастер создания персонажа (7 шагов) ============================== */
 
 const WIZARD_STEPS = [
-  ['role',     '🎭 Роль',           'Выбери роль — она даёт ролевую способность и определяет стиль игры.'],
-  ['lifepath', '🧬 Lifepath',       'Общий Lifepath CP:R или CEMK плюс полный набор таблиц выбранной роли.'],
-  ['stats',    '📊 Характеристики', 'Ровно 62 очка на 10 характеристик, каждая 2–8.'],
-  ['skills',   '🎯 Навыки',         'Ровно 86 очков: обязательные минимумы, максимум 6 и специализированные навыки.'],
-  ['style',    '🕶️ Стиль',          '800€$ на Fashion и весь Fashionware из Data Pool. Остаток сгорает.'],
-  ['shopping', '🛒 Закупка',        '2550€$ на снаряжение и хром; броня разделена на голову и тело. Neuroport по CEMK бесплатен.'],
-  ['summary',  '✅ Итог',           'Проверь лист, впиши псевдоним и создай персонажа.'],
+  ['role', '🎭 Role', '🎭 Роль', 'Choose a Role and configure its Rank 4 benefits.', 'Выберите роль и настройте преимущества Rank 4.'],
+  ['lifepath', '🧬 Lifepath', '🧬 Lifepath', 'Build identity, origin, values, and Role-Based Lifepath.', 'Создайте личность, происхождение, ценности и Role-Based Lifepath.'],
+  ['stats', '📊 Characteristics', '📊 Характеристики', 'Allocate exactly 62 points; each STAT ranges from 2 to 8.', 'Распределите ровно 62 очка; каждая характеристика от 2 до 8.'],
+  ['skills', '🎯 Skills', '🎯 Навыки', 'Allocate 86 points across Corebook Skills and specializations.', 'Распределите 86 очков между навыками и специализациями Corebook.'],
+  ['shopping', '🛒 Shopping', '🛒 Закупка', 'Build the complete starting loadout, Fashion, and Cyberware.', 'Соберите стартовое снаряжение, Fashion и Cyberware.'],
+  ['summary', '✅ Summary', '✅ Итог', 'Resolve blocking issues and preview the final Character Sheet.', 'Исправьте ошибки и проверьте готовый Character Sheet.'],
 ];
+
+function wizardStepLabel(step) { return T(step[1], step[2]); }
+function wizardStepDescription(step) { return T(step[3], step[4]); }
 
 /* ---------- подробные описания ролевых способностей ---------- */
 
@@ -953,12 +957,13 @@ const ROLE_ABILITIES = {
 
 /* ---------- Lifepath: 13 пунктов (CP:R стр. 43–48) ---------- */
 
+function displayKnownValue(value) { return APP_I18N.current() === 'en' ? (LEGACY_DISPLAY_EN[value] || value) : value; }
 function lpFields() {
-  return MERGED_LIFEPATH_FIELDS.map(field => [field.key, field.label, field.options]);
+  return MERGED_LIFEPATH_FIELDS.map(field => [field.key, APP_I18N.current() === 'en' ? (LIFEPATH_LABEL_EN[field.key] || field.label) : field.label, field.options]);
 }
 
 function lpRoleField(role) {
-  return ROLE_LIFEPATHS[role] || [];
+  return (ROLE_LIFEPATHS[role] || []).map(([key, label, options]) => [key, APP_I18N.current() === 'en' ? (LIFEPATH_LABEL_EN[key] || label) : label, options]);
 }
 
 function lpAllFields() {
@@ -1003,9 +1008,12 @@ function lifepathResultInfo(key, value, sources, roleSpecific) {
     crisis: 'Кризис объясняет разрыв с прежней стабильностью и один из мотивов выйти на Улицу.',
     goal: 'Цель задаёт долгосрочное направление и повод принимать опасные заказы.',
   };
-  const sourceText = sources && sources.length ? ` Источник варианта: ${sources.join(' + ')}.` : '';
-  const prefix = roleSpecific ? 'Этот результат уточняет профессиональный опыт и связи выбранной роли.' : (common[key] || 'Этот результат задаёт конкретную деталь предыстории персонажа.');
-  return `<div class="lp-result-info"><b>${esc(value)}</b><br>${esc(prefix)}${esc(sourceText)}</div>`;
+  const isEn = APP_I18N.current() === 'en';
+  const sourceText = sources && sources.length ? (isEn ? ` Source: ${sources.join(' + ')}.` : ` Источник: ${sources.join(' + ')}.`) : '';
+  const prefix = isEn
+    ? (roleSpecific ? 'This result refines the Role’s professional experience and connections.' : (LIFEPATH_QUESTION_EN[key] || 'This result establishes a specific part of the character’s history.'))
+    : (roleSpecific ? 'Этот результат уточняет профессиональный опыт и связи выбранной роли.' : (common[key] || 'Этот результат задаёт конкретную деталь предыстории персонажа.'));
+  return `<div class="lp-result-info"><b>${esc(displayKnownValue(value))}</b><br>${esc(prefix)}${esc(sourceText)}</div>`;
 }
 
 /* ---------- суб-навыки ---------- */
@@ -1016,14 +1024,17 @@ const WIZ_SUB_HIDDEN = new Set(SUB_SKILL_BASES.map(s => s[0]));
 /* ---------- закупка: категории ---------- */
 
 const WIZ_SHOP_CATS = [
-  ['weapons',  '🔫 Оружие',      ['guns', 'melee', 'gun_upgrades']],
-  ['armor',    '🛡️ Броня',       ['armor']],
-  ['chrome',   '🦾 Хром',        ['cyberware']],
-  ['programs', '💾 Программы',   ['programs', 'net_stuff']],
-  ['ammo',     '📦 Боеприпасы',  ['ammo', 'grenades']],
-  ['vehicles', '🏍️ Транспорт',   ['vehicles', 'vehicles_upgrades']],
-  ['gear',     '🎒 Снаряжение и услуги', ['gear', 'services']],
+  ['weapons', '🔫 Weapons', '🔫 Оружие', ['guns', 'melee', 'gun_upgrades']],
+  ['armor', '🛡️ Armor', '🛡️ Броня', ['armor']],
+  ['chrome', '🦾 Cyberware', '🦾 Хром', ['cyberware']],
+  ['fashion', '🧥 Fashion', '🧥 Одежда', ['fashion']],
+  ['fashionware', '💠 Fashionware', '💠 Fashionware', ['cyberware']],
+  ['programs', '💾 Programs & NET', '💾 Программы и NET', ['programs', 'net_stuff']],
+  ['ammo', '📦 Ammunition', '📦 Боеприпасы', ['ammo', 'grenades']],
+  ['vehicles', '🏍️ Vehicles', '🏍️ Транспорт', ['vehicles', 'vehicles_upgrades']],
+  ['gear', '🎒 Gear & Services', '🎒 Снаряжение и услуги', ['gear', 'services']],
 ];
+function shopCategoryLabel(tab) { return T(tab[1], tab[2]); }
 
 const GEAR_BUDGET = 2550;
 const FASHION_BUDGET = 800;
@@ -1046,18 +1057,19 @@ function creationChromeBonus(wiz) { return wiz.soldSoul ? 1500 : 0; }
 function creationMainSpent(wiz) { return wiz.gearCost + Math.max(0, wiz.chromeCost - creationChromeBonus(wiz)); }
 function creationMainRemaining(wiz) { return GEAR_BUDGET - creationMainSpent(wiz); }
 
-const WIZARD_DRAFT_VERSION = 2;
+const WIZARD_DRAFT_VERSION = 3;
 
-function wizardDraftKey() {
-  return state.me ? `cbpr-helper:wizard:${state.me.id}:v${WIZARD_DRAFT_VERSION}` : '';
+function wizardDraftKey(version = WIZARD_DRAFT_VERSION) {
+  return state.me ? `cbpr-helper:wizard:${state.me.id}:v${version}` : '';
 }
 
 function saveWizardDraft() {
   const key = wizardDraftKey();
   if (!key || !state.wizard || state.wizard.created) return;
   try {
+    state.wizard.lastSaved = Date.now();
     const clean = JSON.parse(JSON.stringify(state.wizard, (k, v) => k.startsWith('_') ? undefined : v));
-    localStorage.setItem(key, JSON.stringify({ version: WIZARD_DRAFT_VERSION, saved_at: Date.now(), wizard: clean }));
+    localStorage.setItem(key, JSON.stringify({ version: WIZARD_DRAFT_VERSION, saved_at: state.wizard.lastSaved, wizard: clean }));
   } catch (e) { /* приватный режим или переполненное хранилище */ }
 }
 
@@ -1071,7 +1083,7 @@ function normalizeWizard(w) {
   const stats = {};
   (state.meta ? state.meta.stats : ['INT','REF','DEX','TECH','COOL','WILL','LUCK','MOVE','BODY','EMP'])
     .forEach(key => stats[key] = Math.max(2, Math.min(8, num(w && w.stats && w.stats[key]) || 5)));
-  const role = (w && state.meta.roles[w.role]) ? w.role : 'Solo';
+  const role = (w && state.meta.roles[w.role]) ? w.role : '';
   const lp = Object.assign({}, (w && w.lifepath) || {});
   if (!lp.clothing && lp.wardrobe) lp.clothing = lp.wardrobe;
   if (!lp.hair && lp.hair_style) lp.hair = lp.hair_style;
@@ -1080,18 +1092,23 @@ function normalizeWizard(w) {
     base: x.base, name: String(x.name || ''), lvl: Math.max(0, Math.min(6, num(x.lvl) || 0)), native: !!x.native,
   })) : [];
   if (!subSkills.some(x => x.base === 'Language' && x.name === 'Streetslang')) subSkills.unshift({ base: 'Language', name: 'Streetslang', lvl: 2 });
-  if (!subSkills.some(x => x.base === 'Local Expert' && x.name === 'Свой район')) subSkills.push({ base: 'Local Expert', name: 'Свой район', lvl: 2 });
+  const legacyHome = subSkills.find(x => x.base === 'Local Expert' && x.name === 'Свой район');
+  if (legacyHome) legacyHome.name = 'Your Home';
+  if (!subSkills.some(x => x.base === 'Local Expert')) subSkills.push({ base: 'Local Expert', name: 'Your Home', lvl: 2 });
   for (const [base] of SUB_SKILL_BASES) {
     if (skills[base] == null) skills[base] = subSkills.filter(x => x.base === base && !x.native).reduce((a, x) => a + x.lvl, 0);
   }
   const out = Object.assign({
     step: 1, role, handle: '', firstName: '', lastName: '', stats, skills, subSkills,
     nativeLanguage: '', cyberware: [], fashionware: [], gear: [], fashion: [],
-    armor: { body: null, head: null }, chromeCost: 0, gearCost: 0, fashionCost: 0,
+    armor: { body: null, head: null, shield: null }, chromeCost: 0, gearCost: 0, fashionCost: 0,
     fashionBurned: false, soldSoul: false, freeNeuroport: true,
-    lifepath: lp, roleLifepath: {}, roleSetup: defaultRoleSetup(role),
-    shopTab: 'weapons', shopQ: '', styleQ: '', shopType: 'all', styleType: 'all',
-    scrolls: {}, created: false,
+    lifepath: lp, roleLifepath: {}, roleSetup: defaultRoleSetup(role), roleBenefits: [],
+    shopTab: 'weapons', shopQ: '', shopFilters: {}, shopState: {}, styleQ: '', shopType: 'all', styleType: 'all',
+    scrolls: {}, statLocks: {}, lifepathOpen: { identity: true, origin: true },
+    skillOpen: {}, skillFilter: 'all', skillQ: '', compareItems: [],
+    patron: '', obligation: '', public: false,
+    player: state.me ? (state.me.display_name || '') : '', created: false,
   }, w || {});
   out.ownerId = state.me ? state.me.id : null;
   out.role = role;
@@ -1101,9 +1118,9 @@ function normalizeWizard(w) {
   out.lifepath = lp;
   out.roleSetup = Object.assign(defaultRoleSetup(role), (w && w.roleSetup) || {});
   out.roleLifepath = Object.assign({}, (w && w.roleLifepath) || {});
-  out.armor = Object.assign({ body: null, head: null }, (w && w.armor) || {});
+  out.armor = Object.assign({ body: null, head: null, shield: null }, (w && w.armor) || {});
   out.scrolls = Object.assign({}, (w && w.scrolls) || {});
-  out.step = Math.max(1, Math.min(7, num(out.step) || 1));
+  out.step = Math.max(1, Math.min(6, num(out.step) || 1));
   out.firstName = String(out.firstName || '');
   out.lastName = String(out.lastName || '');
   out.lifepathMode = 'merged';
@@ -1116,12 +1133,20 @@ function normalizeWizard(w) {
 }
 
 function loadWizardDraft() {
-  const key = wizardDraftKey();
-  if (!key) return false;
+  if (!state.me) return false;
   try {
-    const raw = JSON.parse(localStorage.getItem(key) || 'null');
-    if (!raw || raw.version !== WIZARD_DRAFT_VERSION || !raw.wizard) return false;
+    let raw = JSON.parse(localStorage.getItem(wizardDraftKey()) || 'null');
+    if (!raw) {
+      raw = JSON.parse(localStorage.getItem(wizardDraftKey(2)) || 'null');
+      if (raw && raw.wizard) {
+        const oldStep = num(raw.wizard.step) || 1;
+        raw.wizard.step = oldStep <= 4 ? oldStep : (oldStep <= 6 ? 5 : 6);
+      }
+    }
+    if (!raw || ![2, 3].includes(raw.version) || !raw.wizard) return false;
     state.wizard = normalizeWizard(raw.wizard);
+    saveWizardDraft();
+    if (raw.version === 2) localStorage.removeItem(wizardDraftKey(2));
     return true;
   } catch (e) { return false; }
 }
@@ -1131,24 +1156,26 @@ function initWizard() {
   (state.meta ? state.meta.stats : ['INT','REF','DEX','TECH','COOL','WILL','LUCK','MOVE','BODY','EMP']).forEach(s => stats[s] = 5);
   state.wizard = normalizeWizard({
     step: 1,
-    role: 'Solo',
+    role: '',
     handle: '', firstName: '', lastName: '',
     stats,
     skills: {},
     subSkills: [
       { base: 'Language', name: 'Streetslang', lvl: 2 },
-      { base: 'Local Expert', name: 'Свой район', lvl: 2 },
+      { base: 'Local Expert', name: 'Your Home', lvl: 2 },
     ],
     nativeLanguage: '',
     cyberware: [],
     fashionware: [],
-    gear: [], fashion: [], armor: { body: null, head: null },
+    gear: [], fashion: [], armor: { body: null, head: null, shield: null },
     chromeCost: 0, gearCost: 0, fashionCost: 0,
     fashionBurned: false, soldSoul: false, freeNeuroport: true,
     lifepathMode: 'merged', lifepath: {}, roleLifepath: {},
-    roleSetup: defaultRoleSetup('Solo'),
-    shopTab: 'weapons', shopQ: '', styleQ: '', shopType: 'all', styleType: 'all',
-    scrolls: {},
+    roleSetup: defaultRoleSetup(''), roleBenefits: [],
+    shopTab: 'weapons', shopQ: '', shopFilters: {}, shopState: {}, styleQ: '', shopType: 'all', styleType: 'all',
+    scrolls: {}, statLocks: {}, lifepathOpen: { identity: true, origin: true },
+    skillOpen: {}, skillFilter: 'all', skillQ: '', compareItems: [],
+    patron: '', obligation: '', public: false, player: state.me ? (state.me.display_name || '') : '',
   });
 }
 
@@ -1168,34 +1195,39 @@ function wizChar() {
   const purchasedChrome = [...w.cyberware, ...w.fashionware.flatMap(c => Array.from({ length: c.qty || 1 }, () => c))].map(c => ({
     key: c.id, name: c.name, hl: c.hl || 0, price: c.price, type: c.type || '',
     desc: c.desc || '', source: c.source || '', fields: c.fields || {},
+    mechanics: c.mechanics || {}, requirements: c.requirements || [], capacity: c.capacity || {},
+    instance_id: c.instance_id || c.id, host_instance: c.host_instance || '',
   }));
   const hasPaidNeuroport = purchasedChrome.some(c => String(c.name).toLowerCase() === 'neuroport');
   const cyberware = w.freeNeuroport && !hasPaidNeuroport
-    ? [{ key: 'creation-neuroport', name: 'Neuroport', hl: 0, price: 0,
-         type: 'Neuralware', desc: 'Бесплатный стартовый Neuroport по CEMK.',
+    ? [{ key: 'creation-neuroport', instance_id: 'creation-neuroport', name: 'Neuroport', hl: 0, price: 0,
+         type: 'Neuralware', desc: 'CEMK Starting Neuroport.', capacity: { slots_total: 5 },
          humanity_exempt: true, creation_free: true }, ...purchasedChrome]
     : purchasedChrome;
   return {
-    handle: w.handle || 'Безымянный-07',
+    handle: w.handle || 'Unnamed-07',
     first_name: w.firstName || '', last_name: w.lastName || '',
     role: w.role, role_rank: 4, role_setup: Object.assign({}, w.roleSetup),
     stats: Object.assign({}, w.stats),
     hp_cur: null, humanity_cur: null,
-    skills, skill_pools: skillPools, native_language: w.nativeLanguage,
+    skills, skill_pools: skillPools,
+    skill_specializations: w.subSkills.map(sub => ({ base: sub.base, name: sub.name, lvl: sub.lvl || 0, native: !!sub.native })),
+    native_language: w.nativeLanguage,
     cyberware,
-    inventory: [...w.gear.map(i => ({ ...i })), ...w.fashion.map(i => ({ ...i }))],
-    armor: { body: w.armor.body ? { ...w.armor.body } : null, head: w.armor.head ? { ...w.armor.head } : null },
+    inventory: [...w.gear.map(i => ({ ...i })), ...w.fashion.map(i => ({ ...i })), ...roleBenefitItems(w).map(i => ({ ...i, role_benefit: true, price: 0 }))],
+    armor: { body: w.armor.body ? { ...w.armor.body } : null, head: w.armor.head ? { ...w.armor.head } : null, shield: w.armor.shield ? { ...w.armor.shield } : null },
     cash: Math.max(0, creationMainRemaining(w)),
     appearance: [lp.clothing, lp.hair, lp.hair_color, lp.affectation].filter(Boolean).join(' · '),
     background: lpText,
     lifepath_mode: 'merged',
     lifepath: lp, role_lifepath: Object.assign({}, w.roleLifepath),
     creation: { sold_soul: !!w.soldSoul, free_neuroport: !!w.freeNeuroport,
+      patron: w.patron || '', obligation: w.obligation || '',
       gear_spent: w.gearCost, chrome_spent: w.chromeCost, fashion_spent: w.fashionCost },
-    lifestyle: 'Kibble (100€$)',
+    lifestyle: 'Kibble (100eb)',
     housing: w.role === 'Exec' ? 'Corporate Conapt (Teamwork)' : 'Studio Apartment (Rent, VEX)',
-    notes: '', languages: langs, player: '',
-    public: true,
+    notes: '', languages: langs, player: w.player || '',
+    public: !!w.public,
   };
 }
 
@@ -1205,7 +1237,7 @@ function wizDerived() {
 
 async function viewWizard() {
   if (!state.me) {
-    $('#view').innerHTML = '<div class="empty">Нужен вход. <a href="#/login">Войти</a></div>';
+    $('#view').innerHTML = `<div class="empty">Нужен вход. <a href="#/login">${T('Sign in','Войти')}</a></div>`;
     return;
   }
   if (!state.wizard || state.wizard.created || state.wizard.ownerId !== state.me.id) {
@@ -1215,18 +1247,8 @@ async function viewWizard() {
 }
 
 function wizLiveHtml() {
-  const wiz = state.wizard;
-  const d = wizDerived();
-  const remainingGear = creationMainRemaining(wiz);
-  const remainingFashion = wiz.fashionBurned ? 0 : (FASHION_BUDGET - wiz.fashionCost);
-  return `<div class="derived">
-    <span class="dstat"><span class="v">${d.hp_max || '—'}</span><span class="k">HP макс</span></span>
-    <span class="dstat"><span class="v">${d.seriously_wounded != null ? '≤ ' + d.seriously_wounded : '—'}</span><span class="k">Серьёзная рана</span></span>
-    <span class="dstat"><span class="v">${d.humanity_max != null ? d.humanity_cur + '/' + d.humanity_max : '—'}</span><span class="k">Человечность</span></span>
-    <span class="dstat ${d.emp_cur != null && d.emp_cur <= 2 ? 'warn' : ''}"><span class="v">${d.emp_cur != null ? d.emp_cur : '—'}</span><span class="k">EMP</span></span>
-    <span class="dstat"><span class="v">${nf.format(remainingGear)}€$</span><span class="k">Бюджет закупки</span></span>
-    <span class="dstat"><span class="v">${nf.format(remainingFashion)}€$</span><span class="k">Бюджет стиля${wiz.fashionBurned ? ' (сгорел)' : ''}</span></span>
-  </div>`;
+  const wiz=state.wizard,d=wizDerived(),gear=creationMainRemaining(wiz),style=FASHION_BUDGET-wiz.fashionCost;
+  return `<div class="derived"><span class="dstat"><span class="v">${d.hp_max||'—'}</span><span class="k">Max HP</span></span><span class="dstat"><span class="v">${d.humanity_max!=null?d.humanity_cur+'/'+d.humanity_max:'—'}</span><span class="k">Humanity</span></span><span class="dstat ${d.emp_cur!=null&&d.emp_cur<=2?'warn':''}"><span class="v">${d.emp_cur??'—'}</span><span class="k">Current EMP</span></span><span class="dstat"><span class="v">${money(gear)}</span><span class="k">${T('Main Budget','Основной бюджет')}</span></span><span class="dstat"><span class="v">${money(style)}</span><span class="k">Style Budget</span></span></div>`;
 }
 
 function captureWizardScrolls() {
@@ -1244,22 +1266,19 @@ function renderWizard() {
   captureWizardScrolls();
   const wiz = state.wizard;
   const view = $('#view');
-  if (wiz.step === 5) wiz.fashionBurned = false; // вернулись на шаг стиля — бюджет снова активен
-  const stepEmojis = ['🎭', '🧬', '📊', '🎯', '🕶️', '🛒', '✅'];
+  const stepEmojis = ['🎭', '🧬', '📊', '🎯', '🛒', '✅'];
 
   view.innerHTML = `
   <div class="wizard-wrap">
     <div class="page-head">
-      <div><h1>🧬 Мастер создания персонажа</h1>
-      <div class="sub">Пошаговое создание эджраннера в духе Cyberpunk RED Companion.</div></div>
-      <button onclick="location.hash='#/characters'">← К моим персонажам</button>
+      <div><h1>🧬 ${T('Character Creation','Создание персонажа')}</h1><div class="sub">${T('Complete Package · Cyberpunk RED','Complete Package · Cyberpunk RED')} · <span class="draft-status">${T('Draft saved automatically','Draft сохраняется автоматически')}${wiz.lastSaved ? ' · ' + new Date(wiz.lastSaved).toLocaleTimeString(APP_I18N.current()==='ru'?'ru-RU':'en-US',{hour:'2-digit',minute:'2-digit'}) : ''}</span></div></div><button onclick="location.hash='#/characters'">← ${T('Characters','Персонажи')}</button>
     </div>
     <div class="wizard-nav">
       ${WIZARD_STEPS.map((s, i) => `
         <button class="wiz-step ${i + 1 === wiz.step ? 'active' : ''} ${i + 1 < wiz.step ? 'done' : ''}"
                 onclick="wizGoTo(${i + 1})">
           <span class="wiz-num">${stepEmojis[i]}</span>
-          <span class="wiz-label">${s[1]}</span>
+          <span class="wiz-label">${wizardStepLabel(s)}</span>
         </button>`).join('')}
     </div>
 
@@ -1272,12 +1291,11 @@ function renderWizard() {
     <div class="wiz-footer">
       <div class="row" style="justify-content:space-between">
         <div>
-          <button class="btn-sm" id="wiz-restart">⟳ Начать заново</button>
+          <button class="btn-sm" id="wiz-restart">⟳ ${T('Reset draft','Начать заново')}</button>
         </div>
         <div class="row">
-          ${wiz.step > 1 ? '<button id="wiz-prev" class="btn-sm">← Назад</button>' : ''}
-          ${wiz.step < 7 ? '<button id="wiz-next" class="btn-primary">Далее →</button>'
-            : '<button class="btn-primary" id="wiz-create">🧬 Создать персонажа</button>'}
+          ${wiz.step > 1 ? `<button id="wiz-prev" class="btn-sm">← ${T('Back','Назад')}</button>` : ''}
+          ${wiz.step < 6 ? `<button id="wiz-next" class="btn-primary">${T('Next','Далее')} →</button>` : `<button class="btn-primary" id="wiz-create">🧬 ${T('Create Character','Создать персонажа')}</button>`}
         </div>
       </div>
     </div>
@@ -1288,7 +1306,7 @@ function renderWizard() {
   const prv = $('#wiz-prev');
   if (prv) prv.onclick = wizPrev;
   const crt = $('#wiz-create');
-  if (crt) crt.onclick = wizCreate;
+  if (crt) { const blocking = wizValidationErrors(); crt.disabled = blocking.length > 0; crt.title = blocking[0] || ''; crt.onclick = wizCreate; }
   $('#wiz-restart').onclick = wizReset;
   bindWizStep();
   saveWizardDraft();
@@ -1297,7 +1315,7 @@ function renderWizard() {
 function renderWizStep() {
   const wiz = state.wizard;
   const s = WIZARD_STEPS[wiz.step - 1];
-  let html = `<div class="wiz-step-header"><h2>${s[1]}</h2><div class="muted small">${s[2]}</div></div>`;
+  let html = `<div class="wiz-step-header"><h2>${wizardStepLabel(s)}</h2><div class="muted small">${wizardStepDescription(s)}</div></div>`;
   html += `<div class="wiz-content">${wizStepContent(wiz.step)}</div>`;
   return html;
 }
@@ -1308,9 +1326,8 @@ function wizStepContent(step) {
     case 2: return wizStepLifepathHtml();
     case 3: return wizStepStatsHtml();
     case 4: return wizStepSkillsHtml();
-    case 5: return wizStepStyleHtml();
-    case 6: return wizStepShoppingHtml();
-    case 7: return wizStepSummaryHtml();
+    case 5: return wizStepShoppingHtml();
+    case 6: return wizStepSummaryHtml();
     default: return '';
   }
 }
@@ -1326,56 +1343,65 @@ function roleSetupSummary(role, setup) {
   return '';
 }
 
-function wizRoleSetupHtml() {
-  const w = state.wizard, s = w.roleSetup || {};
-  if (w.role === 'Tech') return `<div class="panel accent mt"><h3>Распределение Maker</h3>
-    <div class="small muted mb">На старте Tech получает по 1 рангу в двух разных специализациях за каждый ранг Maker: всего 8, максимум 4 в одной.</div>
-    <div class="grid cols-4">${[
-      ['field','Field Expertise'],['upgrade','Upgrade Expertise'],['fabrication','Fabrication Expertise'],['invention','Invention Expertise']
-    ].map(([k,n]) => `<label class="f"><span>${n}</span><input type="number" min="0" max="4" data-role-setup="${k}" value="${num(s[k]) || 0}"></label>`).join('')}</div>
-    <div class="small">Распределено: <b>${['field','upgrade','fabrication','invention'].reduce((a,k)=>a+(num(s[k])||0),0)}</b> / 8</div></div>`;
-  if (w.role === 'Medtech') return `<div class="panel accent mt"><h3>Распределение Medicine</h3>
-    <div class="small muted mb">Распредели 4 ранга между Surgery, Pharmaceuticals и Cryosystem Operation.</div>
-    <div class="grid cols-3">${[
-      ['surgery','Surgery'],['pharma','Pharmaceuticals'],['cryo','Cryosystem Operation']
-    ].map(([k,n]) => `<label class="f"><span>${n}</span><input type="number" min="0" max="4" data-role-setup="${k}" value="${num(s[k]) || 0}"></label>`).join('')}</div>
-    <div class="small">Распределено: <b>${['surgery','pharma','cryo'].reduce((a,k)=>a+(num(s[k])||0),0)}</b> / 4</div></div>`;
-  if (w.role === 'Exec') return `<div class="panel accent mt"><h3>Teamwork · стартовый сотрудник</h3>
-    <select id="role-team"><option value="">— выбрать —</option>${['Телохранитель','Водитель','Личный помощник','Техник','Нетраннер','Скрытый оперативник'].map(x=>`<option ${s.team_member===x?'selected':''}>${x}</option>`).join('')}</select>
-    <div class="small muted mt">Teamwork также предоставляет Businesswear и корпоративное жильё.</div></div>`;
-  if (w.role === 'Nomad') return `<div class="panel accent mt"><h3>Moto · четыре стартовых выбора</h3>
-    <div class="small muted mb">На каждом ранге выбери новый семейный транспорт доступного ранга или улучшение уже выбранной машины.</div>
-    <div class="grid cols-2">${[0,1,2,3].map(i => `<label class="f"><span>Ранг ${i+1}</span><input data-moto-choice="${i}" value="${esc((s.moto_choices || [])[i] || '')}" placeholder="Транспорт или улучшение"></label>`).join('')}</div></div>`;
-  return '';
+function wizardRoleOrder() { return Object.keys(state.meta.roles || {}); }
+
+const EXEC_TEAM_MEMBERS = [
+  ['Bodyguard', 'Телохранитель'], ['Driver', 'Водитель'], ['Personal Assistant', 'Личный помощник'],
+  ['Technician', 'Техник'], ['Netrunner', 'Нетраннер'], ['Covert Operative', 'Скрытый оперативник'],
+];
+const NOMAD_MOTO_CHOICES = [
+  ['Roadbike',1], ['Compact Groundcar',1], ['Jetski',1], ['Gyrocopter',1],
+  ['Tanson Bellhop',1], ['AmeriCar EconoCompact',1], ['The Harvey 100',1], ['Makigai Ebi',1],
+  ['Zonda Molly 1K',1], ['Zonda Metrocar',1], ['Zonda R400 Trail',1],
+  ['SH-45 Patroller',2], ['AmeriCar Family Star Van',2], ['The Harriet 100',2], ["Yang’s Wheels Rickshaw",2],
+  ['SH-45 Patroller Law',4], ['Diego Motors Chupacabra',4], ['Diego Motors Range Trike',4], ['The Grundy',4],
+  ['The Harvey Merc',4], ['Militech Gorgon Security Van',4], ['Zacatzontli Pickup Truck',4], ['Zonda Sliver',4],
+  ['Militech F-152 Autocopter',4], ['Hydrosubsidium Bimac',4],
+  ['Bulletproof Glass',1], ['Communications Center',1], ['NOS',1], ['Onboard Flamethrower',1],
+  ['Onboard Machinegun',1], ['Seating Upgrade',1], ['Smuggling Upgrade',1], ['Heavy Chassis',1],
+  ['Onboard Melee Weapon',1], ['Combat Plow',1], ['Deployable Spike Strip',1], ['Housing Capacity',1],
+  ['Reinforced Hull/Tires',1], ['Sealed Environment',1],
+];
+
+function roleStepper(key, label, value, max) {
+  return `<div class="allocation-card"><b>${esc(label)}</b><span class="qty-control"><button class="mini-step" data-role-step="${key}|-1" ${value <= 0 ? 'disabled' : ''}>−</button><strong>${value}</strong><button class="mini-step" data-role-step="${key}|1" ${value >= max ? 'disabled' : ''}>＋</button></span></div>`;
 }
 
-function wizardRoleOrder() { return Object.keys(state.meta.roles || {}); }
+function wizRoleSetupHtml() {
+  const w = state.wizard, setup = w.roleSetup || {};
+  if (w.role === 'Tech') {
+    const keys = [['field','Field Expertise'],['upgrade','Upgrade Expertise'],['fabrication','Fabrication Expertise'],['invention','Invention Expertise']];
+    const spent = keys.reduce((sum,[key])=>sum+(num(setup[key])||0),0);
+    return `<section class="panel accent mt role-setup"><h3>${T('Maker Rank 4 allocation','Распределение Maker Rank 4')}</h3><p class="small muted">${T('Allocate exactly 8 Specialty Points; maximum 4 in one specialty.','Распределите ровно 8 Specialty Points; максимум 4 в одну специализацию.')}</p><div class="allocation-grid">${keys.map(([key,label])=>roleStepper(key,label,num(setup[key])||0,4)).join('')}</div><b class="${spent===8?'green':'warn-text'}">${T('Remaining','Осталось')}: ${8-spent}</b></section>`;
+  }
+  if (w.role === 'Medtech') {
+    const keys = [['surgery','Surgery'],['pharma','Pharmaceuticals'],['cryo','Cryosystem Operation']];
+    const spent = keys.reduce((sum,[key])=>sum+(num(setup[key])||0),0);
+    return `<section class="panel accent mt role-setup"><h3>${T('Medicine Rank 4 allocation','Распределение Medicine Rank 4')}</h3><p class="small muted">${T('Allocate exactly 4 Specialty Points.','Распределите ровно 4 Specialty Points.')}</p><div class="allocation-grid">${keys.map(([key,label])=>roleStepper(key,label,num(setup[key])||0,4)).join('')}</div><b class="${spent===4?'green':'warn-text'}">${T('Remaining','Осталось')}: ${4-spent}</b></section>`;
+  }
+  if (w.role === 'Exec') return `<section class="panel accent mt role-setup"><h3>${T('Teamwork Rank 4 Team Member','Team Member для Teamwork Rank 4')}</h3><div class="choice-card-grid">${EXEC_TEAM_MEMBERS.map(([en,ru])=>`<button class="choice-card ${setup.team_member===en?'selected':''}" data-team-member="${esc(en)}"><b>${esc(T(en,ru))}</b><span>${T('Corporate team specialist','Специалист корпоративной команды')}</span></button>`).join('')}</div><p class="small muted">${T('Corporate housing and applicable starting benefits are added to the Character Sheet automatically.','Корпоративное жильё и стартовые преимущества добавляются в лист автоматически.')}</p></section>`;
+  if (w.role === 'Nomad') return `<section class="panel accent mt role-setup"><h3>${T('Moto Rank 4 choices','Выборы Moto Rank 4')}</h3><p class="small muted">${T('Make four sequential vehicle or upgrade choices from the Corebook access list.','Сделайте четыре последовательных выбора транспорта или улучшений из списка Corebook.')}</p><div class="grid cols-2">${[0,1,2,3].map(i=>`<label class="f"><span>Rank ${i+1}</span><select data-moto-choice="${i}"><option value="">${T('Choose…','Выберите…')}</option>${NOMAD_MOTO_CHOICES.filter(([,access])=>access<=i+1).map(([value,access])=>`<option value="${esc(value)}" ${(setup.moto_choices||[])[i]===value?'selected':''}>${esc(value)} · Access ${access}</option>`).join('')}</select></label>`).join('')}</div></section>`;
+  return `<div class="panel mt small muted">${T('This Role has no permanent Rank 4 allocation during character creation.','У этой роли нет постоянного распределения Rank 4 при создании персонажа.')}</div>`;
+}
 
 function wizStepRoleHtml() {
   const wiz = state.wizard;
   const roles = wizardRoleOrder();
-  const role = wiz.role;
-  const ru = state.meta.role_ru[role];
-  const ab = ROLE_ABILITIES[role] || { name: state.meta.roles[role], desc: '' };
-  return `
-    <div class="role-tabs mb" role="tablist" aria-label="Роли">
-      ${roles.map(r => `<button role="tab" aria-selected="${wiz.role === r}" data-role="${r}" class="${wiz.role === r ? 'active' : ''}">${esc(r)}</button>`).join('')}
-    </div>
-    <div class="role-carousel" id="role-carousel">
-      <button class="role-arrow" data-role-shift="-1" aria-label="Предыдущая роль">‹</button>
-      <article class="role-card selected role-focus">
-        <div class="role-index">${roles.indexOf(role) + 1} / ${roles.length}</div>
-        <h2>${esc(role)} <span class="chip role">${esc(ru || '')}</span></h2>
-        <p>${esc(ROLE_LONG_DESCRIPTIONS[role] || state.meta.role_desc[role] || '')}</p>
-        <div class="ability-box">
-          <div class="tag mb" style="display:inline-block;color:var(--yellow);border-color:rgba(255,213,0,.4)">⚡ ${esc(ab.name)}</div>
-          <p class="small">${esc(ab.desc)}</p>
-        </div>
-      </article>
-      <button class="role-arrow" data-role-shift="1" aria-label="Следующая роль">›</button>
-    </div>
-    <div class="small muted" style="text-align:center">Можно выбрать роль кнопками, стрелками или свайпом по карточке.</div>
-    ${wizRoleSetupHtml()}`;
+  if (!wiz.role) return `<div class="role-tabs mb" role="tablist">${roles.map(role=>`<button role="tab" data-role="${role}">${esc(role)}${APP_I18N.current()==='ru'?' · '+esc(state.meta.role_ru[role]||''):''}</button>`).join('')}</div><div class="empty role-empty"><div class="big-icon">🎭</div><h2>${T('Choose a Role','Выберите роль')}</h2><p>${T('No Role is selected by default. Choose deliberately to open its Corebook description and Rank 4 setup.','Роль по умолчанию не выбрана. Выберите её осознанно, чтобы открыть описание Corebook и настройку Rank 4.')}</p></div>`;
+  const source = ROLE_COREBOOK_V3[wiz.role];
+  const localized = source[APP_I18N.current()];
+  const ability = ROLE_ABILITIES[wiz.role] || {name:state.meta.roles[wiz.role],desc:''};
+  return `<div class="role-tabs mb" role="tablist">${roles.map(role=>`<button role="tab" aria-selected="${wiz.role===role}" data-role="${role}" class="${wiz.role===role?'active':''}">${esc(role)}${APP_I18N.current()==='ru'?' · '+esc(state.meta.role_ru[role]||''):''}</button>`).join('')}</div>
+    <div class="role-carousel" id="role-carousel" tabindex="0"><button class="role-arrow" data-role-shift="-1" aria-label="${T('Previous Role','Предыдущая роль')}">‹</button>
+      <article class="role-card selected role-focus role-v3">
+        <div class="role-index">${roles.indexOf(wiz.role)+1} / ${roles.length}</div>
+        <div class="role-art"><img src="/role-art/${wiz.role.toLowerCase()}.webp" alt="" onerror="this.hidden=true"><span>${source.icon}</span></div>
+        <div><h2>${esc(wiz.role)}${APP_I18N.current()==='ru'?` <span class="chip role">${esc(state.meta.role_ru[wiz.role]||'')}</span>`:''}</h2><span class="tag source">${esc(source.pages)}</span>
+        <section><h3>${T('Who you are','Кто вы')}</h3><p>${esc(localized.identity)}</p></section>
+        <section><h3>${T('How the Role plays','Стиль игры')}</h3><p>${esc(localized.play)}</p></section>
+        <section class="ability-box"><h3>⚡ ${esc(T(state.meta.roles[wiz.role], ability.name))}</h3><p>${esc(localized.rank4)}</p>${APP_I18N.current()==='ru'?`<details><summary>Полная справка способности</summary><p class="small">${esc(ability.desc)}</p></details>`:''}</section></div>
+      </article><button class="role-arrow" data-role-shift="1" aria-label="${T('Next Role','Следующая роль')}">›</button></div>
+    <p class="small muted center">${T('Use the tabs, arrow keys, buttons, or swipe.','Используйте вкладки, клавиши-стрелки, кнопки или свайп.')}</p>${wizRoleSetupHtml()}`;
 }
 
 /* ---------- Шаг 2: Lifepath ---------- */
@@ -1417,7 +1443,9 @@ function lifepathFieldsHtml(fields, values, attr, diceAttr, roleSpecific) {
     const selected = values[key] || '';
     const selectedOpt = opts.find(o => (typeof o === 'object' ? o.value : o) === selected);
     const sources = selectedOpt && typeof selectedOpt === 'object' ? selectedOpt.sources : (roleSpecific ? ['CP:R'] : []);
-    const info = roleSpecific ? (ROLE_LIFEPATH_QUESTION_INFO[key] || 'Этот вопрос уточняет профессиональную историю, связи и привычки роли.') : (LIFEPATH_QUESTION_INFO[key] || 'Этот вопрос задаёт важную деталь предыстории персонажа.');
+    const info = APP_I18N.current() === 'en'
+      ? (roleSpecific ? 'This question refines the Role’s professional history, habits, and connections.' : (LIFEPATH_QUESTION_EN[key] || 'This question establishes an important part of the character’s history.'))
+      : (roleSpecific ? (ROLE_LIFEPATH_QUESTION_INFO[key] || 'Этот вопрос уточняет профессиональную историю, связи и привычки роли.') : (LIFEPATH_QUESTION_INFO[key] || 'Этот вопрос задаёт важную деталь предыстории персонажа.'));
     return `<div class="lp-item">
       <div class="lp-label">${esc(label)}</div>
       <div class="small muted lp-question-info">${esc(info)}</div>
@@ -1427,7 +1455,7 @@ function lifepathFieldsHtml(fields, values, attr, diceAttr, roleSpecific) {
           ${opts.map(raw => {
             const value = typeof raw === 'object' ? raw.value : raw;
             const tag = typeof raw === 'object' ? ` · ${raw.sources.join('+')}` : '';
-            return `<option value="${esc(value)}" ${selected === value ? 'selected' : ''}>${esc(value + tag)}</option>`;
+            return `<option value="${esc(value)}" ${selected === value ? 'selected' : ''}>${esc(displayKnownValue(value) + tag)}</option>`;
           }).join('')}
         </select>
         <button class="btn-sm" ${diceAttr}="${key}" title="Случайный результат">🎲</button>
@@ -1441,54 +1469,73 @@ function matchingNamePool(region) {
   const text = String(region || '');
   const direct = REGION_NAME_POOLS[text];
   if (direct) return direct;
-  const key = Object.keys(REGION_NAME_POOLS).find(k => text.startsWith(k) || k.startsWith(text));
-  return key ? REGION_NAME_POOLS[key] : REGION_NAME_POOLS['Северная Америка'];
+  const key = Object.keys(REGION_NAME_POOLS).find(regionKey => text.startsWith(regionKey) || regionKey.startsWith(text));
+  return key ? REGION_NAME_POOLS[key] : null;
 }
-
 function randomFrom(list) { return list[Math.floor(Math.random() * list.length)]; }
+function genderedNames(pool, gender) {
+  if (!pool) return [];
+  if (gender === 'neutral') return pool.first;
+  const parity = gender === 'feminine' ? 1 : 0;
+  const selected = pool.first.filter((_, index) => index % 2 === parity);
+  return selected.length ? selected : pool.first;
+}
 function generateWizardHandle() {
   const pools = Object.values(HANDLE_POOLS);
   state.wizard.handle = randomFrom(randomFrom(pools));
 }
-function generateWizardName() {
-  const pool = matchingNamePool(state.wizard.lifepath.region);
-  state.wizard.firstName = randomFrom(pool.first);
-  state.wizard.lastName = randomFrom(pool.last);
+function generateWizardName(part) {
+  const wiz = state.wizard, pool = matchingNamePool(wiz.lifepath.region);
+  if (!pool) { toast(T('Choose a cultural region first.','Сначала выберите культурный регион.'), true); return; }
+  if (part !== 'last') wiz.firstName = randomFrom(genderedNames(pool, wiz.nameGender || 'neutral'));
+  if (part !== 'first') wiz.lastName = randomFrom(pool.last);
+}
+function wizRollHybrid(key, roleSpecific) {
+  const fields = roleSpecific ? lpRoleField(state.wizard.role) : lpAllFields();
+  const field = fields.find(row => row[0] === key);
+  if (!field) return;
+  const options = field[2];
+  if (roleSpecific || typeof options[0] !== 'object') return wizRollLifepath(key, roleSpecific);
+  const sources = [...new Set(options.flatMap(option => option.sources || []))];
+  const source = randomFrom(sources);
+  const aliases = Object.entries(LIFEPATH_KEY_ALIASES).filter(([, mapped]) => mapped === key).map(([raw]) => raw);
+  const sourceFields = source === 'CEMK' ? CEMK_LIFEPATH_FIELDS : CORE_LIFEPATH_FIELDS;
+  const original = sourceFields.find(([rawKey]) => rawKey === key || aliases.includes(rawKey));
+  if (original && original[2].length) {
+    const index = source === 'CEMK' && original[2].length >= 11
+      ? (1 + Math.floor(Math.random() * 6)) + (1 + Math.floor(Math.random() * 6)) - 2
+      : Math.floor(Math.random() * original[2].length);
+    state.wizard.lifepath[key] = original[2][Math.min(index, original[2].length - 1)];
+  } else {
+    const candidates = options.filter(option => (option.sources || []).includes(source));
+    state.wizard.lifepath[key] = randomFrom(candidates).value;
+  }
+  if (key === 'region') syncNativeLanguage();
+}
+function lifepathProgress(fields, values) { return fields.filter(([key]) => String(values[key] || '').trim()).length; }
+function lifepathSectionHtml(id, en, ru, keys, fields, values, roleSpecific) {
+  const selected = fields.filter(([key]) => keys.includes(key));
+  const complete = lifepathProgress(selected, values);
+  const open = !!(state.wizard.lifepathOpen || {})[id];
+  return `<details class="creation-section" data-lp-section="${id}" ${open ? 'open' : ''}><summary><span>${esc(T(en,ru))}</span><span class="section-progress ${complete===selected.length?'ok':''}">${complete}/${selected.length}</span></summary><div class="section-body lp-grid">${lifepathFieldsHtml(selected, values, roleSpecific?'data-role-lp':'data-lp', roleSpecific?'data-role-lp-dice':'data-lp-dice', roleSpecific)}</div></details>`;
 }
 
 function wizStepLifepathHtml() {
-  const wiz = state.wizard;
-  const fields = lpAllFields();
-  const roleFields = lpRoleField(wiz.role);
+  const wiz = state.wizard, fields = lpAllFields(), roleFields = wiz.role ? lpRoleField(wiz.role) : [];
   const langs = languagesForRegion(wiz.lifepath.region);
-  return `
-    <div class="panel accent mb identity-panel">
-      <h3>Имя и Handle</h3>
-      <div class="grid cols-3">
-        <label class="f"><span>Handle *</span><div class="input-action"><input id="wiz-handle" maxlength="60" value="${esc(wiz.handle)}" placeholder="Neon, Выхлоп…"><button class="btn-sm" data-generate-handle title="Сгенерировать Handle">🎲</button></div></label>
-        <label class="f"><span>Имя <span class="muted">(необязательно)</span></span><input id="wiz-first-name" maxlength="60" value="${esc(wiz.firstName)}"></label>
-        <label class="f"><span>Фамилия <span class="muted">(необязательно)</span></span><div class="input-action"><input id="wiz-last-name" maxlength="60" value="${esc(wiz.lastName)}"><button class="btn-sm" data-generate-name title="Имя и фамилия по выбранному региону">🎲</button></div></label>
-      </div>
-      <div class="small muted mt">Генератор имени использует культурный регион, выбранный ниже. Handle генерируется независимо.</div>
-    </div>
-    <div class="panel accent mb">
-      <b>Единый Lifepath CP:R + CEMK</b>
-      <div class="small muted">Варианты объединены в одном списке и помечены источниками. Друзья, враги и трагическая любовь не входят в новый мастер.</div>
-    </div>
-    <div class="row mb" style="justify-content:space-between;align-items:center">
-      <span class="muted small">Выбирай результат или используй случайную генерацию.</span>
-      <button class="btn-primary btn-sm" id="lp-gen-all">🎲 Сгенерировать весь Lifepath</button>
-    </div>
-    <h3>Общий Lifepath · CP:R + CEMK</h3>
-    <div class="lp-grid">${lifepathFieldsHtml(fields, wiz.lifepath, 'data-lp', 'data-lp-dice', false)}</div>
-    <div class="panel mt mb">
-      <label class="f"><span>Культурный язык · уровень 4 бесплатно</span>
-        <select id="lp-native" ${langs.length ? '' : 'disabled'}><option value="">${langs.length ? '— выбрать язык —' : 'Сначала выбери регион'}</option>
-        ${langs.map(x => `<option value="${esc(x)}" ${wiz.nativeLanguage === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>
-      <div class="small muted">Streetslang остаётся отдельным обязательным навыком уровня 2 и оплачивается из 86 очков.</div>
-    </div>
-    <h3>Ролевой Lifepath · ${esc(wiz.role)} · CP:R</h3>
-    <div class="lp-grid">${lifepathFieldsHtml(roleFields, wiz.roleLifepath, 'data-role-lp', 'data-role-lp-dice', true)}</div>`;
+  const commonDone = lifepathProgress(fields, wiz.lifepath), roleDone = lifepathProgress(roleFields, wiz.roleLifepath);
+  wiz.nameGender = wiz.nameGender || 'neutral';
+  return `<div class="lifepath-progress panel accent mb"><b>${T('Common Lifepath','Общий Lifepath')}: ${commonDone}/${fields.length}</b><b>${T('Role-Based','Ролевой')}: ${wiz.role ? roleDone+'/'+roleFields.length : T('choose a Role','выберите роль')}</b><button class="btn-primary btn-sm" id="lp-gen-all">🎲 ${T('Generate Hybrid Lifepath','Сгенерировать Hybrid Lifepath')}</button></div>
+    <details class="creation-section" data-lp-section="identity" ${(wiz.lifepathOpen||{}).identity?'open':''}><summary><span>Identity</span><span class="section-progress ${wiz.handle?'ok':''}">${wiz.handle?'✓':'0/1'}</span></summary><div class="section-body">
+      <div class="grid cols-3"><label class="f"><span>Handle *</span><div class="input-action"><input id="wiz-handle" maxlength="60" value="${esc(wiz.handle)}"><button class="btn-sm" data-generate-handle>🎲</button></div></label>
+      <label class="f"><span>${T('First name (optional)','Имя (необязательно)')}</span><div class="input-action"><input id="wiz-first-name" maxlength="60" value="${esc(wiz.firstName)}"><button class="btn-sm" data-generate-name="first" ${wiz.lifepath.region?'':'disabled'}>🎲</button></div></label>
+      <label class="f"><span>${T('Last name (optional)','Фамилия (необязательно)')}</span><div class="input-action"><input id="wiz-last-name" maxlength="60" value="${esc(wiz.lastName)}"><button class="btn-sm" data-generate-name="last" ${wiz.lifepath.region?'':'disabled'}>🎲</button></div></label></div>
+      <div class="segmented mt" role="group">${[['masculine','Masculine','Мужское'],['feminine','Feminine','Женское'],['neutral','Neutral','Нейтральное']].map(([id,en,ru])=>`<button data-name-gender="${id}" class="${wiz.nameGender===id?'active':''}">${T(en,ru)}</button>`).join('')}<button data-generate-name="both" ${wiz.lifepath.region?'':'disabled'}>🎲 ${T('Generate full name','Сгенерировать имя')}</button></div>
+      ${wiz.lifepath.region?'':`<p class="small muted">${T('Choose Origin → Cultural Region to enable regional names.','Выберите Происхождение → Культурный регион для генератора имён.')}</p>`}
+    </div></details>
+    ${LIFEPATH_SECTIONS_V3.map(([id,en,ru,keys])=>lifepathSectionHtml(id,en,ru,keys,fields,wiz.lifepath,false)).join('')}
+    <details class="creation-section" data-lp-section="language" ${(wiz.lifepathOpen||{}).language?'open':''}><summary><span>${T('Cultural Language','Культурный язык')}</span><span class="section-progress ${wiz.nativeLanguage?'ok':''}">${wiz.nativeLanguage?'✓':'0/1'}</span></summary><div class="section-body"><label class="f"><span>${T('Cultural Language · Level 4 free','Культурный язык · уровень 4 бесплатно')}</span><select id="lp-native" ${langs.length?'':'disabled'}><option value="">${langs.length?T('Choose…','Выберите…'):T('Choose a region first','Сначала выберите регион')}</option>${langs.map(value=>`<option value="${esc(value)}" ${wiz.nativeLanguage===value?'selected':''}>${esc(displayKnownValue(value))}</option>`).join('')}</select></label><p class="small muted">Streetslang 2 ${T('is paid from the 86-point Skill budget.','оплачивается из бюджета 86 очков.')}</p></div></details>
+    ${wiz.role ? lifepathSectionHtml('role',`${wiz.role} Role-Based Lifepath`,`Ролевой Lifepath · ${wiz.role}`,roleFields.map(row=>row[0]),roleFields,wiz.roleLifepath,true) : `<div class="panel empty"><h3>${T('Choose a Role first','Сначала выберите роль')}</h3><p>${T('Role-Based Lifepath opens after a Role is selected. Common Lifepath remains available.','Role-Based Lifepath откроется после выбора роли. Общий Lifepath уже доступен.')}</p><button class="btn-sm" onclick="wizGoTo(1)">${T('Go to Role','Перейти к роли')}</button></div>`}`;
 }
 
 /* ---------- Шаг 3: Статы ---------- */
@@ -1508,29 +1555,30 @@ function updateWizStatBar() {
   }
 }
 
+const ROLE_STAT_PRIORITIES = {
+  Rockerboy:['COOL','EMP','DEX'], Solo:['REF','DEX','BODY','MOVE'], Netrunner:['INT','REF','TECH'],
+  Tech:['TECH','INT','LUCK'], Medtech:['TECH','INT','EMP'], Media:['INT','COOL','EMP'],
+  Exec:['COOL','INT','EMP'], Lawman:['COOL','REF','BODY'], Fixer:['COOL','EMP','INT'], Nomad:['REF','TECH','MOVE'],
+};
+function randomizeWizardStats() {
+  const wiz=state.wizard, keys=state.meta.stats, unlocked=keys.filter(key=>!wiz.statLocks[key]);
+  const lockedTotal=keys.filter(key=>wiz.statLocks[key]).reduce((sum,key)=>sum+(num(wiz.stats[key])||0),0);
+  let remaining=(state.meta.stat_points||62)-lockedTotal-unlocked.length*2;
+  if (!unlocked.length || remaining<0 || remaining>unlocked.length*6) { toast(T('Unlock more Characteristics: an exact 62-point spread is impossible.','Разблокируйте характеристики: распределение на 62 невозможно.'),true); return; }
+  unlocked.forEach(key=>wiz.stats[key]=2);
+  while(remaining>0){const candidates=unlocked.filter(key=>wiz.stats[key]<8);const key=randomFrom(candidates);wiz.stats[key]++;remaining--;}
+}
+function showStatInfo(stat) {
+  const row=STAT_DETAILS_V3[stat]; if(!row)return;
+  openModal(`<h2>${stat} · ${esc(T(row[0],row[1]))}</h2><p>${esc(T(row[2],row[3]))}</p><div class="tag source">${esc(row[4])}</div>`);
+}
 function wizStepStatsHtml() {
-  const wiz = state.wizard;
-  const spent = wizStatSpent();
-  const budget = state.meta.stat_points || 62;
-  return `
-    <div class="row mb" style="justify-content:space-between">
-      <span class="muted small">Потрачено: <b id="wiz-st-spent" class="${spent !== budget ? 'warn-text' : ''}">${spent}</b> / <b>${budget}</b> очков (каждая стата 2–8, требуется ровно 62)</span>
-      <div class="row">
-        <button class="btn-sm" id="wiz-st-roll">🎲 Сгенерировать</button>
-        <button class="btn-sm" id="wiz-st-reset">Сбросить все на 5</button>
-      </div>
-    </div>
-    <div class="statgrid">
-      ${state.meta.stats.map(s => {
-        const v = num(wiz.stats[s]);
-        const bad = v < 2 || v > 8;
-        return `<div class="stat input${bad ? ' bad' : ''}">
-          <span class="k">${s}</span>
-          <input type="number" min="2" max="8" data-wiz-stat="${s}" value="${v != null ? v : 5}">
-        </div>`;
-      }).join('')}
-    </div>
-    <div class="small muted mt">HP = 10 + 5×⌈(BODY+WILL)/2⌉ · Человечность макс = EMP×10</div>`;
+  const wiz=state.wizard, spent=wizStatSpent(), budget=state.meta.stat_points||62, remaining=budget-spent;
+  const priorities=ROLE_STAT_PRIORITIES[wiz.role]||[];
+  return `<div class="sticky-budget panel accent mb"><div><b>${T('Allocated','Распределено')}: <span id="wiz-st-spent">${spent}</span> / ${budget}</b><span class="budget-remaining ${remaining===0?'ok':remaining<0?'bad':''}">${T('Points remaining','Осталось')}: ${remaining}</span></div><div class="row"><button class="btn-sm" id="wiz-st-roll">🎲 ${T('Randomize unlocked','Сгенерировать незакреплённые')}</button><button class="btn-sm" id="wiz-st-reset">${T('Reset all to 5','Сбросить все на 5')}</button></div></div>
+    ${wiz.role?`<div class="panel mb"><b>${T('Suggested priorities for','Рекомендуемые приоритеты для')} ${esc(wiz.role)}:</b> ${priorities.map(stat=>`<span class="chip">${stat}</span>`).join('')}</div>`:''}
+    <div class="stat-cards">${state.meta.stats.map(stat=>{const value=num(wiz.stats[stat])||5,locked=!!wiz.statLocks[stat],info=STAT_DETAILS_V3[stat];return `<article class="stat-card ${priorities.includes(stat)?'recommended':''}"><button class="skill-name-btn stat-name" data-stat-info="${stat}"><b>${stat}</b><span>${esc(T(info[0],info[1]))}</span></button><button class="stat-lock ${locked?'locked':''}" data-stat-lock="${stat}" title="${T('Preserve during random generation','Сохранить при генерации')}">${locked?'🔒':'🔓'}</button><div class="stat-stepper"><button class="mini-step" data-stat-step="${stat}|-1" ${value<=2?'disabled':''}>−</button><strong>${value}</strong><button class="mini-step" data-stat-step="${stat}|1" ${value>=8||spent>=budget?'disabled':''}>＋</button></div><small>${T('Range','Диапазон')} 2–8</small></article>`;}).join('')}</div>
+    <p class="small muted">${T('Locks only affect random generation. BODY and WILL determine HP; EMP determines starting Humanity.','Замки влияют только на генерацию. BODY и WILL определяют HP; EMP определяет начальную Humanity.')}</p>`;
 }
 
 /* ---------- Шаг 4: Навыки + суб-навыки ---------- */
@@ -1581,11 +1629,10 @@ function skillDetail(name) {
 }
 
 function showSkillInfo(name) {
-  const meta = (state.meta.skills || []).find(s => s[1] === name);
-  const detail = skillDetail(name);
-  openModal(`<h2>${esc(name)}</h2>
-    <div class="chips mb"><span class="chip">STAT ${esc(meta ? meta[2] : '—')}</span>${meta && meta[3] ? '<span class="tag">×2</span>' : '<span class="tag">×1</span>'}</div>
-    <p>${esc(detail[0])}</p><div class="panel accent"><b>Примеры применения</b><p class="small">${esc(detail[1])}</p></div>`);
+  const meta = (state.meta.skills || []).find(s => s[1] === name), detail = skillDetail(name), isEn = APP_I18N.current() === 'en';
+  const description = isEn ? `${name} is a Corebook ${meta ? meta[0] : ''} Skill linked to ${meta ? meta[2] : 'the relevant STAT'}. Each named specialization is tracked separately where applicable.` : detail[0];
+  const example = isEn ? `Example: make a ${name} Check when the declared action directly relies on this training; the GM sets the DV or uses an opposed Check.` : detail[1];
+  openModal(`<h2>${esc(name)}</h2><div class="chips mb"><span class="chip">STAT ${esc(meta ? meta[2] : '—')}</span>${meta && meta[3] ? '<span class="tag">×2</span>' : '<span class="tag">×1</span>'}<span class="tag source">CP:R pp. 130–142</span></div><p>${esc(description)}</p><div class="panel accent"><b>${T('Example','Пример')}</b><p class="small">${esc(example)}</p></div>`);
 }
 
 function wizSubRowsHtml(base, presets, stat, is2) {
@@ -1596,64 +1643,61 @@ function wizSubRowsHtml(base, presets, stat, is2) {
   const dl = `wiz-dl-${base.replace(/\s+/g, '-')}`;
   return `<div class="subskill-pool">
     <div class="subskill-pool-head">
-      <span>Распределено <b>${wizSubAllocated(base)}</b> / ${pool}; свободно <b class="${free ? 'green' : 'muted'}">${free}</b></span>
-      ${free > 0 ? `<button class="btn-sm" data-sub-add="${esc(base)}">＋ Добавить специализацию</button>` : ''}
+      <span>${T('Allocated','Распределено')} <b>${wizSubAllocated(base)}</b> / ${pool}; ${T('free','свободно')} <b class="${free ? 'green' : 'muted'}">${free}</b></span>
+      ${free > 0 ? `<button class="btn-sm" data-sub-add="${esc(base)}">＋ ${T('Add specialization','Добавить специализацию')}</button>` : ''}
     </div>
     ${list.map(([sub, i]) => {
       const currentStat = stat === 'EMP' ? (wizDerived().emp_cur ?? wiz.stats.EMP) : wiz.stats[stat];
       return `<div class="skill-row subskill-row">
-        <span class="sname subskill-name">↳ <input data-sub-name="${i}" list="${dl}" value="${esc(sub.name)}" placeholder="Название специализации" ${sub.native ? 'disabled' : ''}></span>
+        <span class="sname subskill-name">↳ <input data-sub-name="${i}" list="${dl}" value="${esc(sub.name)}" placeholder="${T('Specialization name','Название специализации')}" ${sub.native ? 'disabled' : ''}></span>
         <span class="sstat">${esc(stat)}</span>
         <span class="slvl"><button class="mini-step" data-sub-minus="${i}" ${sub.native || sub.lvl <= 0 ? 'disabled' : ''}>−</button><b>${sub.lvl || 0}</b><button class="mini-step" data-sub-plus="${i}" ${sub.native || free <= 0 || sub.lvl >= 6 ? 'disabled' : ''}>＋</button></span>
-        <span class="sbase"><b>${(num(currentStat) || 0) + (sub.lvl || 0)}</b>${sub.native ? ' <span class="chip">бесплатно</span>' : ''}</span>
-        ${sub.native ? '<span></span>' : `<button class="btn-sm btn-danger" data-sub-del="${i}" title="Удалить специализацию">✕</button>`}
+        <span class="sbase"><b>${(num(currentStat) || 0) + (sub.lvl || 0)}</b>${sub.native ? ` <span class="chip">${T('free','бесплатно')}</span>` : ''}</span>
+        ${sub.native ? '<span></span>' : `<button class="btn-sm btn-danger" data-sub-del="${i}" title="${T('Remove specialization','Удалить специализацию')}">✕</button>`}
       </div>`;
     }).join('')}
     <datalist id="${dl}">${presets.map(value => `<option value="${esc(value)}">`).join('')}</datalist>
   </div>`;
 }
 
+const SKILL_CATEGORY_EN = {'Осознание':'Awareness','Тело':'Body','Управление':'Control','Образование':'Education','Бой':'Fighting','Выступление':'Performance','Стрелковое':'Ranged Weapon','Социальные':'Social','Технические':'Technique'};
+function skillCategoryLabel(category) { return APP_I18N.current() === 'en' ? (SKILL_CATEGORY_EN[category] || category) : category; }
+function skillLevelStepper(name, lvl, is2, allocatedFloor) {
+  const remaining=(state.meta.skill_points||86)-wizSkillSpent(), cost=is2?2:1;
+  return `<span class="slvl skill-stepper"><button class="mini-step" data-wiz-skill-step="${esc(name)}|-1" ${lvl<=Math.max(0,allocatedFloor||0)?'disabled':''}>−</button><b>${lvl}</b><button class="mini-step" data-wiz-skill-step="${esc(name)}|1" ${lvl>=6||remaining<cost?'disabled':''}>＋</button></span>`;
+}
 function wizStepSkillsHtml() {
-  const wiz = state.wizard;
-  const must = new Set(state.meta.must_skills || []);
-  const budget = state.meta.skill_points || 86;
-  const maxLvl = state.meta.skill_max || 6;
-  const spent = wizSkillSpent();
-  const specialized = Object.fromEntries(SUB_SKILL_BASES.map(row => [row[0], row]));
-  const mustChips = (state.meta.must_skills || []).map(name => {
-    const ok = wizMustOk(name);
-    return `<span class="wiz-must-chip chip ${ok ? 'ok' : 'bad'}" data-must="${esc(name)}">${ok ? '✓' : '✗'} ${esc(name)}</span>`;
+  const wiz=state.wizard, budget=state.meta.skill_points||86, spent=wizSkillSpent(), remaining=budget-spent;
+  const recommended=new Set(ROLE_RECOMMENDED_SKILLS[wiz.role]||[]), required=new Set(state.meta.must_skills||[]);
+  const specialized=Object.fromEntries(SUB_SKILL_BASES.map(row=>[row[0],row]));
+  const query=String(wiz.skillQ||'').trim().toLowerCase(), filter=wiz.skillFilter||'all';
+  const requiredDone=[...required].filter(wizMustOk).length;
+  const include=([cat,name,,is2])=>{
+    if(query&&!name.toLowerCase().includes(query))return false;
+    if(filter==='required'&&!required.has(name))return false;
+    if(filter==='recommended'&&!recommended.has(name))return false;
+    if(filter==='allocated'&&!(num(wiz.skills[name])||0)&&!wiz.subSkills.some(sub=>sub.base===name&&sub.lvl>0))return false;
+    if(filter==='x2'&&!is2)return false;
+    return true;
+  };
+  const groups=new Map();
+  for(const row of state.meta.skills.filter(include)){if(!groups.has(row[0]))groups.set(row[0],[]);groups.get(row[0]).push(row);}
+  const derived=wizDerived();
+  const groupHtml=[...groups.entries()].map(([cat,rows])=>{
+    const open=wiz.skillOpen[cat]!==false;
+    const content=rows.map(([_,name,stat,is2])=>{
+      const lvl=num(wiz.skills[name])||0, statValue=stat==='EMP'?(derived.emp_cur??wiz.stats.EMP):wiz.stats[stat];
+      const sub=specialized[name], allocated=sub?wizSubAllocated(name):0, ok=!required.has(name)||wizMustOk(name);
+      return `<div class="skill-row ${sub?'skill-parent':''} ${recommended.has(name)?'recommended':''} ${ok?'':'requirement-missing'}"><button class="skill-name-btn sname" data-skill-info="${esc(name)}">${esc(name)} ${is2?'<span class="tag">×2</span>':'<span class="muted small">×1</span>'}${required.has(name)?` <span class="tag ${ok?'ok':'bad'}">${ok?'Required ✓':'Required 2'}</span>`:''}${recommended.has(name)?` <span class="tag recommended-tag">${T('Recommended','Рекомендуется')}</span>`:''}</button><span class="sstat">${stat} <b>${statValue}</b></span>${skillLevelStepper(name,lvl,is2,allocated)}<span class="sbase"><b>${(num(statValue)||0)+lvl}</b></span><span></span></div>${sub?wizSubRowsHtml(name,sub[2],stat,is2):''}`;
+    }).join('');
+    return `<details class="skill-category creation-section" data-skill-category="${esc(cat)}" ${open?'open':''}><summary><span>${esc(skillCategoryLabel(cat))}</span><span>${rows.length}</span></summary><div class="section-body"><div class="skill-table-head"><span>Skill</span><span>STAT</span><span>LVL</span><span>BASE</span><span></span></div>${content}</div></details>`;
   }).join('');
-  const recommended = (ROLE_RECOMMENDED_SKILLS[wiz.role] || []).map(name => `<span class="chip">${esc(name)}</span>`).join('');
-  let lastCat = null;
-  const rows = state.meta.skills.map(([cat, name, stat, is2]) => {
-    const head = cat !== lastCat ? `<div class="skill-cat">${esc(cat)}</div>` : '';
-    lastCat = cat;
-    const lvl = num(wiz.skills[name]) || 0;
-    const derived = wizDerived();
-    const currentStat = stat === 'EMP' ? (derived.emp_cur ?? wiz.stats.EMP) : wiz.stats[stat];
-    const subMeta = specialized[name];
-    const allocated = subMeta ? wizSubAllocated(name) : 0;
-    const options = [0,1,2,3,4,5,6].map(rank => `<option value="${rank}" ${lvl === rank ? 'selected' : ''} ${subMeta && rank < allocated ? 'disabled' : ''}>${rank}</option>`).join('');
-    return head + `<div class="skill-row ${subMeta ? 'skill-parent' : ''}">
-      <button class="skill-name-btn sname" data-skill-info="${esc(name)}">${must.has(name) ? '<span class="must-tag" title="Обязательный минимум">★</span>' : ''}${esc(name)}${is2 ? ' <span class="muted small">(×2)</span>' : ''}</button>
-      <span class="sstat">${esc(stat)}</span>
-      <span class="slvl"><select ${subMeta ? 'data-wiz-pool' : 'data-wiz-skill'}="${esc(name)}">${options}</select></span>
-      <span class="sbase"><b>${(num(currentStat) || 0) + lvl}</b></span>
-      <span></span>
-    </div>${subMeta ? wizSubRowsHtml(name, subMeta[2], stat, is2) : ''}`;
-  }).join('');
-  const ab = ROLE_ABILITIES[wiz.role] || { name: state.meta.roles[wiz.role] || '—' };
-  return `
-    <div class="row mb" style="justify-content:space-between;align-items:center">
-      <span class="muted small">Потрачено: <b id="wiz-sk-spent" class="${spent !== budget ? 'warn-text' : ''}">${spent}</b> / <b>${budget}</b>. Родительский уровень специализируемого навыка покупается из этого бюджета и распределяется между дочерними строками.</span>
-    </div>
-    <div class="muted small mb">Обязательные минимумы:</div><div class="must-list mb">${mustChips}</div>
-    <div class="muted small mb">Рекомендации для ${esc(wiz.role)}:</div><div class="chips mb">${recommended}</div>
-    <div class="skill-table-head"><span>Навык</span><span>STAT</span><span>LVL</span><span>BASE</span><span></span></div>
-    <div class="skill-row role-skill-row"><span class="sname"><b>${esc(ab.name)}</b> <span class="tag role">роль</span></span><span class="sstat">—</span><span class="slvl"><b>4</b></span><span class="sbase">—</span><span></span></div>
-    <div class="skill-list">${rows}</div>
-    <div class="small muted mt">Культурный Language 4 бесплатен. Streetslang 2 и Local Expert 2 оплачиваются из родительских пулов. Нажми название навыка, чтобы открыть описание и примеры.</div>`;
+  const ability=wiz.role?ROLE_ABILITIES[wiz.role]:null;
+  return `<div class="sticky-budget panel accent mb"><div><b>${T('Allocated','Распределено')}: <span id="wiz-sk-spent">${spent}</span> / ${budget}</b><span class="budget-remaining ${remaining===0?'ok':''}">${T('Points remaining','Осталось')}: ${remaining}</span></div><b>${T('Required Skills','Обязательные навыки')}: ${requiredDone}/${required.size}</b></div>
+    ${ability?`<div class="panel role-ability-banner mb"><div><small>${T('Role Ability — not a Skill','Ролевая способность — не навык')}</small><h3>${esc(ability.name)} · Rank 4</h3></div><button class="btn-sm" onclick="wizGoTo(1)">${T('View Role','Открыть роль')}</button></div>`:''}
+    <div class="skill-tools mb"><input id="wiz-skill-q" value="${esc(wiz.skillQ||'')}" placeholder="${T('Search Skills…','Поиск навыков…')}"><div class="segmented">${[['all','All','Все'],['required','Required','Обязательные'],['recommended','Recommended','Рекомендуемые'],['allocated','Allocated','Купленные'],['x2','×2','×2']].map(([id,en,ru])=>`<button data-skill-filter="${id}" class="${filter===id?'active':''}">${T(en,ru)}</button>`).join('')}</div></div>
+    ${groupHtml||`<div class="empty">${T('No Skills match these filters.','Нет навыков по выбранным фильтрам.')}</div>`}
+    <p class="small muted">${T('Parent pools may retain unallocated levels. Child levels may never exceed the purchased parent pool. Cultural Language 4 is free.','В parent-pool можно оставлять свободные уровни. Сумма дочерних уровней не превышает купленный пул. Cultural Language 4 бесплатен.')}</p>`;
 }
 
 /* ---------- Шаг 5: Стиль и внешность ---------- */
@@ -1682,11 +1726,17 @@ function groupedItemsHtml(items, rowHtml, fallback) {
 }
 
 function showCreationItemInfo(item) {
-  const f = item.fields || {};
-  const rows = Object.entries(f).filter(([, value]) => value != null && String(value).trim()).map(([key, value]) => `<b>${esc(key)}</b><span>${esc(value)}</span>`).join('');
+  if (!item) return;
+  const f = item.fields || {}, mechanics = item.mechanics || {};
+  const rows = [...Object.entries(mechanics), ...Object.entries(f).filter(([key]) => !(key in mechanics))]
+    .filter(([, value]) => value != null && String(value).trim())
+    .map(([key, value]) => `<b>${esc(key.replace(/_/g, ' '))}</b><span>${esc(value && typeof value === 'object' ? (value.notation || JSON.stringify(value)) : value)}</span>`).join('');
+  const requirements = (item.requirements || []).map(req => req.kind === 'stat' ? `${req.stat} ${req.minimum}+` : req.value);
   openModal(`<h2>${esc(item.variant_name || item.display_name || item.name)}</h2>
-    <div class="chips mb"><span class="chip">${esc(itemVisibleType(item, 'Предмет'))}</span>${item.source ? `<span class="tag">${esc(item.source)}</span>` : ''}${item.price != null ? `<span class="price">${money(item.price)}</span>` : ''}</div>
-    ${item.desc ? `<p class="preserve-lines">${esc(item.desc)}</p>` : '<p class="muted">Описание в Data Pool не указано.</p>'}
+    <div class="chips mb"><span class="chip">${esc(itemVisibleType(item, T('Item','Предмет')))}</span>${item.source ? `<span class="tag source">${esc(item.source)}</span>` : ''}${item.price != null ? `<span class="price">${money(item.price)}</span>` : ''}</div>
+    <div class="mechanic-chips mb">${itemMechanicChips(item)}</div>
+    ${requirements.length ? `<div class="panel accent mb"><b>${T('Requirements','Требования')}</b><p>${requirements.map(esc).join(' · ')}</p></div>` : ''}
+    ${item.desc ? `<p class="preserve-lines">${esc(item.desc)}</p>` : `<p class="muted">${T('No description is available in Data Pool.','Описание в Data Pool не указано.')}</p>`}
     ${rows ? `<div class="kv mt">${rows}</div>` : ''}`, true);
 }
 
@@ -1824,125 +1874,127 @@ function hasPaidNeuroport(wiz) {
 
 function isForbiddenDuplicate(wiz, item) {
   if (String(item.name).toLowerCase() === 'neuroport') return wiz.freeNeuroport || hasPaidNeuroport(wiz);
+  if ((item.capacity || {}).unique && [...wiz.cyberware, ...wiz.fashionware].some(entry => entry.id === item.id)) return true;
   if (item.cat === 'armor' && wiz.gear.some(entry => entry.key === (item.variant_id || item.id))) return true;
   return false;
 }
 
+function itemMechanicChips(item) {
+  const m=item.mechanics||{}, chips=[];
+  if(m.damage)chips.push(`<span class="weap-dmg">${esc(m.damage.notation)} · ${m.damage.dice} dice · ${m.damage.average} avg</span>`);
+  const labels={rof:'ROF',hands:'Hands',magazine:'Mag',skill:'Skill',quality:'Quality',concealable:'Conceal',sp:'SP',sdp:'SDP',seats:'Seats',combat_speed:'Combat',narrative_speed:'Narrative',installation:'Install',slots_used:'Slots',program_class:'Class',per:'PER',spd:'SPD',atk:'ATK',def:'DEF',rez:'REZ'};
+  for(const [key,label] of Object.entries(labels))if(m[key]!=null)chips.push(`<span class="chip"><b>${label}</b> ${esc(String(m[key]).replace(/\.0$/,''))}</span>`);
+  if(item.sp!=null&&!m.sp)chips.push(`<span class="chip"><b>SP</b> ${item.sp}</span>`);
+  if(item.hl)chips.push(`<span class="hl-badge">HL ${item.hl}</span>`);
+  if(m.quantity_per_purchase)chips.push(`<span class="chip">${m.quantity_per_purchase} ${T('per purchase','за покупку')}</span>`);
+  return chips.join('');
+}
+function selectedWeaponTypes(wiz) {
+  return wiz.gear.filter(item=>['guns','melee'].includes(item.cat)).map(item=>String((item.mechanics||{}).type||item.fields?.Type||'').toLowerCase()).filter(Boolean);
+}
+function ammoCompatibility(item,wiz) {
+  const suitable=String((item.mechanics||{}).compatible_weapons||item.fields?.['Suitable ammo / weapon']||'').toLowerCase();
+  if(!suitable)return [];
+  return selectedWeaponTypes(wiz).filter(type => {
+    if (suitable.includes('all except')) return !(['grenade', 'rocket'].some(token => type.includes(token)));
+    return suitable.includes(type) || type.includes(suitable.replace(/ ammunition.*/, '').trim());
+  });
+}
+function cyberFoundationNames(host) {
+  const map={Cyberarm:['cyberarm','neo-soviet cyberarm'],Cyberleg:['cyberleg','romanova cyberlegs'],Cybereye:['cybereye','sponsored cybereye'],'Cyberaudio Suite':['cyberaudio suite','discount cyberaudio suite'],'Neural Link or Neuroport':['neural link','neuroport']};
+  return map[host]||[];
+}
+function availableCyberHosts(wiz,item) {
+  const host=item.capacity&&item.capacity.host;if(!host)return [];
+  const accepted=cyberFoundationNames(host), all=[...wiz.cyberware];
+  if(wiz.freeNeuroport)all.unshift({id:'creation-neuroport',instance_id:'creation-neuroport',name:'Neuroport',capacity:{slots_total:5}});
+  return all.filter(candidate=>accepted.includes(String(candidate.name||'').toLowerCase())).filter(candidate=>{
+    const total=num(candidate.capacity&&candidate.capacity.slots_total)||4;
+    const used=wiz.cyberware.filter(option=>option.host_instance===(candidate.instance_id||candidate.id)).reduce((sum,option)=>sum+(num(option.capacity&&option.capacity.slots_used)||0),0);
+    return total-used>=(num(item.capacity&&item.capacity.slots_used)||0);
+  });
+}
+function chooseCyberHost(hosts, item) {
+  if (!hosts.length) return null;
+  if (hosts.length === 1) return hosts[0];
+  const lines = hosts.map((host, index) => `${index + 1}. ${host.name} (${host.instance_id || host.id})`).join('\n');
+  const answer = window.prompt(`${T('Choose a host for','Выберите host для')} ${item.name}:\n${lines}`, '1');
+  const index = Math.max(0, Math.min(hosts.length - 1, (num(answer) || 1) - 1));
+  return hosts[index];
+}
+function catalogRequirementStatus(wiz,item) {
+  const failures=[];
+  if(item.capacity&&item.capacity.host&&!availableCyberHosts(wiz,item).length)failures.push(`${T('Requires available','Требуется доступный')} ${item.capacity.host}`);
+  const names=[...wiz.cyberware.map(x=>x.name.toLowerCase()),...(wiz.freeNeuroport?['neuroport']:[])];
+  for(const req of item.requirements||[]){if(req.kind==='stat'&&(num(wiz.stats[req.stat])||0)<req.minimum)failures.push(`${req.stat} ${req.minimum}`);if(req.kind==='item'){const wanted=req.value.toLowerCase().replace(/^2×\s*/,'');if(!names.some(name=>wanted.includes(name)||name.includes(wanted)))failures.push(req.value);}}
+  return failures;
+}
+function isStyleTab(tab){return tab[0]==='fashion'||tab[0]==='fashionware';}
+function canAffordShopItem(wiz,item,tab){return isStyleTab(tab)?wiz.fashionCost+(item.price||0)<=FASHION_BUDGET:canAffordCreationItem(wiz,item,item.price||0);}
+function itemSelected(wiz,item){const id=item.variant_id||item.id;return wiz.gear.some(x=>x.key===id)||wiz.fashion.some(x=>x.key===id)||wiz.cyberware.some(x=>x.id===item.id)||wiz.fashionware.some(x=>x.id===item.id);}
+function renderCompareModal(items){if(items.length<2){toast(T('Select at least two items to compare.','Выберите минимум два предмета.'),true);return;}const keys=[...new Set(items.flatMap(item=>Object.keys(item.mechanics||{})))];openModal(`<h2>${T('Compare Items','Сравнение предметов')}</h2><div class="table-scroll"><table class="rtable compare-table"><tr><th>Stat</th>${items.map(item=>`<th>${esc(item.name)}</th>`).join('')}</tr><tr><th>Price</th>${items.map(item=>`<td>${money(item.price)}</td>`).join('')}</tr>${keys.map(key=>`<tr><th>${esc(key.replace(/_/g,' '))}</th>${items.map(item=>{const value=(item.mechanics||{})[key];return `<td>${esc(value&&typeof value==='object'?(value.notation||JSON.stringify(value)):(value??'—'))}</td>`;}).join('')}</tr>`).join('')}</table></div>`,true);}
+
 async function wizLoadShopList() {
-  const wiz = state.wizard;
-  const box = $('#wiz-shop-results');
-  if (!box) return;
-  const tab = WIZ_SHOP_CATS.find(t => t[0] === wiz.shopTab) || WIZ_SHOP_CATS[0];
-  const scrollKey = `shop:${tab[0]}`;
-  box.innerHTML = spinner();
-  wiz._shopCache = wiz._shopCache || {};
-  for (const cat of tab[2]) {
-    if (!wiz._shopCache[cat]) {
-      const response = await api('/api/items?' + new URLSearchParams({ cat, limit: 500 }));
-      wiz._shopCache[cat] = response.items;
-    }
-  }
-  let items = tab[2].flatMap(cat => wiz._shopCache[cat] || []).filter(item => item.price != null);
-  if (tab[0] === 'chrome') items = items.filter(item => !String((item.fields || {}).Type || '').toLowerCase().includes('fashionware'));
-  if (tab[0] === 'armor') items = armorPurchaseVariants(items);
-  const q = (wiz.shopQ || '').trim().toLowerCase();
-  if (q) items = items.filter(item => [item.variant_name, item.name, itemVisibleType(item)].some(value => String(value || '').toLowerCase().includes(q)));
-  items.sort(byNameRu);
-
-  const rowHtml = item => {
-    const duplicate = isForbiddenDuplicate(wiz, item);
-    const affordable = canAffordCreationItem(wiz, item, item.price || 0);
-    const disabled = duplicate || !affordable;
-    const requirement = String(item.desc || '').match(/Requires?\s+[^.;]+/i);
-    return `<div class="inv-row catalog-row ${disabled ? 'unaffordable' : ''}">
-      <span class="iname">${esc(item.variant_name || item.name)}</span>
-      ${item.damage ? `<span class="weap-dmg">${esc(item.damage)}</span>` : ''}
-      ${item.sp != null && item.purchase_location !== 'shield' ? `<span class="chip">SP ${item.sp}</span>` : ''}
-      ${item.hl ? `<span class="hl-badge">HL ${item.hl}</span>` : ''}
-      ${requirement ? `<span class="tag" title="${esc(requirement[0])}">требования</span>` : ''}
-      <span class="${affordable ? 'price' : 'muted'}">${money(item.price)}</span>
-      <button class="info-btn" data-shop-info="${esc(item.variant_id || item.id)}" title="Описание">i</button>
-      <button class="btn-sm" data-shop-add="${esc(item.variant_id || item.id)}" ${disabled ? 'disabled' : ''} title="${duplicate ? 'Второй экземпляр запрещён' : ''}">＋</button>
-    </div>`;
-  };
-  box.innerHTML = items.length ? groupedItemsHtml(items, rowHtml, tab[1]) : '<div class="empty">Ничего не нашлось.</div>';
-  requestAnimationFrame(() => { box.scrollTop = (wiz.scrolls || {})[scrollKey] || 0; });
-  box.onscroll = () => { wiz.scrolls[scrollKey] = box.scrollTop; };
-
-  $$('[data-shop-info]', box).forEach(btn => btn.onclick = () => {
-    const item = items.find(x => (x.variant_id || x.id) === btn.dataset.shopInfo);
-    if (item) showCreationItemInfo(item);
-  });
-  $$('[data-shop-add]', box).forEach(btn => btn.onclick = () => {
-    const item = items.find(x => (x.variant_id || x.id) === btn.dataset.shopAdd);
-    if (!item) return;
-    const price = item.price || 0;
-    if (isForbiddenDuplicate(wiz, item)) { toast('Второй экземпляр этого предмета запрещён', true); return; }
-    if (!canAffordCreationItem(wiz, item, price)) { toast('Не хватает стартового бюджета', true); return; }
-    if (item.cat === 'cyberware') {
-      wiz.cyberware.push({ id: item.id, name: item.name, hl: item.hl || 0, price,
-        type: String((item.fields || {}).Type || 'Cyberware'), desc: item.desc || '', fields: item.fields || {}, source: item.source || '' });
-      wiz.chromeCost += price;
-    } else if (item.cat === 'armor') {
-      const entry = { key: item.variant_id, source_key: item.id, cat: 'armor', name: item.name,
-        display_name: item.variant_name, location: item.purchase_location, price, qty: 1,
-        sp: item.sp != null ? item.sp : null, penalties: { ...(item.penalties || {}) },
-        armor_bundled: !!item.armor_bundled, desc: item.desc || '', fields: item.fields || {}, source: item.source || '', type: itemVisibleType(item, 'Armor') };
-      wiz.gear.push(entry);
-      const piece = armorPieceFromItem(item);
-      if (item.purchase_location === 'body' || item.purchase_location === 'set') wiz.armor.body = piece;
-      if (item.purchase_location === 'head' || item.purchase_location === 'set') wiz.armor.head = piece;
-      wiz.gearCost += price;
-    } else {
-      const existing = wiz.gear.find(x => x.key === item.id);
-      if (existing) existing.qty = (existing.qty || 1) + 1;
-      else wiz.gear.push({ key: item.id, cat: item.cat, name: item.name, price, qty: 1,
-        damage: item.damage || null, sp: item.sp != null ? item.sp : null, desc: item.desc || '',
-        fields: item.fields || {}, source: item.source || '', type: itemVisibleType(item, tab[1]) });
-      wiz.gearCost += price;
-    }
-    renderWizard(); toast('Добавлено: ' + (item.variant_name || item.name));
-  });
+  const wiz=state.wizard,box=$('#wiz-shop-results');if(!box)return;
+  const tab=WIZ_SHOP_CATS.find(row=>row[0]===wiz.shopTab)||WIZ_SHOP_CATS[0], scrollKey=`shop:${tab[0]}`;
+  box.innerHTML=spinner();wiz._shopCache=wiz._shopCache||{};
+  for(const cat of tab[3])if(!wiz._shopCache[cat]){const response=await api('/api/items?'+new URLSearchParams({cat,limit:500}));wiz._shopCache[cat]=response.items;}
+  let items=tab[3].flatMap(cat=>wiz._shopCache[cat]||[]).filter(item=>item.price!=null);
+  if(tab[0]==='chrome')items=items.filter(item=>!String(item.fields?.Type||'').toLowerCase().includes('fashionware'));
+  if(tab[0]==='fashionware')items=items.filter(item=>String(item.fields?.Type||'').toLowerCase().includes('fashionware'));
+  if(tab[0]==='fashion')items=items.filter(item=>item.cat==='fashion');
+  if(tab[0]==='armor')items=armorPurchaseVariants(items);
+  const query=String(wiz.shopQ||'').trim().toLowerCase(),filters=wiz.shopFilters||{};
+  if(query)items=items.filter(item=>[item.variant_name,item.name,itemVisibleType(item),item.desc].some(value=>String(value||'').toLowerCase().includes(query)));
+  if(filters.affordable)items=items.filter(item=>canAffordShopItem(wiz,item,tab));
+  if(filters.selected)items=items.filter(item=>itemSelected(wiz,item));
+  if(filters.type&&filters.type!=='all')items=items.filter(item=>itemVisibleType(item)===filters.type);
+  if(filters.source&&filters.source!=='all')items=items.filter(item=>String(item.source||'').split(/\n/).some(source=>source.startsWith(filters.source)));
+  if(num(filters.maxPrice)!=null)items=items.filter(item=>(item.price||0)<=num(filters.maxPrice));
+  const sort = filters.sort || 'name';
+  items.sort((a,b) => {
+    if (sort === 'price') return (a.price||0)-(b.price||0) || byNameRu(a,b);
+    if (sort === 'damage') return ((b.mechanics?.damage?.average)||0)-((a.mechanics?.damage?.average)||0) || byNameRu(a,b);
+    if (sort === 'rof') return (num(b.mechanics?.rof)||0)-(num(a.mechanics?.rof)||0) || byNameRu(a,b);
+    if (sort === 'sp') return (num(b.sp ?? b.mechanics?.sp)||0)-(num(a.sp ?? a.mechanics?.sp)||0) || byNameRu(a,b);
+    if (sort === 'hl') return (num(a.hl)||0)-(num(b.hl)||0) || byNameRu(a,b);
+    return byNameRu(a,b);
+  });wiz._currentShopItems=items;
+  const selectedTypes=[...new Set(items.map(item=>itemVisibleType(item)))].sort();
+  const typeSelect=$('#wiz-shop-type');if(typeSelect&&typeSelect.options.length<=1){typeSelect.insertAdjacentHTML('beforeend',selectedTypes.map(type=>`<option value="${esc(type)}" ${filters.type===type?'selected':''}>${esc(type)}</option>`).join(''));}
+  const sources=[...new Set(items.flatMap(item=>String(item.source||'').split(/\n/).map(source=>source.split(/\s+\d/)[0]).filter(Boolean)))].sort();
+  const sourceSelect=$('#wiz-shop-source');if(sourceSelect&&sourceSelect.options.length<=1)sourceSelect.insertAdjacentHTML('beforeend',sources.map(source=>`<option value="${esc(source)}" ${filters.source===source?'selected':''}>${esc(source)}</option>`).join(''));
+  const rowHtml=item=>{const duplicate=isForbiddenDuplicate(wiz,item),affordable=canAffordShopItem(wiz,item,tab),requirements=tab[0]==='chrome'?catalogRequirementStatus(wiz,item):[],disabled=duplicate||!affordable||requirements.length>0,suggested=tab[0]==='fashion'&&String(wiz.lifepath.clothing||'')&&[item.name,item.mechanics?.fashion_style].some(value=>String(value||'').toLowerCase().includes(String(wiz.lifepath.clothing).toLowerCase()));const compatible=(tab[0]==='ammo'||item.cat==='gun_upgrades')?ammoCompatibility(item,wiz):(item.cat==='vehicles_upgrades'&&wiz.gear.some(selected=>selected.cat==='vehicles')?[T('selected vehicle','выбранный транспорт')]:(item.cat==='programs'&&wiz.gear.some(selected=>selected.cat==='net_stuff'&&String(selected.name).toLowerCase().includes('cyberdeck'))?[T('selected Cyberdeck','выбранный Cyberdeck')]:[]));const compared=(wiz.compareItems||[]).includes(item.id);return `<article class="catalog-card ${disabled?'unaffordable':''} ${compatible.length?'compatible':''} ${suggested?'recommended':''}"><div class="catalog-card-main"><label class="compare-check"><input type="checkbox" data-compare-id="${esc(item.id)}" ${compared?'checked':''}> ${T('Compare','Сравнить')}</label><h4>${esc(item.variant_name||item.name)}${suggested?` <span class="tag recommended-tag">${T('Lifepath Style','Стиль Lifepath')}</span>`:''}</h4><div class="mechanic-chips">${itemMechanicChips(item)}${item.mechanics?.skill?(()=>{const meta=state.meta.skills.find(row=>row[1]===item.mechanics.skill),stat=meta&&meta[2],statValue=stat==='EMP'?(wizDerived().emp_cur??wiz.stats.EMP):wiz.stats[stat];return `<span class="chip character-aware"><b>${esc(item.mechanics.skill)} BASE</b> ${(num(statValue)||0)+(num(wiz.skills[item.mechanics.skill])||0)}</span>`;})():''}</div>${compatible.length?`<div class="compatibility-ok">✓ ${T('Compatible with selected loadout','Совместимо с выбранным снаряжением')}: ${compatible.map(esc).join(', ')}</div>`:''}${requirements.length?`<div class="requirement-fail">⛔ ${requirements.map(esc).join(' · ')}</div>`:''}<div class="small muted">${esc(item.source||'')}</div></div><div class="catalog-card-actions"><span class="price">${money(item.price)}</span><button class="info-btn" data-shop-info="${esc(item.variant_id||item.id)}">i</button><button class="btn-sm" data-shop-add="${esc(item.variant_id||item.id)}" ${disabled?'disabled':''}>＋</button></div></article>`;};
+  box.innerHTML=items.length?groupedItemsHtml(items,rowHtml,shopCategoryLabel(tab)):`<div class="empty">${T('Nothing matches these filters.','Ничего не найдено.')}</div>`;
+  requestAnimationFrame(()=>box.scrollTop=(wiz.scrolls||{})[scrollKey]||0);box.onscroll=()=>{wiz.scrolls[scrollKey]=box.scrollTop;};
+  $$('[data-compare-id]',box).forEach(input=>input.onchange=()=>{wiz.compareItems=wiz.compareItems||[];if(input.checked&&!wiz.compareItems.includes(input.dataset.compareId)){if(wiz.compareItems.length>=3){input.checked=false;toast(T('Compare supports up to three items.','Можно сравнить не более трёх предметов.'),true);return;}wiz.compareItems.push(input.dataset.compareId);}if(!input.checked)wiz.compareItems=wiz.compareItems.filter(id=>id!==input.dataset.compareId);saveWizardDraft();const count=$('#compare-count');if(count)count.textContent=wiz.compareItems.length;});
+  $$('[data-shop-info]',box).forEach(btn=>btn.onclick=()=>{const item=items.find(x=>(x.variant_id||x.id)===btn.dataset.shopInfo);if(item)showCreationItemInfo(item);});
+  $$('[data-shop-add]',box).forEach(btn=>btn.onclick=()=>{const item=items.find(x=>(x.variant_id||x.id)===btn.dataset.shopAdd);if(!item)return;const price=item.price||0;if(isForbiddenDuplicate(wiz,item)||!canAffordShopItem(wiz,item,tab))return;
+    const shared={desc:item.desc||'',fields:item.fields||{},source:item.source||'',mechanics:item.mechanics||{},requirements:item.requirements||[],capacity:item.capacity||{}};
+    if(tab[0]==='fashion'){const existing=wiz.fashion.find(x=>x.key===item.id);if(existing)existing.qty=(existing.qty||1)+1;else wiz.fashion.push({key:item.id,cat:item.cat,name:item.name,price,qty:1,type:itemVisibleType(item,'Fashion'),...shared});wiz.fashionCost+=price;}
+    else if(tab[0]==='fashionware'){const existing=wiz.fashionware.find(x=>x.id===item.id);if(existing)existing.qty=(existing.qty||1)+1;else wiz.fashionware.push({id:item.id,name:item.name,hl:item.hl||0,price,qty:1,type:String(item.fields?.Type||'Fashionware'),...shared});wiz.fashionCost+=price;}
+    else if(item.cat==='cyberware'){const hosts=availableCyberHosts(wiz,item),host=chooseCyberHost(hosts,item);if((item.capacity||{}).host&&!host)return;const instance=`${item.id}:${Date.now()}:${Math.random().toString(16).slice(2)}`;wiz.cyberware.push({id:item.id,instance_id:instance,name:item.name,hl:item.hl||0,price,type:String(item.fields?.Type||'Cyberware'),host_instance:host?(host.instance_id||host.id):'',...shared});wiz.chromeCost+=price;}
+    else if(item.cat==='armor'){wiz.gear.push({key:item.variant_id,source_key:item.id,cat:'armor',name:item.name,display_name:item.variant_name,location:item.purchase_location,price,qty:1,sp:item.sp,penalties:{...(item.penalties||{})},armor_bundled:!!item.armor_bundled,type:itemVisibleType(item,'Armor'),...shared});wiz.gearCost+=price;}
+    else{const existing=wiz.gear.find(x=>x.key===item.id);if(existing)existing.qty=(existing.qty||1)+1;else wiz.gear.push({key:item.id,cat:item.cat,name:item.name,price,qty:1,damage:item.damage||null,sp:item.sp,type:itemVisibleType(item,shopCategoryLabel(tab)),...shared});wiz.gearCost+=price;}
+    renderWizard();toast(`${T('Added','Добавлено')}: ${item.variant_name||item.name}`);});
 }
 
-function cartSectionHtml(title, items) {
-  return items.length ? `<section class="catalog-group"><h4 class="catalog-type">${esc(title)} <span>${items.length}</span></h4>${items.join('')}</section>` : '';
-}
+function roleBenefitItems(wiz){const out=[];if(wiz.role==='Exec')out.push({key:'role-exec-businesswear',name:'Businesswear (Teamwork)',type:'Role Benefit',qty:1,price:0,role_benefit:true,desc:'Corporate clothing supplied by Teamwork.'});if(wiz.role==='Nomad')for(const choice of (wiz.roleSetup.moto_choices||[]).filter(Boolean))out.push({key:'role-nomad-'+choice,name:choice,type:'Nomad Family Access',qty:1,price:0,role_benefit:true});return out;}
+function equipmentWarnings(wiz){const warnings=[];const weapons=wiz.gear.filter(item=>item.cat==='guns'),ammo=wiz.gear.filter(item=>item.cat==='ammo');for(const weapon of weapons){const type=String(weapon.mechanics?.type||weapon.fields?.Type||'').toLowerCase();if(!ammo.some(item=>ammoCompatibility(item,wiz).includes(type)))warnings.push(`${weapon.name}: ${T('no compatible ammunition selected','не выбраны совместимые боеприпасы')}`);}if(!wiz.armor.body)warnings.push(T('No Body Armor equipped','Не надета броня для тела'));if(!wiz.armor.head)warnings.push(T('No Head Armor equipped','Не надета броня для головы'));return warnings;}
+async function generateRandomOutfit(){const wiz=state.wizard;wiz._shopCache=wiz._shopCache||{};if(!wiz._shopCache.fashion){const response=await api('/api/items?'+new URLSearchParams({cat:'fashion',limit:500}));wiz._shopCache.fashion=response.items;}const preferred=String(wiz.outfitStyle||wiz.lifepath.clothing||'').toLowerCase();let pool=wiz._shopCache.fashion.filter(item=>item.price!=null);const matching=pool.filter(item=>item.name.toLowerCase().includes(preferred)||String(item.mechanics?.fashion_style||'').toLowerCase()===preferred);if(matching.length)pool=matching;pool=[...pool].sort(()=>Math.random()-.5);const picked=[];let spent=0;for(const item of pool){if(picked.length>=6)break;if(spent+(item.price||0)<=FASHION_BUDGET){picked.push(item);spent+=item.price||0;}}if(!picked.length){toast(T('No affordable outfit found.','Не удалось подобрать комплект.'),true);return;}if(!confirm(`${T('Replace current Fashion selection with','Заменить выбранную одежду на')} ${picked.map(x=>x.name).join(', ')}?`))return;wiz.fashion=picked.map(item=>({key:item.id,cat:'fashion',name:item.name,price:item.price,qty:1,type:itemVisibleType(item,'Fashion'),desc:item.desc||'',fields:item.fields||{},source:item.source||'',mechanics:item.mechanics||{}}));wiz.fashionCost=spent+wiz.fashionware.reduce((sum,item)=>sum+(item.price||0)*(item.qty||1),0);renderWizard();}
+function cartSectionHtml(title,items){return items.length?`<section class="catalog-group"><h4 class="catalog-type">${esc(title)} <span>${items.length}</span></h4>${items.join('')}</section>`:'';}
+function combinedCartHtml(wiz){const rows=[];for(const item of roleBenefitItems(wiz))rows.push({type:item.type,html:`<div class="inv-row role-benefit"><span class="iname">🎁 ${esc(item.name)}</span><span class="tag">Role Benefit</span><span class="price">${money(0)}</span></div>`});
+  const seen=new Set();wiz.cyberware.forEach((item,index)=>{if(seen.has(item.id))return;seen.add(item.id);const qty=wiz.cyberware.filter(x=>x.id===item.id).length;rows.push({type:itemVisibleType(item,'Cyberware'),html:`<div class="inv-row"><span class="iname">🦾 ${esc(item.name)}</span>${quantityControl('chrome',index,qty,String(item.name).toLowerCase()!=='neuroport'&&!(item.capacity||{}).unique&&(!(item.capacity||{}).host||availableCyberHosts(wiz,item).length>0))}<span class="hl-badge">HL ${(item.hl||0)*qty}</span><span class="price">${money((item.price||0)*qty)}</span><button class="info-btn" data-cart-info="chrome|${index}">i</button></div>`});});
+  wiz.fashionware.forEach((item,index)=>rows.push({type:'Fashionware',html:`<div class="inv-row"><span class="iname">💠 ${esc(item.name)}</span>${quantityControl('fashionware',index,item.qty||1,true)}<span class="price">${money((item.price||0)*(item.qty||1))}</span><button class="info-btn" data-cart-info="fashionware|${index}">i</button></div>`}));
+  wiz.fashion.forEach((item,index)=>rows.push({type:itemVisibleType(item,'Fashion'),html:`<div class="inv-row"><span class="iname">🧥 ${esc(item.name)}</span>${quantityControl('style',index,item.qty||1,true)}<span class="price">${money((item.price||0)*(item.qty||1))}</span><button class="info-btn" data-cart-info="style|${index}">i</button></div>`}));
+  wiz.gear.forEach((item,index)=>{const equip=item.cat==='armor'?`<button class="btn-sm" data-equip-armor="${index}">${T('Equip','Надеть')}</button>`:'';rows.push({type:itemVisibleType(item,'Gear'),html:`<div class="inv-row"><span class="iname">${esc(item.display_name||item.name)}</span>${quantityControl('gear',index,item.qty||1,item.cat!=='armor')}${itemMechanicChips(item)}<span class="price">${money((item.price||0)*(item.qty||1))}</span>${equip}<button class="info-btn" data-cart-info="gear|${index}">i</button></div>`});});
+  const groups=new Map();for(const row of rows){if(!groups.has(row.type))groups.set(row.type,[]);groups.get(row.type).push(row.html);}return [...groups.entries()].map(([type,content])=>cartSectionHtml(type,content)).join('')||`<div class="empty">${T('No starting gear selected.','Стартовое снаряжение не выбрано.')}</div>`;}
 
-function wizStepShoppingHtml() {
-  const wiz = state.wizard;
-  const remaining = creationMainRemaining(wiz);
-  const bonus = creationChromeBonus(wiz);
-  const totalHl = wiz.cyberware.reduce((a, c) => a + (c.hl || 0), 0);
-  const groupedChrome = [];
-  const seen = new Set();
-  wiz.cyberware.forEach((item, index) => {
-    if (seen.has(item.id)) return;
-    seen.add(item.id);
-    const qty = wiz.cyberware.filter(x => x.id === item.id).length;
-    const canPlus = String(item.name).toLowerCase() !== 'neuroport' && canAffordCreationItem(wiz, { cat: 'cyberware' }, item.price || 0);
-    groupedChrome.push({ type: itemVisibleType(item, 'Cyberware'), html: `<div class="inv-row"><span class="iname">🦾 ${esc(item.name)}</span>${quantityControl('chrome', index, qty, canPlus)}<span class="hl-badge">HL ${(item.hl || 0) * qty}</span><span class="price">${money((item.price || 0) * qty)}</span><button class="info-btn" data-cart-info="chrome|${index}">i</button></div>` });
-  });
-  const groupedGear = wiz.gear.map((item, index) => ({ type: itemVisibleType(item, 'Снаряжение'), html: `<div class="inv-row"><span class="iname">${esc(item.display_name || item.name)}</span>${quantityControl('gear', index, item.qty || 1, item.cat !== 'armor' && canAffordCreationItem(wiz, item, item.price || 0))}${item.damage ? `<span class="weap-dmg">${esc(item.damage)}</span>` : ''}${item.sp != null ? `<span class="chip">SP ${item.sp}</span>` : ''}<span class="price">${money((item.price || 0) * (item.qty || 1))}</span><button class="info-btn" data-cart-info="gear|${index}">i</button></div>` }));
-  const cartGroups = new Map();
-  for (const row of [...groupedChrome, ...groupedGear]) { if (!cartGroups.has(row.type)) cartGroups.set(row.type, []); cartGroups.get(row.type).push(row.html); }
-  const cartHtml = [...cartGroups.entries()].sort((a,b)=>a[0].localeCompare(b[0],'ru')).map(([type, rows]) => cartSectionHtml(type, rows)).join('');
-  const paidPort = hasPaidNeuroport(wiz);
-  const equipped = [['body','Тело'],['head','Голова']].map(([key,label]) => `<span class="chip"><b>${label}:</b> ${wiz.armor[key] ? esc(wiz.armor[key].name) + ' · SP ' + wiz.armor[key].sp : 'не выбрано'}</span>`).join('');
-  return `
-    <div class="panel accent mb">
-      <label class="checkbox mb"><input type="checkbox" id="wiz-neuroport" ${wiz.freeNeuroport ? 'checked' : ''} ${paidPort ? 'disabled' : ''}>
-        Бесплатный стартовый Neuroport по CEMK: 0€$, 0 HL, максимум Humanity не снижается${paidPort ? ' · отключён: куплен платный Neuroport' : ''}</label>
-      <label class="checkbox"><input type="checkbox" id="wiz-soul" ${wiz.soldSoul ? 'checked' : ''}> Продаться армии, банде или корпорации: +1500€$ только на хром; остаток сгорает</label>
-    </div>
-    <div class="row mb" style="justify-content:space-between"><span class="muted small">Бюджет: <b>${money(GEAR_BUDGET)}</b> · Учтено: <b>${money(creationMainSpent(wiz))}</b> · Осталось: <b class="${remaining < 0 ? 'warn-text' : ''}">${money(remaining)}</b>${bonus ? ` · фонд хрома: ${money(bonus)}` : ''}</span><span class="muted small">Хром: ${wiz.cyberware.length} шт · HL <b class="hl-badge">${totalHl}</b></span></div>
-    <div class="chips mb">${equipped}</div>
-    <div class="tabs mb" id="wiz-shop-tabs">${WIZ_SHOP_CATS.map(([id, ru]) => `<button data-shop-tab="${id}" class="${wiz.shopTab === id ? 'active' : ''}">${ru}</button>`).join('')}</div>
-    <div class="searchbar mb"><input id="wiz-shop-q" placeholder="Фильтр по названию или Type…" value="${esc(wiz.shopQ || '')}"></div>
-    <div id="wiz-shop-results" class="catalog-scroll shop-scroll">${spinner()}</div>
-    <div class="mt"><h3>📋 Корзина · по Type</h3></div><div id="wiz-shop-cart">${cartHtml || '<div class="empty small">Пока пусто.</div>'}</div>
-    <div class="small muted mt">Кнопки − и + меняют количество с полным пересчётом цены, HL и Humanity. Neuroport виден в магазине, но бесплатный и платный варианты взаимоисключающие.</div>`;
-}
+function wizStepShoppingHtml(){const wiz=state.wizard,d=wizDerived(),remaining=creationMainRemaining(wiz),styleRemaining=FASHION_BUDGET-wiz.fashionCost,warnings=equipmentWarnings(wiz),paidPort=hasPaidNeuroport(wiz);return `<div class="shopping-budgets sticky-budget panel accent mb"><div><b>Main</b><span>${money(remaining)} ${T('remaining','осталось')}</span></div><div><b>Style</b><span>${money(styleRemaining)} ${T('remaining','осталось')}</span></div><div><b>Humanity</b><span>${d.humanity_cur??'—'} / ${d.humanity_max??'—'} · EMP ${d.emp_cur??'—'}</span></div></div>
+  <div class="neuroport-choices mb"><article class="choice-card ${wiz.freeNeuroport?'selected':''} ${paidPort?'disabled':''}"><h3>CEMK Starting Neuroport</h3><p>0eb · 0 HL · Humanity exempt</p><button data-neuro-choice="free" ${paidPort?'disabled':''}>${wiz.freeNeuroport?T('Selected','Выбран'):T('Select','Выбрать')}</button></article><article class="choice-card ${paidPort?'selected':''} ${wiz.freeNeuroport?'disabled':''}"><h3>Standard Neuroport</h3><p>1,000eb · 7 HL</p><button data-shop-tab-jump="chrome">${paidPort?T('Purchased','Куплен'):T('Find in Cyberware','Найти в Cyberware')}</button></article></div>
+  <details class="panel mb sold-soul" ${wiz.soldSoul?'open':''}><summary><label class="checkbox"><input type="checkbox" id="wiz-soul" ${wiz.soldSoul?'checked':''}> Sell Your Soul · +1,500eb Cyberware-only</label></summary><div class="grid cols-2 mt"><label class="f"><span>Patron *</span><select id="wiz-patron"><option value="">${T('Choose…','Выберите…')}</option>${['Corporation','Military','Gang','Government Agency','Other Organization'].map(value=>`<option ${wiz.patron===value?'selected':''}>${value}</option>`).join('')}</select></label><label class="f"><span>Obligation *</span><input id="wiz-obligation" value="${esc(wiz.obligation||'')}" placeholder="${T('What do you owe them?','Что вы им должны?')}"></label></div></details>
+  <div class="shopping-layout"><div class="shopping-catalog"><div class="tabs mb" id="wiz-shop-tabs">${WIZ_SHOP_CATS.map(tab=>`<button data-shop-tab="${tab[0]}" class="${wiz.shopTab===tab[0]?'active':''}">${shopCategoryLabel(tab)}</button>`).join('')}</div><div class="shop-tools"><input id="wiz-shop-q" value="${esc(wiz.shopQ||'')}" placeholder="${T('Search name, description, or Type…','Поиск по названию, описанию или Type…')}"><select id="wiz-shop-type"><option value="all">All Types</option></select><select id="wiz-shop-source"><option value="all">All Sources</option></select><input id="wiz-shop-max-price" type="number" min="0" step="50" value="${esc(wiz.shopFilters?.maxPrice||'')}" placeholder="Max eb" style="width:100px"><select id="wiz-shop-sort"><option value="name">Name</option><option value="price" ${wiz.shopFilters?.sort==='price'?'selected':''}>Price</option><option value="damage" ${wiz.shopFilters?.sort==='damage'?'selected':''}>Damage</option><option value="rof" ${wiz.shopFilters?.sort==='rof'?'selected':''}>ROF</option><option value="sp" ${wiz.shopFilters?.sort==='sp'?'selected':''}>SP</option><option value="hl" ${wiz.shopFilters?.sort==='hl'?'selected':''}>HL</option></select><label><input type="checkbox" id="shop-affordable" ${wiz.shopFilters?.affordable?'checked':''}> ${T('Affordable','Доступные')}</label><label><input type="checkbox" id="shop-selected" ${wiz.shopFilters?.selected?'checked':''}> ${T('Selected','Выбранные')}</label><button class="btn-sm" id="compare-items">${T('Compare','Сравнить')} (<span id="compare-count">${(wiz.compareItems||[]).length}</span>)</button>${wiz.shopTab==='fashion'?`<select id="outfit-style"><option value="">${T('Lifepath Style','Стиль Lifepath')}</option>${['Bag Lady Chic','Generic Chic','Leisurewear','Urban Flash','Businesswear','High Fashion','Bohemian','Asia Pop','Gang Colors','Nomad Leathers'].map(style=>`<option value="${style}" ${wiz.outfitStyle===style?'selected':''}>${style}</option>`).join('')}</select><button class="btn-sm" id="random-outfit">🎲 ${T('Generate Outfit','Создать комплект')}</button>`:''}</div><div id="wiz-shop-results" class="catalog-scroll shop-scroll">${spinner()}</div></div>
+  <aside class="shopping-cart"><h3>${T('Selected Starting Gear','Выбранное снаряжение')}</h3><div class="equipped-summary"><span><b>Body:</b> ${wiz.armor.body?esc(wiz.armor.body.name):'—'}</span><span><b>Head:</b> ${wiz.armor.head?esc(wiz.armor.head.name):'—'}</span></div>${warnings.length?`<div class="readiness-warnings">${warnings.map(w=>`<div>⚠ ${esc(w)}</div>`).join('')}${warnings.some(w=>w.includes('ammunition')||w.includes('боеприпасы'))?`<button class="btn-sm mt" data-shop-tab="ammo">${T('Find compatible ammunition','Найти совместимые боеприпасы')}</button>`:''}</div>`:''}<div id="wiz-shop-cart">${combinedCartHtml(wiz)}</div></aside></div>`;}
 
 /* ---------- Шаг 7: Итог ---------- */
 
@@ -1995,45 +2047,37 @@ function cyberwareRequirementErrors(w) {
   return errors;
 }
 
-function wizValidationErrors() {
-  const w = state.wizard;
-  const errors = [];
-  const statSpent = wizStatSpent(), skillSpent = wizSkillSpent();
-  if (statSpent !== (state.meta.stat_points || 62)) errors.push(`Характеристики: ${statSpent}/62 — нужно использовать ровно весь бюджет`);
-  if (skillSpent !== (state.meta.skill_points || 86)) errors.push(`Навыки: ${skillSpent}/86 — нужно использовать ровно весь бюджет`);
-  for (const s of (state.meta.must_skills || [])) if (!wizMustOk(s)) errors.push(`Обязательный навык не выполнен: ${s}`);
-  for (const [name, lvl] of Object.entries(wizChar().skills)) if (lvl > (state.meta.skill_max || 6)) errors.push(`${name}: максимум создания — 6`);
-  if (!w.nativeLanguage) errors.push('Не выбран культурный язык уровня 4');
-  if (!w.handle || !w.handle.trim()) errors.push('Не заполнен Handle');
-  const commonMissing = lpAllFields().filter(([key]) => !w.lifepath[key]).length;
-  const roleMissing = lpRoleField(w.role).filter(([key]) => !w.roleLifepath[key]).length;
-  if (commonMissing) errors.push(`Общий Lifepath: не заполнено полей — ${commonMissing}`);
-  if (roleMissing) errors.push(`Lifepath роли ${w.role}: не заполнено полей — ${roleMissing}`);
-  if (creationMainRemaining(w) < 0) errors.push('Превышен основной бюджет закупки');
-  for (const [base] of SUB_SKILL_BASES) {
-    const children = w.subSkills.filter(sub => sub.base === base && !sub.native && (sub.lvl || 0) > 0);
-    const free = wizSubFree(base);
-    if (free) errors.push(`${base}: распределите ещё ${free} ур. между специализациями`);
-    if (children.some(sub => !String(sub.name || '').trim())) errors.push(`${base}: у каждой купленной специализации должно быть название`);
-    const names = children.map(sub => String(sub.name).trim().toLowerCase());
-    if (new Set(names).size !== names.length) errors.push(`${base}: названия специализаций не должны повторяться`);
-  }
-  const paidPorts = w.cyberware.filter(item => String(item.name).toLowerCase() === 'neuroport').length;
-  if (paidPorts + (w.freeNeuroport ? 1 : 0) > 1) errors.push('Одновременно допустим только один Neuroport');
-  if ((w.cyberware.length || w.fashionware.length || w.soldSoul) && !w.freeNeuroport && !paidPorts) errors.push('Хром 2070-х и сделка Sold Soul требуют Neuroport');
-  errors.push(...cyberwareRequirementErrors(w));
-  if (w.role === 'Tech') {
-    const ranks = ['field','upgrade','fabrication','invention'].map(k => num(w.roleSetup[k]) || 0);
-    if (ranks.reduce((a,b)=>a+b,0) !== 8 || ranks.some(x => x > 4)) errors.push('Tech должен распределить 8 рангов Maker, максимум 4 в специализации');
-  }
-  if (w.role === 'Medtech') {
-    const ranks = ['surgery','pharma','cryo'].map(k => num(w.roleSetup[k]) || 0);
-    if (ranks.reduce((a,b)=>a+b,0) !== 4) errors.push('Medtech должен распределить 4 ранга Medicine');
-  }
-  if (w.role === 'Exec' && !w.roleSetup.team_member) errors.push('Exec должен выбрать сотрудника Teamwork');
-  if (w.role === 'Nomad' && (!Array.isArray(w.roleSetup.moto_choices) || w.roleSetup.moto_choices.length !== 4 || w.roleSetup.moto_choices.some(x => !String(x || '').trim()))) errors.push('Nomad должен заполнить все четыре стартовых выбора Moto');
+function cyberSlotErrors(wiz) {
+  const errors=[];
+  for(const item of wiz.cyberware){if(item.capacity&&item.capacity.host&&!item.host_instance)errors.push(`${item.name}: ${T('no compatible cyberware host','нет совместимого host')}`);}
+  const hosts=[...wiz.cyberware];if(wiz.freeNeuroport)hosts.push({instance_id:'creation-neuroport',name:'Neuroport',capacity:{slots_total:5}});
+  for(const host of hosts){const id=host.instance_id||host.id,total=num(host.capacity&&host.capacity.slots_total)||0;if(!total)continue;const used=wiz.cyberware.filter(item=>item.host_instance===id).reduce((sum,item)=>sum+(num(item.capacity&&item.capacity.slots_used)||0),0);if(used>total)errors.push(`${host.name}: Option Slots ${used}/${total}`);}
   return errors;
 }
+function wizValidationErrors() {
+  const w=state.wizard,errors=[],statSpent=wizStatSpent(),skillSpent=wizSkillSpent();
+  if(!w.role)errors.push(T('Role: choose a Role','Роль: выберите роль'));
+  if(statSpent!==(state.meta.stat_points||62))errors.push(`${T('Characteristics','Характеристики')}: ${statSpent}/62`);
+  if(skillSpent!==(state.meta.skill_points||86))errors.push(`${T('Skills','Навыки')}: ${skillSpent}/86`);
+  for(const skill of state.meta.must_skills||[])if(!wizMustOk(skill))errors.push(`${T('Required Skill','Обязательный навык')}: ${skill} 2+`);
+  for(const [name,lvl] of Object.entries(wizChar().skills))if(lvl>(state.meta.skill_max||6))errors.push(`${name}: ${T('maximum at creation is 6','максимум при создании — 6')}`);
+  if(!w.nativeLanguage)errors.push(T('Lifepath: choose a Cultural Language','Lifepath: выберите культурный язык'));
+  if(!String(w.handle||'').trim())errors.push('Identity: Handle');
+  const commonMissing=lpAllFields().filter(([key])=>!w.lifepath[key]).length;if(commonMissing)errors.push(`${T('Common Lifepath missing','Не заполнен общий Lifepath')}: ${commonMissing}`);
+  if(w.role){const missing=lpRoleField(w.role).filter(([key])=>!w.roleLifepath[key]).length;if(missing)errors.push(`${w.role} Role-Based Lifepath: ${missing}`);}
+  if(creationMainRemaining(w)<0)errors.push(T('Shopping: Main Budget exceeded','Закупка: превышен основной бюджет'));
+  if(w.fashionCost>FASHION_BUDGET)errors.push(T('Shopping: Style Budget exceeded','Закупка: превышен Style Budget'));
+  for(const [base] of SUB_SKILL_BASES){const children=w.subSkills.filter(sub=>sub.base===base&&!sub.native&&(sub.lvl||0)>0);if(children.some(sub=>!String(sub.name||'').trim()))errors.push(`${base}: ${T('a non-zero specialization needs a name','ненулевой специализации нужно название')}`);const names=children.map(sub=>String(sub.name).trim().toLowerCase());if(new Set(names).size!==names.length)errors.push(`${base}: ${T('duplicate specialization','дублирующаяся специализация')}`);if(wizSubAllocated(base)>(num(w.skills[base])||0))errors.push(`${base}: children > parent pool`);}
+  const paidPorts=w.cyberware.filter(item=>String(item.name).toLowerCase()==='neuroport').length;if(paidPorts+(w.freeNeuroport?1:0)>1)errors.push(T('Only one Neuroport is allowed','Допустим только один Neuroport'));if((w.cyberware.length||w.fashionware.length||w.soldSoul)&&!w.freeNeuroport&&!paidPorts)errors.push(T('Cyberware requires a Neuroport','Для Cyberware нужен Neuroport'));
+  errors.push(...cyberwareRequirementErrors(w),...cyberSlotErrors(w));
+  if(w.soldSoul&&(!w.patron||!String(w.obligation||'').trim()))errors.push(T('Sell Your Soul: choose a Patron and Obligation','Sell Your Soul: выберите покровителя и обязательство'));
+  if(w.role==='Tech'){const ranks=['field','upgrade','fabrication','invention'].map(key=>num(w.roleSetup[key])||0);if(ranks.reduce((a,b)=>a+b,0)!==8||ranks.some(value=>value>4))errors.push('Tech: Maker 8 / max 4');}
+  if(w.role==='Medtech'){const ranks=['surgery','pharma','cryo'].map(key=>num(w.roleSetup[key])||0);if(ranks.reduce((a,b)=>a+b,0)!==4)errors.push('Medtech: Medicine 4');}
+  if(w.role==='Exec'&&!w.roleSetup.team_member)errors.push('Exec: Team Member');
+  if(w.role==='Nomad'&&(!Array.isArray(w.roleSetup.moto_choices)||w.roleSetup.moto_choices.length!==4||w.roleSetup.moto_choices.some(value=>!value)))errors.push('Nomad: four Moto choices');
+  return errors;
+}
+function validationTarget(message){if(/Role|Tech|Medtech|Exec|Nomad/.test(message)&&!/Lifepath/.test(message))return 1;if(/Lifepath|Identity|Language/.test(message))return 2;if(/Characteristics/.test(message))return 3;if(/Skill|Language \(|Local Expert|Martial Arts|Science|Instrument|parent pool/.test(message))return 4;return 5;}
 
 function characterSkillLevel(char, name) {
   return Math.max(0, num((char.skills || {})[name]) || 0);
@@ -2041,9 +2085,12 @@ function characterSkillLevel(char, name) {
 
 function specializedChildren(char, base) {
   const prefix = base + ' (';
-  return Object.entries(char.skills || {}).filter(([name]) => name.startsWith(prefix) && name.endsWith(')'))
-    .map(([name, lvl]) => ({ name: name.slice(prefix.length, -1), lvl: num(lvl) || 0 }))
-    .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  const children = Object.entries(char.skills || {}).filter(([name]) => name.startsWith(prefix) && name.endsWith(')'))
+    .map(([name, lvl]) => ({ name: name.slice(prefix.length, -1), lvl: num(lvl) || 0 }));
+  for (const saved of (char.skill_specializations || []).filter(row => row.base === base)) {
+    if (!children.some(child => child.name === saved.name)) children.push({ name: saved.name, lvl: num(saved.lvl) || 0, native: !!saved.native });
+  }
+  return children.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
 }
 
 function characterSkillPool(char, base) {
@@ -2056,15 +2103,15 @@ function fullSkillsTableHtml(char, derived) {
   let lastCat = null;
   const rows = [];
   for (const [cat, name, stat, is2] of state.meta.skills) {
-    if (cat !== lastCat) { rows.push(`<div class="skill-cat">${esc(cat)}</div>`); lastCat = cat; }
+    if (cat !== lastCat) { rows.push(`<div class="skill-cat">${esc(skillCategoryLabel(cat))}</div>`); lastCat = cat; }
     const lvl = specialized.has(name) ? characterSkillPool(char, name) : characterSkillLevel(char, name);
     const statValue = stat === 'EMP' ? (derived.emp_cur ?? (char.stats || {}).EMP) : (char.stats || {})[stat];
-    rows.push(`<div class="skill-row ${specialized.has(name) ? 'skill-parent' : ''}">
+    rows.push(`<div class="skill-row ${specialized.has(name) ? 'skill-parent' : ''} ${lvl === 0 ? 'zero-level' : ''}">
       <button class="skill-name-btn sname" data-skill-info="${esc(name)}">${esc(name)} ${is2 ? '<span class="muted small">(×2)</span>' : '<span class="muted small">(×1)</span>'}</button>
       <span class="sstat">${esc(stat)} <b>${num(statValue) ?? 0}</b></span><span class="slvl"><b>${lvl}</b></span><span class="sbase"><b>${(num(statValue) || 0) + lvl}</b></span><span></span></div>`);
     if (specialized.has(name)) {
       for (const child of specializedChildren(char, name)) {
-        rows.push(`<div class="skill-row subskill-row"><span class="sname subskill-name">↳ ${esc(child.name)}${name === 'Language' && child.name === char.native_language && child.lvl === 4 ? ' <span class="chip">культурный</span>' : ''}</span><span class="sstat">${esc(stat)} <b>${num(statValue) ?? 0}</b></span><span class="slvl"><b>${child.lvl}</b></span><span class="sbase"><b>${(num(statValue) || 0) + child.lvl}</b></span><span></span></div>`);
+        rows.push(`<div class="skill-row subskill-row ${child.lvl === 0 ? 'zero-level' : ''}"><span class="sname subskill-name">↳ ${esc(child.name)}${name === 'Language' && child.name === char.native_language && child.lvl === 4 ? ' <span class="chip">культурный</span>' : ''}</span><span class="sstat">${esc(stat)} <b>${num(statValue) ?? 0}</b></span><span class="slvl"><b>${child.lvl}</b></span><span class="sbase"><b>${(num(statValue) || 0) + child.lvl}</b></span><span></span></div>`);
       }
     }
   }
@@ -2078,69 +2125,38 @@ function chromeGroupedHtml(items, withInfo) {
   return [...groups.entries()].sort((a,b)=>a[0].localeCompare(b[0],'ru')).map(([type, content]) => cartSectionHtml(type, content)).join('') || '<div class="empty small">— чист от хрома —</div>';
 }
 
-function wizStepSummaryHtml() {
-  const wiz = state.wizard;
-  const d = wizDerived();
-  const c = wizChar();
-  const errors = wizValidationErrors();
-  const warnings = [];
-  if (d.emp_cur != null && d.emp_cur <= 2) warnings.push('EMP ≤ 2 — персонаж близок к киберпсихозу');
-  if (d.humanity_cur != null && d.humanity_cur < 0) errors.push('Текущая Humanity ниже 0 — персонаж в состоянии киберпсихоза');
-  if (!wiz.armor.body) warnings.push('Не выбрана надетая броня для тела');
-  if (!wiz.armor.head) warnings.push('Не выбрана надетая броня для головы');
-  const totalCash = Math.max(0, creationMainRemaining(wiz));
-  const statBlock = state.meta.stats.map(s => `<span class="chip"><b>${s}</b> ${wiz.stats[s] != null ? wiz.stats[s] : '—'}</span>`).join('');
-  const allChrome = c.cyberware;
-  const lpRows = lifepathNarrative(wiz.lifepath, wiz.role, wiz.roleLifepath);
-  const ab = ROLE_ABILITIES[wiz.role] || { name: state.meta.roles[wiz.role] || '—', desc: '' };
+function summaryInventoryHtml(items) {
+  if(!items.length)return `<div class="empty">${T('None','Нет')}</div>`;
+  return groupedItemsHtml(items.map((item,index)=>({...item,_summaryIndex:index})),item=>`<div class="inv-row"><span class="iname">${esc(item.display_name||item.name)}${(item.qty||1)>1?' ×'+item.qty:''}</span>${itemMechanicChips(item)}<span class="price">${money((item.price||0)*(item.qty||1))}</span><button class="info-btn" data-summary-item="${item._summaryIndex}">i</button></div>`,'Gear');
+}
+function cyberwareTreeHtml(items) {
+  if (!items.length) return `<div class="empty">${T('No Cyberware','Нет Cyberware')}</div>`;
+  const children = new Map();
+  items.forEach((item,index) => { if (item.host_instance) { if (!children.has(item.host_instance)) children.set(item.host_instance,[]); children.get(item.host_instance).push([item,index]); } });
+  const roots = items.map((item,index)=>[item,index]).filter(([item])=>!item.host_instance);
+  const row = (item,index,nested) => { const id=item.instance_id||item.key||item.id,total=num(item.capacity?.slots_total)||0,used=(children.get(id)||[]).reduce((sum,[child])=>sum+(num(child.capacity?.slots_used)||0),0);return `<div class="cyber-tree-row ${nested?'nested':''}"><span class="iname">${nested?'↳ ':''}${esc(item.name)}</span>${total?`<span class="chip">Slots ${used}/${total}</span>`:''}${item.capacity?.slots_used?`<span class="chip">Uses ${item.capacity.slots_used}</span>`:''}<span class="hl-badge">HL ${item.hl||0}</span><button class="info-btn" data-owned-chrome="${index}">i</button></div>${(children.get(id)||[]).map(([child,childIndex])=>row(child,childIndex,true)).join('')}`; };
+  return roots.map(([item,index])=>row(item,index,false)).join('');
+}
 
-  return `
-    <div class="grid cols-2" style="gap:18px">
-      <div>
-        <div class="panel mb">
-          <h3>🧬 ${esc(wiz.handle || 'Безымянный')}${wiz.firstName || wiz.lastName ? ` · ${esc([wiz.firstName, wiz.lastName].filter(Boolean).join(' '))}` : ''}</h3>
-          <div class="chips mb">
-            <span class="tag role">${esc(wiz.role)} · 4</span>
-            <span class="tag price">${money(totalCash)}</span>
-            <span class="chip">HP ${d.hp_max || '—'}</span>
-            <span class="chip">HUM ${d.humanity_cur != null ? d.humanity_cur + '/' + d.humanity_max : '—'}</span>
-            <span class="chip">EMP ${d.emp_cur != null ? d.emp_cur : '—'}</span>
-          </div>
-          <div class="small muted mb">Культурный язык: <b>${esc(wiz.nativeLanguage || '—')}</b> · Lifestyle: <b>${esc(c.lifestyle)}</b> · Жильё: <b>${esc(c.housing)}</b></div>
-          <h4>📊 Характеристики</h4>
-          <div class="statgrid mb">${statBlock}</div>
-          <h4>🎯 Все навыки Corebook</h4>
-          <div class="small muted mb">STAT — текущая характеристика; LVL — уровень; BASE = STAT + LVL. Для EMP используется значение после Humanity Loss.</div>
-          ${fullSkillsTableHtml(c, d)}
-          <h4>🛡️ Надетая броня</h4>
-          <div class="chips mb"><span class="chip">Тело: ${wiz.armor.body ? esc(wiz.armor.body.name) + ' · SP ' + wiz.armor.body.sp : '—'}</span><span class="chip">Голова: ${wiz.armor.head ? esc(wiz.armor.head.name) + ' · SP ' + wiz.armor.head.sp : '—'}</span></div>
-          <h4>🦾 Хром по категориям (HL ${allChrome.reduce((a, x) => a + (x.hl || 0), 0)})</h4>
-          <div class="mb">${chromeGroupedHtml(allChrome, true)}</div>
-          <h4>🎒 Инвентарь</h4>
-          <div class="chips">${c.inventory.length ? c.inventory.map(i => `<span class="chip">${esc(i.name)}${(i.qty || 1) > 1 ? ' ×' + i.qty : ''}</span>`).join('') : '<span class="muted small">— пусто —</span>'}</div>
-        </div>
-        <div class="panel">
-          <h3>🧬 Lifepath</h3>
-          ${lpRows.length ? `<div class="kv">${lpRows.map(([k, v]) => `<b>${esc(k)}</b><span>${esc(v)}</span>`).join('')}</div>` : '<div class="muted small">Lifepath не заполнен — вернись на шаг 2.</div>'}
-        </div>
-      </div>
-      <div>
-        <div class="panel"><h3>Identity</h3><div class="kv"><b>Handle</b><span>${esc(wiz.handle || '—')}</span><b>Имя</b><span>${esc(wiz.firstName || '—')}</span><b>Фамилия</b><span>${esc(wiz.lastName || '—')}</span></div><button class="btn-sm mt" onclick="wizGoTo(2)">Изменить в Lifepath</button></div>
-        <div class="panel accent" style="margin-top:14px">
-          <h3>🎭 ${esc(wiz.role)} — ${esc(state.meta.role_ru[wiz.role] || '')}</h3>
-          <div class="small muted mb">${esc(state.meta.role_desc[wiz.role] || '')}</div>
-          <div class="tag mb" style="display:inline-block;color:var(--yellow);border-color:rgba(255,213,0,.4)">⚡ ${esc(ab.name)}</div>
-          <div class="small mt">${esc(ab.desc)}</div>
-        </div>
-        <div class="panel" style="margin-top:14px">
-          <h3>⚠️ Проверки</h3>
-          ${errors.map(w => `<div class="small mb" style="color:var(--red)">⛔ ${esc(w)}</div>`).join('')}
-          ${warnings.map(w => `<div class="small mb" style="color:var(--orange)">⚠️ ${esc(w)}</div>`).join('')}
-          ${!errors.length && !warnings.length ? '<div class="green small">✅ Все проверки пройдены! Можно создавать.</div>' : ''}
-        </div>
-        <div class="small muted mt">Остаток бюджета закупки записывается в наличные персонажа (${money(totalCash)}). Остаток бюджета стиля сгорел.</div>
-      </div>
-    </div>`;
+function wizStepSummaryHtml() {
+  const wiz=state.wizard,c=wizChar(),d=wizDerived(),errors=wizValidationErrors(),warnings=equipmentWarnings(wiz);
+  if(d.emp_cur!=null&&d.emp_cur<=2)warnings.push(T('EMP is 2 or lower','EMP не выше 2'));
+  if(wiz.fashionCost < FASHION_BUDGET) warnings.push(`${T('Unused Style Budget will be lost','Неиспользованный Style Budget сгорит')}: ${money(FASHION_BUDGET-wiz.fashionCost)}`);
+  for(const [base] of SUB_SKILL_BASES){const free=wizSubFree(base);if(free)warnings.push(`${base}: ${free} ${T('parent levels remain unallocated','уровней parent-pool не распределено')}`);}
+  const slotHosts=[...wiz.cyberware];if(wiz.freeNeuroport)slotHosts.push({instance_id:'creation-neuroport',name:'Neuroport',capacity:{slots_total:5}});for(const host of slotHosts){const total=num(host.capacity?.slots_total)||0;if(!total)continue;const used=wiz.cyberware.filter(item=>item.host_instance===(host.instance_id||host.id)).reduce((sum,item)=>sum+(num(item.capacity?.slots_used)||0),0);if(total>used)warnings.push(`${host.name}: ${total-used} Option Slots ${T('unused','свободно')}`);}
+  const lpRows=lifepathNarrative(wiz.lifepath,wiz.role,wiz.roleLifepath),roleSource=ROLE_COREBOOK_V3[wiz.role];
+  const statBlock=state.meta.stats.map(stat=>`<button class="chip skill-name-btn" data-stat-info="${stat}"><b>${stat}</b> ${wiz.stats[stat]}</button>`).join('');
+  const weaponRows=wiz.gear.filter(item=>['guns','melee'].includes(item.cat)).map(item=>`<div class="inv-row"><span class="iname">${esc(item.name)}</span>${itemMechanicChips(item)}${item.mechanics?.skill?`<span class="chip">${esc(item.mechanics.skill)} BASE ${characterSkillLevel(c,item.mechanics.skill)+(num(c.stats[state.meta.skills.find(row=>row[1]===item.mechanics.skill)?.[2]])||0)}</span>`:''}</div>`).join('');
+  return `<div class="summary-status panel accent mb"><div><h2>${errors.length?`⛔ ${errors.length} ${T('blocking issues','блокирующих ошибок')}`:`✅ ${T('Ready to create','Готов к созданию')}`}</h2><p>⚠ ${warnings.length} ${T('warnings','предупреждений')}</p></div><div class="row"><button class="btn-sm" id="summary-print">🖨️ Print</button><button class="btn-sm" id="summary-json">⬇ JSON</button></div></div>
+  <details class="creation-section validation-section" open><summary><span>Validation</span><span>${errors.length+warnings.length}</span></summary><div class="section-body">${errors.map(error=>`<button class="validation-row error" data-validation-step="${validationTarget(error)}">⛔ <span>${esc(error)}</span><b>${T('Fix','Исправить')} →</b></button>`).join('')}${warnings.map(warning=>`<div class="validation-row warning">⚠ <span>${esc(warning)}</span></div>`).join('')}${!errors.length&&!warnings.length?`<div class="green">✓ ${T('All checks passed.','Все проверки пройдены.')}</div>`:''}</div></details>
+  <details class="creation-section" open><summary><span>Identity & Role</span></summary><div class="section-body summary-identity"><div><h2>${esc(wiz.handle||'—')}</h2><p>${esc([wiz.firstName,wiz.lastName].filter(Boolean).join(' ')||'—')}</p><div class="chips"><span class="tag role">${esc(wiz.role||T('No Role','Роль не выбрана'))}${wiz.role?' · Rank 4':''}</span>${roleSource?`<span class="tag source">${esc(roleSource.pages)}</span>`:''}</div></div>${wiz.role?`<div><h3>${ROLE_COREBOOK_V3[wiz.role].icon} ${esc(state.meta.roles[wiz.role])}</h3><p>${esc(ROLE_COREBOOK_V3[wiz.role][APP_I18N.current()].rank4)}</p><div>${esc(roleSetupSummary(wiz.role,wiz.roleSetup))}</div></div>`:''}<button class="btn-sm" onclick="wizGoTo(1)">${T('Edit Role','Изменить роль')}</button></div></details>
+  <details class="creation-section"><summary><span>Lifepath</span><span>${lpRows.length}</span></summary><div class="section-body">${lpRows.length?`<div class="kv">${lpRows.map(([key,value])=>`<b>${esc(key)}</b><span>${esc(displayKnownValue(value))}</span>`).join('')}</div>`:`<div class="empty">${T('Not completed','Не заполнен')}</div>`}<button class="btn-sm mt" onclick="wizGoTo(2)">${T('Edit Lifepath','Изменить Lifepath')}</button></div></details>
+  <details class="creation-section" open><summary><span>Characteristics</span><span>${wizStatSpent()}/62</span></summary><div class="section-body"><div class="statgrid mb">${statBlock}</div><div class="derived"><span class="dstat"><b>${d.hp_max??'—'}</b><small>Max HP</small></span><span class="dstat"><b>${d.death_save??'—'}</b><small>Death Save</small></span><span class="dstat"><b>${d.humanity_cur??'—'} / ${d.humanity_max??'—'}</b><small>Humanity</small></span><span class="dstat"><b>${d.emp_cur??'—'}</b><small>Current EMP</small></span></div></div></details>
+  <details class="creation-section"><summary><span>Skills</span><span>${wizSkillSpent()}/86</span></summary><div class="section-body"><label class="checkbox mb"><input type="checkbox" id="summary-zero-skills" checked> ${T('Show zero-level Skills','Показывать навыки уровня 0')}</label>${fullSkillsTableHtml(c,d)}</div></details>
+  <details class="creation-section"><summary><span>Combat Loadout</span><span>${wiz.gear.filter(item=>['guns','melee'].includes(item.cat)).length}</span></summary><div class="section-body">${weaponRows||`<div class="empty">${T('No weapons selected','Оружие не выбрано')}</div>`}<h3>Armor</h3><div class="chips"><span class="chip"><b>Body</b> ${wiz.armor.body?esc(wiz.armor.body.name):'—'}</span><span class="chip"><b>Head</b> ${wiz.armor.head?esc(wiz.armor.head.name):'—'}</span></div></div></details>
+  <details class="creation-section"><summary><span>Cyberware</span><span>HL ${d.hl_total||0}</span></summary><div class="section-body"><div class="humanity-breakdown panel mb"><span>Base ${wiz.stats.EMP*10}</span><span>HL −${d.hl_total||0}</span><span>Max reduction −${d.hum_cut||0}</span><b>${d.humanity_cur}/${d.humanity_max} · EMP ${d.emp_cur}</b></div>${cyberwareTreeHtml(c.cyberware)}${wiz.soldSoul?`<div class="panel accent mt"><b>Sell Your Soul</b><p>${esc(wiz.patron)} · ${esc(wiz.obligation)}</p></div>`:''}</div></details>
+  <details class="creation-section"><summary><span>Inventory, Fashion & Role Benefits</span><span>${c.inventory.length}</span></summary><div class="section-body">${summaryInventoryHtml(c.inventory)}</div></details>
+  <details class="creation-section" open><summary><span>Finances & Visibility</span></summary><div class="section-body"><div class="finance-grid"><div><b>Main Budget</b><span>${money(GEAR_BUDGET)}</span><small>${T('Spent','Потрачено')} ${money(creationMainSpent(wiz))}</small><strong>${T('Starting Cash','Стартовые наличные')} ${money(Math.max(0,creationMainRemaining(wiz)))}</strong></div><div><b>Style Budget</b><span>${money(FASHION_BUDGET)}</span><small>${T('Spent','Потрачено')} ${money(wiz.fashionCost)}</small><strong>${T('Lost','Сгорит')} ${money(Math.max(0,FASHION_BUDGET-wiz.fashionCost))}</strong></div><div><b>Cyberware Bonus</b><span>${money(creationChromeBonus(wiz))}</span><small>Sell Your Soul</small></div><div><b>Role Benefits</b><span>${roleBenefitItems(wiz).length}</span><small>${money(0)} paid</small></div></div><div class="grid cols-2 mt"><label class="f"><span>Player</span><input id="summary-player" value="${esc(wiz.player||'')}"></label><label class="f"><span>Visibility</span><select id="summary-public"><option value="private" ${!wiz.public?'selected':''}>Private</option><option value="public" ${wiz.public?'selected':''}>Public</option></select></label></div></div></details>`;
 }
 
 /* ---------- биндинги шагов ---------- */
@@ -2157,7 +2173,7 @@ function changeWizardRole(nextRole) {
   const wiz = state.wizard;
   if (!nextRole || nextRole === wiz.role) return;
   if (hasRoleSpecificProgress(wiz) &&
-      !window.confirm(`Сменить роль ${wiz.role} на ${nextRole}? Заполненный ролевой Lifepath и изменённая настройка способности будут сброшены. Общие данные сохранятся.`)) return;
+      !window.confirm(T(`Change Role from ${wiz.role} to ${nextRole}? Filled Role-Based Lifepath and modified Role setup will be reset. Shared data stays.`,`Сменить роль ${wiz.role} на ${nextRole}? Ролевой Lifepath и настройка роли будут сброшены. Общие данные сохранятся.`))) return;
   wiz.role = nextRole;
   wiz.roleLifepath = {};
   wiz.roleSetup = defaultRoleSetup(nextRole);
@@ -2180,7 +2196,7 @@ function adjustStyleCart(kind, index, delta) {
 }
 
 function clearArmorForEntry(wiz, item) {
-  for (const location of ['body', 'head']) if (wiz.armor[location] && wiz.armor[location].key === item.key) wiz.armor[location] = null;
+  for (const location of ['body', 'head', 'shield']) if (wiz.armor[location] && wiz.armor[location].key === item.key) wiz.armor[location] = null;
 }
 
 function adjustShopCart(kind, index, delta) {
@@ -2189,13 +2205,23 @@ function adjustShopCart(kind, index, delta) {
     const sample = wiz.cyberware[index];
     if (!sample) return;
     if (delta > 0) {
-      if (String(sample.name).toLowerCase() === 'neuroport') { toast('Второй Neuroport запрещён', true); return; }
-      if (!canAffordCreationItem(wiz, { cat: 'cyberware' }, sample.price || 0)) { toast('Не хватает бюджета', true); return; }
-      wiz.cyberware.push({ ...sample }); wiz.chromeCost += sample.price || 0;
+      if (String(sample.name).toLowerCase() === 'neuroport' || (sample.capacity || {}).unique) { toast(T('A second installation is not allowed.','Вторая установка запрещена.'), true); return; }
+      const hosts = availableCyberHosts(wiz, sample);
+      if ((sample.capacity || {}).host && !hosts.length) { toast(T('No compatible host has enough Option Slots.','У совместимых hosts нет свободных Option Slots.'), true); return; }
+      if (!canAffordCreationItem(wiz, { cat: 'cyberware' }, sample.price || 0)) { toast(T('Not enough Main Budget.','Недостаточно основного бюджета.'), true); return; }
+      const host = chooseCyberHost(hosts, sample); if ((sample.capacity || {}).host && !host) return;
+      wiz.cyberware.push({ ...sample, instance_id: `${sample.id}:${Date.now()}:${Math.random().toString(16).slice(2)}`, host_instance: host ? (host.instance_id || host.id) : '' }); wiz.chromeCost += sample.price || 0;
     } else {
       const removeIndex = wiz.cyberware.findIndex(x => x.id === sample.id);
       const removed = wiz.cyberware[removeIndex];
-      if (removed) { wiz.chromeCost = Math.max(0, wiz.chromeCost - (removed.price || 0)); wiz.cyberware.splice(removeIndex, 1); }
+      if (removed) {
+        const hostId = removed.instance_id || removed.id;
+        const dependents = wiz.cyberware.filter(item => item.host_instance === hostId);
+        if (dependents.length && !window.confirm(T(`Remove ${removed.name} and ${dependents.length} installed options?`,`Удалить ${removed.name} и установленные опции (${dependents.length})?`))) return;
+        const removedIds = new Set([hostId]);
+        wiz.cyberware = wiz.cyberware.filter(item => item !== removed && !removedIds.has(item.host_instance));
+        wiz.chromeCost = Math.max(0, wiz.chromeCost - (removed.price || 0) - dependents.reduce((sum,item)=>sum+(item.price||0),0));
+      }
     }
   } else {
     const item = wiz.gear[index];
@@ -2213,94 +2239,76 @@ function adjustShopCart(kind, index, delta) {
 }
 
 function bindWizStep() {
-  const wiz = state.wizard;
-  const step = wiz.step;
-  const body = $('#wiz-body');
-  if (!body) return;
-
-  if (step === 1) {
-    $$('[data-role]', body).forEach(btn => btn.onclick = () => changeWizardRole(btn.dataset.role));
-    $$('[data-role-shift]', body).forEach(btn => btn.onclick = () => {
-      const roles = wizardRoleOrder(); const next = (roles.indexOf(wiz.role) + Number(btn.dataset.roleShift) + roles.length) % roles.length;
-      changeWizardRole(roles[next]);
-    });
-    const carousel = $('#role-carousel');
-    if (carousel) {
-      let touchX = null;
-      carousel.ontouchstart = event => { touchX = event.changedTouches[0].clientX; };
-      carousel.ontouchend = event => {
-        if (touchX == null) return;
-        const dx = event.changedTouches[0].clientX - touchX; touchX = null;
-        if (Math.abs(dx) < 45) return;
-        const roles = wizardRoleOrder(); const next = (roles.indexOf(wiz.role) + (dx < 0 ? 1 : -1) + roles.length) % roles.length;
-        changeWizardRole(roles[next]);
-      };
-    }
-    $$('[data-role-setup]', body).forEach(inp => inp.oninput = () => { wiz.roleSetup[inp.dataset.roleSetup] = Math.max(0, Math.min(4, num(inp.value) || 0)); });
-    const team = $('#role-team'); if (team) team.onchange = () => { wiz.roleSetup.team_member = team.value; };
-    $$('[data-moto-choice]', body).forEach(inp => inp.oninput = () => { wiz.roleSetup.moto_choices = wiz.roleSetup.moto_choices || ['', '', '', '']; wiz.roleSetup.moto_choices[Number(inp.dataset.motoChoice)] = inp.value; });
+  const wiz=state.wizard,step=wiz.step,body=$('#wiz-body');if(!body)return;
+  if(step===1){
+    $$('[data-role]',body).forEach(button=>button.onclick=()=>changeWizardRole(button.dataset.role));
+    const shift=delta=>{const roles=wizardRoleOrder(),index=Math.max(0,roles.indexOf(wiz.role));changeWizardRole(roles[(index+delta+roles.length)%roles.length]);};
+    $$('[data-role-shift]',body).forEach(button=>button.onclick=()=>shift(Number(button.dataset.roleShift)));
+    const carousel=$('#role-carousel');if(carousel){let touchX=null;carousel.ontouchstart=e=>touchX=e.changedTouches[0].clientX;carousel.ontouchend=e=>{if(touchX==null)return;const dx=e.changedTouches[0].clientX-touchX;touchX=null;if(Math.abs(dx)>=45)shift(dx<0?1:-1);};carousel.onkeydown=e=>{if(e.key==='ArrowLeft')shift(-1);if(e.key==='ArrowRight')shift(1);};}
+    $$('[data-role-step]',body).forEach(button=>button.onclick=()=>{const [key,raw]=button.dataset.roleStep.split('|'),delta=Number(raw),keys=wiz.role==='Tech'?['field','upgrade','fabrication','invention']:['surgery','pharma','cryo'],limit=wiz.role==='Tech'?8:4,total=keys.reduce((sum,k)=>sum+(num(wiz.roleSetup[k])||0),0),current=num(wiz.roleSetup[key])||0;if(delta>0&&(total>=limit||current>=4))return;wiz.roleSetup[key]=Math.max(0,current+delta);renderWizard();});
+    $$('[data-team-member]',body).forEach(button=>button.onclick=()=>{wiz.roleSetup.team_member=button.dataset.teamMember;renderWizard();});
+    $$('[data-moto-choice]',body).forEach(select=>select.onchange=()=>{wiz.roleSetup.moto_choices=wiz.roleSetup.moto_choices||['','','',''];wiz.roleSetup.moto_choices[Number(select.dataset.motoChoice)]=select.value;saveWizardDraft();});
   }
-
-  if (step === 2) {
-    const handle = $('#wiz-handle'); if (handle) handle.oninput = () => { wiz.handle = handle.value; };
-    const first = $('#wiz-first-name'); if (first) first.oninput = () => { wiz.firstName = first.value; };
-    const last = $('#wiz-last-name'); if (last) last.oninput = () => { wiz.lastName = last.value; };
-    $('[data-generate-handle]', body).onclick = () => { generateWizardHandle(); renderWizard(); };
-    $('[data-generate-name]', body).onclick = () => { generateWizardName(); renderWizard(); };
-    $$('[data-lp]', body).forEach(sel => sel.onchange = () => { wiz.lifepath[sel.dataset.lp] = sel.value; if (sel.dataset.lp === 'region') syncNativeLanguage(); renderWizard(); });
-    $$('[data-role-lp]', body).forEach(sel => sel.onchange = () => { wiz.roleLifepath[sel.dataset.roleLp] = sel.value; renderWizard(); });
-    $$('[data-lp-dice]', body).forEach(btn => btn.onclick = () => { wizRollLifepath(btn.dataset.lpDice, false); renderWizard(); });
-    $$('[data-role-lp-dice]', body).forEach(btn => btn.onclick = () => { wizRollLifepath(btn.dataset.roleLpDice, true); renderWizard(); });
-    const native = $('#lp-native'); if (native) native.onchange = () => { wiz.nativeLanguage = native.value; syncNativeLanguage(); renderWizard(); };
-    const genAll = $('#lp-gen-all'); if (genAll) genAll.onclick = () => { lpAllFields().forEach(([key]) => wizRollLifepath(key, false)); lpRoleField(wiz.role).forEach(([key]) => wizRollLifepath(key, true)); syncNativeLanguage(); renderWizard(); toast('🎲 Общий и ролевой Lifepath сгенерированы'); };
+  if(step===2){
+    $$('[data-lp-section]',body).forEach(details=>details.ontoggle=()=>{wiz.lifepathOpen[details.dataset.lpSection]=details.open;saveWizardDraft();});
+    const handle=$('#wiz-handle'),first=$('#wiz-first-name'),last=$('#wiz-last-name');if(handle)handle.oninput=()=>wiz.handle=handle.value;if(first)first.oninput=()=>wiz.firstName=first.value;if(last)last.oninput=()=>wiz.lastName=last.value;
+    $('[data-generate-handle]',body).onclick=()=>{generateWizardHandle();renderWizard();};
+    $$('[data-name-gender]',body).forEach(button=>button.onclick=()=>{wiz.nameGender=button.dataset.nameGender;renderWizard();});
+    $$('[data-generate-name]',body).forEach(button=>button.onclick=()=>{generateWizardName(button.dataset.generateName);renderWizard();});
+    $$('[data-lp]',body).forEach(select=>select.onchange=()=>{wiz.lifepath[select.dataset.lp]=select.value;if(select.dataset.lp==='region')syncNativeLanguage();renderWizard();});
+    $$('[data-role-lp]',body).forEach(select=>select.onchange=()=>{wiz.roleLifepath[select.dataset.roleLp]=select.value;renderWizard();});
+    $$('[data-lp-dice]',body).forEach(button=>button.onclick=()=>{wizRollHybrid(button.dataset.lpDice,false);renderWizard();});
+    $$('[data-role-lp-dice]',body).forEach(button=>button.onclick=()=>{wizRollHybrid(button.dataset.roleLpDice,true);renderWizard();});
+    const native=$('#lp-native');if(native)native.onchange=()=>{wiz.nativeLanguage=native.value;syncNativeLanguage();renderWizard();};
+    $('#lp-gen-all').onclick=()=>{lpAllFields().forEach(([key])=>wizRollHybrid(key,false));if(wiz.role)lpRoleField(wiz.role).forEach(([key])=>wizRollHybrid(key,true));syncNativeLanguage();renderWizard();toast(T('Hybrid Lifepath generated.','Hybrid Lifepath сгенерирован.'));};
   }
-
-  if (step === 3) {
-    $$('[data-wiz-stat]', body).forEach(inp => inp.oninput = () => { const key = inp.dataset.wizStat; const value = Math.max(2, Math.min(8, num(inp.value) || 2)); wiz.stats[key] = value; inp.value = value; updateWizStatBar(); wizRefreshLive(); });
-    $('#wiz-st-roll').onclick = () => { const arr = [8,7,7,6,6,6,6,6,5,5]; for (let i=arr.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]];} state.meta.stats.forEach((key,i)=>wiz.stats[key]=arr[i]); renderWizard(); };
-    $('#wiz-st-reset').onclick = () => { state.meta.stats.forEach(key => wiz.stats[key] = 5); renderWizard(); };
-    updateWizStatBar();
+  if(step===3){
+    $$('[data-stat-step]',body).forEach(button=>button.onclick=()=>{const [stat,raw]=button.dataset.statStep.split('|'),delta=Number(raw),current=num(wiz.stats[stat])||5;if(delta>0&&wizStatSpent()>=62)return;wiz.stats[stat]=Math.max(2,Math.min(8,current+delta));renderWizard();});
+    $$('[data-stat-lock]',body).forEach(button=>button.onclick=()=>{wiz.statLocks[button.dataset.statLock]=!wiz.statLocks[button.dataset.statLock];renderWizard();});
+    $$('[data-stat-info]',body).forEach(button=>button.onclick=()=>showStatInfo(button.dataset.statInfo));
+    $('#wiz-st-roll').onclick=()=>{randomizeWizardStats();renderWizard();};$('#wiz-st-reset').onclick=()=>{state.meta.stats.forEach(stat=>wiz.stats[stat]=5);renderWizard();};
   }
-
-  if (step === 4) {
-    updateWizSkillHud();
-    $$('[data-wiz-skill]', body).forEach(sel => sel.onchange = () => { wiz.skills[sel.dataset.wizSkill] = Number(sel.value); updateWizSkillHud(); wizRefreshLive(); });
-    $$('[data-wiz-pool]', body).forEach(sel => sel.onchange = () => { const base = sel.dataset.wizPool; wiz.skills[base] = Math.max(wizSubAllocated(base), Number(sel.value)); renderWizard(); });
-    $$('[data-sub-add]', body).forEach(btn => btn.onclick = () => { if (wizSubFree(btn.dataset.subAdd) <= 0) return; wiz.subSkills.push({ base: btn.dataset.subAdd, name: '', lvl: 1 }); renderWizard(); });
-    $$('[data-sub-del]', body).forEach(btn => btn.onclick = () => { const item = wiz.subSkills[Number(btn.dataset.subDel)]; if (item && !item.native) wiz.subSkills.splice(Number(btn.dataset.subDel), 1); renderWizard(); });
-    $$('[data-sub-name]', body).forEach(inp => inp.oninput = () => { const item = wiz.subSkills[Number(inp.dataset.subName)]; if (item && !item.native) item.name = inp.value; });
-    $$('[data-sub-minus]', body).forEach(btn => btn.onclick = () => { const item = wiz.subSkills[Number(btn.dataset.subMinus)]; if (item && !item.native && item.lvl > 0) item.lvl--; renderWizard(); });
-    $$('[data-sub-plus]', body).forEach(btn => btn.onclick = () => { const item = wiz.subSkills[Number(btn.dataset.subPlus)]; if (item && !item.native && item.lvl < 6 && wizSubFree(item.base) > 0) item.lvl++; renderWizard(); });
+  if(step===4){
+    const query=$('#wiz-skill-q');if(query)query.oninput=()=>{wiz.skillQ=query.value;renderWizard();};
+    $$('[data-skill-filter]',body).forEach(button=>button.onclick=()=>{wiz.skillFilter=button.dataset.skillFilter;renderWizard();});
+    $$('[data-skill-category]',body).forEach(details=>details.ontoggle=()=>{wiz.skillOpen[details.dataset.skillCategory]=details.open;saveWizardDraft();});
+    $$('[data-wiz-skill-step]',body).forEach(button=>button.onclick=()=>{const [name,raw]=button.dataset.wizSkillStep.split('|'),delta=Number(raw),meta=state.meta.skills.find(row=>row[1]===name),cost=meta&&meta[3]?2:1,current=num(wiz.skills[name])||0,floor=WIZ_SUB_HIDDEN.has(name)?wizSubAllocated(name):0;if(delta>0&&((state.meta.skill_points||86)-wizSkillSpent()<cost||current>=6))return;if(delta<0&&current<=floor)return;wiz.skills[name]=Math.max(floor,Math.min(6,current+delta));renderWizard();});
+    $$('[data-sub-add]',body).forEach(button=>button.onclick=()=>{if(wizSubFree(button.dataset.subAdd)<=0)return;wiz.subSkills.push({base:button.dataset.subAdd,name:'',lvl:1});renderWizard();});
+    $$('[data-sub-del]',body).forEach(button=>button.onclick=()=>{const item=wiz.subSkills[Number(button.dataset.subDel)];if(item&&!item.native)wiz.subSkills.splice(Number(button.dataset.subDel),1);renderWizard();});
+    $$('[data-sub-name]',body).forEach(input=>input.oninput=()=>{const item=wiz.subSkills[Number(input.dataset.subName)];if(item&&!item.native)item.name=input.value;});
+    $$('[data-sub-minus]',body).forEach(button=>button.onclick=()=>{const item=wiz.subSkills[Number(button.dataset.subMinus)];if(item&&!item.native&&item.lvl>0)item.lvl--;renderWizard();});
+    $$('[data-sub-plus]',body).forEach(button=>button.onclick=()=>{const item=wiz.subSkills[Number(button.dataset.subPlus)];if(item&&!item.native&&item.lvl<6&&wizSubFree(item.base)>0)item.lvl++;renderWizard();});
   }
-
-  if (step === 5) {
-    const query = $('#wiz-style-q'); if (query) query.oninput = () => { captureWizardScrolls(); wiz.styleQ = query.value; wiz.scrolls.style = 0; wiz.scrolls.fashionware = 0; wizLoadStyleLists(); };
-    $$('[data-cart-qty]', body).forEach(btn => btn.onclick = () => { const [kind, index, delta] = btn.dataset.cartQty.split('|'); adjustStyleCart(kind, Number(index), Number(delta)); });
-    $$('[data-cart-info]', body).forEach(btn => btn.onclick = () => { const [kind, index] = btn.dataset.cartInfo.split('|'); showCreationItemInfo(kind === 'style' ? wiz.fashion[Number(index)] : wiz.fashionware[Number(index)]); });
-    wizLoadStyleLists();
-  }
-
-  if (step === 6) {
-    const neuroport = $('#wiz-neuroport'); if (neuroport) neuroport.onchange = () => { if (neuroport.checked && hasPaidNeuroport(wiz)) { toast('Сначала удалите платный Neuroport', true); return; } wiz.freeNeuroport = neuroport.checked; renderWizard(); };
-    const soul = $('#wiz-soul'); if (soul) soul.onchange = () => { wiz.soldSoul = soul.checked; renderWizard(); };
-    $$('[data-shop-tab]', body).forEach(btn => btn.onclick = () => { captureWizardScrolls(); wiz.shopTab = btn.dataset.shopTab; renderWizard(); });
-    const query = $('#wiz-shop-q'); if (query) query.oninput = () => { captureWizardScrolls(); wiz.shopQ = query.value; wiz.scrolls[`shop:${wiz.shopTab}`] = 0; wizLoadShopList(); };
-    $$('[data-cart-qty]', body).forEach(btn => btn.onclick = () => { const [kind, index, delta] = btn.dataset.cartQty.split('|'); adjustShopCart(kind, Number(index), Number(delta)); });
-    $$('[data-cart-info]', body).forEach(btn => btn.onclick = () => { const [kind, index] = btn.dataset.cartInfo.split('|'); showCreationItemInfo(kind === 'chrome' ? wiz.cyberware[Number(index)] : wiz.gear[Number(index)]); });
+  if(step===5){
+    $$('[data-shop-tab]',body).forEach(button=>button.onclick=()=>{captureWizardScrolls();wiz.shopState=wiz.shopState||{};wiz.shopState[wiz.shopTab]={q:wiz.shopQ,filters:{...(wiz.shopFilters||{})}};wiz.shopTab=button.dataset.shopTab;const saved=wiz.shopState[wiz.shopTab]||{};wiz.shopQ=saved.q||'';wiz.shopFilters={...(saved.filters||{})};renderWizard();});
+    $$('[data-shop-tab-jump]',body).forEach(button=>button.onclick=()=>{const dependents=wiz.cyberware.filter(item=>item.host_instance==='creation-neuroport');if(dependents.length&&!window.confirm(T('Removing the free Neuroport will also remove its installed options. Continue?','Удаление бесплатного Neuroport также удалит его опции. Продолжить?')))return;wiz.cyberware=wiz.cyberware.filter(item=>item.host_instance!=='creation-neuroport');wiz.chromeCost=Math.max(0,wiz.chromeCost-dependents.reduce((sum,item)=>sum+(item.price||0),0));wiz.shopTab=button.dataset.shopTabJump;wiz.freeNeuroport=false;renderWizard();});
+    $$('[data-neuro-choice]',body).forEach(button=>button.onclick=()=>{if(button.dataset.neuroChoice!=='free'||hasPaidNeuroport(wiz))return;if(wiz.freeNeuroport){const dependents=wiz.cyberware.filter(item=>item.host_instance==='creation-neuroport');if(dependents.length&&!window.confirm(T(`Remove the free Neuroport and ${dependents.length} installed options?`,`Удалить бесплатный Neuroport и установленные опции (${dependents.length})?`)))return;wiz.cyberware=wiz.cyberware.filter(item=>item.host_instance!=='creation-neuroport');wiz.chromeCost=Math.max(0,wiz.chromeCost-dependents.reduce((sum,item)=>sum+(item.price||0),0));}wiz.freeNeuroport=!wiz.freeNeuroport;renderWizard();});
+    const soul=$('#wiz-soul');if(soul)soul.onchange=()=>{wiz.soldSoul=soul.checked;renderWizard();};const patron=$('#wiz-patron');if(patron)patron.onchange=()=>wiz.patron=patron.value;const obligation=$('#wiz-obligation');if(obligation)obligation.oninput=()=>wiz.obligation=obligation.value;
+    const query=$('#wiz-shop-q');if(query)query.oninput=()=>{captureWizardScrolls();wiz.shopQ=query.value;wiz.scrolls[`shop:${wiz.shopTab}`]=0;wizLoadShopList();};
+    const type=$('#wiz-shop-type');if(type)type.onchange=()=>{wiz.shopFilters.type=type.value;wizLoadShopList();};const source=$('#wiz-shop-source');if(source)source.onchange=()=>{wiz.shopFilters.source=source.value;wizLoadShopList();};const maxPrice=$('#wiz-shop-max-price');if(maxPrice)maxPrice.onchange=()=>{wiz.shopFilters.maxPrice=maxPrice.value;wizLoadShopList();};const sort=$('#wiz-shop-sort');if(sort)sort.onchange=()=>{wiz.shopFilters.sort=sort.value;wizLoadShopList();};const affordable=$('#shop-affordable');if(affordable)affordable.onchange=()=>{wiz.shopFilters.affordable=affordable.checked;wizLoadShopList();};const selected=$('#shop-selected');if(selected)selected.onchange=()=>{wiz.shopFilters.selected=selected.checked;wizLoadShopList();};
+    const compare=$('#compare-items');if(compare)compare.onclick=()=>{const all=Object.values(wiz._shopCache||{}).flat();renderCompareModal((wiz.compareItems||[]).map(id=>all.find(item=>item.id===id)).filter(Boolean));};const outfitStyle=$('#outfit-style');if(outfitStyle)outfitStyle.onchange=()=>wiz.outfitStyle=outfitStyle.value;const outfit=$('#random-outfit');if(outfit)outfit.onclick=generateRandomOutfit;
+    $$('[data-cart-qty]',body).forEach(button=>button.onclick=()=>{const [kind,index,delta]=button.dataset.cartQty.split('|');if(kind==='style'||kind==='fashionware')adjustStyleCart(kind,Number(index),Number(delta));else adjustShopCart(kind,Number(index),Number(delta));});
+    $$('[data-cart-info]',body).forEach(button=>button.onclick=()=>{const [kind,index]=button.dataset.cartInfo.split('|'),lists={chrome:wiz.cyberware,gear:wiz.gear,style:wiz.fashion,fashionware:wiz.fashionware};showCreationItemInfo(lists[kind][Number(index)]);});
+    $$('[data-equip-armor]',body).forEach(button=>button.onclick=()=>{const item=wiz.gear[Number(button.dataset.equipArmor)];if(!item)return;const piece={key:item.key,source_key:item.source_key,name:item.name,sp:item.sp||0,penalties:{...(item.penalties||{})},bundled:!!item.armor_bundled};if(item.location==='body'||item.location==='set')wiz.armor.body=piece;if(item.location==='head'||item.location==='set')wiz.armor.head=piece;if(item.location==='shield')wiz.armor.shield=piece;renderWizard();});
     wizLoadShopList();
   }
-
-  $$('[data-skill-info]', body).forEach(btn => btn.onclick = () => showSkillInfo(btn.dataset.skillInfo));
-  $$('[data-owned-chrome]', body).forEach(btn => btn.onclick = () => showCreationItemInfo(wizChar().cyberware[Number(btn.dataset.ownedChrome)]));
-  body.addEventListener('input', saveWizardDraft);
-  body.addEventListener('change', saveWizardDraft);
+  if(step===6){
+    $$('[data-validation-step]',body).forEach(button=>button.onclick=()=>wizGoTo(Number(button.dataset.validationStep)));
+    $$('[data-stat-info]',body).forEach(button=>button.onclick=()=>showStatInfo(button.dataset.statInfo));$$('[data-skill-info]',body).forEach(button=>button.onclick=()=>showSkillInfo(button.dataset.skillInfo));
+    $$('[data-owned-chrome]',body).forEach(button=>button.onclick=()=>showCreationItemInfo(wizChar().cyberware[Number(button.dataset.ownedChrome)]));$$('[data-summary-item]',body).forEach(button=>button.onclick=()=>showCreationItemInfo(wizChar().inventory[Number(button.dataset.summaryItem)]));
+    const player=$('#summary-player');if(player)player.oninput=()=>wiz.player=player.value;const visibility=$('#summary-public');if(visibility)visibility.onchange=()=>wiz.public=visibility.value==='public';
+    const zero=$('#summary-zero-skills');if(zero)zero.onchange=()=>$('.full-skill-list',body).classList.toggle('hide-zero-skills',!zero.checked);
+    $('#summary-print').onclick=()=>window.print();$('#summary-json').onclick=()=>{const blob=new Blob([JSON.stringify(wizChar(),null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`${(wiz.handle||'character').replace(/[^a-z0-9_-]+/gi,'-')}.json`;a.click();URL.revokeObjectURL(a.href);};
+  }
+  $$('[data-skill-info]',body).forEach(button=>button.onclick=()=>showSkillInfo(button.dataset.skillInfo));
+  body.addEventListener('input',saveWizardDraft);body.addEventListener('change',saveWizardDraft);
 }
 
 /* ---------- навигация ---------- */
 
 function wizNext() {
   const wiz = state.wizard;
-  if (wiz.step < 7) { wiz.step++; renderWizard(); }
+  if (wiz.step < 6) { wiz.step++; renderWizard(); }
   window.scrollTo(0, 0);
 }
 
@@ -2311,17 +2319,15 @@ function wizPrev() {
 }
 
 function wizGoTo(step) {
-  state.wizard.step = Math.max(1, Math.min(7, step));
+  state.wizard.step = Math.max(1, Math.min(6, step));
   renderWizard();
   window.scrollTo(0, 0);
 }
 
 function wizReset() {
-  if (!window.confirm('Полностью очистить сохранённый draft и начать заново? Это действие нельзя отменить.')) return;
-  clearWizardDraft();
-  initWizard();
-  renderWizard();
-  toast('Draft очищен');
+  if (!window.confirm(T('Permanently clear this saved draft and start over?','Полностью очистить сохранённый draft и начать заново?'))) return;
+  clearWizardDraft(); initWizard(); renderWizard();
+  toast(T('Draft cleared.','Draft очищен.'));
 }
 
 function wizRefreshLive() {
@@ -2332,21 +2338,18 @@ function wizRefreshLive() {
 
 async function wizCreate() {
   const wiz = state.wizard;
+  if (wiz.creating) return;
   const errors = wizValidationErrors();
-  if (errors.length) {
-    toast(errors[0], true);
-    return;
-  }
-
-  const char = wizChar();
+  if (errors.length) { toast(errors[0], true); return; }
+  wiz.creating = true;
+  const button = $('#wiz-create'); if (button) { button.disabled = true; button.textContent = T('Creating…','Создание…'); }
   try {
-    await api('/api/characters', { method: 'POST', body: { data: char } });
-    wiz.created = true;
-    clearWizardDraft();
-    state.wizard = null;
-    toast('🎉 Персонаж успешно создан!');
+    await api('/api/characters', { method: 'POST', body: { data: wizChar() } });
+    wiz.created = true; clearWizardDraft(); state.wizard = null;
+    toast(T('🎉 Character created!','🎉 Персонаж создан!'));
     location.hash = '#/characters';
   } catch (e) {
+    wiz.creating = false; if (button) button.disabled = false;
     toast(e.message, true);
   }
 }
@@ -2381,8 +2384,9 @@ async function viewSheet(id) {
     <div><h1>📄 ${esc(ch.handle || 'Безымянный')}${ch.first_name || ch.last_name ? ` · ${esc([ch.first_name, ch.last_name].filter(Boolean).join(' '))}` : ''}</h1>
       <div class="sub">Лист персонажа · ${esc(ch.role || '—')} ${ch.role_rank || 4} · владелец: ${esc(c.owner_name || '—')}${ch.player ? ' · игрок: ' + esc(ch.player) : ''}</div></div>
     <div class="row">
-      <button id="sheet-back">← К моим персонажам</button>
-      ${mine ? `<button class="btn-primary" id="sheet-edit">✏️ Редактировать</button>
+      <button id="sheet-back">← ${T('Characters','Персонажи')}</button>
+      <button class="btn-sm" id="sheet-print">🖨️ Print</button><button class="btn-sm" id="sheet-json">⬇ JSON</button>
+      ${mine ? `<button class="btn-primary" id="sheet-edit">✏️ ${T('Edit','Редактировать')}</button>
                 <button class="btn-danger" id="sheet-del">🗑️ Удалить</button>` : ''}
     </div>
   </div>
@@ -2421,14 +2425,14 @@ async function viewSheet(id) {
       </div>
       <div class="panel mb">
         <h2>🦾 Хром по категориям (HL ${cw.reduce((a, x) => a + (num(x.hl) || 0), 0)})</h2>
-        ${chromeGroupedHtml(cw, true)}
+        ${cyberwareTreeHtml(cw)}
       </div>
       <div class="panel mb">
         <h2>🎒 Инвентарь (${inv.length})</h2>
         ${inv.length ? groupedItemsHtml(inv.map((item, index) => ({ ...item, _sheetIndex: index })), i => `
           <div class="inv-row"><span class="iname">${esc(i.display_name || i.name)} ×${i.qty || 1}</span>
-            ${i.damage ? `<span class="weap-dmg">${esc(i.damage)}</span>` : ''}
-            ${i.sp != null ? `<span class="chip">SP ${i.sp}</span>` : ''}
+            ${itemMechanicChips(i)}
+            ${i.sp != null && !(i.mechanics || {}).sp ? `<span class="chip">SP ${i.sp}</span>` : ''}
             <span class="muted small">${money((i.price || 0) * (i.qty || 1))}</span><button class="info-btn" data-owned-item="${i._sheetIndex}">i</button>
           </div>`, 'Снаряжение') : '<div class="muted small">Пусто. Совсем.</div>'}
         ${armorSlots.length ? `<h3 class="mt">🛡️ Надетая броня</h3>${armorSlots.map(([piece, ru]) => `
@@ -2441,7 +2445,7 @@ async function viewSheet(id) {
     <div>
       <div class="panel mb">
         <h2>🧬 Lifepath</h2>
-        ${lpRows.length ? `<div class="kv">${lpRows.map(([k, v]) => `<b>${esc(k)}</b><span>${esc(v)}</span>`).join('')}</div>`
+        ${lpRows.length ? `<div class="kv">${lpRows.map(([k, v]) => `<b>${esc(k)}</b><span>${esc(displayKnownValue(v))}</span>`).join('')}</div>`
           : (ch.background ? `<div class="desc" style="white-space:pre-wrap">${esc(ch.background)}</div>` : '<div class="muted small">Lifepath не заполнен.</div>')}
       </div>
       ${ch.appearance ? `<div class="panel mb"><h2>🕶️ Внешность</h2><div class="desc">${esc(ch.appearance)}</div></div>` : ''}
@@ -2455,6 +2459,8 @@ async function viewSheet(id) {
   $$('[data-skill-info]', view).forEach(btn => btn.onclick = () => showSkillInfo(btn.dataset.skillInfo));
   $$('[data-owned-chrome]', view).forEach(btn => btn.onclick = () => showCreationItemInfo(cw[Number(btn.dataset.ownedChrome)]));
   $$('[data-owned-item]', view).forEach(btn => btn.onclick = () => showCreationItemInfo(inv[Number(btn.dataset.ownedItem)]));
+  $('#sheet-print').onclick = () => window.print();
+  $('#sheet-json').onclick = () => { const blob = new Blob([JSON.stringify(ch, null, 2)], {type:'application/json'}), a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${(ch.handle || 'character').replace(/[^a-z0-9_-]+/gi,'-')}.json`; a.click(); URL.revokeObjectURL(a.href); };
   $('#sheet-back').onclick = () => go('/characters');
   const editBtn = $('#sheet-edit');
   if (editBtn) editBtn.onclick = () => { location.hash = '#/char/' + c.id + '?edit'; };
@@ -2473,15 +2479,15 @@ async function viewSheet(id) {
 
 async function viewCharacters(view) {
   if (!state.me) {
-    view.innerHTML = `<div class="empty">Раздел только для вошедших. <a href="#/login">Войти</a> · <a href="#/register">Регистрация</a></div>`;
+    view.innerHTML = `<div class="empty">Раздел только для вошедших. <a href="#/login">${T('Sign in','Войти')}</a> · <a href="#/register">Регистрация</a></div>`;
     return;
   }
   view.innerHTML = spinner();
   const data = await api('/api/characters');
   view.insertAdjacentHTML('afterbegin', `
     <div class="page-head">
-      <div><h1>🧬 Мои персонажи</h1><div class="sub">Личное хранилище: ${data.characters.length}/50</div></div>
-      <button class="btn-primary" onclick="location.hash='#/char/new'">+ Новый эджраннер</button>
+      <div><h1>🧬 ${T('My Characters','Мои персонажи')}</h1><div class="sub">${T('Personal storage','Личное хранилище')}: ${data.characters.length}/50</div></div>
+      <button class="btn-primary" onclick="location.hash='#/char/new'">+ ${T('New Edgerunner','Новый эджраннер')}</button>
     </div>`);
   const listEl = document.createElement('div');
   listEl.className = 'grid cols-3';
@@ -2532,7 +2538,7 @@ const EDITOR_TABS = [
 ];
 
 async function viewEditor(id) {
-  if (!state.me) { $('#view').innerHTML = '<div class="empty">Нужен вход. <a href="#/login">Войти</a></div>'; return; }
+  if (!state.me) { $('#view').innerHTML = `<div class="empty">Нужен вход. <a href="#/login">${T('Sign in','Войти')}</a></div>`; return; }
   const view = $('#view');
   let payload;
   if (id === 'new') {
@@ -2958,7 +2964,7 @@ async function pickItem(cats, title, onPick, predicate) {
 
 async function viewRoster(view) {
   view.innerHTML = `
-  <div class="page-head"><div><h1>📋 Ростер партии</h1><div class="sub">Все публичные персонажи всех игроков.</div></div></div>
+  <div class="page-head"><div><h1>📋 ${T('Campaign Roster','Ростер партии')}</h1><div class="sub">${T('All Public characters.','Все публичные персонажи.')}</div></div></div>
   <div class="searchbar"><input id="ro-q" placeholder="Фильтр: псевдоним, роль, игрок…"><button id="ro-go">Фильтр</button></div>
   <div id="ro-list">${spinner()}</div>`;
   let q = '';
@@ -3021,7 +3027,7 @@ async function showRosterModal(id) {
       <div class="statgrid mb">${state.meta.stats.map(s => `<div class="stat"><div class="v">${ch.stats[s] != null ? ch.stats[s] : '—'}</div><div class="k">${s}</div></div>`).join('')}</div>
       <div class="derived mb">${[['HP', d.hp_max], ['HUM', d.humanity_max != null ? d.humanity_cur + '/' + d.humanity_max : null], ['EMP', d.emp_cur], ['SP тело', d.sp_body], ['SP голова', d.sp_head]]
         .filter(([, v]) => v != null).map(([k, v]) => `<span class="dstat"><span class="v">${v}</span><span class="k">${k}</span></span>`).join('')}</div>` : ''}
-    ${extra.length ? `<div class="kv mb">${extra.map(([k, v]) => `<b>${esc(k)}</b><span>${esc(v)}</span>`).join('')}</div>` : ''}
+    ${extra.length ? `<div class="kv mb">${extra.map(([k, v]) => `<b>${esc(k)}</b><span>${esc(displayKnownValue(v))}</span>`).join('')}</div>` : ''}
     ${ch.appearance ? `<p class="small"><b>Внешность:</b> ${esc(ch.appearance)}</p>` : ''}
     ${ch.background ? `<p class="small"><b>Биография:</b> ${esc(ch.background)}</p>` : ''}
     ${skills.length ? `<h3>Навыки</h3><div class="chips mb">${skills.map(([n, v]) => `<span class="chip">${esc(n)} <b>${v}</b></span>`).join('')}</div>` : ''}
@@ -3035,7 +3041,7 @@ async function showRosterModal(id) {
 
 async function viewNews(view) {
   view.innerHTML = `
-  <div class="page-head"><div><h1>📡 Сводки с улиц</h1><div class="sub">Краткие пересказы событий партий от разных источников.</div></div></div>
+  <div class="page-head"><div><h1>📡 ${T('Street Reports','Сводки с улиц')}</h1><div class="sub">${T('Campaign reports from different sources.','События партий от разных источников.')}</div></div></div>
   <div id="news-compose"></div>
   <div id="news-list">${spinner()}</div>`;
   const composeBox = $('#news-compose');
@@ -3057,7 +3063,7 @@ async function viewNews(view) {
       } catch (e) { toast(e.message, true); }
     };
   } else {
-    composeBox.innerHTML = '<div class="empty mb">Войди, чтобы публиковать сводки. <a href="#/login">Войти</a></div>';
+    composeBox.innerHTML = `<div class="empty mb">Войди, чтобы публиковать сводки. <a href="#/login">${T('Sign in','Войти')}</a></div>`;
   }
   const data = await api('/api/news');
   $('#news-list').innerHTML = data.news.length ? data.news.map(n => `
@@ -3085,7 +3091,7 @@ async function viewNews(view) {
 async function viewJobs(view) {
   view.innerHTML = `
   <div class="page-head">
-    <div><h1>📞 Доска заказов</h1><div class="sub">ГМ-ы анонсируют партии, эджраннеры записываются.</div></div>
+    <div><h1>📞 ${T('Job Board','Доска заказов')}</h1><div class="sub">${T('GMs post sessions; Edgerunners sign up.','ГМ публикует партии; Эджраннеры записываются.')}</div></div>
     ${state.me && state.me.is_gm ? '<button class="btn-primary" id="jb-new">＋ Разместить заказ</button>' : ''}
   </div>
   ${state.me && !state.me.is_gm ? '<div class="muted small mb">Размещать заказы могут пользователи с ролью ГМ (включается в профиле).</div>' : ''}
@@ -3198,7 +3204,7 @@ async function showJobModal(id) {
       };
     }
   } else if (!state.me) {
-    actions.innerHTML = '<span class="muted small">Войдите, чтобы записаться. <a href="#/login">Войти</a></span>';
+    actions.innerHTML = `<span class="muted small">Войдите, чтобы записаться. <a href="#/login">${T('Sign in','Войти')}</a></span>`;
   }
 }
 
@@ -3208,25 +3214,25 @@ function viewLogin(view) {
   view.innerHTML = `
   <div class="grid cols-2" style="max-width:900px;margin:0 auto">
     <div class="panel">
-      <h2>Вход</h2>
-      <label class="f"><span>Логин</span><input id="lg-u" autocomplete="username"></label>
-      <label class="f"><span>Пароль</span><input id="lg-p" type="password" autocomplete="current-password"></label>
-      <button class="btn-primary" id="lg-go">Войти</button>
+      <h2>${T('Sign in','Вход')}</h2>
+      <label class="f"><span>${T('Username','Логин')}</span><input id="lg-u" autocomplete="username"></label>
+      <label class="f"><span>${T('Password','Пароль')}</span><input id="lg-p" type="password" autocomplete="current-password"></label>
+      <button class="btn-primary" id="lg-go">${T('Sign in','Войти')}</button>
     </div>
     <div class="panel accent">
-      <h2>Регистрация</h2>
-      <label class="f"><span>Логин (латиница)</span><input id="rg-u" autocomplete="username"></label>
-      <label class="f"><span>Отображаемое имя</span><input id="rg-d" placeholder="как тебя знают в городе"></label>
-      <label class="f"><span>Пароль</span><input id="rg-p" type="password" autocomplete="new-password"></label>
-      <label class="checkbox mb"><input type="checkbox" id="rg-gm"> Я ГМ (могу размещать заказы и вести выплаты)</label>
-      <button class="btn-primary" id="rg-go">Создать аккаунт</button>
+      <h2>${T('Register','Регистрация')}</h2>
+      <label class="f"><span>${T('Username (Latin letters)','Логин (латиница)')}</span><input id="rg-u" autocomplete="username"></label>
+      <label class="f"><span>${T('Display name','Отображаемое имя')}</span><input id="rg-d" placeholder="${T('How Night City knows you','Как тебя знают в городе')}"></label>
+      <label class="f"><span>${T('Password','Пароль')}</span><input id="rg-p" type="password" autocomplete="new-password"></label>
+      <label class="checkbox mb"><input type="checkbox" id="rg-gm"> ${T('I am a GM (can post Jobs and issue payouts)','Я ГМ (могу размещать заказы и вести выплаты)')}</label>
+      <button class="btn-primary" id="rg-go">${T('Create account','Создать аккаунт')}</button>
     </div>
   </div>`;
   const doLogin = async () => {
     try {
       state.me = await api('/api/login', { method: 'POST', body: { username: $('#lg-u').value, password: $('#lg-p').value } });
       renderUserbox();
-      toast('С возвращением, ' + state.me.display_name);
+      toast(T('Welcome back, ','С возвращением, ') + state.me.display_name);
       go('/characters');
     } catch (e) { toast(e.message, true); }
   };
@@ -3238,7 +3244,7 @@ function viewLogin(view) {
         username: $('#rg-u').value, display_name: $('#rg-d').value,
         password: $('#rg-p').value, is_gm: $('#rg-gm').checked } });
       renderUserbox();
-      toast('Добро пожаловать в Ночной город');
+      toast(T('Welcome to Night City.','Добро пожаловать в Ночной город.'));
       go('/characters');
     } catch (e) { toast(e.message, true); }
   };
@@ -3247,11 +3253,11 @@ function viewLogin(view) {
 function viewRegister(view) { viewLogin(view); }
 
 async function viewProfile(view) {
-  if (!state.me) { view.innerHTML = '<div class="empty">Нужен вход. <a href="#/login">Войти</a></div>'; return; }
+  if (!state.me) { view.innerHTML = `<div class="empty">Нужен вход. <a href="#/login">${T('Sign in','Войти')}</a></div>`; return; }
   view.innerHTML = `
   <div class="panel" style="max-width:560px;margin:0 auto">
     <h2>Профиль</h2>
-    <label class="f"><span>Отображаемое имя</span><input id="pf-d" value="${esc(state.me.display_name)}"></label>
+    <label class="f"><span>${T('Display name','Отображаемое имя')}</span><input id="pf-d" value="${esc(state.me.display_name)}"></label>
     <label class="checkbox mb"><input type="checkbox" id="pf-gm" ${state.me.is_gm ? 'checked' : ''}> Роль ГМ: размещение заказов на доске, выплаты персонажам</label>
     <button class="btn-primary" id="pf-save">Сохранить</button>
   </div>`;
@@ -3269,6 +3275,12 @@ async function viewProfile(view) {
 
 (async function init() {
   window.addEventListener('hashchange', route);
+  window.addEventListener('beforeunload', saveWizardDraft);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveWizardDraft(); });
+  const languageToggle = $('#language-toggle');
+  if (languageToggle) languageToggle.onclick = () => APP_I18N.toggle();
+  window.addEventListener('app-language-change', () => { APP_I18N.apply(); route(); });
+  APP_I18N.apply();
   try {
     const [me, meta] = await Promise.all([api('/api/me'), api('/api/meta')]);
     state.me = me.user;
