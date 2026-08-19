@@ -1002,8 +1002,10 @@ function roleAbilityDisplayName(role) {
 }
 function roleAbilityDisplayDescription(role) {
   const ability = ROLE_ABILITIES[role] || {};
-  const rules = (typeof ROLE_RULES_V3 !== 'undefined' && ROLE_RULES_V3[role]) || {};
-  return APP_I18N.current() === 'en' ? ((rules.en && `${rules.en.identity} ${rules.en.rank4}`) || '') : (ability.desc || '');
+  const rules = (typeof ROLE_COREBOOK_V3 !== 'undefined' && ROLE_COREBOOK_V3[role]) || {};
+  return APP_I18N.current() === 'en'
+    ? ((rules.en && `${rules.en.play} ${rules.en.rank4}`) || '')
+    : (ability.desc || '');
 }
 
 /* ---------- Lifepath: 13 пунктов (CP:R стр. 43–48) ---------- */

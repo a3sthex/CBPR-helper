@@ -87,6 +87,9 @@ for (const [,, options] of [...CORE_LIFEPATH_FIELDS, ...CEMK_LIFEPATH_FIELDS]) {
   for (const option of options) if (hasCyrillic(displayKnownValue(option))) throw new Error('untranslated legacy Lifepath option: ' + option);
 }}
 for (const role of Object.keys(state.meta.roles)) {{
+  const abilityDescription = roleAbilityDisplayDescription(role);
+  if (!abilityDescription.trim()) throw new Error('missing English Role Ability description: ' + role);
+  if (hasCyrillic(abilityDescription)) throw new Error('untranslated English Role Ability description: ' + role);
   state.wizard.role = role;
   state.wizard.roleLifepath = {{}};
   for (const [key,, options] of lpRoleField(role)) state.wizard.roleLifepath[key] = typeof options[0] === 'object' ? options[0].value : options[0];
