@@ -157,7 +157,7 @@ async function route() {
   try {
     if (seg0 === 'char') {
       const charId = seg1 ? seg1.split('?')[0] : '';
-      if (!charId || charId === '') { await viewWizard(); return; }
+      if (!charId || charId === '' || charId === 'new') { await viewWizard(); return; }
       await viewEditor(charId); return;
     }
     const fn = routes[seg0] || viewHome;
