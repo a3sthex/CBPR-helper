@@ -722,7 +722,7 @@ class Handler(BaseHTTPRequestHandler):
         q = (q1(qs.get('q')) or '').strip().lower()
         cat_id = q1(qs.get('cat'))
         try:
-            limit = min(100, max(1, int(q1(qs.get('limit'), '30'))))
+            limit = min(500, max(1, int(q1(qs.get('limit'), '30'))))
             offset = max(0, int(q1(qs.get('offset'), '0')))
         except ValueError:
             limit, offset = 30, 0
