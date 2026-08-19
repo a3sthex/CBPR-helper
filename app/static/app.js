@@ -72,6 +72,7 @@ const state = {
   cart: [],           // корзина рынка: {id, name, qty, price, mode}
   editor: null,       // текущий редактируемый персонаж
 };
+let guidesTab = null; // активная вкладка гайдов
 
 /* ============================== правила (зеркало сервера) ============================== */
 
@@ -91,14 +92,22 @@ function derive(char) {
     out.death_save = body;
   }
   const hl = (char.cyberware || []).reduce((a, c) => a + (num(c.hl) || 0), 0);
+  // срез максимума человечности: фэшнвер 0, боргвер 4, прочий хром 2
+  let humCut = 0;
+  for (const c of (char.cyberware || [])) {
+    const t = String(c.type || '').toLowerCase();
+    if (t.includes('borgware')) humCut += 4;
+    else if (!t.includes('fashionware')) humCut += 2;
+  }
   const emp = num(st.EMP);
   if (emp != null) {
-    out.humanity_max = emp * 10 - hl;
+    out.humanity_max = emp * 10 - hl - humCut;
     let cur = num(char.humanity_cur);
     if (cur == null) cur = out.humanity_max;
     out.humanity_cur = Math.max(0, Math.min(cur, Math.max(0, out.humanity_max)));
     out.emp_cur = Math.floor(out.humanity_cur / 10);
     out.hl_total = hl;
+    out.hum_cut = humCut;
   }
   const armor = char.armor || {};
   let penalty = 0;
@@ -124,7 +133,7 @@ function blankChar() {
     handle: '', role: 'Solo', role_rank: 4, player: '',
     appearance: '', background: '', notes: '', languages: '',
     stats: { INT: 6, REF: 6, DEX: 6, TECH: 6, COOL: 6, WILL: 6, LUCK: 6, MOVE: 6, BODY: 6, EMP: 6 },
-    humanity_cur: null, hp_cur: null, cash: 1000,
+    humanity_cur: null, hp_cur: null, cash: 2550,
     skills: {}, inventory: [], cyberware: [], armor: { head: null, body_outer: null, body_inner: null },
     public: true,
   };
@@ -133,7 +142,7 @@ function blankChar() {
 /* ============================== роутер ============================== */
 
 const routes = {
-  '': viewHome, codex: viewCodex, market: viewMarket, calc: viewCalc,
+  '': viewHome, codex: viewCodex, guides: viewGuides, market: viewMarket, calc: viewCalc,
   characters: viewCharacters, roster: viewRoster, news: viewNews, jobs: viewJobs,
   login: viewLogin, register: viewRegister, profile: viewProfile,
 };
@@ -237,9 +246,10 @@ async function viewHome(view) {
   </div>
   <div class="feature-cards mt">
     <a class="card" href="#/characters"><div class="ico">🧬</div><h3>Создание персонажа</h3><div class="muted small">Полный лист: статы, навыки, хром, броня, снаряжение.</div></a>
+    <a class="card" href="#/guides"><div class="ico">📖</div><h3>Мини-гайды</h3><div class="muted small">Создание персонажа, боёвка FNFF и нетраннинг — кратко и по делу.</div></a>
     <a class="card" href="#/market"><div class="ico">🕶️</div><h3>Чёрный рынок</h3><div class="muted small">Ночная распродажа каждый день, покупки и продажа хлама.</div></a>
     <a class="card" href="#/codex"><div class="ico">📚</div><h3>Справочник</h3><div class="muted small">1092 предмета из книг с источниками и страницами.</div></a>
-    <a class="card" href="#/calc"><div class="ico">🎲</div><h3>Калькулятор</h3><div class="muted small">Урон, DV-таблицы, броски костей, наслоение брони.</div></a>
+    <a class="card" href="#/calc"><div class="ico">🎲</div><h3>Калькулятор</h3><div class="muted small">Урон, крит. травмы, автоогонь, DV-таблицы, броски костей.</div></a>
     <a class="card" href="#/roster"><div class="ico">📋</div><h3>Ростер партии</h3><div class="muted small">Все публичные персонажи всех игроков вместе.</div></a>
     <a class="card" href="#/jobs"><div class="ico">📞</div><h3>Доска заказов</h3><div class="muted small">Анонсы партий от ГМ-ов и запись в группу.</div></a>
   </div>`;
@@ -281,6 +291,67 @@ async function viewCodex(view) {
   $('#codex-q').onkeydown = (e) => { if (e.key === 'Enter') doSearch(); };
   await loadCodexItems();
 }
+
+/* ============================== гайды ============================== */
+
+function guideInline(s) {
+  return esc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+}
+
+function guideBlock(b) {
+  if (b.t === 'p') return `<p>${guideInline(b.x)}</p>`;
+  if (b.t === 'note') return `<div class="guide-note">${guideInline(b.x)}</div>`;
+  if (b.t === 'ul') return `<ul>${b.items.map(x => `<li>${guideInline(x)}</li>`).join('')}</ul>`;
+  if (b.t === 'ol') return `<ol>${b.items.map(x => `<li>${guideInline(x)}</li>`).join('')}</ol>`;
+  if (b.t === 'table') {
+    return `<div class="table-scroll"><table class="rtable guide-table">
+      ${b.head ? `<tr>${b.head.map(h => `<th>${esc(h)}</th>`).join('')}</tr>` : ''}
+      ${b.rows.map(r => `<tr>${r.map(c => `<td>${guideInline(String(c))}</td>`).join('')}</tr>`).join('')}
+    </table></div>`;
+  }
+  if (b.t === 'hp') {
+    // Таблица HP: BODY 2–15 × WILL 2–10, HP = 10 + 5×⌈(BODY+WILL)/2⌉
+    const bodies = [], wills = [];
+    for (let i = 2; i <= 15; i++) bodies.push(i);
+    for (let i = 2; i <= 10; i++) wills.push(i);
+    return `<div class="table-scroll"><table class="rtable guide-table hp-table">
+      <tr><th>BODY\\WILL</th>${bodies.map(v => `<th>${v}</th>`).join('')}</tr>
+      ${wills.map(w => `<tr><th>${w}</th>${bodies.map(bd => `<td>${10 + 5 * Math.ceil((bd + w) / 2)}</td>`).join('')}</tr>`).join('')}
+    </table></div>`;
+  }
+  if (b.t === 'img') {
+    return `<figure class="guide-img"><img src="${esc(b.src)}" alt="${esc(b.alt || '')}" loading="lazy">${b.cap ? `<figcaption>${guideInline(b.cap)}</figcaption>` : ''}</figure>`;
+  }
+  return '';
+}
+
+function guideSectionHtml(s, idx) {
+  const blocks = (s.blocks || []).map(guideBlock).join('');
+  return `<details class="guide-section"${idx === 0 ? ' open' : ''}>
+    <summary>${esc(s.h)}</summary>
+    <div class="guide-body">${blocks}</div>
+  </details>`;
+}
+
+function viewGuides(view) {
+  const gs = typeof GUIDES !== 'undefined' ? GUIDES : [];
+  if (!gs.length) { view.innerHTML = '<div class="empty">Гайды не загрузились</div>'; return; }
+  const cur = guidesTab || gs[0].id;
+  view.innerHTML = `
+  <div class="page-head">
+    <div><h1>📖 Мини-гайды</h1>
+      <div class="sub">Краткие правила из «Spes Desperata»: создание персонажа, боёвка и нетраннинг.</div></div>
+  </div>
+  <div class="editor-tabs" style="margin-bottom:14px">
+    ${gs.map(g => `<button data-g="${g.id}" class="${g.id === cur ? 'active' : ''}">${g.emoji} ${esc(g.title)}</button>`).join('')}
+  </div>
+  <div class="panel accent mb"><b>${gs.find(g => g.id === cur)?.emoji} ${esc(gs.find(g => g.id === cur)?.title || '')}.</b> ${esc(gs.find(g => g.id === cur)?.sub || '')}</div>
+  <div id="guide-box">
+    ${gs.filter(g => g.id === cur).map(g => g.sections.map((s, i) => guideSectionHtml(s, i)).join('')).join('')}
+  </div>`;
+  $$('[data-g]', view).forEach(b => b.onclick = () => { guidesTab = b.dataset.g; viewGuides(view); });
+}
+
 
 async function loadCodexItems() {
   const box = $('#codex-results');
@@ -588,7 +659,7 @@ function rollDice(expr) {
 async function viewCalc(view) {
   const [range, auto] = [state.meta.range_table, state.meta.autofire_table];
   view.innerHTML = `
-  <div class="page-head"><div><h1>🎲 Калькулятор</h1><div class="sub">Урон против брони, броски костей и таблицы DV.</div></div></div>
+  <div class="page-head"><div><h1>🎲 Калькулятор</h1><div class="sub">Урон против брони, броски костей, крит. травмы, автоогонь и таблицы DV.</div></div></div>
   <div class="grid cols-2">
     <div class="panel">
       <h2>💥 Расчёт урона</h2>
@@ -625,6 +696,51 @@ async function viewCalc(view) {
       <div class="calc-out" id="ar-out"></div>
     </div>
   </div>
+  <div class="grid cols-2 mt">
+    <div class="panel">
+      <h2>☠️ Критические травмы</h2>
+      <p class="small muted">2+ шестёрки на кубах урона атаки = крит. травма (+5 урона сразу по HP, броня не снижает). Брось 2d6 по локации; повторяй, пока не выпадет травма, которой у цели ещё нет.</p>
+      <div class="row mb">
+        <button class="btn-primary" id="ci-body">Бросить 2d6 — тело</button>
+        <button id="ci-head">Бросить 2d6 — голова</button>
+      </div>
+      <div id="ci-out" class="calc-out"></div>
+      <details class="guide-section small-details"><summary>Таблицы травм</summary>
+        ${critTableHtml(state.meta.crit_body, 'Тело')}
+        ${critTableHtml(state.meta.crit_head, 'Голова')}
+      </details>
+    </div>
+    <div class="panel">
+      <h2>🔥 Автоогонь</h2>
+      <p class="small muted">Действие + 10 пуль. Навык Autofire, таблица автоогня. Урон = 2d6 × (бросок − DV), максимум множителя — у оружия.</p>
+      <div class="grid cols-2">
+        <label class="f"><span>Тип оружия</span><select id="af-type">
+          <option value="3">SMG / Machine Pistol (×3)</option>
+          <option value="4">Assault Rifle / Machine Gun (×4)</option>
+        </select></label>
+        <label class="f"><span>DV (по дистанции)</span><input id="af-dv" type="number" value="20" min="1"></label>
+      </div>
+      <label class="f"><span>REF + Autofire</span><input id="af-mod" type="number" value="14"></label>
+      <button class="btn-primary mb" id="af-roll">Бросить атаку</button>
+      <div id="af-out" class="calc-out"></div>
+    </div>
+  </div>
+  <div class="grid cols-2 mt">
+    <div class="panel">
+      <h2>💀 Спасбросок от смерти</h2>
+      <p class="small muted">В начале хода при смертельном ранении (HP &lt; 1): 1d10 ≤ BODY − штраф. 10 — всегда провал. Штраф растёт на +1 за каждый бросок.</p>
+      <div class="grid cols-2">
+        <label class="f"><span>BODY</span><input id="ds-body" type="number" value="6" min="1" max="15"></label>
+        <label class="f"><span>Штраф (Death Save Penalty)</span><input id="ds-pen" type="number" value="0" min="0" max="20"></label>
+      </div>
+      <button class="btn-primary mb" id="ds-roll">Бросить 1d10</button>
+      <div id="ds-out" class="calc-out"></div>
+    </div>
+    <div class="panel">
+      <h2>🩹 Состояния ранений</h2>
+      ${woundStatesHtml()}
+    </div>
+  </div>
   <div class="panel mt">
     <h2>📏 Таблица DV (дальность)</h2>
     <div style="overflow-x:auto">${tableHtml(range)}</div>
@@ -645,17 +761,19 @@ async function viewCalc(view) {
     const hpMax = num($('#dc-hp').value) || 0;
     let hpCur = num($('#dc-hpcur').value);
     if (hpCur == null) hpCur = hpMax;
+    const crit = r.die === 6 && r.rolls.filter(x => x === 6).length >= 2;
     let lines = [
       `<span class="dice-face">🎲 ${r.rolls.join(' + ')}${r.mod ? (r.mod > 0 ? ' + ' : ' − ') + Math.abs(r.mod) : ''} = ${r.total}</span>`,
     ];
+    if (crit) lines.push('<div class="crit-hit">🔥 Две шестёрки! Критическая травма (+5 HP, броня не снижает) — брось 2d6 в панели «Критические травмы».</div>');
     if (net > 0) {
       lines.push(`<div>Урон: <b style="color:var(--magenta)">${net}</b> (SP ${sp}${spEff !== sp ? ' → ' + spEff : ''} вычтен). Броня пробита — SP абляируется на 1.</div>`);
       const newHp = Math.max(0, hpCur - net);
       const sw = Math.ceil(hpMax / 2);
       let stateTxt;
-      if (newHp <= 0) stateTxt = '<b style="color:var(--red)">0 HP! Спасбросок от смерти (1d10 ≤ BODY), −1 за каждый раунд при смерти.</b>';
-      else if (newHp <= sw) stateTxt = `<b style="color:var(--orange)">Серьёзная рана (≤ ${sw} HP): −2 ко всем действиям.</b>`;
-      else stateTxt = '<b style="color:var(--green)">Цель держится.</b>';
+      if (newHp < 1) stateTxt = '<b style="color:var(--red)">Смертельное ранение (HP &lt; 1): −4 ко всем действиям, −6 MOVE. В начале хода — спасбросок от смерти. Стабилизация: Paramedic DV15 → 1 HP, без сознания.</b>';
+      else if (newHp <= sw) stateTxt = `<b style="color:var(--orange)">Серьёзное ранение (HP ≤ ½ = ${sw}): −2 ко всем действиям. Стабилизация: DV13.</b>`;
+      else stateTxt = '<b style="color:var(--green)">Лёгкое ранение: эффектов нет. Цель держится.</b>';
       lines.push(`<div>HP цели: ${hpCur} → <b>${newHp}</b>. ${stateTxt}</div>`);
     } else {
       lines.push(`<div>Броня держит (урон ${r.total} ≤ SP ${spEff}). HP не тратится, SP не абляируется.</div>`);
@@ -680,7 +798,78 @@ async function viewCalc(view) {
     $('#ar-out').innerHTML = `SP: <b>${hi + Math.ceil(lo / 2)}</b> <span class="muted small">(${hi} + ⌈${lo}/2⌉)</span>`;
   };
   ['ar-o', 'ar-i'].forEach(id => $('#' + id).oninput = doArmor);
+
+  // критическая травма
+  const doCrit = (table, label) => {
+    const r = rollDice('2d6');
+    const row = (table || []).find(x => x[0] === r.total) || null;
+    const out = $('#ci-out');
+    if (!row) { out.innerHTML = 'Бросок вне таблицы (2d6: 2–12)'; return; }
+    out.innerHTML = `
+      <span class="dice-face">🎲 ${r.rolls.join(' + ')} = <b>${r.total}</b></span>
+      <div><b style="color:var(--magenta)">${esc(row[1])}</b> <span class="tag">${esc(label)}</span></div>
+      <div>${esc(row[2])}</div>
+      <div class="small muted">Quick Fix: ${esc(row[3])} · Treatment: ${esc(row[4])} · +5 HP сразу.</div>`;
+  };
+  $('#ci-body').onclick = () => doCrit(state.meta.crit_body, 'тело');
+  $('#ci-head').onclick = () => doCrit(state.meta.crit_head, 'голова');
+
+  // автоогонь
+  $('#af-roll').onclick = () => {
+    const maxMul = num($('#af-type').value) || 3;
+    const dv = num($('#af-dv').value) || 0;
+    const mod = num($('#af-mod').value) || 0;
+    const atk = rollDice('1d10');
+    const total = atk.total + mod;
+    const margin = total - dv;
+    const out = $('#af-out');
+    let lines = [`Атака: 🎲 ${atk.rolls[0]} + ${mod} = <b>${total}</b> против DV ${dv}.`];
+    if (margin <= 0) {
+      lines.push(`<div style="color:var(--red)">Промах (разница ${margin} ≤ 0). Пули ушли в стену.</div>`);
+    } else {
+      const dmg = rollDice('2d6');
+      const mul = Math.min(margin, maxMul);
+      const crit = dmg.rolls[0] === 6 && dmg.rolls[1] === 6;
+      lines.push(`Попадание! Множитель: min(${margin}, ${maxMul}) = <b>${mul}</b>.`);
+      lines.push(`<div>Урон автоогня: 2d6 (${dmg.rolls.join(' + ')}) × ${mul} = <b style="color:var(--magenta)">${dmg.total * mul}</b> (до вычета SP).</div>`);
+      if (crit) lines.push('<div class="crit-hit">🔥 Обе шестёрки на кубах урона — плюс крит. травма!</div>');
+    }
+    out.innerHTML = lines.join('');
+  };
+
+  // спасбросок смерти
+  $('#ds-roll').onclick = () => {
+    const body = num($('#ds-body').value) || 0;
+    const pen = num($('#ds-pen').value) || 0;
+    const r = rollDice('1d10');
+    const out = $('#ds-out');
+    if (r.rolls[0] === 10) {
+      out.innerHTML = `🎲 <b>10</b> — <b style="color:var(--red)">автоматический провал. Ты мёртв.</b>`;
+    } else if (r.rolls[0] <= body - pen) {
+      out.innerHTML = `🎲 ${r.rolls[0]} ≤ ${body}${pen ? ' − ' + pen : ''} — <b style="color:var(--green)">держишься</b>. Следующий бросок со штрафом +1 (текущий станет ${pen + 1}).`;
+    } else {
+      out.innerHTML = `🎲 ${r.rolls[0]} > ${body}${pen ? ' − ' + pen : ''} — <b style="color:var(--red)">провал. Ты мёртв.</b>`;
+    }
+  };
+
   doDamage(); doArmor();
+}
+
+function critTableHtml(table, label) {
+  if (!table || !table.length) return '';
+  return `<div class="table-scroll"><table class="rtable guide-table">
+    <tr><th>2d6</th><th>Травма (${esc(label)})</th><th>Эффект</th><th>Quick Fix</th><th>Treatment</th></tr>
+    ${table.map(r => `<tr><td><b>${r[0]}</b></td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td><td>${esc(r[4])}</td></tr>`).join('')}
+  </table></div>`;
+}
+
+function woundStatesHtml() {
+  const ws = state.meta.wound_states || [];
+  if (!ws.length) return '<div class="muted">Нет данных</div>';
+  return `<div class="table-scroll"><table class="rtable guide-table">
+    <tr><th>Состояние</th><th>Порог</th><th>Эффект</th><th>Стабилизация</th></tr>
+    ${ws.map(r => `<tr><td><b>${esc(r[0])}</b></td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td></tr>`).join('')}
+  </table></div>`;
 }
 
 function tableHtml(rows) {
@@ -818,6 +1007,7 @@ function renderDerived() {
     ${stat('SP голова', d.sp_head)}
     ${stat('Штраф брони', d.armor_penalty || 0, d.armor_penalty > 0)}
   </div>
+  ${d.hum_cut ? `<div class="small muted" style="margin-top:6px">Срез макс. человечности за хром: −${d.hum_cut} (по 2 за хром, 4 за боргвер; HL: −${d.hl_total || 0}).</div>` : ''}
   ${d.emp_cur != null && d.emp_cur <= 2 ? '<div class="small" style="color:var(--magenta);margin-top:6px">⚠️ EMP ≤ 2 — на грани киберпсихоза. Осторожно с хромом.</div>' : ''}`;
 }
 
@@ -844,6 +1034,8 @@ function renderEditorTab() {
   const box = $('#ed-body');
   const c = ed.char;
   if (ed.tab === 'base') {
+    const roleDesc = (state.meta.role_desc || {})[c.role] || '';
+    const roleAb = state.meta.roles[c.role] || '';
     box.innerHTML = `
     <div class="panel">
       <div class="grid cols-2">
@@ -851,15 +1043,22 @@ function renderEditorTab() {
         <label class="f"><span>Роль</span><select id="f-role">
           ${Object.keys(state.meta.roles).map(r => `<option value="${r}" ${c.role === r ? 'selected' : ''}>${r} — ${esc(state.meta.role_ru[r])}</option>`).join('')}
         </select></label>
-        <label class="f"><span>Ранг роли</span><input id="f-rank" type="number" min="1" max="10" value="${c.role_rank || 4}"></label>
+        <label class="f"><span>Ранг роли (старт — 4)</span><input id="f-rank" type="number" min="1" max="10" value="${c.role_rank || 4}"></label>
         <label class="f"><span>Игрок (реальное имя)</span><input id="f-player" maxlength="60" value="${esc(c.player || '')}"></label>
       </div>
+      <div class="small muted mb" id="f-role-note">${roleDesc ? esc(roleDesc) + ' Способность: <b>' + esc(roleAb) + '</b>.' : ''}</div>
       <label class="f"><span>Внешность</span><textarea id="f-appearance" maxlength="4000">${esc(c.appearance || '')}</textarea></label>
       <label class="f"><span>Биография / предыстория</span><textarea id="f-background" maxlength="4000">${esc(c.background || '')}</textarea></label>
       <label class="f"><span>Счёт (€$)</span><input id="f-cash" type="number" min="0" step="50" value="${c.cash || 0}"></label>
+      <p class="small muted">Старт по гайду: <b>${state.meta.start_cash_gear ?? 2550}€$</b> на оружие/броню/снаряжение/хром + <b>${state.meta.start_cash_fashion ?? 800}€$</b> отдельно на Fashion и Fashionware. Подробнее — в <a href="#/guides">гайдах</a>.</p>
     </div>`;
     $('#f-handle').oninput = (e) => { c.handle = e.target.value; edChanged(); };
-    $('#f-role').onchange = (e) => { c.role = e.target.value; edChanged(); };
+    $('#f-role').onchange = (e) => {
+      c.role = e.target.value; edChanged();
+      const rd = (state.meta.role_desc || {})[c.role] || '';
+      const ra = state.meta.roles[c.role] || '';
+      $('#f-role-note').innerHTML = rd ? esc(rd) + ' Способность: <b>' + esc(ra) + '</b>.' : '';
+    };
     $('#f-rank').oninput = (e) => { c.role_rank = num(e.target.value) || 4; edChanged(); };
     $('#f-player').oninput = (e) => { c.player = e.target.value; edChanged(); };
     $('#f-appearance').oninput = (e) => { c.appearance = e.target.value; };
@@ -869,26 +1068,34 @@ function renderEditorTab() {
   if (ed.tab === 'stats') {
     const st = c.stats;
     const spent = Object.values(st).reduce((a, b) => a + (num(b) || 0), 0);
+    const budget = state.meta.stat_points || 62;
     box.innerHTML = `
     <div class="panel">
       <div class="row mb">
-        <span class="muted small">Стандарт создания: 62 очка, статы 2–8 (LUCK до 10). Потрачено: <b id="st-spent">${spent}</b></span>
+        <span class="muted small">Стандарт создания: <b>${budget} очков</b>, каждая стата <b>2–8</b>. Потрачено: <b id="st-spent" class="${spent > budget ? 'warn-text' : ''}">${spent}</b>${spent > budget ? ' — перебор!' : ''}</span>
         <button class="btn-sm" id="st-roll">🎲 Случайно (массив 8,7,7,6,6,6,6,6,5,5)</button>
         <button class="btn-sm" id="st-reset">Сброс на 6</button>
       </div>
       <div class="statgrid mb">
-        ${state.meta.stats.map(s => `
-          <div class="stat input"><span class="k">${s}</span><input type="number" min="1" max="13" data-stat="${s}" value="${st[s] != null ? st[s] : ''}"></div>`).join('')}
+        ${state.meta.stats.map(s => {
+          const v = num(st[s]);
+          const bad = v != null && (v < 2 || v > 8);
+          return `<div class="stat input${bad ? ' bad' : ''}"><span class="k">${s}</span><input type="number" min="2" max="8" data-stat="${s}" value="${st[s] != null ? st[s] : ''}"></div>`;
+        }).join('')}
       </div>
       <div class="grid cols-2">
         <label class="f"><span>Текущее HP (пусто = максимум)</span><input id="f-hpcur" type="number" min="0" value="${c.hp_cur != null ? c.hp_cur : ''}" placeholder="авто"></label>
         <label class="f"><span>Текущая человечность (пусто = максимум)</span><input id="f-humcur" type="number" min="0" value="${c.humanity_cur != null ? c.humanity_cur : ''}" placeholder="авто"></label>
       </div>
-      <p class="small muted">HP = 10 + 5×⌈(BODY+WILL)/2⌉. Максимум человечности = EMP×10 минус HL вшитого хрома. Текущий EMP = человечность ÷ 10 (вниз).</p>
+      <p class="small muted">HP = 10 + 5×⌈(BODY+WILL)/2⌉. Серьёзная рана = ½ HP (вверх), спасбросок смерти = BODY. Максимум человечности = EMP×10 − HL хрома − <b>2</b> за каждый хром (кроме фэшнвера, <b>4</b> за боргвер). Текущий EMP = человечность ÷ 10 (вниз).</p>
     </div>`;
     $$('[data-stat]', box).forEach(inp => inp.oninput = () => {
       c.stats[inp.dataset.stat] = num(inp.value);
-      $('#st-spent').textContent = Object.values(c.stats).reduce((a, b) => a + (num(b) || 0), 0);
+      const v = num(inp.value);
+      inp.parentElement.classList.toggle('bad', v != null && (v < 2 || v > 8));
+      const sp = Object.values(c.stats).reduce((a, b) => a + (num(b) || 0), 0);
+      $('#st-spent').textContent = sp;
+      $('#st-spent').classList.toggle('warn-text', sp > budget);
       edChanged();
     });
     $('#st-roll').onclick = () => {
@@ -903,29 +1110,52 @@ function renderEditorTab() {
   }
   if (ed.tab === 'skills') {
     const skills = state.meta.skills;
-    const pickupLeft = 9 + (num(c.stats.INT) || 0);
-    const spent = Object.values(c.skills || {}).reduce((a, b) => a + (b || 0), 0);
+    const dblCost = Object.fromEntries(skills.map(([cat, name, stat, is2]) => [name, !!is2]));
+    const must = new Set(state.meta.must_skills || []);
+    const budget = state.meta.skill_points || 86;
+    const maxLvl = state.meta.skill_max || 6;
+    const skillSpent = () => Object.entries(c.skills || {}).reduce((a, [k, v]) => a + (v || 0) * (dblCost[k] ? 2 : 1), 0);
     let lastCat = null;
-    const rows = skills.map(([cat, name, stat, dbl]) => {
+    const rows = skills.map(([cat, name, stat, is2]) => {
       const head = cat !== lastCat ? `<div class="skill-cat">${esc(cat)}</div>` : '';
       lastCat = cat;
+      const lvl = c.skills[name] || 0;
+      const over = lvl > maxLvl;
       return head + `
         <div class="skill-row" data-skill="${esc(name)}">
-          <span class="sname">${esc(name)}${dbl ? ' <span class="muted small">(×2)</span>' : ''}</span>
+          <span class="sname">${must.has(name) ? '<span class="must-tag" title="Обязательный минимум: 2 очка">★</span>' : ''}${esc(name)}${is2 ? ' <span class="muted small">(×2)</span>' : ''}${name === 'Language' ? ' <span class="muted small">· родной — 4 бесплатно</span>' : ''}</span>
           <span class="sstat">${stat}</span>
-          <select data-rank="${esc(name)}">
-            ${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(r => `<option value="${r}" ${(c.skills[name] || 0) === r ? 'selected' : ''}>${r === 0 ? '—' : r}</option>`).join('')}
+          <select data-rank="${esc(name)}" class="${over ? 'over-max' : ''}">
+            ${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(r => `<option value="${r}" ${lvl === r ? 'selected' : ''}>${r === 0 ? '—' : r}</option>`).join('')}
           </select>
         </div>`;
     }).join('');
     const roleAbility = state.meta.roles[c.role] || '';
+    const refreshSkHud = () => {
+      const spent = skillSpent();
+      const el = $('#sk-spent');
+      if (el) {
+        el.textContent = spent;
+        el.classList.toggle('warn-text', spent > budget);
+      }
+      $$('.must-chip', box).forEach(chip => {
+        const ok = (c.skills[chip.dataset.must] || 0) >= 2;
+        chip.classList.toggle('ok', ok);
+        chip.classList.toggle('bad', !ok);
+        chip.innerHTML = (ok ? '✓ ' : '✗ ') + esc(chip.dataset.must);
+      });
+    };
+    const mustChips = (state.meta.must_skills || []).map(s =>
+      `<span class="must-chip ${(c.skills[s] || 0) >= 2 ? 'ok' : 'bad'}" data-must="${esc(s)}">${(c.skills[s] || 0) >= 2 ? '✓' : '✗'} ${esc(s)}</span>`).join('');
     box.innerHTML = `
     <div class="panel">
-      <div class="row mb" style="justify-content:space-between">
-        <span class="muted small">При создании: очки навыков = 9 + INT = <b>${pickupLeft}</b>, потрачено <b id="sk-spent">${spent}</b> (роль не в счёт, максимум 6 при создании)</span>
+      <div class="row mb" style="justify-content:space-between;align-items:center">
+        <span class="muted small">При создании: <b>${budget} очков</b>. ×2-навыки стоят 2 за уровень, максимум <b>${maxLvl}</b> в навыке. Потрачено: <b id="sk-spent">${skillSpent()}</b></span>
       </div>
+      <div class="muted small mb">Обязательные минимумы (по 2 очка, итого 26):</div>
+      <div class="must-list mb">${mustChips}</div>
       <div class="skill-row" style="border-bottom:1px solid var(--line)">
-        <span class="sname"><b>${esc(roleAbility || '—')}</b> <span class="tag role">способность роли · ${esc(c.role)}</span></span>
+        <span class="sname"><b>${esc(roleAbility || '—')}</b> <span class="tag role">способность роли · ${esc(c.role)} · старт — 4</span></span>
         <span class="sstat"></span>
         <select id="sk-role"><option>${c.role_rank || 4}</option></select>
       </div>
@@ -933,7 +1163,8 @@ function renderEditorTab() {
     </div>`;
     $$('[data-rank]', box).forEach(sel => sel.onchange = () => {
       c.skills[sel.dataset.rank] = Number(sel.value);
-      $('#sk-spent').textContent = Object.values(c.skills).reduce((a, b) => a + (b || 0), 0);
+      sel.classList.toggle('over-max', Number(sel.value) > maxLvl);
+      refreshSkHud();
       edChanged();
     });
   }
@@ -960,8 +1191,9 @@ function renderEditorTab() {
     <div class="panel">
       <div class="row mb">
         <button class="btn-primary" id="add-chrome">＋ Вшить хром</button>
-        <span class="muted small grow">HL каждого импланта вычитается из максимума человечности. EMP падает — не переборщи.</span>
+        <span class="muted small grow">HL импланта вычитается из человечности; при создании бери среднее значение (в скобках).</span>
       </div>
+      <p class="small muted">Правило гайда: каждый хром (кроме Fashionware) дополнительно режет <b>максимум</b> человечности на 2, Borgware — на 4.</p>
       <div id="chrome-list"></div>
     </div>`;
     $('#add-chrome').onclick = () => pickItem(['cyberware'], 'Кибернетика', (it) => {

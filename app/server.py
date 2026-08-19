@@ -60,29 +60,41 @@ def item_by_id(iid):
 STATS = ['INT', 'REF', 'DEX', 'TECH', 'COOL', 'WILL', 'LUCK', 'MOVE', 'BODY', 'EMP']
 
 ROLES = {
-    'Solo': 'Awareness',
-    'Rockerboy': 'Charismatic Impact',
+    'Rockerboy': 'Charismatic Leadership',
+    'Solo': 'Combat Awareness',
     'Netrunner': 'Interface',
     'Tech': 'Maker',
     'Medtech': 'Medicine',
     'Media': 'Credibility',
     'Exec': 'Teamwork',
     'Lawman': 'Backup',
-    'Fixer': 'Street Deal',
+    'Fixer': 'Operator',
     'Nomad': 'Moto',
 }
 ROLE_RU = {
-    'Solo': 'Соло', 'Rockerboy': 'Рокербой', 'Netrunner': 'Нэтраннер',
+    'Solo': 'Соло', 'Rockerboy': 'Рокербой', 'Netrunner': 'Нетраннер',
     'Tech': 'Техник', 'Medtech': 'Медтех', 'Media': 'Медиа', 'Exec': 'Корпорат',
     'Lawman': 'Законник', 'Fixer': 'Фиксер', 'Nomad': 'Номад',
 }
+ROLE_DESC = {
+    'Rockerboy': 'Рок-н-ролльные бунтари, использующие выступления, искусство и словоблудие для борьбы со властью.',
+    'Solo': 'Ассасины, телохранители, убийцы и наёмные солдаты в новом мире беззакония.',
+    'Netrunner': 'Кибернетические мастера-хакеры Сетевого мира, выжигающие мозги похитители тайн и секретов.',
+    'Tech': 'Механики-ренегаты и изобретатели супертехнологий. Люди, которые заставляют Тёмное Будущее развиваться.',
+    'Medtech': 'Нелицензированные уличные доктора и рипперы, одинаково хорошо латающие мясо и хром.',
+    'Media': 'Репортёры, медиа-звёзды и инфлюенсеры, рискующие всем ради правды или славы.',
+    'Exec': 'Корпоративные воротилы и бизнес-рейдеры на службе у Мегакорпораций.',
+    'Lawman': 'Блюстители порядка, патрулирующие неблагодарные улицы и шоссе с варварскими порядками далеко за пределами города.',
+    'Fixer': 'Дельцы, организаторы, брокеры информацией на Полуночных Рынках.',
+    'Nomad': 'Эксперты по транспорту, ультимативные воины дорог, пираты и контрабандисты, которые держат мир объединённым.',
+}
 
 SKILLS = [
-    # (категория, имя, стата, x2 стоимость)
+    # (категория, имя, стата, x2 стоимость) — 66 навыков, как в гайде по созданию
     ('Осознание', 'Concentration', 'WILL', False),
-    ('Осознание', 'Perception', 'INT', False),
     ('Осознание', 'Conceal/Reveal Object', 'INT', False),
     ('Осознание', 'Lip Reading', 'INT', False),
+    ('Осознание', 'Perception', 'INT', False),
     ('Осознание', 'Tracking', 'INT', False),
     ('Тело', 'Athletics', 'DEX', False),
     ('Тело', 'Contortionist', 'DEX', False),
@@ -99,6 +111,7 @@ SKILLS = [
     ('Образование', 'Bureaucracy', 'INT', False),
     ('Образование', 'Business', 'INT', False),
     ('Образование', 'Composition', 'INT', False),
+    ('Образование', 'Criminology', 'INT', False),
     ('Образование', 'Cryptography', 'INT', False),
     ('Образование', 'Deduction', 'INT', False),
     ('Образование', 'Education', 'INT', False),
@@ -107,7 +120,8 @@ SKILLS = [
     ('Образование', 'Library Search', 'INT', False),
     ('Образование', 'Local Expert', 'INT', False),
     ('Образование', 'Science', 'INT', False),
-    ('Образование', 'Streetwise', 'COOL', False),
+    ('Образование', 'Tactics', 'INT', False),
+    ('Образование', 'Wilderness Survival', 'INT', False),
     ('Бой', 'Brawling', 'DEX', False),
     ('Бой', 'Evasion', 'DEX', False),
     ('Бой', 'Martial Arts', 'DEX', True),
@@ -125,12 +139,13 @@ SKILLS = [
     ('Социальные', 'Interrogation', 'COOL', False),
     ('Социальные', 'Persuasion', 'COOL', False),
     ('Социальные', 'Personal Grooming', 'COOL', False),
-    ('Социальные', 'Seduction', 'EMP', False),
+    ('Социальные', 'Streetwise', 'COOL', False),
     ('Социальные', 'Trading', 'COOL', False),
     ('Социальные', 'Wardrobe & Style', 'COOL', False),
+    ('Технические', 'Air Vehicle Tech', 'TECH', False),
+    ('Технические', 'Basic Tech', 'TECH', False),
     ('Технические', 'Cybertech', 'TECH', False),
     ('Технические', 'Demolitions', 'TECH', True),
-    ('Технические', 'Disguise', 'TECH', False),
     ('Технические', 'Electronics/Security Tech', 'TECH', True),
     ('Технические', 'First Aid', 'TECH', False),
     ('Технические', 'Forgery', 'TECH', False),
@@ -139,8 +154,63 @@ SKILLS = [
     ('Технические', 'Paramedic', 'TECH', True),
     ('Технические', 'Photography/Film', 'TECH', False),
     ('Технические', 'Pick Lock', 'TECH', False),
+    ('Технические', 'Pick Pocket', 'TECH', False),
+    ('Технические', 'Sea Vehicle Tech', 'TECH', False),
+    ('Технические', 'Weaponstech', 'TECH', False),
 ]
 SKILL_BY_NAME = {s[1]: s for s in SKILLS}
+
+# Правила создания из гайда «Создание Киберпанка» (Spes Desperata)
+STAT_POINTS = 62          # на 10 характеристик, каждая 2–8
+SKILL_POINTS = 86         # на навыки: 26 в обязательные минимумы + 60 свободных
+SKILL_MAX_CREATION = 6    # максимум уровня навыка при создании
+MUST_SKILLS = [           # минимум 2 очка в каждом (итого 26)
+    'Athletics', 'Brawling', 'Concentration', 'Conversation', 'Education',
+    'Evasion', 'First Aid', 'Human Perception', 'Language',
+    'Local Expert', 'Perception', 'Persuasion', 'Stealth',
+]
+START_CASH_GEAR = 2550    # стартовые €$ на оружие/броню/снаряжение/хром
+START_CASH_FASHION = 800  # отдельный бюджет на Fashion и Fashionware
+
+# Состояния ранений: (название, порог, эффект, DV стабилизации)
+WOUND_STATES = [
+    ['Смертельное (Mortally Wounded)', 'HP < 1',
+     '−4 ко всем действиям, −6 MOVE (мин. 1). В начале хода — спасбросок смерти. Урон атакой: +крит. травма и +1 к штрафу спасброска.', 'DV15 → 1 HP, без сознания (1 минута)'],
+    ['Серьёзное (Seriously Wounded)', 'HP ≤ ½ максимума (вверх)',
+     '−2 ко всем действиям.', 'DV13'],
+    ['Лёгкое (Lightly Wounded)', 'HP < максимума', 'Эффектов нет.', 'DV10'],
+    ['Мёртв', 'Проваленный спасбросок смерти', 'Ты мёртв. Соболезнуем.', '—'],
+]
+
+# Критические травмы тела: (2d6, травма, эффект, Quick Fix, Treatment)
+CRIT_BODY = [
+    [2, 'Dismembered Arm (Отрубленная рука)', 'Руки больше нет. Вы роняете все предметы в её кисти. +1 к Base Death Save Penalty.', '—', 'Surgery DV17'],
+    [3, 'Dismembered Hand (Отрубленная кисть)', 'Кисти больше нет. Вы роняете все предметы в ней. +1 к Base Death Save Penalty.', '—', 'Surgery DV17'],
+    [4, 'Collapsed Lung (Коллапс лёгкого)', '−2 MOVE (мин. 1). +1 к Base Death Save Penalty.', 'Paramedic DV15', 'Surgery DV15'],
+    [5, 'Broken Ribs (Перелом рёбер)', 'При перемещении более 4 м на ногах — снова бонусный урон крит. травмы в конце хода.', 'Paramedic DV13', 'Paramedic DV15 или Surgery DV13'],
+    [6, 'Broken Arm (Перелом руки)', 'Сломанная рука не используется. Вы роняете всё из её кисти.', 'Paramedic DV13', 'Paramedic DV15 или Surgery DV13'],
+    [7, 'Foreign Object (Инородное тело)', 'При перемещении более 4 м на ногах — снова бонусный урон крит. травмы в конце хода.', 'First Aid или Paramedic DV13', 'Quick Fix убирает навсегда'],
+    [8, 'Broken Leg (Перелом ноги)', '−4 MOVE (мин. 1).', 'Paramedic DV13', 'Paramedic DV15 или Surgery DV13'],
+    [9, 'Torn Muscle (Разрыв мышц)', '−2 к атакам ближнего боя.', 'First Aid или Paramedic DV13', 'Quick Fix убирает навсегда'],
+    [10, 'Spinal Injury (Травма позвоночника)', 'В следующем ходу нельзя использовать Действие (можно Перемещаться). +1 к Base Death Save Penalty.', 'Paramedic DV15', 'Surgery DV15'],
+    [11, 'Crushed Fingers (Раздавленные пальцы)', '−4 ко всем Действиям этой кистью.', 'Paramedic DV13', 'Surgery DV15'],
+    [12, 'Dismembered Leg (Отрубленная нога)', '−6 MOVE (мин. 1). Нельзя уклоняться. +1 к Base Death Save Penalty.', '—', 'Surgery DV17'],
+]
+
+# Критические травмы головы
+CRIT_HEAD = [
+    [2, 'Lost Eye (Потеря глаза)', 'Глаза больше нет. −4 к атакам дальнего боя и зрительным Perception. +1 к Base Death Save Penalty.', '—', 'Surgery DV17'],
+    [3, 'Brain Injury (Черепно-мозговая травма)', '−2 ко всем Действиям. +1 к Base Death Save Penalty.', '—', 'Surgery DV17'],
+    [4, 'Damaged Eye (Повреждение глаза)', '−2 к атакам дальнего боя и зрительным Perception.', 'Paramedic DV15', 'Surgery DV13'],
+    [5, 'Concussion (Сотрясение)', '−2 ко всем Действиям.', 'First Aid или Paramedic DV13', 'Quick Fix убирает навсегда'],
+    [6, 'Broken Jaw (Перелом челюсти)', '−4 ко всем Действиям, связанным с речью.', 'Paramedic DV13', 'Paramedic или Surgery DV13'],
+    [7, 'Foreign Object (Инородное тело)', 'При перемещении более 4 м на ногах — снова бонусный урон крит. травмы в конце хода.', 'First Aid или Paramedic DV13', 'Quick Fix убирает навсегда'],
+    [8, 'Whiplash (Хлыстовая травма)', '+1 к Base Death Save Penalty.', 'Paramedic DV13', 'Paramedic или Surgery DV13'],
+    [9, 'Cracked Skull (Треснувший череп)', 'Прицельные атаки в голову дают модификатор ×3, а не ×2. +1 к Base Death Save Penalty.', 'Paramedic DV15', 'Paramedic или Surgery DV15'],
+    [10, 'Damaged Ear (Повреждение уха)', 'При перемещении более 4 м — нельзя перемещаться в следующем ходу. −2 к слуховым Perception.', 'Paramedic DV13', 'Surgery DV13'],
+    [11, 'Crushed Windpipe (Раздавленная трахея)', 'Нельзя говорить. +1 к Base Death Save Penalty.', '—', 'Surgery DV15'],
+    [12, 'Lost Ear (Потеря уха)', 'Уха больше нет. При перемещении более 4 м — нельзя перемещаться в следующем ходу. −4 к слуховым Perception. +1 к Base Death Save Penalty.', '—', 'Surgery DV17'],
+]
 
 
 def derive(char):
@@ -154,10 +224,18 @@ def derive(char):
         out['hp_max'] = hp_max
         out['seriously_wounded'] = (hp_max + 1) // 2
         out['death_save'] = body
+    # хром: HL + срез максимума человечности (фэшнвер 0, боргвер 4, прочий хром 2)
     hl_total = sum(_num(c.get('hl')) or 0 for c in char.get('cyberware') or [])
+    hum_cut = 0
+    for c in char.get('cyberware') or []:
+        t = str(c.get('type') or '').lower()
+        if 'borgware' in t:
+            hum_cut += 4
+        elif 'fashionware' not in t:
+            hum_cut += 2
     emp_base = _num(st.get('EMP'))
     if emp_base is not None:
-        hum_max = emp_base * 10 - hl_total
+        hum_max = emp_base * 10 - hl_total - hum_cut
         out['humanity_max'] = hum_max
         hum_cur = char.get('humanity_cur')
         if hum_cur is None:
@@ -166,6 +244,7 @@ def derive(char):
         out['humanity_cur'] = hum_cur
         out['emp_cur'] = hum_cur // 10
         out['hl_total'] = hl_total
+        out['hum_cut'] = hum_cut
     # броня
     armor = char.get('armor') or {}
     sps = []
@@ -618,7 +697,12 @@ class Handler(BaseHTTPRequestHandler):
     def api_meta(self, conn, qs, m, body):
         cat = catalog()
         self.send_json({
-            'stats': STATS, 'roles': ROLES, 'role_ru': ROLE_RU, 'skills': SKILLS,
+            'stats': STATS, 'roles': ROLES, 'role_ru': ROLE_RU, 'role_desc': ROLE_DESC,
+            'skills': SKILLS, 'must_skills': MUST_SKILLS,
+            'stat_points': STAT_POINTS, 'skill_points': SKILL_POINTS,
+            'skill_max': SKILL_MAX_CREATION,
+            'start_cash_gear': START_CASH_GEAR, 'start_cash_fashion': START_CASH_FASHION,
+            'wound_states': WOUND_STATES, 'crit_body': CRIT_BODY, 'crit_head': CRIT_HEAD,
             'cats': cat['cats'],
             'range_table': cat['range_table'],
             'autofire_table': cat['autofire_table'],
