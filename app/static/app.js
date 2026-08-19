@@ -27,7 +27,7 @@ function toast(msg, isErr) {
   const root = $('#toast-root');
   const el = document.createElement('div');
   el.className = 'toast' + (isErr ? ' err' : '');
-  el.textContent = msg;
+  el.textContent = APP_I18N.translate(msg);
   root.appendChild(el);
   setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .4s'; }, 3200);
   setTimeout(() => el.remove(), 3700);
@@ -39,8 +39,9 @@ function toastUndo(message, undo) {
 
 function openModal(html, wide) {
   const root = $('#modal-root');
-  root.innerHTML = `<div class="modal${wide ? ' wide' : ''}"><button class="close" title="Закрыть">✕</button>${html}</div>`;
+  root.innerHTML = `<div class="modal${wide ? ' wide' : ''}"><button class="close" title="${T('Close','Закрыть')}">✕</button>${html}</div>`;
   root.classList.add('open');
+  APP_I18N.apply(root);
   $('.close', root).onclick = closeModal;
   root.onmousedown = (e) => { if (e.target === root) closeModal(); };
   return root.firstElementChild;
@@ -93,7 +94,7 @@ async function api(path, opts) {
   return data;
 }
 
-function spinner() { return '<div class="empty"><span class="spin"></span> Загрузка…</div>'; }
+function spinner() { return `<div class="empty"><span class="spin"></span> ${T('Loading…','Загрузка…')}</div>`; }
 
 /* ============================== состояние ============================== */
 
@@ -205,7 +206,9 @@ async function route() {
     const fn = routes[seg0] || viewHome;
     await fn(view);
   } catch (e) {
-    view.innerHTML = `<div class="empty">⚠️ ${esc(e.message)}</div>`;
+    view.innerHTML = `<div class="empty">⚠️ ${esc(APP_I18N.translate(e.message))}</div>`;
+  } finally {
+    APP_I18N.apply(view);
   }
 }
 
@@ -249,61 +252,67 @@ async function viewHome(view) {
   view.innerHTML = `
   <div class="hero">
     <h1>${T('Night City <span class="accent">online</span>','Ночной город <span class="accent">онлайн</span>')}</h1>
-    <p>Создавай эджраннеров, закупайся на чёрном рынке, веди ростер всей партии,
-       читай сводки с улиц и находи заказы. Всё для твоей кампании по Cyberpunk RED.</p>
+    <p>${T('Create edgerunners, shop the Night Market, manage the whole crew roster, read street reports, and find Jobs. Everything your Cyberpunk RED campaign needs.','Создавай эджраннеров, закупайся на чёрном рынке, веди ростер всей партии, читай сводки с улиц и находи заказы. Всё для твоей кампании по Cyberpunk RED.')}</p>
     <div class="row">
-      <button class="btn-primary" onclick="location.hash='#/characters'">Создать персонажа</button>
-      <button onclick="location.hash='#/market'">Чёрный рынок</button>
-      <button onclick="location.hash='#/codex'">Справочник</button>
+      <button class="btn-primary" onclick="location.hash='#/characters'">${T('Create Character','Создать персонажа')}</button>
+      <button onclick="location.hash='#/market'">${T('Night Market','Чёрный рынок')}</button>
+      <button onclick="location.hash='#/codex'">${T('Codex','Справочник')}</button>
     </div>
     <div class="statbar mt">
-      <span class="sb"><span class="v">${nf.format(stats.items)}</span><span class="k">предметов</span></span>
-      <span class="sb"><span class="v">${nf.format(stats.characters)}</span><span class="k">персонажей</span></span>
-      <span class="sb"><span class="v">${nf.format(stats.users)}</span><span class="k">эджраннеров</span></span>
-      <span class="sb"><span class="v">${nf.format(stats.news)}</span><span class="k">новостей</span></span>
-      <span class="sb"><span class="v">${nf.format(stats.open_jobs)}</span><span class="k">открытых заказов</span></span>
+      <span class="sb"><span class="v">${nf.format(stats.items)}</span><span class="k">${T('items','предметов')}</span></span>
+      <span class="sb"><span class="v">${nf.format(stats.characters)}</span><span class="k">${T('characters','персонажей')}</span></span>
+      <span class="sb"><span class="v">${nf.format(stats.users)}</span><span class="k">${T('edgerunners','эджраннеров')}</span></span>
+      <span class="sb"><span class="v">${nf.format(stats.news)}</span><span class="k">${T('reports','новостей')}</span></span>
+      <span class="sb"><span class="v">${nf.format(stats.open_jobs)}</span><span class="k">${T('open Jobs','открытых заказов')}</span></span>
     </div>
   </div>
   <div class="grid cols-2">
     <div class="panel">
       <div class="row" style="justify-content:space-between">
-        <h2 style="margin:0">📡 Сводки с улиц</h2>
-        <a href="#/news" class="small">все новости →</a>
+        <h2 style="margin:0">📡 ${T('Street Reports','Сводки с улиц')}</h2>
+        <a href="#/news" class="small">${T('all reports →','все новости →')}</a>
       </div>
       ${lastNews.length ? lastNews.map(n => `
         <div class="post mt">
-          <div class="meta">${n.tag ? `<span class="tag">${esc(n.tag)}</span>` : ''}<span>${esc(n.author)}</span>·<span>${timeAgo(n.created)}</span></div>
-          <div class="title">${esc(n.title)}</div>
-          <div class="desc" style="max-height:70px;overflow:hidden">${esc(n.body)}</div>
-        </div>`).join('') : '<div class="empty mt">Пока тихо. Стань первым — <a href="#/news">опубликуй сводку</a>.</div>'}
+          <div class="meta user-content">${n.tag ? `<span class="tag">${esc(n.tag)}</span>` : ''}<span>${esc(n.author)}</span>·<span>${timeAgo(n.created)}</span></div>
+          <div class="title user-content">${esc(n.title)}</div>
+          <div class="desc user-content" style="max-height:70px;overflow:hidden">${esc(n.body)}</div>
+        </div>`).join('') : `<div class="empty mt">${T('Quiet for now. Be the first to ','Пока тихо. Стань первым — ')}<a href="#/news">${T('publish a report','опубликуй сводку')}</a>.</div>`}
     </div>
     <div class="panel">
       <div class="row" style="justify-content:space-between">
-        <h2 style="margin:0">🎯 Горячие заказы</h2>
-        <a href="#/jobs" class="small">вся доска →</a>
+        <h2 style="margin:0">🎯 ${T('Hot Jobs','Горячие заказы')}</h2>
+        <a href="#/jobs" class="small">${T('full board →','вся доска →')}</a>
       </div>
       ${openJobs.length ? openJobs.map(j => `
         <div class="card job mt" style="cursor:pointer" onclick="location.hash='#/jobs'">
-          <div class="meta"><span class="tag">${esc(j.system || 'Cyberpunk RED')}</span>${j.when_text ? `<span>⏱ ${esc(j.when_text)}</span>` : ''}<span>ГМ: ${esc(j.author)}</span></div>
-          <h3 style="margin:4px 0">${esc(j.title)}</h3>
-          <div class="small muted">${j.slots ? `слотов: ${j.signups}/${j.slots}` : 'без ограничений'} · записалось: ${j.signups}</div>
-        </div>`).join('') : '<div class="empty mt">Заказов нет. ГМ, <a href="#/jobs">размещи анонс партии</a>!</div>'}
+          <div class="meta"><span class="tag user-content">${esc(j.system || 'Cyberpunk RED')}</span>${j.when_text ? `<span class="user-content">⏱ ${esc(j.when_text)}</span>` : ''}<span>${T('GM:','ГМ:')} <span class="user-content">${esc(j.author)}</span></span></div>
+          <h3 class="user-content" style="margin:4px 0">${esc(j.title)}</h3>
+          <div class="small muted">${j.slots ? `${T('slots:','слотов:')} ${j.signups}/${j.slots}` : T('unlimited','без ограничений')} · ${T('signed up:','записалось:')} ${j.signups}</div>
+        </div>`).join('') : `<div class="empty mt">${T('No Jobs yet. GM, ','Заказов нет. ГМ, ')}<a href="#/jobs">${T('post a game announcement','размещи анонс партии')}</a>!</div>`}
     </div>
   </div>
   <div class="feature-cards mt">
-    <a class="card" href="#/characters"><div class="ico">🧬</div><h3>Создание персонажа</h3><div class="muted small">Полный лист: статы, навыки, хром, броня, снаряжение.</div></a>
-    <a class="card" href="#/guides"><div class="ico">📖</div><h3>Мини-гайды</h3><div class="muted small">Создание персонажа, боёвка FNFF и нетраннинг — кратко и по делу.</div></a>
-    <a class="card" href="#/market"><div class="ico">🕶️</div><h3>Чёрный рынок</h3><div class="muted small">Ночная распродажа каждый день, покупки и продажа хлама.</div></a>
-    <a class="card" href="#/codex"><div class="ico">📚</div><h3>Справочник</h3><div class="muted small">1092 предмета из книг с источниками и страницами.</div></a>
-    <a class="card" href="#/calc"><div class="ico">🎲</div><h3>Калькулятор</h3><div class="muted small">Урон, крит. травмы, автоогонь, DV-таблицы, броски костей.</div></a>
-    <a class="card" href="#/roster"><div class="ico">📋</div><h3>Ростер партии</h3><div class="muted small">Все публичные персонажи всех игроков вместе.</div></a>
-    <a class="card" href="#/jobs"><div class="ico">📞</div><h3>Доска заказов</h3><div class="muted small">Анонсы партий от ГМ-ов и запись в группу.</div></a>
+    <a class="card" href="#/characters"><div class="ico">🧬</div><h3>${T('Character Creation','Создание персонажа')}</h3><div class="muted small">${T('A complete sheet: Characteristics, Skills, Cyberware, Armor, and Gear.','Полный лист: статы, навыки, хром, броня, снаряжение.')}</div></a>
+    <a class="card" href="#/guides"><div class="ico">📖</div><h3>${T('Mini Guides · Russian only','Мини-гайды')}</h3><div class="muted small">${T('Original Russian reference guides for creation, FNFF combat, and Netrunning.','Создание персонажа, боёвка FNFF и нетраннинг — кратко и по делу.')}</div></a>
+    <a class="card" href="#/market"><div class="ico">🕶️</div><h3>${T('Night Market','Чёрный рынок')}</h3><div class="muted small">${T('A new sale every night, with shopping and resale.','Ночная распродажа каждый день, покупки и продажа хлама.')}</div></a>
+    <a class="card" href="#/codex"><div class="ico">📚</div><h3>${T('Codex','Справочник')}</h3><div class="muted small">${T('1,092 items from the books, including sources and pages.','1092 предмета из книг с источниками и страницами.')}</div></a>
+    <a class="card" href="#/calc"><div class="ico">🎲</div><h3>${T('Calculator','Калькулятор')}</h3><div class="muted small">${T('Damage, Critical Injuries, Autofire, DV tables, and dice rolls.','Урон, крит. травмы, автоогонь, DV-таблицы, броски костей.')}</div></a>
+    <a class="card" href="#/roster"><div class="ico">📋</div><h3>${T('Campaign Roster','Ростер партии')}</h3><div class="muted small">${T('Every player’s public characters in one place.','Все публичные персонажи всех игроков вместе.')}</div></a>
+    <a class="card" href="#/jobs"><div class="ico">📞</div><h3>${T('Job Board','Доска заказов')}</h3><div class="muted small">${T('Game announcements from GMs and crew signups.','Анонсы партий от ГМ-ов и запись в группу.')}</div></a>
   </div>`;
 }
 
 /* ============================== справочник ============================== */
 
 function catalogCategoryName(category) { return APP_I18N.current() === 'en' ? (category.en || category.sheet || category.id) : category.ru; }
+const ITEM_DESC_EN = {
+  'VEX Megatower (Rent)': '“Choose any megatower and, as if by magic, you will find a keycard for an empty apartment in the nearest parcel locker.” Apartments supplied by the Netrunner VEX. His goals are unclear, but an apartment is an apartment.',
+};
+function itemDescription(item) {
+  const value = APP_I18N.current() === 'en' ? (item.desc_en || ITEM_DESC_EN[item.name] || item.desc || '') : (item.desc_ru || item.desc || '');
+  return APP_I18N.current() === 'en' ? String(value).replace(/сost/g, 'cost') : value;
+}
 const codexState = { cat: '', q: '', offset: 0, limit: 30 };
 
 async function viewCodex(view) {
@@ -312,15 +321,15 @@ async function viewCodex(view) {
   <div class="page-head"><div><h1>📚 ${T('Codex','Справочник')}</h1><div class="sub">${T('All equipment from Data Pool','Всё снаряжение из Data Pool')}: ${nf.format(state.meta._total || '')}</div></div></div>
   <div class="codex-layout">
     <div class="cat-list panel" style="padding:10px">
-      <a href="javascript:void(0)" data-cat="" class="${codexState.cat === '' ? 'active' : ''}">🌐 Всё подряд</a>
+      <a href="javascript:void(0)" data-cat="" class="${codexState.cat === '' ? 'active' : ''}">🌐 ${T('All Categories','Всё подряд')}</a>
       ${cats.map(c => `
         <a href="javascript:void(0)" data-cat="${c.id}" class="${codexState.cat === c.id ? 'active' : ''}">
           <span>${c.emoji} ${esc(catalogCategoryName(c))}</span><span class="cnt">${c.count}</span></a>`).join('')}
     </div>
     <div>
       <div class="searchbar">
-        <input id="codex-q" placeholder="Поиск: имя, тип, описание…" value="${esc(codexState.q)}">
-        <button id="codex-search">Найти</button>
+        <input id="codex-q" placeholder="${T('Search by name, type, or description…','Поиск: имя, тип, описание…')}" value="${esc(codexState.q)}">
+        <button id="codex-search">${T('Search','Найти')}</button>
       </div>
       <div id="codex-results">${spinner()}</div>
     </div>
@@ -382,18 +391,20 @@ function guideSectionHtml(s, idx) {
 
 function viewGuides(view) {
   const gs = typeof GUIDES !== 'undefined' ? GUIDES : [];
-  if (!gs.length) { view.innerHTML = '<div class="empty">Гайды не загрузились</div>'; return; }
+  if (!gs.length) { view.innerHTML = `<div class="empty">${T('Guides failed to load','Гайды не загрузились')}</div>`; return; }
   const cur = guidesTab || gs[0].id;
   view.innerHTML = `
   <div class="page-head">
-    <div><h1>📖 Мини-гайды</h1>
-      <div class="sub">Краткие правила из «Spes Desperata»: создание персонажа, боёвка и нетраннинг.</div></div>
+    <div><h1>📖 ${T('Mini Guides','Мини-гайды')} ${APP_I18N.current()==='en'?'<span class="tag">Russian only</span>':''}</h1>
+      <div class="sub">${T('These reference guides remain in their original Russian.','Краткие правила из «Spes Desperata»: создание персонажа, боёвка и нетраннинг.')}</div></div>
   </div>
+  <div data-no-auto-translate>
   <div class="editor-tabs" style="margin-bottom:14px">
     ${gs.map(g => `<button data-g="${g.id}" class="${g.id === cur ? 'active' : ''}">${g.emoji} ${esc(g.title)}</button>`).join('')}
   </div>
   <div class="panel accent mb"><b>${gs.find(g => g.id === cur)?.emoji} ${esc(gs.find(g => g.id === cur)?.title || '')}.</b> ${esc(gs.find(g => g.id === cur)?.sub || '')}</div>
-  <div id="guide-box">
+  </div>
+  <div id="guide-box" data-no-auto-translate>
     ${gs.filter(g => g.id === cur).map(g => g.sections.map((s, i) => guideSectionHtml(s, i)).join('')).join('')}
   </div>`;
   $$('[data-g]', view).forEach(b => b.onclick = () => { guidesTab = b.dataset.g; viewGuides(view); });
@@ -408,7 +419,7 @@ async function loadCodexItems() {
   const data = await api('/api/items?' + p);
   const catName = (id) => { const c = state.meta.cats.find(x => x.id === id); return c ? c.emoji + ' ' + catalogCategoryName(c) : id; };
   box.innerHTML = `
-    <div class="muted small mb">Найдено: ${nf.format(data.total)}</div>
+    <div class="muted small mb">${T('Found:','Найдено:')} ${nf.format(data.total)}</div>
     <div class="item-grid">
       ${data.items.map(it => `
         <div class="card item-card">
@@ -420,7 +431,7 @@ async function loadCodexItems() {
             ${Object.entries(it.fields || {}).slice(0, 6).map(([k, v]) => `<span class="chip">${esc(shortField(k, v))}</span>`).join('')}
           </div>
           ${it.source ? `<div class="small muted">📖 ${esc(it.source)}</div>` : ''}
-          ${it.desc ? `<details class="desc-wrap"><summary>Описание</summary><div class="desc">${esc(it.desc)}</div></details>` : ''}
+          ${it.desc ? `<details class="desc-wrap"><summary>${T('Description','Описание')}</summary><div class="desc">${esc(itemDescription(it))}</div></details>` : ''}
         </div>`).join('')}
     </div>
     ${pagerHtml(data.total, data.offset, data.limit)}`;
@@ -440,9 +451,9 @@ function pagerHtml(total, offset, limit) {
   if (total <= limit) return '';
   const from = offset + 1, to = Math.min(total, offset + limit);
   return `<div class="pager">
-    <button class="btn-sm" ${offset <= 0 ? 'disabled' : ''} data-pg="prev">← Назад</button>
-    <span class="muted small">${nf.format(from)}–${nf.format(to)} из ${nf.format(total)}</span>
-    <button class="btn-sm" ${to >= total ? 'disabled' : ''} data-pg="next">Вперёд →</button></div>`;
+    <button class="btn-sm" ${offset <= 0 ? 'disabled' : ''} data-pg="prev">← ${T('Back','Назад')}</button>
+    <span class="muted small">${nf.format(from)}–${nf.format(to)} ${T('of','из')} ${nf.format(total)}</span>
+    <button class="btn-sm" ${to >= total ? 'disabled' : ''} data-pg="next">${T('Next →','Вперёд →')}</button></div>`;
 }
 function bindPager(box, onNext, onPrev) {
   const next = $('[data-pg="next"]', box), prev = $('[data-pg="prev"]', box);
@@ -464,7 +475,7 @@ async function showItemModal(id) {
     <div class="kv mb">
       ${Object.entries(it.fields || {}).map(([k, v]) => `<b>${esc(k)}</b><span>${esc(v)}</span>`).join('')}
     </div>
-    ${it.desc ? `<div class="desc">${esc(it.desc)}</div>` : '<div class="muted">Описание отсутствует.</div>'}
+    ${it.desc ? `<div class="desc">${esc(itemDescription(it))}</div>` : `<div class="muted">${T('No description available.','Описание отсутствует.')}</div>`}
   `);
   return m;
 }
@@ -477,13 +488,13 @@ async function viewMarket(view) {
   view.innerHTML = `
   <div class="page-head">
     <div><h1>🕶️ ${T('Night Market','Чёрный рынок')}</h1>
-    <div class="sub">Ночная витрина обновляется каждый день в 00:00 МСК. Уличные цены гуляют ±50%.</div></div>
-    ${state.me && state.me.is_gm ? '<button id="payroll-btn">💰 Выплата (ГМ)</button>' : ''}
+    <div class="sub">${T('The Night Market refreshes every day at 00:00 Moscow time. Street prices vary by ±50%.','Ночная витрина обновляется каждый день в 00:00 МСК. Уличные цены гуляют ±50%.')}</div></div>
+    ${state.me && state.me.is_gm ? `<button id="payroll-btn">💰 ${T('Payout (GM)','Выплата (ГМ)')}</button>` : ''}
   </div>
   <div class="tabs">
-    <button data-tab="nm" class="${marketState.tab === 'nm' ? 'active' : ''}">🌙 Ночная витрина</button>
-    <button data-tab="catalog" class="${marketState.tab === 'catalog' ? 'active' : ''}">📦 Полный каталог</button>
-    <button data-tab="sell" class="${marketState.tab === 'sell' ? 'active' : ''}">♻️ Скупка хлама</button>
+    <button data-tab="nm" class="${marketState.tab === 'nm' ? 'active' : ''}">🌙 ${T('Night Market Showcase','Ночная витрина')}</button>
+    <button data-tab="catalog" class="${marketState.tab === 'catalog' ? 'active' : ''}">📦 ${T('Full Catalog','Полный каталог')}</button>
+    <button data-tab="sell" class="${marketState.tab === 'sell' ? 'active' : ''}">♻️ ${T('Sell Used Gear','Скупка хлама')}</button>
   </div>
   <div id="market-body">${spinner()}</div>
   <div id="cart-slot"></div>`;
@@ -709,91 +720,91 @@ async function viewCalc(view) {
   <div class="page-head"><div><h1>🎲 ${T('Calculator','Калькулятор')}</h1><div class="sub">${T('Damage, Armor, dice, Critical Injuries, Autofire, and Range DVs.','Урон, броня, кости, критические травмы, автоогонь и DV дистанции.')}</div></div></div>
   <div class="grid cols-2">
     <div class="panel">
-      <h2>💥 Расчёт урона</h2>
+      <h2>💥 ${T('Damage Calculation','Расчёт урона')}</h2>
       <div class="row mb">
-        <label class="f grow" style="margin:0"><span>Формула урона</span><input id="dc-expr" value="3d6" placeholder="3d6, 5d6, 2d6+3…"></label>
-        <button class="btn-primary" id="dc-roll">Бросить</button>
+        <label class="f grow" style="margin:0"><span>${T('Damage Formula','Формула урона')}</span><input id="dc-expr" value="3d6" placeholder="3d6, 5d6, 2d6+3…"></label>
+        <button class="btn-primary" id="dc-roll">${T('Roll','Бросить')}</button>
       </div>
       <div class="row mb small muted" id="dc-presets">
         ${['2d6', '3d6', '4d6', '5d6', '6d6', '2d6+3'].map(d => `<button class="btn-sm" data-preset="${d}">${d}</button>`).join('')}
       </div>
       <div class="grid cols-2">
-        <label class="f"><span>SP брони цели</span><input id="dc-sp" type="number" value="11" min="0" max="50"></label>
-        <label class="f"><span>Max HP цели</span><input id="dc-hp" type="number" value="40" min="1"></label>
+        <label class="f"><span>${T('Target Armor SP','SP брони цели')}</span><input id="dc-sp" type="number" value="11" min="0" max="50"></label>
+        <label class="f"><span>${T('Target Max HP','Max HP цели')}</span><input id="dc-hp" type="number" value="40" min="1"></label>
       </div>
-      <label class="f"><span>Текущее HP цели</span><input id="dc-hpcur" type="number" value="40" min="0"></label>
-      <label class="checkbox mb"><input type="checkbox" id="dc-melee"> Ближний бой / бронепробой (SP цели делится на 2, округление вверх)</label>
+      <label class="f"><span>${T('Target Current HP','Текущее HP цели')}</span><input id="dc-hpcur" type="number" value="40" min="0"></label>
+      <label class="checkbox mb"><input type="checkbox" id="dc-melee"> ${T('Melee / Armor Piercing (target SP is halved, rounded up)','Ближний бой / бронепробой (SP цели делится на 2, округление вверх)')}</label>
       <div id="dc-out" class="calc-out"></div>
     </div>
     <div class="panel">
-      <h2>🎯 Броски костей</h2>
+      <h2>🎯 ${T('Dice Rolls','Броски костей')}</h2>
       <div class="row mb">
         <input id="dr-expr" value="1d10" style="flex:1">
-        <button class="btn-primary" id="dr-roll">Бросить</button>
+        <button class="btn-primary" id="dr-roll">${T('Roll','Бросить')}</button>
       </div>
       <div class="row small muted mb">${['1d10', '2d6', '3d6', '1d6+2'].map(d => `<button class="btn-sm" data-dpreset="${d}">${d}</button>`).join('')}</div>
       <div id="dr-out"></div>
       <hr>
-      <h2>🛡️ Несколько слоёв брони</h2>
-      <p class="small muted">SP не складывается: на локации действует только наибольший SP. При пробитии все надетые слои на этой локации абляируются одновременно.</p>
+      <h2>🛡️ ${T('Multiple Armor Layers','Несколько слоёв брони')}</h2>
+      <p class="small muted">${T('SP does not stack: only the highest SP at a location applies. When penetrated, all worn layers at that location ablate together.','SP не складывается: на локации действует только наибольший SP. При пробитии все надетые слои на этой локации абляируются одновременно.')}</p>
       <div class="grid cols-2">
-        <label class="f"><span>SP верхнего</span><input id="ar-o" type="number" value="11"></label>
-        <label class="f"><span>SP нижнего</span><input id="ar-i" type="number" value="7"></label>
+        <label class="f"><span>${T('Outer SP','SP верхнего')}</span><input id="ar-o" type="number" value="11"></label>
+        <label class="f"><span>${T('Inner SP','SP нижнего')}</span><input id="ar-i" type="number" value="7"></label>
       </div>
       <div class="calc-out" id="ar-out"></div>
     </div>
   </div>
   <div class="grid cols-2 mt">
     <div class="panel">
-      <h2>☠️ Критические травмы</h2>
-      <p class="small muted">2+ шестёрки на кубах урона атаки = крит. травма (+5 урона сразу по HP, броня не снижает). Брось 2d6 по локации; повторяй, пока не выпадет травма, которой у цели ещё нет.</p>
+      <h2>☠️ ${T('Critical Injuries','Критические травмы')}</h2>
+      <p class="small muted">${T('Two or more sixes on attack damage dice cause a Critical Injury (+5 damage directly to HP; Armor does not reduce it). Roll 2d6 for the location; repeat if the target already has that injury.','2+ шестёрки на кубах урона атаки = крит. травма (+5 урона сразу по HP, броня не снижает). Брось 2d6 по локации; повторяй, пока не выпадет травма, которой у цели ещё нет.')}</p>
       <div class="row mb">
-        <button class="btn-primary" id="ci-body">Бросить 2d6 — тело</button>
-        <button id="ci-head">Бросить 2d6 — голова</button>
+        <button class="btn-primary" id="ci-body">${T('Roll 2d6 — Body','Бросить 2d6 — тело')}</button>
+        <button id="ci-head">${T('Roll 2d6 — Head','Бросить 2d6 — голова')}</button>
       </div>
       <div id="ci-out" class="calc-out"></div>
-      <details class="guide-section small-details"><summary>Таблицы травм</summary>
-        ${critTableHtml(state.meta.crit_body, 'Тело')}
-        ${critTableHtml(state.meta.crit_head, 'Голова')}
+      <details class="guide-section small-details"><summary>${T('Injury Tables','Таблицы травм')}</summary>
+        ${critTableHtml(state.meta.crit_body, T('Body','Тело'))}
+        ${critTableHtml(state.meta.crit_head, T('Head','Голова'))}
       </details>
     </div>
     <div class="panel">
-      <h2>🔥 Автоогонь</h2>
-      <p class="small muted">Действие + 10 пуль. Навык Autofire, таблица автоогня. Урон = 2d6 × (бросок − DV), максимум множителя — у оружия.</p>
+      <h2>🔥 ${T('Autofire','Автоогонь')}</h2>
+      <p class="small muted">${T('An Action plus 10 bullets. Use the Autofire Skill and Autofire table. Damage is 2d6 × (Check − DV), limited by the weapon’s maximum multiplier.','Действие + 10 пуль. Навык Autofire, таблица автоогня. Урон = 2d6 × (бросок − DV), максимум множителя — у оружия.')}</p>
       <div class="grid cols-2">
-        <label class="f"><span>Тип оружия</span><select id="af-type">
+        <label class="f"><span>${T('Weapon Type','Тип оружия')}</span><select id="af-type">
           <option value="3">SMG / Machine Pistol (×3)</option>
           <option value="4">Assault Rifle / Machine Gun (×4)</option>
         </select></label>
-        <label class="f"><span>DV (по дистанции)</span><input id="af-dv" type="number" value="20" min="1"></label>
+        <label class="f"><span>${T('DV (by range)','DV (по дистанции)')}</span><input id="af-dv" type="number" value="20" min="1"></label>
       </div>
       <label class="f"><span>REF + Autofire</span><input id="af-mod" type="number" value="14"></label>
-      <button class="btn-primary mb" id="af-roll">Бросить атаку</button>
+      <button class="btn-primary mb" id="af-roll">${T('Roll Attack','Бросить атаку')}</button>
       <div id="af-out" class="calc-out"></div>
     </div>
   </div>
   <div class="grid cols-2 mt">
     <div class="panel">
-      <h2>💀 Спасбросок от смерти</h2>
-      <p class="small muted">В начале хода при смертельном ранении (HP &lt; 1): 1d10 ≤ BODY − штраф. 10 — всегда провал. Штраф растёт на +1 за каждый бросок.</p>
+      <h2>💀 ${T('Death Save','Спасбросок от смерти')}</h2>
+      <p class="small muted">${T('At the start of a Turn while Mortally Wounded (HP &lt; 1), roll 1d10 ≤ BODY − penalty. A 10 always fails. The penalty increases by 1 after every roll.','В начале хода при смертельном ранении (HP < 1): 1d10 ≤ BODY − штраф. 10 — всегда провал. Штраф растёт на +1 за каждый бросок.')}</p>
       <div class="grid cols-2">
         <label class="f"><span>BODY</span><input id="ds-body" type="number" value="6" min="1" max="15"></label>
-        <label class="f"><span>Штраф (Death Save Penalty)</span><input id="ds-pen" type="number" value="0" min="0" max="20"></label>
+        <label class="f"><span>${T('Death Save Penalty','Штраф (Death Save Penalty)')}</span><input id="ds-pen" type="number" value="0" min="0" max="20"></label>
       </div>
-      <button class="btn-primary mb" id="ds-roll">Бросить 1d10</button>
+      <button class="btn-primary mb" id="ds-roll">${T('Roll 1d10','Бросить 1d10')}</button>
       <div id="ds-out" class="calc-out"></div>
     </div>
     <div class="panel">
-      <h2>🩹 Состояния ранений</h2>
+      <h2>🩹 ${T('Wound States','Состояния ранений')}</h2>
       ${woundStatesHtml()}
     </div>
   </div>
   <div class="panel mt">
-    <h2>📏 Таблица DV (дальность)</h2>
+    <h2>📏 ${T('DV Table (Range)','Таблица DV (дальность)')}</h2>
     <div style="overflow-x:auto">${tableHtml(range)}</div>
   </div>
   <div class="panel mt">
-    <h2>🔥 Таблица DV (автоогонь)</h2>
+    <h2>🔥 ${T('DV Table (Autofire)','Таблица DV (автоогонь)')}</h2>
     <div style="overflow-x:auto">${tableHtml(auto)}</div>
   </div>`;
 
@@ -801,7 +812,7 @@ async function viewCalc(view) {
     const expr = $('#dc-expr').value.trim() || '3d6';
     const r = rollDice(expr);
     const out = $('#dc-out');
-    if (!r) { out.innerHTML = '<span style="color:var(--red)">Не понял формулу. Пример: 3d6 или 2d6+3</span>'; return; }
+    if (!r) { out.innerHTML = `<span style="color:var(--red)">${T('Formula not recognized. Example: 3d6 or 2d6+3','Не понял формулу. Пример: 3d6 или 2d6+3')}</span>`; return; }
     const sp = Math.max(0, num($('#dc-sp').value) || 0);
     const spEff = $('#dc-melee').checked ? Math.ceil(sp / 2) : sp;
     const net = r.total - spEff;
@@ -812,18 +823,18 @@ async function viewCalc(view) {
     let lines = [
       `<span class="dice-face">🎲 ${r.rolls.join(' + ')}${r.mod ? (r.mod > 0 ? ' + ' : ' − ') + Math.abs(r.mod) : ''} = ${r.total}</span>`,
     ];
-    if (crit) lines.push('<div class="crit-hit">🔥 Две шестёрки! Критическая травма (+5 HP, броня не снижает) — брось 2d6 в панели «Критические травмы».</div>');
+    if (crit) lines.push(`<div class="crit-hit">🔥 ${T('Two sixes! Critical Injury (+5 HP; Armor does not reduce it) — roll 2d6 in the Critical Injuries panel.','Две шестёрки! Критическая травма (+5 HP, броня не снижает) — брось 2d6 в панели «Критические травмы».')}</div>`);
     if (net > 0) {
-      lines.push(`<div>Урон: <b style="color:var(--magenta)">${net}</b> (SP ${sp}${spEff !== sp ? ' → ' + spEff : ''} вычтен). Броня пробита — SP абляируется на 1.</div>`);
+      lines.push(`<div>${T('Damage:','Урон:')} <b style="color:var(--magenta)">${net}</b> (${T('SP','SP')} ${sp}${spEff !== sp ? ' → ' + spEff : ''} ${T('subtracted','вычтен')}). ${T('Armor penetrated — SP ablates by 1.','Броня пробита — SP абляируется на 1.')}</div>`);
       const newHp = Math.max(0, hpCur - net);
       const sw = Math.ceil(hpMax / 2);
       let stateTxt;
-      if (newHp < 1) stateTxt = '<b style="color:var(--red)">Смертельное ранение (HP &lt; 1): −4 ко всем действиям, −6 MOVE. В начале хода — спасбросок от смерти. Стабилизация: Paramedic DV15 → 1 HP, без сознания.</b>';
-      else if (newHp <= sw) stateTxt = `<b style="color:var(--orange)">Серьёзное ранение (HP ≤ ½ = ${sw}): −2 ко всем действиям. Стабилизация: DV13.</b>`;
-      else stateTxt = '<b style="color:var(--green)">Лёгкое ранение: эффектов нет. Цель держится.</b>';
-      lines.push(`<div>HP цели: ${hpCur} → <b>${newHp}</b>. ${stateTxt}</div>`);
+      if (newHp < 1) stateTxt = `<b style="color:var(--red)">${T('Mortally Wounded (HP &lt; 1): −4 to all Actions and −6 MOVE. Make a Death Save at the start of each Turn. Stabilization: Paramedic DV15 → 1 HP and unconscious.','Смертельное ранение (HP &lt; 1): −4 ко всем действиям, −6 MOVE. В начале хода — спасбросок от смерти. Стабилизация: Paramedic DV15 → 1 HP, без сознания.')}</b>`;
+      else if (newHp <= sw) stateTxt = `<b style="color:var(--orange)">${T(`Seriously Wounded (HP ≤ half = ${sw}): −2 to all Actions. Stabilization: DV13.`,`Серьёзное ранение (HP ≤ ½ = ${sw}): −2 ко всем действиям. Стабилизация: DV13.`)}</b>`;
+      else stateTxt = `<b style="color:var(--green)">${T('Lightly Wounded: no effect. The target is still standing.','Лёгкое ранение: эффектов нет. Цель держится.')}</b>`;
+      lines.push(`<div>${T('Target HP:','HP цели:')} ${hpCur} → <b>${newHp}</b>. ${stateTxt}</div>`);
     } else {
-      lines.push(`<div>Броня держит (урон ${r.total} ≤ SP ${spEff}). HP не тратится, SP не абляируется.</div>`);
+      lines.push(`<div>${T(`Armor holds (damage ${r.total} ≤ SP ${spEff}). HP and SP are unchanged.`,`Броня держит (урон ${r.total} ≤ SP ${spEff}). HP не тратится, SP не абляируется.`)}</div>`);
     }
     out.innerHTML = lines.join('');
   };
@@ -833,7 +844,7 @@ async function viewCalc(view) {
   const doRoll = () => {
     const r = rollDice($('#dr-expr').value.trim() || '1d10');
     const out = $('#dr-out');
-    if (!r) { out.innerHTML = '<span style="color:var(--red)">Не понял формулу</span>'; return; }
+    if (!r) { out.innerHTML = `<span style="color:var(--red)">${T('Formula not recognized','Не понял формулу')}</span>`; return; }
     out.innerHTML = `<div class="calc-out"><span class="dice-face">🎲 ${r.rolls.join(', ')}</span> = <b>${r.total}</b></div>`;
   };
   $('#dr-roll').onclick = doRoll;
@@ -842,7 +853,7 @@ async function viewCalc(view) {
   const doArmor = () => {
     const o = num($('#ar-o').value) || 0, i = num($('#ar-i').value) || 0;
     const hi = Math.max(o, i);
-    $('#ar-out').innerHTML = `Действующий SP: <b>${hi}</b> <span class="muted small">(максимум из ${o} и ${i}; SP не складывается)</span>`;
+    $('#ar-out').innerHTML = `${T('Effective SP:','Действующий SP:')} <b>${hi}</b> <span class="muted small">${T(`(maximum of ${o} and ${i}; SP does not stack)`,`(максимум из ${o} и ${i}; SP не складывается)`)}</span>`;
   };
   ['ar-o', 'ar-i'].forEach(id => $('#' + id).oninput = doArmor);
 
@@ -851,15 +862,15 @@ async function viewCalc(view) {
     const r = rollDice('2d6');
     const row = (table || []).find(x => x[0] === r.total) || null;
     const out = $('#ci-out');
-    if (!row) { out.innerHTML = 'Бросок вне таблицы (2d6: 2–12)'; return; }
+    if (!row) { out.innerHTML = T('Roll is outside the table (2d6: 2–12)','Бросок вне таблицы (2d6: 2–12)'); return; }
     out.innerHTML = `
       <span class="dice-face">🎲 ${r.rolls.join(' + ')} = <b>${r.total}</b></span>
       <div><b style="color:var(--magenta)">${esc(row[1])}</b> <span class="tag">${esc(label)}</span></div>
       <div>${esc(row[2])}</div>
-      <div class="small muted">Quick Fix: ${esc(row[3])} · Treatment: ${esc(row[4])} · +5 HP сразу.</div>`;
+      <div class="small muted">Quick Fix: ${esc(row[3])} · Treatment: ${esc(row[4])} · ${T('+5 HP immediately.','+5 HP сразу.')}</div>`;
   };
-  $('#ci-body').onclick = () => doCrit(state.meta.crit_body, 'тело');
-  $('#ci-head').onclick = () => doCrit(state.meta.crit_head, 'голова');
+  $('#ci-body').onclick = () => doCrit(state.meta.crit_body, T('Body','тело'));
+  $('#ci-head').onclick = () => doCrit(state.meta.crit_head, T('Head','голова'));
 
   // автоогонь
   $('#af-roll').onclick = () => {
@@ -870,16 +881,16 @@ async function viewCalc(view) {
     const total = atk.total + mod;
     const margin = total - dv;
     const out = $('#af-out');
-    let lines = [`Атака: 🎲 ${atk.rolls[0]} + ${mod} = <b>${total}</b> против DV ${dv}.`];
+    let lines = [`${T('Attack:','Атака:')} 🎲 ${atk.rolls[0]} + ${mod} = <b>${total}</b> ${T('against DV','против DV')} ${dv}.`];
     if (margin <= 0) {
-      lines.push(`<div style="color:var(--red)">Промах (разница ${margin} ≤ 0). Пули ушли в стену.</div>`);
+      lines.push(`<div style="color:var(--red)">${T(`Miss (margin ${margin} ≤ 0). The bullets hit the wall.`,`Промах (разница ${margin} ≤ 0). Пули ушли в стену.`)}</div>`);
     } else {
       const dmg = rollDice('2d6');
       const mul = Math.min(margin, maxMul);
       const crit = dmg.rolls[0] === 6 && dmg.rolls[1] === 6;
-      lines.push(`Попадание! Множитель: min(${margin}, ${maxMul}) = <b>${mul}</b>.`);
-      lines.push(`<div>Урон автоогня: 2d6 (${dmg.rolls.join(' + ')}) × ${mul} = <b style="color:var(--magenta)">${dmg.total * mul}</b> (до вычета SP).</div>`);
-      if (crit) lines.push('<div class="crit-hit">🔥 Обе шестёрки на кубах урона — плюс крит. травма!</div>');
+      lines.push(`${T('Hit! Multiplier:','Попадание! Множитель:')} min(${margin}, ${maxMul}) = <b>${mul}</b>.`);
+      lines.push(`<div>${T('Autofire damage:','Урон автоогня:')} 2d6 (${dmg.rolls.join(' + ')}) × ${mul} = <b style="color:var(--magenta)">${dmg.total * mul}</b> ${T('(before SP).','(до вычета SP).')}</div>`);
+      if (crit) lines.push(`<div class="crit-hit">🔥 ${T('Both damage dice are sixes — add a Critical Injury!','Обе шестёрки на кубах урона — плюс крит. травма!')}</div>`);
     }
     out.innerHTML = lines.join('');
   };
@@ -891,11 +902,11 @@ async function viewCalc(view) {
     const r = rollDice('1d10');
     const out = $('#ds-out');
     if (r.rolls[0] === 10) {
-      out.innerHTML = `🎲 <b>10</b> — <b style="color:var(--red)">автоматический провал. Ты мёртв.</b>`;
+      out.innerHTML = `🎲 <b>10</b> — <b style="color:var(--red)">${T('automatic failure. You are dead.','автоматический провал. Ты мёртв.')}</b>`;
     } else if (r.rolls[0] <= body - pen) {
-      out.innerHTML = `🎲 ${r.rolls[0]} ≤ ${body}${pen ? ' − ' + pen : ''} — <b style="color:var(--green)">держишься</b>. Следующий бросок со штрафом +1 (текущий станет ${pen + 1}).`;
+      out.innerHTML = `🎲 ${r.rolls[0]} ≤ ${body}${pen ? ' − ' + pen : ''} — <b style="color:var(--green)">${T('you hold on','держишься')}</b>. ${T(`The next roll has +1 penalty (new penalty ${pen + 1}).`,`Следующий бросок со штрафом +1 (текущий станет ${pen + 1}).`)}`;
     } else {
-      out.innerHTML = `🎲 ${r.rolls[0]} > ${body}${pen ? ' − ' + pen : ''} — <b style="color:var(--red)">провал. Ты мёртв.</b>`;
+      out.innerHTML = `🎲 ${r.rolls[0]} > ${body}${pen ? ' − ' + pen : ''} — <b style="color:var(--red)">${T('failure. You are dead.','провал. Ты мёртв.')}</b>`;
     }
   };
 
@@ -905,16 +916,16 @@ async function viewCalc(view) {
 function critTableHtml(table, label) {
   if (!table || !table.length) return '';
   return `<div class="table-scroll"><table class="rtable guide-table">
-    <tr><th>2d6</th><th>Травма (${esc(label)})</th><th>Эффект</th><th>Quick Fix</th><th>Treatment</th></tr>
+    <tr><th>2d6</th><th>${T('Injury','Травма')} (${esc(label)})</th><th>${T('Effect','Эффект')}</th><th>Quick Fix</th><th>Treatment</th></tr>
     ${table.map(r => `<tr><td><b>${r[0]}</b></td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td><td>${esc(r[4])}</td></tr>`).join('')}
   </table></div>`;
 }
 
 function woundStatesHtml() {
   const ws = state.meta.wound_states || [];
-  if (!ws.length) return '<div class="muted">Нет данных</div>';
+  if (!ws.length) return `<div class="muted">${T('No data','Нет данных')}</div>`;
   return `<div class="table-scroll"><table class="rtable guide-table">
-    <tr><th>Состояние</th><th>Порог</th><th>Эффект</th><th>Стабилизация</th></tr>
+    <tr><th>${T('State','Состояние')}</th><th>${T('Threshold','Порог')}</th><th>${T('Effect','Эффект')}</th><th>${T('Stabilization','Стабилизация')}</th></tr>
     ${ws.map(r => `<tr><td><b>${esc(r[0])}</b></td><td>${esc(r[1])}</td><td>${esc(r[2])}</td><td>${esc(r[3])}</td></tr>`).join('')}
   </table></div>`;
 }
@@ -985,9 +996,19 @@ const ROLE_ABILITIES = {
   },
 };
 
+function roleAbilityDisplayName(role) {
+  const ability = ROLE_ABILITIES[role] || {};
+  return APP_I18N.current() === 'en' ? (state.meta.roles[role] || ability.name || '') : (ability.name || state.meta.roles[role] || '');
+}
+function roleAbilityDisplayDescription(role) {
+  const ability = ROLE_ABILITIES[role] || {};
+  const rules = (typeof ROLE_RULES_V3 !== 'undefined' && ROLE_RULES_V3[role]) || {};
+  return APP_I18N.current() === 'en' ? ((rules.en && `${rules.en.identity} ${rules.en.rank4}`) || '') : (ability.desc || '');
+}
+
 /* ---------- Lifepath: 13 пунктов (CP:R стр. 43–48) ---------- */
 
-function displayKnownValue(value) { return APP_I18N.current() === 'en' ? (LEGACY_DISPLAY_EN[value] || value) : value; }
+function displayKnownValue(value) { return APP_I18N.current() === 'en' ? (LEGACY_DISPLAY_EN[value] || APP_I18N.translate(value)) : value; }
 function lpFields() {
   return MERGED_LIFEPATH_FIELDS.map(field => [field.key, APP_I18N.current() === 'en' ? (LIFEPATH_LABEL_EN[field.key] || field.label) : field.label, field.options]);
 }
@@ -1011,12 +1032,12 @@ function lifepathNarrative(lp, role, roleLp) {
   }
   // Старые персонажи сохраняют социальные поля прежних схем, хотя новый мастер их больше не требует.
   for (const [key, label] of [...CORE_LIFEPATH_FIELDS, ...CEMK_LIFEPATH_FIELDS]) {
-    if (lp && lp[key] && !shown.has(key) && !LIFEPATH_KEY_ALIASES[key]) { out.push([label, lp[key]]); shown.add(key); }
+    if (lp && lp[key] && !shown.has(key) && !LIFEPATH_KEY_ALIASES[key]) { out.push([APP_I18N.current()==='en' ? (LIFEPATH_LABEL_EN[key] || APP_I18N.translate(label)) : label, lp[key]]); shown.add(key); }
   }
   for (const [key, label] of lpRoleField(role)) {
-    if (roleLp && roleLp[key]) out.push(['Роль · ' + label, roleLp[key]]);
+    if (roleLp && roleLp[key]) out.push([T('Role · ','Роль · ') + label, roleLp[key]]);
   }
-  if ((!roleLp || !Object.keys(roleLp).length) && lp && lp.rolebg) out.push(['Ролевая предыстория', lp.rolebg]);
+  if ((!roleLp || !Object.keys(roleLp).length) && lp && lp.rolebg) out.push([T('Role Background','Ролевая предыстория'), lp.rolebg]);
   return out;
 }
 
@@ -1735,7 +1756,7 @@ function wizStepSkillsHtml() {
   }).join('');
   const ability=wiz.role?ROLE_ABILITIES[wiz.role]:null;
   return `<div class="sticky-budget panel accent mb"><div><b>${T('Allocated','Распределено')}: <span id="wiz-sk-spent">${spent}</span> / ${budget}</b><span class="budget-remaining ${remaining===0?'ok':''}">${T('Points remaining','Осталось')}: ${remaining}</span></div><b>${T('Required Skills','Обязательные навыки')}: ${requiredDone}/${required.size}</b></div>
-    ${ability?`<div class="panel role-ability-banner mb"><div><small>${T('Role Ability — not a Skill','Ролевая способность — не навык')}</small><h3>${esc(ability.name)} · Rank 4</h3></div><button class="btn-sm" onclick="wizGoTo(1)">${T('View Role','Открыть роль')}</button></div>`:''}
+    ${ability?`<div class="panel role-ability-banner mb"><div><small>${T('Role Ability — not a Skill','Ролевая способность — не навык')}</small><h3>${esc(roleAbilityDisplayName(wiz.role))} · Rank 4</h3></div><button class="btn-sm" onclick="wizGoTo(1)">${T('View Role','Открыть роль')}</button></div>`:''}
     <div class="skill-tools mb"><input id="wiz-skill-q" value="${esc(wiz.skillQ||'')}" placeholder="${T('Search Skills…','Поиск навыков…')}"><div class="segmented">${[['all','All','Все'],['required','Required','Обязательные'],['recommended','Recommended','Рекомендуемые'],['allocated','Allocated','Купленные'],['x2','×2','×2']].map(([id,en,ru])=>`<button data-skill-filter="${id}" class="${filter===id?'active':''}">${T(en,ru)}</button>`).join('')}</div></div>
     ${groupHtml||`<div class="empty">${T('No Skills match these filters.','Нет навыков по выбранным фильтрам.')}</div>`}
     <p class="small muted">${T('Parent pools may retain unallocated levels. Child levels may never exceed the purchased parent pool. Cultural Language 4 is free.','В parent-pool можно оставлять свободные уровни. Сумма дочерних уровней не превышает купленный пул. Cultural Language 4 бесплатен.')}</p>`;
@@ -2168,7 +2189,7 @@ function fullSkillsTableHtml(char, derived, interactive) {
       }
     }
   }
-  return `<div class="skill-table-head"><span>Навык</span><span>STAT</span><span>LVL</span><span>BASE</span><span></span></div><div class="skill-list full-skill-list">${rows.join('')}</div>`;
+  return `<div class="skill-table-head"><span>${T('Skill','Навык')}</span><span>STAT</span><span>LVL</span><span>BASE</span><span></span></div><div class="skill-list full-skill-list">${rows.join('')}</div>`;
 }
 
 function chromeGroupedHtml(items, withInfo) {
@@ -2474,20 +2495,20 @@ async function viewSheet(id) {
   const lpRows = ch.lifepath ? lifepathNarrative(ch.lifepath, ch.role, ch.role_lifepath, ch.lifepath_mode) : [];
   const armor = ch.armor || {};
   const armorSlots = [
-    [armor.head, 'Голова'],
-    [armor.body || armor.body_outer || armor.body_inner, 'Тело'],
+    [armor.head, T('Head','Голова')],
+    [armor.body || armor.body_outer || armor.body_inner, T('Body','Тело')],
   ].filter(([piece]) => piece);
 
   view.innerHTML = `
   <div class="page-head official-sheet-head">
     ${ch.portrait_media_id?`<img class="sheet-portrait" src="/api/media/${esc(ch.portrait_media_id)}" alt="${esc(ch.handle||'Character')}">`:''}
-    <div><h1>📄 ${esc(ch.handle || 'Безымянный')}${ch.first_name || ch.last_name ? ` · ${esc([ch.first_name, ch.last_name].filter(Boolean).join(' '))}` : ''}</h1>
-      <div class="sub">Character Sheet · ${(ch.roles||[]).map(role=>`${esc(role.name)} ${role.rank}${role.name===ch.active_role?' ★':''}`).join(' · ')||`${esc(ch.role||'—')} ${ch.role_rank||4}`} · ${T('owner','владелец')}: ${esc(c.owner_name||'—')}${ch.player?' · '+T('player','игрок')+': '+esc(ch.player):''}</div></div>
+    <div><h1>📄 <span class="user-content">${esc(ch.handle || T('Unnamed','Безымянный'))}${ch.first_name || ch.last_name ? ` · ${esc([ch.first_name, ch.last_name].filter(Boolean).join(' '))}` : ''}</span></h1>
+      <div class="sub">Character Sheet · ${(ch.roles||[]).map(role=>`${esc(role.name)} ${role.rank}${role.name===ch.active_role?' ★':''}`).join(' · ')||`${esc(ch.role||'—')} ${ch.role_rank||4}`} · ${T('owner','владелец')}: <span class="user-content">${esc(c.owner_name||'—')}</span>${ch.player?' · '+T('player','игрок')+': <span class="user-content">'+esc(ch.player)+'</span>':''}</div></div>
     <div class="row">
       <button id="sheet-back">← ${T('Characters','Персонажи')}</button>
       <button class="btn-sm" id="sheet-print">🖨️ Print</button><button class="btn-sm" id="sheet-json">⬇ JSON</button>
       ${mine ? `<label class="btn-sm">🖼️ Portrait<input id="sheet-portrait-file" type="file" accept="image/jpeg,image/png,image/webp" hidden></label><button class="btn-primary" id="sheet-edit">✏️ ${T('Edit','Редактировать')}</button>
-                <button class="btn-danger" id="sheet-del">🗑️ Удалить</button>` : ''}
+                <button class="btn-danger" id="sheet-del">🗑️ ${T('Delete','Удалить')}</button>` : ''}
     </div>
   </div>
 
@@ -2499,8 +2520,8 @@ async function viewSheet(id) {
       <span class="dstat"><span class="v">${d.seriously_wounded != null ? '≤ ' + d.seriously_wounded : '—'}</span><span class="k">Серьёзная рана</span></span>
       <span class="dstat ${d.humanity_max != null && d.humanity_cur <= 20 ? 'warn' : ''}"><span class="v">${d.humanity_max != null ? d.humanity_cur + ' / ' + d.humanity_max : '—'}</span><span class="k">Человечность</span></span>
       <span class="dstat ${d.emp_cur != null && d.emp_cur <= 2 ? 'warn' : ''}"><span class="v">${d.emp_cur != null ? d.emp_cur : '—'}</span><span class="k">EMP</span></span>
-      <span class="dstat"><span class="v">${d.sp_body != null ? d.sp_body : '—'}</span><span class="k">Броня SP тело</span></span>
-      <span class="dstat"><span class="v">${d.sp_head != null ? d.sp_head : '—'}</span><span class="k">Броня SP голова</span></span>
+      <span class="dstat"><span class="v">${d.sp_body != null ? d.sp_body : '—'}</span><span class="k">${T('Body Armor SP','Броня SP тело')}</span></span>
+      <span class="dstat"><span class="v">${d.sp_head != null ? d.sp_head : '—'}</span><span class="k">${T('Head Armor SP','Броня SP голова')}</span></span>
       <span class="dstat"><span class="v">${d.death_save != null ? d.death_save : '—'}</span><span class="k">Death Save</span></span>
       <span class="dstat resource-stat"><span class="v">${money(ch.cash || 0)}</span><span class="k">Cash</span>${mine?`<span class="resource-actions"><button data-resource="cash|-100">−100</button><button data-resource="cash|-10">−10</button><button data-resource="cash|10">+10</button><button data-resource="cash|100">+100</button></span>`:''}</span>
       <span class="dstat"><span class="v">${ch.ip_available||0}</span><span class="k">Improvement Points</span>${mine?`<button class="btn-sm" id="sheet-improve">Improve</button>`:(state.me&&state.me.is_gm?`<button class="btn-sm" id="sheet-ip-gm">Adjust IP</button>`:'')}</span>
@@ -2512,16 +2533,16 @@ async function viewSheet(id) {
   <div class="grid cols-2 sheet-layout" style="gap:18px">
     <div>
       <div class="panel mb" id="sheet-overview">
-        <h2>🎭 Roles & Abilities</h2>${(ch.roles||[]).map(role=>{const ability=ROLE_ABILITIES[role.name]||{name:state.meta.roles[role.name],desc:''};return `<div class="role-sheet-entry ${role.name===ch.active_role?'active':''}"><div class="row"><span class="tag role">${esc(role.name)} · Rank ${role.rank}</span>${role.primary?'<span class="chip">Primary</span>':''}${role.name===ch.active_role?'<span class="chip">Active</span>':''}</div><h3>⚡ ${esc(ability.name)}</h3>${roleSetupSummary(role.name,role.setup)?`<div class="chip">${esc(roleSetupSummary(role.name,role.setup))}</div>`:''}<p class="small muted">${esc(ability.desc)}</p></div>`;}).join('')}
+        <h2>🎭 Roles & Abilities</h2>${(ch.roles||[]).map(role=>`<div class="role-sheet-entry ${role.name===ch.active_role?'active':''}"><div class="row"><span class="tag role">${esc(role.name)} · Rank ${role.rank}</span>${role.primary?'<span class="chip">Primary</span>':''}${role.name===ch.active_role?'<span class="chip">Active</span>':''}</div><h3>⚡ ${esc(roleAbilityDisplayName(role.name))}</h3>${roleSetupSummary(role.name,role.setup)?`<div class="chip">${esc(roleSetupSummary(role.name,role.setup))}</div>`:''}<p class="small muted">${esc(roleAbilityDisplayDescription(role.name))}</p></div>`).join('')}
       </div>
       <div class="panel mb">
-        <h2>📊 Характеристики</h2>
+        <h2>📊 ${T('Characteristics','Характеристики')}</h2>
         <div class="statgrid">${state.meta.stats.map(s => `
           <div class="stat"><div class="v">${(ch.stats || {})[s] != null ? ch.stats[s] : '—'}</div><div class="k">${s}</div></div>`).join('')}</div>
       </div>
       <div class="panel mb" id="sheet-skills">
         <h2>🎯 Skills</h2>
-        <div class="small muted mb">STAT · LVL · BASE = текущий STAT + LVL; EMP учитывает Humanity Loss.</div>
+        <div class="small muted mb">${T('STAT · LVL · BASE = current STAT + LVL; EMP reflects Humanity Loss.','STAT · LVL · BASE = текущий STAT + LVL; EMP учитывает Humanity Loss.')}</div>
         ${fullSkillsTableHtml(ch, d, true)}
       </div>
       <div class="panel mb" id="sheet-cyberware">
@@ -2535,8 +2556,8 @@ async function viewSheet(id) {
             ${itemMechanicChips(i)}
             ${i.sp != null && !(i.mechanics || {}).sp ? `<span class="chip">SP ${i.sp}</span>` : ''}
             <span class="muted small">${money((i.price || 0) * (i.qty || 1))}</span><button class="info-btn" data-owned-item="${i._sheetIndex}">i</button>
-          </div>`, 'Снаряжение') : '<div class="muted small">Пусто. Совсем.</div>'}
-        ${armorSlots.length ? `<h3 class="mt">🛡️ Надетая броня</h3>${armorSlots.map(([piece, ru]) => `
+          </div>`, T('Gear','Снаряжение')) : `<div class="muted small">${T('Empty.','Пусто. Совсем.')}</div>`}
+        ${armorSlots.length ? `<h3 class="mt">🛡️ ${T('Equipped Armor','Надетая броня')}</h3>${armorSlots.map(([piece, ru]) => `
           <div class="inv-row"><span class="iname">${ru}: ${esc(piece.name)}</span>
             <span class="chip">SP ${piece.sp}</span>
             ${Object.values(armorPenalties(piece)).some(v => v) ? `<span class="chip">${Object.entries(armorPenalties(piece)).map(([k,v]) => k + ' ' + v).join(' · ')}</span>` : ''}
@@ -2547,13 +2568,13 @@ async function viewSheet(id) {
       <div class="panel mb" id="sheet-lifepath">
         <h2>🧬 Lifepath</h2>
         ${lpRows.length ? `<div class="kv">${lpRows.map(([k, v]) => `<b>${esc(k)}</b><span>${esc(displayKnownValue(v))}</span>`).join('')}</div>`
-          : (ch.background ? `<div class="desc" style="white-space:pre-wrap">${esc(ch.background)}</div>` : '<div class="muted small">Lifepath не заполнен.</div>')}
+          : (ch.background ? `<div class="desc user-content" style="white-space:pre-wrap">${esc(ch.background)}</div>` : `<div class="muted small">${T('Lifepath is incomplete.','Lifepath не заполнен.')}</div>`)}
       </div>
-      ${ch.appearance ? `<div class="panel mb"><h2>🕶️ Внешность</h2><div class="desc">${esc(ch.appearance)}</div></div>` : ''}
-      ${ch.languages ? `<div class="panel mb"><h2>🗣️ Языки</h2><div class="desc">${esc(ch.languages)}</div></div>` : ''}
-      ${(ch.lifestyle || ch.housing) ? `<div class="panel mb"><h2>🏠 Жизнь</h2><div class="kv"><b>Lifestyle</b><span>${esc(ch.lifestyle || '—')}</span><b>Жильё</b><span>${esc(ch.housing || '—')}</span></div></div>` : ''}
-      ${lpRows.length && ch.background ? `<div class="panel mb"><h2>📖 Предыстория</h2><div class="desc" style="white-space:pre-wrap">${esc(ch.background)}</div></div>` : ''}
-      <div class="panel mb"><h2>📝 Notes</h2>${mine?`<textarea id="sheet-notes" maxlength="20000" rows="8">${esc(ch.notes||'')}</textarea><div class="small muted" id="sheet-notes-status">Autosaves after typing</div>`:`<div class="desc" style="white-space:pre-wrap">${esc(ch.notes||'—')}</div>`}</div>
+      ${ch.appearance ? `<div class="panel mb"><h2>🕶️ ${T('Appearance','Внешность')}</h2><div class="desc user-content">${esc(ch.appearance)}</div></div>` : ''}
+      ${ch.languages ? `<div class="panel mb"><h2>🗣️ ${T('Languages','Языки')}</h2><div class="desc user-content">${esc(ch.languages)}</div></div>` : ''}
+      ${(ch.lifestyle || ch.housing) ? `<div class="panel mb"><h2>🏠 ${T('Lifestyle','Жизнь')}</h2><div class="kv"><b>Lifestyle</b><span class="user-content">${esc(ch.lifestyle || '—')}</span><b>${T('Housing','Жильё')}</b><span class="user-content">${esc(ch.housing || '—')}</span></div></div>` : ''}
+      ${lpRows.length && ch.background ? `<div class="panel mb"><h2>📖 ${T('Background','Предыстория')}</h2><div class="desc user-content" style="white-space:pre-wrap">${esc(ch.background)}</div></div>` : ''}
+      <div class="panel mb"><h2>📝 Notes</h2>${mine?`<textarea id="sheet-notes" maxlength="20000" rows="8">${esc(ch.notes||'')}</textarea><div class="small muted" id="sheet-notes-status">Autosaves after typing</div>`:`<div class="desc user-content" style="white-space:pre-wrap">${esc(ch.notes||'—')}</div>`}</div>
     </div>
   </div>`;
 
@@ -2609,7 +2630,7 @@ async function viewCharacters(view) {
     return `
     <div class="card" data-id="${c.id}">
       <div class="head row" style="justify-content:space-between">
-        <h3 style="cursor:pointer" class="open">${esc(ch.handle || 'Безымянный')}</h3>
+        <h3 style="cursor:pointer" class="open user-content">${esc(ch.handle || T('Unnamed','Безымянный'))}</h3>
         <span class="muted small">${c.public ? '👁 публичный' : '🔒 приватный'}</span>
       </div>
       <div class="chips">
@@ -2641,8 +2662,8 @@ async function viewCharacters(view) {
 /* ============================== редактор персонажа ============================== */
 
 const EDITOR_TABS = [
-  ['base', 'Основное'], ['stats', 'Характеристики'], ['skills', 'Навыки'],
-  ['gear', 'Снаряжение и оружие'], ['chrome', 'Кибернетика'], ['armor', 'Броня'], ['notes', 'Прочее'],
+  ['base', 'General', 'Основное'], ['stats', 'Characteristics', 'Характеристики'], ['skills', 'Skills', 'Навыки'],
+  ['gear', 'Gear & Weapons', 'Снаряжение и оружие'], ['chrome', 'Cyberware', 'Кибернетика'], ['armor', 'Armor', 'Броня'], ['notes', 'Other', 'Прочее'],
 ];
 
 async function viewEditor(id) {
@@ -2663,16 +2684,16 @@ async function viewEditor(id) {
 
   view.innerHTML = `
   <div class="page-head">
-    <div><h1 id="ed-title">${payload.id ? '✏️ Редактор: ' + esc(payload.data.handle || '…') : '🧬 Новый эджраннер'}</h1>
+    <div><h1 id="ed-title">${payload.id ? `✏️ ${T('Editor:','Редактор:')} <span class="user-content">${esc(payload.data.handle || '…')}</span>` : `🧬 ${T('New Edgerunner','Новый эджраннер')}`}</h1>
       <div class="sub" id="ed-sub"></div></div>
     <div class="row">
-      <button onclick="location.hash='#/characters'">← К моим</button>
-      <button class="btn-primary" id="ed-save">💾 Сохранить</button>
+      <button onclick="location.hash='#/characters'">← ${T('My Characters','К моим')}</button>
+      <button class="btn-primary" id="ed-save">💾 ${T('Save','Сохранить')}</button>
     </div>
   </div>
   <div class="panel accent mb" id="ed-derived"></div>
   <div class="editor-tabs" id="ed-tabs">
-    ${EDITOR_TABS.map(([k, ru]) => `<button data-tab="${k}" class="${state.editor.tab === k ? 'active' : ''}">${ru}</button>`).join('')}
+    ${EDITOR_TABS.map(([k, en, ru]) => `<button data-tab="${k}" class="${state.editor.tab === k ? 'active' : ''}">${T(en,ru)}</button>`).join('')}
   </div>
   <div id="ed-body"></div>`;
 
@@ -2696,20 +2717,20 @@ function renderDerived() {
   if (!ed) return;
   const d = derive(ed.char);
   const c = ed.char;
-  $('#ed-title').textContent = (ed.id ? '✏️ Редактор: ' : '🧬 Новый: ') + (c.handle || 'Безымянный');
-  $('#ed-sub').innerHTML = `${esc(c.role || '—')} · ${money(c.cash)} · ${c.public ? '👁 публичный' : '🔒 приватный'}`;
+  $('#ed-title').innerHTML = `${ed.id ? `✏️ ${T('Editor:','Редактор:')}` : `🧬 ${T('New:','Новый:')}`} <span class="user-content">${esc(c.handle || T('Unnamed','Безымянный'))}</span>`;
+  $('#ed-sub').innerHTML = `${esc(c.role || '—')} · ${money(c.cash)} · ${c.public ? T('👁 public','👁 публичный') : T('🔒 private','🔒 приватный')}`;
   const box = $('#ed-derived');
   const stat = (k, v, warn) => `<span class="dstat${warn ? ' warn' : ''}"><span class="v">${v == null ? '—' : v}</span><span class="k">${k}</span></span>`;
   box.innerHTML = `<div class="derived">
-    ${stat('HP макс', d.hp_max)}
-    ${stat('Текущее HP', (() => { let h = c.hp_cur == null ? d.hp_max : c.hp_cur; return h; })())}
-    ${stat('Серьёзная рана ≤', d.seriously_wounded)}
-    ${stat('Спасбросок смерти', d.death_save)}
-    ${stat('Человечность', d.humanity_max != null ? d.humanity_cur + '/' + d.humanity_max : null, d.humanity_max != null && d.humanity_cur <= 20)}
-    ${stat('EMP текущий', d.emp_cur, d.emp_cur != null && d.emp_cur <= 2)}
-    ${stat('SP тело', d.sp_body)}
-    ${stat('SP голова', d.sp_head)}
-    ${stat('Штраф брони', Object.entries(d.armor_penalties || {}).map(([k,v]) => `${k} ${v}`).join(' · '), Object.values(d.armor_penalties || {}).some(v => v < 0))}
+    ${stat(T('Max HP','HP макс'), d.hp_max)}
+    ${stat(T('Current HP','Текущее HP'), (() => { let h = c.hp_cur == null ? d.hp_max : c.hp_cur; return h; })())}
+    ${stat(T('Seriously Wounded ≤','Серьёзная рана ≤'), d.seriously_wounded)}
+    ${stat(T('Death Save','Спасбросок смерти'), d.death_save)}
+    ${stat(T('Humanity','Человечность'), d.humanity_max != null ? d.humanity_cur + '/' + d.humanity_max : null, d.humanity_max != null && d.humanity_cur <= 20)}
+    ${stat(T('Current EMP','EMP текущий'), d.emp_cur, d.emp_cur != null && d.emp_cur <= 2)}
+    ${stat(T('Body SP','SP тело'), d.sp_body)}
+    ${stat(T('Head SP','SP голова'), d.sp_head)}
+    ${stat(T('Armor Penalty','Штраф брони'), Object.entries(d.armor_penalties || {}).map(([k,v]) => `${k} ${v}`).join(' · '), Object.values(d.armor_penalties || {}).some(v => v < 0))}
   </div>
   ${d.hum_cut ? `<div class="small muted" style="margin-top:6px">Срез макс. человечности за хром: −${d.hum_cut} (по 2 за хром, 4 за боргвер; HL: −${d.hl_total || 0}).</div>` : ''}
   ${d.emp_cur != null && d.emp_cur <= 2 ? '<div class="small" style="color:var(--magenta);margin-top:6px">⚠️ EMP ≤ 2 — на грани киберпсихоза. Осторожно с хромом.</div>' : ''}`;
@@ -2738,34 +2759,34 @@ function renderEditorTab() {
   const box = $('#ed-body');
   const c = ed.char;
   if (ed.tab === 'base') {
-    const roleDesc = (state.meta.role_desc || {})[c.role] || '';
+    const roleDesc = ((APP_I18N.current() === 'en' ? state.meta.role_desc_en : state.meta.role_desc) || {})[c.role] || '';
     const roleAb = state.meta.roles[c.role] || '';
     box.innerHTML = `
     <div class="panel">
       <div class="grid cols-2">
-        <label class="f"><span>Псевдоним (Handle) *</span><input id="f-handle" maxlength="60" value="${esc(c.handle)}" placeholder="Выхлоп, Neon, Slim…"></label>
+        <label class="f"><span>${T('Handle *','Псевдоним (Handle) *')}</span><input id="f-handle" maxlength="60" value="${esc(c.handle)}" placeholder="${T('Neon, Slim, Switch…','Выхлоп, Neon, Slim…')}"></label>
         <label class="f"><span>Имя (необязательно)</span><input id="f-first-name" maxlength="60" value="${esc(c.first_name || '')}"></label>
         <label class="f"><span>Фамилия (необязательно)</span><input id="f-last-name" maxlength="60" value="${esc(c.last_name || '')}"></label>
         <label class="f"><span>Роль</span><select id="f-role">
-          ${Object.keys(state.meta.roles).map(r => `<option value="${r}" ${c.role === r ? 'selected' : ''}>${r} — ${esc(state.meta.role_ru[r])}</option>`).join('')}
+          ${Object.keys(state.meta.roles).map(r => `<option value="${r}" ${c.role === r ? 'selected' : ''}>${r}${APP_I18N.current()==='ru' ? ' — '+esc(state.meta.role_ru[r]) : ''}</option>`).join('')}
         </select></label>
-        <label class="f"><span>Ранг роли (старт — 4)</span><input id="f-rank" type="number" min="1" max="10" value="${c.role_rank || 4}"></label>
+        <label class="f"><span>${T('Role Rank (starts at 4)','Ранг роли (старт — 4)')}</span><input id="f-rank" type="number" min="1" max="10" value="${c.role_rank || 4}"></label>
         <label class="f"><span>Игрок (реальное имя)</span><input id="f-player" maxlength="60" value="${esc(c.player || '')}"></label>
       </div>
-      <div class="small muted mb" id="f-role-note">${roleDesc ? esc(roleDesc) + ' Способность: <b>' + esc(roleAb) + '</b>.' : ''}</div>
+      <div class="small muted mb" id="f-role-note">${roleDesc ? esc(roleDesc) + ` ${T('Ability:','Способность:')} <b>` + esc(roleAb) + '</b>.' : ''}</div>
       <label class="f"><span>Внешность</span><textarea id="f-appearance" maxlength="4000">${esc(c.appearance || '')}</textarea></label>
       <label class="f"><span>Биография / предыстория</span><textarea id="f-background" maxlength="4000">${esc(c.background || '')}</textarea></label>
       <label class="f"><span>Счёт (€$)</span><input id="f-cash" type="number" min="0" step="50" value="${c.cash || 0}"></label>
-      <p class="small muted">Старт по гайду: <b>${state.meta.start_cash_gear ?? 2550}€$</b> на оружие/броню/снаряжение/хром + <b>${state.meta.start_cash_fashion ?? 800}€$</b> отдельно на Fashion и Fashionware. Подробнее — в <a href="#/guides">гайдах</a>.</p>
+      <p class="small muted">${T('Starting budgets:','Старт по гайду:')} <b>${state.meta.start_cash_gear ?? 2550}€$</b> ${T('for Weapons, Armor, Gear, and Cyberware, plus','на оружие/броню/снаряжение/хром +')} <b>${state.meta.start_cash_fashion ?? 800}€$</b> ${T('separately for Fashion and Fashionware. See the','отдельно на Fashion и Fashionware. Подробнее — в')} <a href="#/guides">${T('guides','гайдах')}</a>.</p>
     </div>`;
     $('#f-handle').oninput = (e) => { c.handle = e.target.value; edChanged(); };
     $('#f-first-name').oninput = (e) => { c.first_name = e.target.value; edChanged(); };
     $('#f-last-name').oninput = (e) => { c.last_name = e.target.value; edChanged(); };
     $('#f-role').onchange = (e) => {
       c.role = e.target.value; edChanged();
-      const rd = (state.meta.role_desc || {})[c.role] || '';
+      const rd = ((APP_I18N.current() === 'en' ? state.meta.role_desc_en : state.meta.role_desc) || {})[c.role] || '';
       const ra = state.meta.roles[c.role] || '';
-      $('#f-role-note').innerHTML = rd ? esc(rd) + ' Способность: <b>' + esc(ra) + '</b>.' : '';
+      $('#f-role-note').innerHTML = rd ? esc(rd) + ` ${T('Ability:','Способность:')} <b>` + esc(ra) + '</b>.' : '';
     };
     $('#f-rank').oninput = (e) => { c.role_rank = num(e.target.value) || 4; edChanged(); };
     $('#f-player').oninput = (e) => { c.player = e.target.value; edChanged(); };
@@ -2780,9 +2801,9 @@ function renderEditorTab() {
     box.innerHTML = `
     <div class="panel">
       <div class="row mb">
-        <span class="muted small">Стандарт создания: <b>${budget} очков</b>, каждая стата <b>2–8</b>. Потрачено: <b id="st-spent" class="${spent !== budget ? 'warn-text' : ''}">${spent}</b>${spent > budget ? ' — перебор!' : ''}</span>
-        <button class="btn-sm" id="st-roll">🎲 Случайно (массив 8,7,7,6,6,6,6,6,5,5)</button>
-        <button class="btn-sm" id="st-reset">Сбросить все на 5</button>
+        <span class="muted small">${T('Creation standard:','Стандарт создания:')} <b>${budget} ${T('points','очков')}</b>, ${T('each Characteristic','каждая стата')} <b>2–8</b>. ${T('Spent:','Потрачено:')} <b id="st-spent" class="${spent !== budget ? 'warn-text' : ''}">${spent}</b>${spent > budget ? T(' — over budget!',' — перебор!') : ''}</span>
+        <button class="btn-sm" id="st-roll">🎲 ${T('Random (array 8,7,7,6,6,6,6,6,5,5)','Случайно (массив 8,7,7,6,6,6,6,6,5,5)')}</button>
+        <button class="btn-sm" id="st-reset">${T('Reset all to 5','Сбросить все на 5')}</button>
       </div>
       <div class="statgrid mb">
         ${state.meta.stats.map(s => {
@@ -2795,7 +2816,7 @@ function renderEditorTab() {
         <label class="f"><span>Текущее HP (пусто = максимум)</span><input id="f-hpcur" type="number" min="0" value="${c.hp_cur != null ? c.hp_cur : ''}" placeholder="авто"></label>
         <label class="f"><span>Текущая человечность (пусто = максимум)</span><input id="f-humcur" type="number" min="0" value="${c.humanity_cur != null ? c.humanity_cur : ''}" placeholder="авто"></label>
       </div>
-      <p class="small muted">HP = 10 + 5×⌈(BODY+WILL)/2⌉. Текущая Humanity при установке уменьшается на HL. Максимальная Humanity отдельно уменьшается на <b>2</b> за обычный хром и на <b>4</b> за Borgware; Fashionware и бесплатный стартовый Neuroport CEMK исключены. Текущий EMP = Humanity ÷ 10 (вниз).</p>
+      <p class="small muted">${T('HP = 10 + 5×⌈(BODY+WILL)/2⌉. Current Humanity decreases by HL when Cyberware is installed. Maximum Humanity separately decreases by','HP = 10 + 5×⌈(BODY+WILL)/2⌉. Текущая Humanity при установке уменьшается на HL. Максимальная Humanity отдельно уменьшается на')} <b>2</b> ${T('for ordinary Cyberware and','за обычный хром и на')} <b>4</b> ${T('for Borgware; Fashionware and the free starting CEMK Neuroport are excluded. Current EMP = Humanity ÷ 10, rounded down.','за Borgware; Fashionware и бесплатный стартовый Neuroport CEMK исключены. Текущий EMP = Humanity ÷ 10 (вниз).')}</p>
     </div>`;
     $$('[data-stat]', box).forEach(inp => inp.oninput = () => {
       c.stats[inp.dataset.stat] = num(inp.value);
@@ -2844,7 +2865,7 @@ function renderEditorTab() {
     };
     let lastCat = null;
     const rows = skills.map(([cat, name, stat, is2]) => {
-      const head = cat !== lastCat ? `<div class="skill-cat">${esc(cat)}</div>` : '';
+      const head = cat !== lastCat ? `<div class="skill-cat">${esc(skillCategoryLabel(cat))}</div>` : '';
       lastCat = cat;
       const lvl = c.skills[name] || 0;
       return head + `<div class="skill-row"><button class="skill-name-btn sname" data-skill-info="${esc(name)}">${(state.meta.must_skills||[]).includes(name) ? '<span class="must-tag">★</span>' : ''}${esc(name)}${is2 ? ' <span class="muted small">(×2)</span>' : ''}</button>
@@ -2856,11 +2877,11 @@ function renderEditorTab() {
       <select data-spec-rank="${i}">${[0,1,2,3,4,5,6,7,8,9,10].map(r=>`<option value="${r}" ${(num(s.lvl)||0)===r?'selected':''}>${r||'—'}</option>`).join('')}</select>
       <button class="btn-sm btn-danger" data-spec-del="${i}">✕</button></div>`).join('');
     const mustChips = (state.meta.must_skills || []).map(name => `<span class="must-chip ${requiredOk(name)?'ok':'bad'}">${requiredOk(name)?'✓':'✗'} ${esc(name === 'Language' ? 'Language (Streetslang)' : name)}</span>`).join('');
-    box.innerHTML = `<div class="panel"><div class="row mb" style="justify-content:space-between"><span class="muted small">При создании ровно <b>86</b>, максимум <b>6</b>. После создания редактор допускает развитие до 10. Потрачено при пересчёте: <b id="sk-spent">${skillSpent()}</b></span></div>
+    box.innerHTML = `<div class="panel"><div class="row mb" style="justify-content:space-between"><span class="muted small">${T('Creation requires exactly','При создании ровно')} <b>86</b> ${T('points with a maximum Level of','очков, максимум')} <b>6</b>. ${T('After creation, the editor supports advancement to Level 10. Recalculated spent points:','После создания редактор допускает развитие до 10. Потрачено при пересчёте:')} <b id="sk-spent">${skillSpent()}</b></span></div>
       <div class="must-list mb">${mustChips}</div>
-      <div class="panel mb"><div class="row" style="justify-content:space-between"><h3>Специализированные навыки</h3><button class="btn-sm" id="add-special-skill">＋ Добавить</button></div>
-        <label class="f"><span>Культурный язык (4 уровня бесплатно при создании)</span><input id="ed-native" value="${esc(c.native_language || '')}"></label>
-        ${specialRows || '<div class="muted small">Нет специализированных навыков.</div>'}</div>
+      <div class="panel mb"><div class="row" style="justify-content:space-between"><h3>${T('Specialized Skills','Специализированные навыки')}</h3><button class="btn-sm" id="add-special-skill">＋ ${T('Add','Добавить')}</button></div>
+        <label class="f"><span>${T('Cultural Language (4 Levels free at creation)','Культурный язык (4 уровня бесплатно при создании)')}</span><input id="ed-native" value="${esc(c.native_language || '')}"></label>
+        ${specialRows || `<div class="muted small">${T('No specialized Skills.','Нет специализированных навыков.')}</div>`}</div>
       <div class="skill-list">${rows}</div></div>`;
     const refresh = () => { const el=$('#sk-spent'); if(el) el.textContent=skillSpent(); edChanged(); };
     $$('[data-skill-info]', box).forEach(btn => btn.onclick = () => showSkillInfo(btn.dataset.skillInfo));
@@ -2881,8 +2902,8 @@ function renderEditorTab() {
     box.innerHTML = `
     <div class="panel">
       <div class="row mb">
-        <button class="btn-primary" id="add-weapon">＋ Оружие</button>
-        <button id="add-gear">＋ Снаряжение</button>
+        <button class="btn-primary" id="add-weapon">＋ ${T('Weapons','Оружие')}</button>
+        <button id="add-gear">＋ ${T('Gear','Снаряжение')}</button>
         <span class="muted small grow">Всё купленное на рынке тоже попадает сюда.</span>
       </div>
       <div id="inv-list"></div>
@@ -2899,10 +2920,10 @@ function renderEditorTab() {
     box.innerHTML = `
     <div class="panel">
       <div class="row mb">
-        <button class="btn-primary" id="add-chrome">＋ Вшить хром</button>
-        <span class="muted small grow">HL импланта вычитается из человечности; при создании бери среднее значение (в скобках).</span>
+        <button class="btn-primary" id="add-chrome">＋ ${T('Install Cyberware','Вшить хром')}</button>
+        <span class="muted small grow">${T('Cyberware HL is subtracted from Humanity; at creation use the average value shown in parentheses.','HL импланта вычитается из человечности; при создании бери среднее значение (в скобках).')}</span>
       </div>
-      <p class="small muted">Правило гайда: каждый хром (кроме Fashionware) дополнительно режет <b>максимум</b> человечности на 2, Borgware — на 4.</p>
+      <p class="small muted">${T('Guide rule: each piece of Cyberware except Fashionware also reduces','Правило гайда: каждый хром (кроме Fashionware) дополнительно режет')} <b>${T('maximum','максимум')}</b> ${T('Humanity by 2, or by 4 for Borgware.','человечности на 2, Borgware — на 4.')}</p>
       <div id="chrome-list"></div>
     </div>`;
     $('#add-chrome').onclick = () => pickItem(['cyberware'], 'Кибернетика', (it) => {
@@ -2916,7 +2937,7 @@ function renderEditorTab() {
   if (ed.tab === 'armor') {
     box.innerHTML = `
     <div class="panel">
-      <p class="small muted">Броня выбирается отдельно для головы и тела. SP слоёв не складывается: работает только наибольший SP локации, а все надетые слои абляируются вместе. Применяется один самый строгий штраф отдельно к REF, DEX и MOVE.</p>
+      <p class="small muted">${T('Armor is selected separately for Head and Body. Layer SP does not stack: only the highest SP at a location applies, and every worn layer at that location ablates together. Apply the single most severe penalty separately to REF, DEX, and MOVE.','Броня выбирается отдельно для головы и тела. SP слоёв не складывается: работает только наибольший SP локации, а все надетые слои абляируются вместе. Применяется один самый строгий штраф отдельно к REF, DEX и MOVE.')}</p>
       <div class="grid cols-2" id="armor-slots"></div>
     </div>`;
     renderArmorSlots();
@@ -2924,7 +2945,7 @@ function renderEditorTab() {
   if (ed.tab === 'notes') {
     box.innerHTML = `
     <div class="panel">
-      <label class="f"><span>Языки</span><input id="f-lang" maxlength="200" value="${esc(c.languages || '')}" placeholder="Streetslang, русский, английский…"></label>
+      <label class="f"><span>${T('Languages','Языки')}</span><input id="f-lang" maxlength="200" value="${esc(c.languages || '')}" placeholder="${T('Streetslang, Spanish, English…','Streetslang, русский, английский…')}"></label>
       <label class="f"><span>Заметки</span><textarea id="f-notes" maxlength="4000" style="min-height:160px">${esc(c.notes || '')}</textarea></label>
       <label class="checkbox"><input type="checkbox" id="f-public" ${c.public !== false ? 'checked' : ''}> Показывать персонажа в общем ростере партии</label>
     </div>`;
@@ -3004,7 +3025,7 @@ function renderArmorSlots() {
     const old = [c.armor.body_outer, c.armor.body_inner].filter(Boolean);
     c.armor.body = old.sort((a, b) => (num(b.sp) || 0) - (num(a.sp) || 0))[0] || null;
   }
-  const slotDefs = [['body', 'Тело'], ['head', 'Голова']];
+  const slotDefs = [['body', T('Body','Тело')], ['head', T('Head','Голова')]];
   box.innerHTML = slotDefs.map(([slot, ru]) => {
     const a = c.armor[slot];
     const penalty = a ? Object.entries(armorPenalties(a)).filter(([,v]) => v).map(([k,v]) => `${k} ${v}`).join(' · ') : '';
@@ -3013,8 +3034,8 @@ function renderArmorSlots() {
       ${a ? `<div class="row" style="justify-content:space-between">
           <div><b>${esc(a.name)}</b><div class="small muted">SP ${a.sp}${penalty ? ' · ' + esc(penalty) : ''}</div></div>
           <button class="btn-sm btn-danger" data-clear="${slot}">✕</button></div>`
-        : '<div class="muted small mb">— пусто —</div>'}
-      <button class="btn-sm mt" data-pick="${slot}">Выбрать броню</button>
+        : `<div class="muted small mb">${T('— empty —','— пусто —')}</div>`}
+      <button class="btn-sm mt" data-pick="${slot}">${T('Choose Armor','Выбрать броню')}</button>
     </div>`;
   }).join('');
   $$('[data-pick]', box).forEach(b => {
@@ -3099,7 +3120,7 @@ function rosterCard(c) {
   return `
   <div class="card">
     <div class="row" style="justify-content:space-between;align-items:baseline">
-      <h3 class="ro-open" style="cursor:pointer">${esc(ch.handle || 'Безымянный')}</h3>
+      <h3 class="ro-open user-content" style="cursor:pointer">${esc(ch.handle || T('Unnamed','Безымянный'))}</h3>
       ${ch.seed ? '<span class="tag seed">Data Pool</span>' : ''}
     </div>
     <div class="chips">
@@ -3110,8 +3131,8 @@ function rosterCard(c) {
       ${(ch.cyberware || []).length ? `<span class="chip">🦾 ${(ch.cyberware || []).length}</span>` : ''}
     </div>
     ${Object.keys(st).length ? `<div class="char-summary">${state.meta.stats.map(s => `<span class="chip"><b>${s}</b> ${st[s] != null ? st[s] : '—'}</span>`).join('')}</div>` : ''}
-    ${ch.player ? `<div class="muted small">игрок: ${esc(ch.player)}</div>` : ''}
-    <button class="btn-sm ro-open mt" data-id="${c.id}">Лист персонажа</button>
+    ${ch.player ? `<div class="muted small">${T('player:','игрок:')} <span class="user-content">${esc(ch.player)}</span></div>` : ''}
+    <button class="btn-sm ro-open mt" data-id="${c.id}">${T('Character Sheet','Лист персонажа')}</button>
   </div>`;
 }
 
@@ -3123,11 +3144,11 @@ async function showRosterModal(id) {
   const cw = ch.cyberware || [];
   const extra = Object.entries(ch.extra || {});
   openModal(`
-    <h2>${esc(ch.handle)}</h2>
+    <h2 class="user-content">${esc(ch.handle)}</h2>
     <div class="chips mb">
       <span class="tag role">${esc(ch.role || '—')}${ch.role_rank ? ' ' + ch.role_rank : ''}</span>
-      <span class="chip">владелец: ${esc(c.owner_name)}</span>
-      ${ch.player ? `<span class="chip">игрок: ${esc(ch.player)}</span>` : ''}
+      <span class="chip">${T('owner:','владелец:')} <span class="user-content">${esc(c.owner_name)}</span></span>
+      ${ch.player ? `<span class="chip">${T('player:','игрок:')} <span class="user-content">${esc(ch.player)}</span></span>` : ''}
       <span class="tag price">${money(ch.cash || 0)}</span>
       ${d.death_save ? `<span class="chip">Death Save ${d.death_save}</span>` : ''}
     </div>
@@ -3135,13 +3156,13 @@ async function showRosterModal(id) {
       <div class="statgrid mb">${state.meta.stats.map(s => `<div class="stat"><div class="v">${ch.stats[s] != null ? ch.stats[s] : '—'}</div><div class="k">${s}</div></div>`).join('')}</div>
       <div class="derived mb">${[['HP', d.hp_max], ['HUM', d.humanity_max != null ? d.humanity_cur + '/' + d.humanity_max : null], ['EMP', d.emp_cur], ['SP тело', d.sp_body], ['SP голова', d.sp_head]]
         .filter(([, v]) => v != null).map(([k, v]) => `<span class="dstat"><span class="v">${v}</span><span class="k">${k}</span></span>`).join('')}</div>` : ''}
-    ${extra.length ? `<div class="kv mb">${extra.map(([k, v]) => `<b>${esc(k)}</b><span>${esc(displayKnownValue(v))}</span>`).join('')}</div>` : ''}
-    ${ch.appearance ? `<p class="small"><b>Внешность:</b> ${esc(ch.appearance)}</p>` : ''}
-    ${ch.background ? `<p class="small"><b>Биография:</b> ${esc(ch.background)}</p>` : ''}
+    ${extra.length ? `<div class="kv mb">${extra.map(([k, v]) => `<b>${esc(displayKnownValue(k))}</b><span class="user-content">${esc(v)}</span>`).join('')}</div>` : ''}
+    ${ch.appearance ? `<p class="small"><b>${T('Appearance:','Внешность:')}</b> <span class="user-content">${esc(ch.appearance)}</span></p>` : ''}
+    ${ch.background ? `<p class="small"><b>${T('Biography:','Биография:')}</b> <span class="user-content">${esc(ch.background)}</span></p>` : ''}
     ${skills.length ? `<h3>Навыки</h3><div class="chips mb">${skills.map(([n, v]) => `<span class="chip">${esc(n)} <b>${v}</b></span>`).join('')}</div>` : ''}
     ${cw.length ? `<h3>Хром (${cw.reduce((a, x) => a + (x.hl || 0), 0)} HL)</h3><div class="chips mb">${cw.map(x => `<span class="chip">🦾 ${esc(x.name)} <b class="hl-badge">${x.hl || 0}</b></span>`).join('')}</div>` : ''}
     ${inv.length ? `<h3>Инвентарь</h3><div class="chips">${inv.map(x => `<span class="chip">${esc(x.name)}${x.qty > 1 ? ' ×' + x.qty : ''}</span>`).join('')}</div>` : ''}
-    ${ch.notes ? `<hr><div class="desc">${esc(ch.notes)}</div>` : ''}
+    ${ch.notes ? `<hr><div class="desc user-content">${esc(ch.notes)}</div>` : ''}
   `, true);
 }
 
@@ -3158,7 +3179,7 @@ async function viewNews(view) {
     <div class="panel mb">
       <div class="grid cols-2">
         <label class="f"><span>Заголовок</span><input id="nw-title" maxlength="140" placeholder="Перестрелка в Мегабилдинге H4"></label>
-        <label class="f"><span>Источник / тег (партия, район…)</span><input id="nw-tag" maxlength="40" placeholder="Партия «С-Unit», Уотсон…"></label>
+        <label class="f"><span>Источник / тег (партия, район…)</span><input id="nw-tag" maxlength="40" placeholder="${T('Campaign C-Unit, Watson…','Партия «С-Unit», Уотсон…')}"></label>
       </div>
       <label class="f"><span>Что случилось</span><textarea id="nw-body" maxlength="20000" placeholder="Кратко: кто, где, чем кончилось…"></textarea></label>
       <button class="btn-primary" id="nw-post">Опубликовать</button>
@@ -3177,12 +3198,12 @@ async function viewNews(view) {
   $('#news-list').innerHTML = data.news.length ? data.news.map(n => `
     <div class="card post" data-id="${n.id}">
       <div class="meta">
-        ${n.tag ? `<span class="tag">${esc(n.tag)}</span>` : ''}
-        <span>📰 ${esc(n.author)}</span><span>·</span><span>${timeAgo(n.created)}</span>
+        ${n.tag ? `<span class="tag user-content">${esc(n.tag)}</span>` : ''}
+        <span class="user-content">📰 ${esc(n.author)}</span><span>·</span><span>${timeAgo(n.created)}</span>
         ${n.mine || (state.me && state.me.is_gm) ? '<button class="btn-sm btn-danger" data-del style="margin-left:auto">✕</button>' : ''}
       </div>
-      <div class="title">${esc(n.title)}</div>
-      <div class="desc">${esc(n.body)}</div>
+      <div class="title user-content">${esc(n.title)}</div>
+      <div class="desc user-content">${esc(n.body)}</div>
     </div>`).join('') : '<div class="empty">Сводок нет. Улицы молчат.</div>';
   $$('#news-list [data-del]').forEach(b => b.onclick = async () => {
     if (!confirm('Удалить сводку?')) return;
@@ -3200,7 +3221,7 @@ async function viewJobs(view) {
   view.innerHTML = `
   <div class="page-head">
     <div><h1>📞 ${T('Job Board','Доска заказов')}</h1><div class="sub">${T('GMs post sessions; Edgerunners sign up.','ГМ публикует партии; Эджраннеры записываются.')}</div></div>
-    ${state.me && state.me.is_gm ? '<button class="btn-primary" id="jb-new">＋ Разместить заказ</button>' : ''}
+    ${state.me && state.me.is_gm ? `<button class="btn-primary" id="jb-new">＋ ${T('Post a Job','Разместить заказ')}</button>` : ''}
   </div>
   ${state.me && !state.me.is_gm ? '<div class="muted small mb">Размещать заказы могут пользователи с ролью ГМ (включается в профиле).</div>' : ''}
   <div id="jb-list">${spinner()}</div>`;
@@ -3211,13 +3232,13 @@ async function viewJobs(view) {
     <div class="card job ${j.status}" data-id="${j.id}">
       <div class="meta">
         <span class="tag">${j.status === 'open' ? '🟢 открыт' : '🔴 закрыт'}</span>
-        <span class="tag">${esc(j.system || 'Cyberpunk RED')}</span>
-        ${j.when_text ? `<span>⏱ ${esc(j.when_text)}</span>` : ''}
-        <span>ГМ: ${esc(j.author)}</span>
+        <span class="tag user-content">${esc(j.system || 'Cyberpunk RED')}</span>
+        ${j.when_text ? `<span class="user-content">⏱ ${esc(j.when_text)}</span>` : ''}
+        <span>${T('GM:','ГМ:')} <span class="user-content">${esc(j.author)}</span></span>
         <span class="slots">${j.slots ? `${j.signups}/${j.slots} слотов` : `записалось: ${j.signups}`}</span>
       </div>
-      <h3 style="margin:4px 0">${esc(j.title)}</h3>
-      <div class="desc" style="max-height:80px;overflow:hidden">${esc(j.description)}</div>
+      <h3 class="user-content" style="margin:4px 0">${esc(j.title)}</h3>
+      <div class="desc user-content" style="max-height:80px;overflow:hidden">${esc(j.description)}</div>
       <div class="row mt">
         <button class="btn-sm btn-primary" data-open>Подробнее / записаться</button>
         ${j.mine ? `<button class="btn-sm" data-toggle>${j.status === 'open' ? 'Закрыть' : 'Открыть'}</button>
@@ -3273,18 +3294,18 @@ function jobComposeModal() {
 async function showJobModal(id) {
   const j = await api('/api/jobs/' + id);
   const m = openModal(`
-    <h2>${esc(j.title)}</h2>
+    <h2 class="user-content">${esc(j.title)}</h2>
     <div class="meta" style="color:var(--muted);font-size:13.5px;margin-bottom:8px">
-      <span class="tag">${j.status === 'open' ? '🟢 открыт' : '🔴 закрыт'}</span>
-      <span class="tag">${esc(j.system || 'Cyberpunk RED')}</span>
-      ${j.when_text ? `<span>⏱ ${esc(j.when_text)}</span>` : ''}
-      <span>ГМ: ${esc(j.author)}</span>
+      <span class="tag">${j.status === 'open' ? T('🟢 open','🟢 открыт') : T('🔴 closed','🔴 закрыт')}</span>
+      <span class="tag user-content">${esc(j.system || 'Cyberpunk RED')}</span>
+      ${j.when_text ? `<span class="user-content">⏱ ${esc(j.when_text)}</span>` : ''}
+      <span>${T('GM:','ГМ:')} <span class="user-content">${esc(j.author)}</span></span>
     </div>
-    <div class="desc mb">${esc(j.description)}</div>
+    <div class="desc mb user-content">${esc(j.description)}</div>
     ${j.signups_list && j.signups_list.length ? `
       <h3>Записались (${j.signups_list.length}${j.slots ? ' из ' + j.slots : ''})</h3>
       ${j.signups_list.map(s => `
-        <div class="inv-row"><span class="iname">${esc(s.user)}${s.char_name ? ' → <b>' + esc(s.char_name) + '</b>' : ''}</span>
+        <div class="inv-row user-content"><span class="iname">${esc(s.user)}${s.char_name ? ' → <b>' + esc(s.char_name) + '</b>' : ''}</span>
         ${s.note ? `<span class="muted small">${esc(s.note)}</span>` : ''}</div>`).join('')}` : '<div class="muted small mb">Пока никто не записался.</div>'}
     <div class="row mt" id="jm-actions"></div>`);
   const actions = $('#jm-actions', m);
@@ -3299,7 +3320,7 @@ async function showJobModal(id) {
       try { chars = (await api('/api/characters')).characters; } catch (e) {}
       actions.innerHTML = `
         <select id="jm-char" style="flex:1">
-          <option value="">— без персонажа —</option>
+          <option value="">${T('— without a character —','— без персонажа —')}</option>
           ${chars.map(c => `<option value="${esc(c.data.handle)}">${esc(c.data.handle)} — ${esc(c.data.role || 'персонаж')}</option>`).join('')}
         </select>
         <button class="btn-primary" id="jm-join">Записаться</button>`;
@@ -3363,20 +3384,20 @@ function viewLogin(view) {
 function viewRegister(view) { viewLogin(view); }
 
 async function viewProfile(view) {
-  if (!state.me) { view.innerHTML = `<div class="empty">Нужен вход. <a href="#/login">${T('Sign in','Войти')}</a></div>`; return; }
+  if (!state.me) { view.innerHTML = `<div class="empty">${T('Sign in required.','Нужен вход.')} <a href="#/login">${T('Sign in','Войти')}</a></div>`; return; }
   view.innerHTML = `
   <div class="panel" style="max-width:560px;margin:0 auto">
-    <h2>Профиль</h2>
+    <h2>${T('Profile','Профиль')}</h2>
     <label class="f"><span>${T('Display name','Отображаемое имя')}</span><input id="pf-d" value="${esc(state.me.display_name)}"></label>
-    <label class="checkbox mb"><input type="checkbox" id="pf-gm" ${state.me.is_gm ? 'checked' : ''}> Роль ГМ: размещение заказов на доске, выплаты персонажам</label>
-    <button class="btn-primary" id="pf-save">Сохранить</button>
+    <label class="checkbox mb"><input type="checkbox" id="pf-gm" ${state.me.is_gm ? 'checked' : ''}> ${T('GM role: post Jobs and issue character payouts','Роль ГМ: размещение заказов на доске, выплаты персонажам')}</label>
+    <button class="btn-primary" id="pf-save">${T('Save','Сохранить')}</button>
   </div>`;
   $('#pf-save').onclick = async () => {
     try {
       state.me = await api('/api/profile', { method: 'POST', body: {
         display_name: $('#pf-d').value, is_gm: $('#pf-gm').checked } });
       renderUserbox();
-      toast('Профиль обновлён');
+      toast(T('Profile updated','Профиль обновлён'));
     } catch (e) { toast(e.message, true); }
   };
 }
@@ -3391,7 +3412,15 @@ async function viewProfile(view) {
   if (themeToggle) themeToggle.onclick = openThemeSettings;
   const languageToggle = $('#language-toggle');
   if (languageToggle) languageToggle.onclick = () => APP_I18N.toggle();
-  window.addEventListener('app-language-change', () => { APP_I18N.apply(); route(); });
+  window.addEventListener('app-language-change', async () => {
+    APP_I18N.apply();
+    try {
+      const meta = await api('/api/meta');
+      state.meta = meta;
+      state.meta._total = meta.cats.reduce((sum, category) => sum + category.count, 0);
+    } catch (e) { /* Keep the last metadata snapshot if refresh fails. */ }
+    route();
+  });
   APP_I18N.apply();
   try {
     const [me, meta] = await Promise.all([api('/api/me'), api('/api/meta')]);
@@ -3400,7 +3429,7 @@ async function viewProfile(view) {
     state.meta = meta;
     state.meta._total = meta.cats.reduce((a, c) => a + c.count, 0);
   } catch (e) {
-    $('#view').innerHTML = '<div class="empty">⚠️ Сервер недоступен: ' + esc(e.message) + '</div>';
+    $('#view').innerHTML = `<div class="empty">⚠️ ${T('Server unavailable: ','Сервер недоступен: ')}${esc(APP_I18N.translate(e.message))}</div>`;
     return;
   }
   renderUserbox();

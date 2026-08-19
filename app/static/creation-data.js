@@ -580,6 +580,8 @@ const LIFEPATH_LABEL_EN = {
   channel:'Distribution Channel', ethics:'Professional Ethics', stories:'Type of Stories', division:'Corporate Division', base:'Organization Base',
   boss:'Relationship with Boss', position:'Position', jurisdiction:'Jurisdiction', corruption:'Department Ethics', target:'Primary Target',
   office:'Office', size:'Family Size', domain:'Transport Domain', activity:'Family Work', duty:'Family Duty', philosophy:'Family Philosophy',
+  friends:'Friends', friend_role:'Friend’s Role', friend_circle:'Friend’s Circle', enemies:'Enemies', enemy_role:'Enemy’s Role', enemy_circle:'Enemy’s Circle',
+  enemy_cause:'Cause of Enmity', enemy_wronged:'Who Was Wronged?', enemy_resources:'Enemy Resources', enemy_revenge:'What Happens When You Meet?', love:'Tragic Love Affair',
 };
 const LIFEPATH_QUESTION_EN = {
   region:'Defines cultural roots and the list available for the free Cultural Language at Level 4.',
@@ -594,7 +596,146 @@ const LIFEPATH_QUESTION_EN = {
   goal:'A long-term objective that can drive jobs and personal stories.',
 };
 
+// English labels are display-only. Russian source values remain stable canonical data so
+// existing drafts and saved characters do not change when the UI language changes.
+const COMMON_LIFEPATH_OPTION_EN = {
+  region: ['North America','Latin America','Western Europe','Eastern Europe','Middle East / North Africa','Sub-Saharan Africa','South Asia','Southeast Asia','East Asia','Oceania / Pacific Islands'],
+  personality: ['Shy and secretive','Rebellious, antisocial, and violent','Arrogant, proud, and aloof','Moody, rash, and headstrong','Picky, fussy, and nervous','Stable and serious','Silly and scatterbrained','Sneaky and deceptive','Intellectual and detached','Friendly and outgoing'],
+  clothing: ['Generic Chic','Leisurewear','Urban Flash','Businesswear','High Fashion','Bohemian','Bag Lady Chic','Gang Colors','Nomad Leathers','Asia Pop','Entropism — function over style','Kitsch — flashy style over substance','Neo-Militarism — severe utility','Neo-Kitsch — classic style with modern technology'],
+  hair: ['Mohawk','Long and ratty','Short and spiked','Wild and all over','Shaved','Striped','Wild colors','Neat and short','Short and curly','Long and straight','Short and unkempt','Long and styled'],
+  hair_color: ['Multicolored','One bright color','Natural color','Soft tint','Lots of ornaments','A new color every day'],
+  affectation: ['Tattoos','Mirrorshades','Ritual scars','Spiked gloves','Nose ring','Tongue or other piercing','Strange fingernails','Spiked boots or heels','Fingerless gloves','Strange contact lenses'],
+  value: ['Money','Honor','Your word','Honesty','Knowledge','Vengeance','Love','Power','Family','Friendship'],
+  people: ['I love almost everyone','I hate almost everyone','People are tools for my goals','Every life is valuable','People are obstacles to be destroyed','People are sheep and I am the wolf','Good people are hard to find','People are fine until they disappoint me','Never trust anyone completely','I have a few close people; everyone else is background','Neutral toward almost everyone','Everyone is unique; I judge them individually','Most people are trash','Deep connections are difficult','I fall in love too easily'],
+  person: ['A lover','A parent','A sibling','A child','A mentor','A best friend','A pet','A group, gang, or family','A personal hero or historical figure','No one'],
+  possession: ['A weapon','A tool','An article of clothing','A photograph','A diary','A letter','Jewelry','A toy','A book','A vehicle'],
+  family: ['Corporate executives','Corporate managers','Corporate technicians','A Nomad pack','A gang in place of a family','Combat Zone residents','Urban homeless','Megastructure residents','Reclaimers','Edgerunners','Corporate workers','An ordinary family outside these categories'],
+  environment: ['The Street with no adult supervision','A safe corporate zone','A wandering Nomad pack','A Nomad transport clan','A once-prosperous neighborhood fighting off boosters','Ruins in the heart of a Combat Zone','A massive corporate megastructure','An abandoned Reclaimer town','A floating Drift Nation','A luxurious corporate skyscraper','A secured mansion or skyscraper','A squat in the heart of a Combat Zone','A megabuilding controlled by a corporation or authority','An ordinary small home'],
+  crisis: ['Your family lost everything through betrayal','Your family lost everything through bad management','Your family was exiled from its home, nation, or corporation','Your family is imprisoned; only you escaped','Your family vanished; you are the only one left','Your family was killed; you are the sole survivor','Your family is caught in a long-running conspiracy or criminal organization','Disaster scattered your family across the world','Your family is plagued by an inherited feud','You inherited a family debt that must be paid','You are the only remaining member of your family','The law is hunting you'],
+  goal: ['Clear your bad reputation','Gain power and control','Escape The Street at any cost','Punish everyone who gets in your way','Forget your former life','Find those responsible and make them pay','Take what is rightfully yours','Save someone close to you','Achieve fame and recognition','Become feared and respected','Correct a terrible mistake','Score big and leave the game','Redeem a shameful past','Fame and money','Protect your loved ones at any cost'],
+};
+
+const LEGACY_LIFEPATH_OPTION_EN = {
+  core: {
+    friends: ['No true friends','One friend like an older relative','One friend like a younger relative','One friend who is a mentor','One friend who is a partner or coworker','One friend who is a former lover','One friend who is a former enemy','One childhood friend','One friend from The Street','Two close friends','Three close friends'],
+    enemies: ['No serious enemies yet','A former friend','A former lover','An estranged relative','A childhood enemy','A former subordinate','A former boss','A partner or coworker','A corporate executive','A government official','A booster ganger'],
+    enemy_cause: ['Not applicable — no enemies','Loss of face or status','Death of someone close','Public humiliation','Accusation of cowardice or another failing','Betrayal','A rejected job or romance','Mutual dislike','Romantic rivalry','Business rivalry','Framed for someone else’s crime'],
+    enemy_wronged: ['Not applicable — no enemies','You','Your enemy'],
+    enemy_resources: ['Not applicable — no enemies','Only them, and they will not actively hunt you','Only them','Them and a close friend','Several friends','A large group of supporters','An entire gang','Local cops or Lawmen','An influential leader or small corporation','A powerful corporation','An entire city, government, or agency'],
+    enemy_revenge: ['Not applicable — no enemies','Avoid each other','Fly into a rage and attack','Cause harm indirectly','Attack verbally','Frame the other for a crime','Try to kill or maim the other'],
+    love: ['No tragic romances','Your lover died in an accident','Your lover mysteriously disappeared','The relationship simply did not work out','A personal goal or vendetta came between you','Your lover was kidnapped','Your lover went insane or became a cyberpsycho','Your lover died by suicide','Your lover died in combat','A rival destroyed the relationship','Your lover was imprisoned or exiled'],
+  },
+  cemk: {
+    friends: ['No true friends','One friend who is a former lover','One childhood friend','One friend who is a mentor or parental figure','One friend who is a former boss','One friend who is a former enemy','One friend who shares an interest','Two true friends'],
+    friend_role: ['Not applicable — no friends','No Role','Fixer','Medtech','Tech','Nomad','Rockerboy','Solo','Netrunner'],
+    friend_circle: ['Not applicable — no friends','Combat Zone','Corporate ladder','Edgerunner crew','Emergency medicine','Gang','Government service','NCPD','Media and entertainment','Nomad pack','Retail'],
+    enemies: ['No serious enemies yet','A former friend or lover','A childhood enemy','A former boss who betrayed you','A hostile relative','A former partner or coworker','A mysterious figure you do not know about yet','Two serious enemies'],
+    enemy_role: ['Not applicable — no enemies','No Role','Fixer','Medtech','Tech','Nomad','Rockerboy','Solo','Netrunner'],
+    enemy_circle: ['Not applicable — no enemies','Combat Zone','Corporate ladder','Edgerunner crew','Emergency medicine','Gang','Government service','NCPD','Media and entertainment','Nomad pack','Retail'],
+    love: ['Your lover died','Your lover mysteriously disappeared','A goal or vendetta came between you','Your lover was imprisoned or exiled','Your lover chose someone else','No tragic romance'],
+  },
+};
+
+const ROLE_LIFEPATH_OPTION_EN = {
+  Rockerboy: {
+    kind: ['Musician','Slam Poet','Street Artist','Performance Artist','Comedian','Orator','Politician','Rap Artist','DJ','Idoru'],
+    act: ['You are in a group','You have always performed solo','You left the group voluntarily','You were kicked out of the group','The group split over creative differences','External enemies destroyed the group'],
+    venue: ['Alternative cafés','Private clubs','Seedy bars','Guerrilla performances','Nightclubs across the city','The Data Pool'],
+    enemy: ['A bitter former member','A rival artist','A corporation that hates your message','A critic or influencer','An old media star','A former lover or media figure'],
+  },
+  Solo: {
+    kind: ['Bodyguard','Street muscle for hire','Corporate enforcer with side jobs','Corporate or independent special-operations agent','Hired vigilante','Assassin or killer'],
+    moral: ['Always fight on the side of good','Always spare the innocent','Rarely permit yourself unethical actions','Ruthless; work for anyone who pays','Break the rules to get results','Enjoy illegal and violent work'],
+    enemy: ['An enraged corporation','A booster gang from your past','Corrupt or misguided Lawmen','A Solo from a rival corporation','A Fixer who sees you as a threat','A Solo who considers you a mortal enemy'],
+    territory: ['A corporate zone','Combat Zones','The entire city','One corporation’s territory','A particular Fixer’s territory','Anywhere the money leads'],
+  },
+  Netrunner: {
+    kind: ['Freelancer for hire','Corporate clone runner','Hacktivist','Hack for the fun of it','Member of a permanent crew','Work for a Media, politician, or Lawman'],
+    partner: ['Work alone','Your partner is family','Your partner is an old friend','Your partner may become a lover','A secret partner, possibly an AI','A partner with gang connections','A partner with corporate connections'],
+    workspace: ['Screens everywhere','Looks better in Virtuality','A filthy bed tangled in wires','Corporate modular style','Minimal and orderly','Takes up the entire living space'],
+    clients: ['Local Fixers','Gang members who protect your work','Corporate black projects','Solos who need systems protected','Nomads and Fixers','Sell everything you find in the NET'],
+    supplies: ['Search abandoned city networks','Take programs from defeated Netrunners','Receive them from a Fixer for work','Receive them from a corporation for services','Have backdoors into corporate warehouses','Buy them at Night Markets'],
+    enemy: ['Possibly a rogue AI or NET ghost','Rival Netrunners','A corporation wants exclusivity','Lawmen see you as a black-hat hacker','Disgruntled former clients','A Fixer wants to control your services'],
+  },
+  Tech: {
+    kind: ['Cybertech','Auto Mechanic','General Technician','Small-Electronics Specialist','Weaponsmith','Mad Inventor','Robot and Drone Mechanic','Heavy Machinery Mechanic','Scavenger','Ship Mechanic'],
+    partner: ['Work alone','Your partner is family','Your partner is an old friend','Your partner may become a lover','Your partner is a mentor','A partner with gang connections','A partner with corporate connections'],
+    workspace: ['Blueprints are scattered everywhere','Everything is color-coded but looks nightmarish','Fully digital with daily backups','Design everything on your Agent','Never throw anything away','Only you understand the storage system'],
+    clients: ['Local Fixers','Local gang members','Corporate black projects','Solos and other fighters','Nomads and Fixers with recovered tech','Work for yourself'],
+    supplies: ['Strip parts from ruins','Take parts from bodies after fights','A Fixer brings parts in exchange for repairs','A corporation supplies you for services','Use backdoors into warehouses','Hunt for deals at Night Markets'],
+    enemy: ['Gang members demand exclusivity','A rival Tech steals clients','A corporation demands exclusivity','A manufacturer sees your modifications as a threat','A former client thinks you cheated them','A rival fights you for parts and resources'],
+  },
+  Medtech: {
+    kind: ['Surgeon','General Practitioner','Trauma Specialist','Psychiatrist','Cyberpsychosis Therapist','Ripperdoc','Cryosystems Operator','Pharmacist','Bodysculptor','Forensic Pathologist'],
+    partner: ['Work alone','A Trauma Team crew','An old friend','Your partner may become a lover','A relative','A partner with gang connections','A partner with corporate connections'],
+    workspace: ['Sterilized every morning','Outdated but comfortable','Cryogenic equipment cools the drinks','Everything is disposable and compactly packed','Not as clean as the patients hope','Immaculately organized and sterile'],
+    clients: ['Clients of local Fixers','Local gang members','Corporate black projects','Solos and other fighters','Injured Nomads and Fixer clients','Trauma Team paramedic work'],
+    supplies: ['Find medical caches in the ruins','Take supplies from bodies after fights','A Fixer brings supplies in exchange for treatment','A corporation or Trauma Team supplies you','Have a backdoor into hospital warehouses','Buy them at Night Markets'],
+  },
+  Media: {
+    kind: ['Blogger','Writer','Videographer','Documentarian','Investigative Journalist','Street Correspondent'],
+    channel: ['Monthly magazine','Blog','Mainstream video feed','News channel','Book sales','Screamsheets'],
+    ethics: ['Only verified truth','Honest, but use rumors','Rarely violate professional standards','Break the rules to expose bad people','Ruthlessly pursue fame','Completely corrupt'],
+    stories: ['Political intrigue','Environmental consequences','Celebrity news','Corporate exposés','Editorial columns','Propaganda'],
+  },
+  Exec: {
+    kind: ['Finance','Media and communications','Cybertechnology and medicine','Pharmaceuticals and biotechnology','Food and clothing','Energy','Electronics and robotics','Corporate services','Consumer services','Real estate and construction'],
+    division: ['Procurement','Manufacturing','Research and development','Human resources','Public relations and advertising','Mergers and acquisitions'],
+    ethics: ['Actively supports ethical conduct','Always operates honestly','Rarely permits unethical decisions','Bends the rules to get results','Ruthless and profit-driven','Completely criminal and immoral'],
+    base: ['One city','Several cities','An entire state or region','National','International with several offices','International and everywhere'],
+    enemy: ['A competitor in the same industry','Law enforcement is watching you','Local Media want to destroy you','Internal divisions are feuding','Local authorities dislike the corporation','An international takeover is coming'],
+    boss: ['Mentors you but has dangerous enemies','Gives you complete freedom','A micromanager','An unpredictable, paranoid psychopath','Protects you from rivals','Fears your rise and is preparing to strike'],
+  },
+  Lawman: {
+    position: ['Security Guard','Patrol Officer','Criminal Investigator','Tactical Response','Motor Patrol','Internal Security'],
+    jurisdiction: ['Corporate zones','A city patrol district','Combat Zones','City outskirts','Rebuilding zones','Open highways'],
+    corruption: ['Honest and ethical service','Honest but severe','Occasional violations','Breaks rules to catch criminals','Ruthlessly controls The Street','Completely corrupt'],
+    enemy: ['Organized crime','Booster gangs','A police oversight group','Corrupt politicians','Smugglers','Street criminals'],
+    target: ['Organized crime','Booster gangs','Drug dealers','Corrupt politicians','Smugglers','Street crime'],
+  },
+  Fixer: {
+    kind: ['Mediator between warring gangs','Source rare resources for the elite','Agent for Solos and Techs','Supplier of food, medicine, or drugs','Supplier of strictly forbidden goods','Supplier of parts for Techs and Medtechs','Night Market organizer','Broker of heavy machinery and military vehicles','Buyer of scavenged goods','Exclusive agent for a Media, Rockerboy, or Nomad pack'],
+    partner: ['Work alone','Your partner is family','Your partner is an old friend','Your partner may become a lover','Your partner is a mentor','A partner with criminal connections','A partner with corporate connections'],
+    office: ['No office; always on the move','A table in a local bar','Data Pool messages and anonymous dead drops','A room in a warehouse, store, or clinic','An abandoned building','A capsule-hotel lobby'],
+    clients: ['Local Rockerboys and Medias','Gang members who protect the office','Corporate black projects','Solos and other fighters','Nomads and Fixers','Politicians and corporate executives'],
+    enemy: ['Gang members demand exclusivity','A competitor steals clients','A corporation demands exclusivity','A former client’s enemy is covering their tracks','A former client thinks you cheated them','A competitor fights you for resources'],
+  },
+  Nomad: {
+    size: ['One large family','Several dozen people','Forty to fifty people','One hundred or more','A blood family in the hundreds','A combined family of several clans'],
+    domain: ['Land','Air','Sea'],
+    activity: ['Motorcycle gang','Passenger transport','Nomadic school','Traveling circus','Seasonal labor','Cargo transport','Cargo protection','Smuggling','Mercenary army','Construction crew','Air piracy','Aircraft protection','Maritime piracy','Combat support','Underwater warfare'],
+    duty: ['Scout and negotiator','Vanguard and defense','Pilot or driver','Cargo master','Independent smuggler','Fuel and vehicle buyer'],
+    philosophy: ['Always does good and welcomes outsiders','Honest family business','Rarely permits unethical acts','Bends the rules for the family’s needs','Ruthlessly puts itself above others','Robs and terrorizes everyone in its path'],
+    enemy: ['Organized crime','Booster gangs','Drug dealers','Corrupt politicians','Rival clans','Corrupt cops'],
+  },
+};
+
+function buildLifepathDisplayEn() {
+  const out = {};
+  for (const [fields, translatedFields] of [[CORE_LIFEPATH_FIELDS, LEGACY_LIFEPATH_OPTION_EN.core], [CEMK_LIFEPATH_FIELDS, LEGACY_LIFEPATH_OPTION_EN.cemk]]) {
+    for (const [key,, options] of fields) {
+      const translated = translatedFields[key] || [];
+      options.forEach((option, index) => { if (translated[index]) out[option] = translated[index]; });
+    }
+  }
+  for (const [role, fields] of Object.entries(ROLE_LIFEPATHS)) {
+    for (const [key,, options] of fields) {
+      const translated = (ROLE_LIFEPATH_OPTION_EN[role] || {})[key] || [];
+      options.forEach((option, index) => { if (translated[index]) out[option] = translated[index]; });
+    }
+  }
+  for (const field of MERGED_LIFEPATH_FIELDS) {
+    const translated = COMMON_LIFEPATH_OPTION_EN[field.key] || [];
+    field.options.forEach((option, index) => { if (translated[index]) out[option.value] = translated[index]; });
+  }
+  for (const aliases of Object.values(LIFEPATH_VALUE_ALIASES)) {
+    for (const [alias, canonical] of Object.entries(aliases)) if (out[canonical]) out[alias] = out[canonical];
+  }
+  return out;
+}
+
 const LEGACY_DISPLAY_EN = {
+  ...buildLifepathDisplayEn(),
   'Северная Америка':'North America','Южная / Центральная Америка':'South/Central America','Центральная Америка':'Central America','Южная Америка':'South America',
   'Западная Европа':'Western Europe','Восточная Европа':'Eastern Europe','Ближний Восток / Северная Африка':'Middle East/North Africa',
   'Африка южнее Сахары':'Sub-Saharan Africa','Южная Азия':'South Asia','Юго-Восточная Азия':'Southeast Asia','Восточная Азия':'East Asia',
@@ -606,7 +747,7 @@ const LEGACY_DISPLAY_EN = {
   'Эве':'Ewe','Амхарский':'Amharic','Хинди':'Hindi','Бенгальский':'Bengali','Урду':'Urdu','Тамильский':'Tamil','Непальский':'Nepali',
   'Вьетнамский':'Vietnamese','Тайский':'Thai','Индонезийский':'Indonesian','Тагальский':'Tagalog','Кхмерский':'Khmer','Китайский':'Chinese',
   'Японский':'Japanese','Корейский':'Korean','Монгольский':'Mongolian','Маори':'Maori','Гавайский':'Hawaiian','Самоанский':'Samoan','Таитянский':'Tahitian',
-  'Свой район':'Your Home',
+  'Свой район':'Your Home','Жилье':'Housing','Жильё':'Housing','Кому продался':'Patron',
 };
 
 REGION_NAME_POOLS['Латинская Америка'] = {

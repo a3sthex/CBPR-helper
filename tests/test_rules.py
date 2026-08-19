@@ -1,6 +1,8 @@
+import ast
 import copy
 import importlib.util
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -324,6 +326,48 @@ class CreationValidationTests(unittest.TestCase):
         char['cash'] = 2450
         with self.assertRaisesRegex(server.ApiError, 'Modular Finger Cyberhand'):
             server.validate_creation(char)
+
+
+class ServerLocalizationTests(unittest.TestCase):
+    def test_static_api_errors_have_english_messages(self):
+        tree = ast.parse((ROOT / 'app/server.py').read_text(encoding='utf-8'))
+        messages = []
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
+                    node.func.id == 'ApiError' and len(node.args) > 1):
+                try:
+                    message = ast.literal_eval(node.args[1])
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(message, str) and re.search(r'[А-Яа-яЁё]', message):
+                    messages.append(message)
+        untranslated = {
+            message: server.server_error_message(message, 'en')
+            for message in messages
+            if re.search(r'[А-Яа-яЁё]', server.server_error_message(message, 'en'))
+        }
+        dynamic_messages = []
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and
+                    node.func.id == 'ApiError' and len(node.args) > 1 and
+                    isinstance(node.args[1], ast.JoinedStr)):
+                dynamic_messages.append(''.join(
+                    value.value if isinstance(value, ast.Constant) else 'X'
+                    for value in node.args[1].values
+                ))
+        untranslated.update({
+            message: server.server_error_message(message, 'en')
+            for message in dynamic_messages
+            if re.search(r'[А-Яа-яЁё]', server.server_error_message(message, 'en'))
+        })
+        self.assertEqual(untranslated, {})
+        self.assertEqual(server.server_error_message('Персонаж не найден', 'ru'),
+                         'Персонаж не найден')
+
+    def test_english_metadata_has_no_cyrillic(self):
+        metadata = [server.ROLE_DESC_EN, server.WOUND_STATES_EN,
+                    server.CRIT_BODY_EN, server.CRIT_HEAD_EN]
+        self.assertNotRegex(json.dumps(metadata, ensure_ascii=False), r'[А-Яа-яЁё]')
 
 
 class CatalogArmorTests(unittest.TestCase):

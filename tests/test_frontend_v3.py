@@ -20,6 +20,7 @@ class FrontendV3Contracts(unittest.TestCase):
             'roles': server.ROLES,
             'role_ru': server.ROLE_RU,
             'role_desc': server.ROLE_DESC,
+            'role_desc_en': server.ROLE_DESC_EN,
             'skills': server.SKILLS,
             'must_skills': server.MUST_SKILLS,
             'stat_points': server.STAT_POINTS,
@@ -54,6 +55,8 @@ global.Blob = function () {};
         test = f"""
 state.meta = {json.dumps(meta, ensure_ascii=False)};
 state.me = {{ id: 9, display_name: 'Player' }};
+if (APP_I18N.current() !== 'en') throw new Error('English must be the default locale');
+if (APP_I18N.translate('Профиль') !== 'Profile') throw new Error('known UI literal was not translated');
 initWizard();
 if (WIZARD_STEPS.length !== 6) throw new Error('expected six wizard steps');
 if (MERGED_LIFEPATH_FIELDS.find(field => field.key === 'region').options.length !== 10) throw new Error('expected ten canonical cultural regions');
@@ -69,6 +72,32 @@ if (!wizStepStatsHtml().includes('data-stat-lock')) throw new Error('STAT locks 
 if (!wizStepSkillsHtml().includes('data-skill-filter')) throw new Error('Skill filters missing');
 if (!wizStepShoppingHtml().includes('shopping-layout')) throw new Error('Shopping was not merged');
 if (!wizStepSummaryHtml().includes('Visibility')) throw new Error('Summary visibility missing');
+const hasCyrillic = value => /[А-Яа-яЁё]/.test(String(value));
+const englishVisibleText = html => String(html)
+  .replace(/<style[\\s\\S]*?<\\/style>/g, '')
+  .replace(/<[^>]*>/g, '\\n').split('\\n')
+  .map(value => APP_I18N.translate(value)).join(' ')
+  .replace(/&[^;]+;/g, ' ').replace(/\\s+/g, ' ').trim();
+const englishAttributes = html => [...String(html).matchAll(/(?:placeholder|title|aria-label)="([^"]*)"/g)]
+  .map(match => APP_I18N.translate(match[1])).join(' ');
+for (const field of MERGED_LIFEPATH_FIELDS) {{
+  for (const option of field.options) if (hasCyrillic(displayKnownValue(option.value))) throw new Error('untranslated Common Lifepath option: ' + option.value);
+}}
+for (const [,, options] of [...CORE_LIFEPATH_FIELDS, ...CEMK_LIFEPATH_FIELDS]) {{
+  for (const option of options) if (hasCyrillic(displayKnownValue(option))) throw new Error('untranslated legacy Lifepath option: ' + option);
+}}
+for (const role of Object.keys(state.meta.roles)) {{
+  state.wizard.role = role;
+  state.wizard.roleLifepath = {{}};
+  for (const [key,, options] of lpRoleField(role)) state.wizard.roleLifepath[key] = typeof options[0] === 'object' ? options[0].value : options[0];
+  for (const [key,, options] of lpFields()) state.wizard.lifepath[key] = typeof options[0] === 'object' ? options[0].value : options[0];
+  state.wizard.nativeLanguage = languagesForRegion(state.wizard.lifepath.region)[0];
+  for (const render of [wizStepRoleHtml, wizStepLifepathHtml, wizStepStatsHtml, wizStepSkillsHtml, wizStepShoppingHtml, wizStepSummaryHtml]) {{
+    const html = render();
+    const visible = englishVisibleText(html) + ' ' + englishAttributes(html);
+    if (hasCyrillic(visible)) throw new Error(`untranslated English UI in ${{role}}/${{render.name}}: ${{visible.match(/.{{0,50}}[А-Яа-яЁё].{{0,80}}/g)}}`);
+  }}
+}}
 state.wizard.skills.Language = 3;
 if (wizSubFree('Language') !== 1) throw new Error('parent-pool free level incorrect');
 saveWizardDraft(); state.wizard = null;
