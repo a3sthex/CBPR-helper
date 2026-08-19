@@ -60,7 +60,7 @@ def item_by_id(iid):
 STATS = ['INT', 'REF', 'DEX', 'TECH', 'COOL', 'WILL', 'LUCK', 'MOVE', 'BODY', 'EMP']
 
 ROLES = {
-    'Rockerboy': 'Charismatic Leadership',
+    'Rockerboy': 'Charismatic Impact',
     'Solo': 'Combat Awareness',
     'Netrunner': 'Interface',
     'Tech': 'Maker',
@@ -169,8 +169,23 @@ MUST_SKILLS = [           # минимум 2 очка в каждом (итог�
     'Evasion', 'First Aid', 'Human Perception', 'Language',
     'Local Expert', 'Perception', 'Persuasion', 'Stealth',
 ]
+SPECIALIZED_SKILLS = {'Language', 'Local Expert', 'Martial Arts', 'Science', 'Play Instrument'}
 START_CASH_GEAR = 2550    # стартовые €$ на оружие/броню/снаряжение/хром
 START_CASH_FASHION = 800  # отдельный бюджет на Fashion и Fashionware
+CULTURAL_LANGUAGES = {
+    'Северная Америка': {'Английский', 'Испанский', 'Навахо', 'Кри', 'Креольский', 'Французский'},
+    'Южная / Центральная Америка': {'Испанский', 'Португальский', 'Гуарани', 'Кечуа', 'Майя', 'Науатль'},
+    'Центральная Америка': {'Испанский', 'Английский', 'Креольский', 'Майя', 'Науатль'},
+    'Южная Америка': {'Испанский', 'Португальский', 'Гуарани', 'Кечуа'},
+    'Западная Европа': {'Английский', 'Французский', 'Немецкий', 'Итальянский', 'Испанский', 'Норвежский'},
+    'Восточная Европа': {'Русский', 'Украинский', 'Польский', 'Финский', 'Румынский'},
+    'Ближний Восток / Северная Африка': {'Арабский', 'Иврит', 'Персидский', 'Турецкий', 'Берберский'},
+    'Африка южнее Сахары': {'Суахили', 'Хауса', 'Лингала', 'Зулу', 'Эве', 'Амхарский'},
+    'Южная Азия': {'Хинди', 'Бенгальский', 'Урду', 'Тамильский', 'Непальский'},
+    'Юго-Восточная Азия': {'Вьетнамский', 'Тайский', 'Индонезийский', 'Тагальский', 'Кхмерский'},
+    'Восточная Азия': {'Китайский', 'Японский', 'Корейский', 'Монгольский'},
+    'Океания / Тихоокеанские острова': {'Английский', 'Маори', 'Гавайский', 'Самоанский', 'Таитянский'},
+}
 
 # Состояния ранений: (название, порог, эффект, DV стабилизации)
 WOUND_STATES = [
@@ -213,8 +228,19 @@ CRIT_HEAD = [
 ]
 
 
+def _armor_penalties(piece):
+    """Возвращает раздельные штрафы брони, включая старый формат данных."""
+    if not isinstance(piece, dict):
+        return {}
+    penalties = piece.get('penalties')
+    if isinstance(penalties, dict):
+        return {stat: _num(penalties.get(stat)) or 0 for stat in ('REF', 'DEX', 'MOVE')}
+    legacy = _num(piece.get('penalty')) or 0
+    return {stat: legacy for stat in ('REF', 'DEX', 'MOVE')} if legacy else {}
+
+
 def derive(char):
-    """Производные показатели листа персонажа."""
+    """Производные показатели листа персонажа по правилам CP:R/CEMK."""
     st = char.get('stats') or {}
     out = {}
     body = _num(st.get('BODY'))
@@ -224,45 +250,56 @@ def derive(char):
         out['hp_max'] = hp_max
         out['seriously_wounded'] = (hp_max + 1) // 2
         out['death_save'] = body
-    # хром: HL + срез максимума человечности (фэшнвер 0, боргвер 4, прочий хром 2)
-    hl_total = sum(_num(c.get('hl')) or 0 for c in char.get('cyberware') or [])
+
+    # HL уменьшает текущую Humanity. Максимум отдельно режется на 2 за
+    # обычный хром и на 4 за Borgware. Стартовый Neuroport из CEMK не
+    # вызывает ни одного из эффектов.
+    hl_total = 0
     hum_cut = 0
-    for c in char.get('cyberware') or []:
-        t = str(c.get('type') or '').lower()
-        if 'borgware' in t:
+    for chrome in char.get('cyberware') or []:
+        if chrome.get('humanity_exempt') and chrome.get('key') == 'creation-neuroport':
+            continue
+        hl_total += _num(chrome.get('hl')) or 0
+        ctype = str(chrome.get('type') or '').lower()
+        if 'borgware' in ctype:
             hum_cut += 4
-        elif 'fashionware' not in t:
+        elif 'fashionware' not in ctype:
             hum_cut += 2
     emp_base = _num(st.get('EMP'))
     if emp_base is not None:
-        hum_max = emp_base * 10 - hl_total - hum_cut
-        out['humanity_max'] = hum_max
-        hum_cur = char.get('humanity_cur')
+        humanity_start = emp_base * 10
+        hum_max = humanity_start - hum_cut
+        hum_cur = _num(char.get('humanity_cur'))
         if hum_cur is None:
-            hum_cur = hum_max
-        hum_cur = max(0, min(hum_cur, hum_max)) if hum_max >= 0 else 0
+            hum_cur = humanity_start - hl_total
+        hum_cur = min(hum_cur, hum_max)
+        out['humanity_max'] = hum_max
         out['humanity_cur'] = hum_cur
-        out['emp_cur'] = hum_cur // 10
+        out['emp_cur'] = max(0, hum_cur // 10)
         out['hl_total'] = hl_total
         out['hum_cut'] = hum_cut
-    # броня
+
+    # На каждой локации работает только наибольший SP. Штраф применяется
+    # один раз — самый строгий отдельно для REF, DEX и MOVE.
     armor = char.get('armor') or {}
-    sps = []
-    penalty = 0
-    for slot in ('body_outer', 'body_inner'):
-        a = armor.get(slot)
-        if a and _num(a.get('sp')) is not None:
-            sps.append(_num(a['sp']))
-            penalty += _num(a.get('penalty')) or 0
-    if sps:
-        sps.sort(reverse=True)
-        sp = sps[0] + ((sps[1] + 1) // 2 if len(sps) > 1 else 0)
-        out['sp_body'] = sp
-        out['armor_penalty'] = penalty
-    head = armor.get('head')
-    if head and _num(head.get('sp')) is not None:
-        out['sp_head'] = _num(head['sp'])
-        out['armor_penalty'] = penalty + (_num(head.get('penalty')) or 0)
+    body_pieces = [armor.get('body'), armor.get('body_outer'), armor.get('body_inner')]
+    head_pieces = [armor.get('head')]
+    body_pieces = [a for a in body_pieces if isinstance(a, dict)]
+    head_pieces = [a for a in head_pieces if isinstance(a, dict)]
+    body_sps = [_num(a.get('sp')) for a in body_pieces]
+    head_sps = [_num(a.get('sp')) for a in head_pieces]
+    body_sps = [sp for sp in body_sps if sp is not None]
+    head_sps = [sp for sp in head_sps if sp is not None]
+    if body_sps:
+        out['sp_body'] = max(body_sps)
+    if head_sps:
+        out['sp_head'] = max(head_sps)
+    penalties = {'REF': 0, 'DEX': 0, 'MOVE': 0}
+    for piece in body_pieces + head_pieces:
+        for stat, value in _armor_penalties(piece).items():
+            penalties[stat] = min(penalties[stat], value)
+    out['armor_penalties'] = penalties
+    out['armor_penalty'] = min(penalties.values())
     return out
 
 
@@ -480,8 +517,293 @@ def clean_character(data):
         out['skills'] = {}
     if not isinstance(out.get('armor') or {}, dict):
         out['armor'] = {}
-    out['cash'] = max(0.0, min(9_999_999.0, float(out.get('cash') or 0)))
+    try:
+        out['cash'] = max(0.0, min(9_999_999.0, float(out.get('cash') or 0)))
+    except (TypeError, ValueError):
+        raise ApiError(400, 'cash должен быть числом')
     return out
+
+
+def skill_base(name):
+    name = str(name or '')
+    for known in SKILL_BY_NAME:
+        if name == known or name.startswith(known + ' ('):
+            return known
+    return None
+
+
+def creation_skill_cost(data):
+    """Стоимость навыков с бесплатными 4 уровнями культурного языка."""
+    skills = data.get('skills') or {}
+    total = 0
+    native = str(data.get('native_language') or '').strip()
+    native_key = f'Language ({native})' if native else None
+    for name, raw_level in skills.items():
+        base = skill_base(name)
+        if not base:
+            raise ApiError(400, f'Неизвестный навык: {name}')
+        if base in SPECIALIZED_SKILLS and name == base:
+            raise ApiError(400, f'{base}: укажите конкретную специализацию в скобках')
+        level = _num(raw_level)
+        if level is None or level < 0 or level > SKILL_MAX_CREATION:
+            raise ApiError(400, f'{name}: при создании допустим уровень 0–{SKILL_MAX_CREATION}')
+        cost = 2 if SKILL_BY_NAME[base][3] else 1
+        total += level * cost
+        if name == native_key and base == 'Language':
+            total -= min(4, level)
+    return total
+
+
+def validate_cyberware_requirements(data):
+    """Проверяет явные фундаментальные требования из описаний Data Pool."""
+    chrome = [c for c in data.get('cyberware') or []
+              if not (c.get('creation_free') and c.get('key') == 'creation-neuroport')]
+    items = [item_by_id(str(c.get('key') or '')) for c in chrome]
+    items = [item for item in items if item]
+    names = [item['name'].lower() for item in items]
+    inventory_names = [str(entry.get('name') or '').lower() for entry in data.get('inventory') or []]
+    has_port = any(c.get('key') == 'creation-neuroport' for c in data.get('cyberware') or []) or 'neuroport' in names
+    foundations = {
+        'cybereye': {'cybereye', 'sponsored cybereye'},
+        'cyberarm': {'cyberarm', 'neo-soviet cyberarm'},
+        'cyberleg': {'cyberleg', 'romanova cyberlegs'},
+        'cyberaudio suite': {'cyberaudio suite', 'discount cyberaudio suite'},
+        'chipware socket': {'chipware socket', 'budget chipware socket'},
+    }
+    count_foundation = lambda kind: sum(name in foundations[kind] for name in names)
+    body = _num((data.get('stats') or {}).get('BODY')) or 0
+
+    for item in items:
+        desc = str(item.get('desc') or '').lower().replace('\n', ' ')
+        missing = None
+        if 'requires a modular finger cyberhand' in desc and 'modular finger cyberhand' not in names:
+            missing = 'Modular Finger Cyberhand'
+        elif ('requires a cyberaudio suite' in desc or 'cyberaudio option' in desc) and not count_foundation('cyberaudio suite'):
+            missing = 'Cyberaudio Suite'
+        elif 'cybereye option' in desc and not count_foundation('cybereye'):
+            missing = 'Cybereye'
+        elif ('cyberarm option' in desc and 'can be installed as the only piece of cyberware in a meat arm' not in desc
+              and not count_foundation('cyberarm')):
+            missing = 'Cyberarm'
+        elif 'cyberleg option' in desc and not count_foundation('cyberleg'):
+            missing = 'Cyberleg'
+        elif ('cyberlimb option' in desc and not (count_foundation('cyberarm') or count_foundation('cyberleg'))):
+            missing = 'Cyberarm или Cyberleg'
+        elif ('neuralware option' in desc and not (has_port or 'neural link' in names)):
+            missing = 'Neural Link или Neuroport'
+        elif ('requires chipware socket' in desc or 'requires a chipware socket' in desc) and not count_foundation('chipware socket'):
+            missing = 'Chipware Socket'
+        elif ('requires neural link' in desc or 'requires interface plugs and neural link' in desc) and not (
+                has_port or 'neural link' in names):
+            missing = 'Neural Link или Neuroport'
+        elif 'requires neuroport cyberdeck port' in desc and 'neuroport cyberdeck port' not in names:
+            missing = 'Neuroport Cyberdeck Port'
+        elif 'requires neuroport' in desc and not has_port:
+            missing = 'Neuroport'
+        elif 'requires two cybereyes' in desc and count_foundation('cybereye') < 2:
+            missing = 'две Cybereye'
+        elif 'requires a cybereye' in desc and not count_foundation('cybereye'):
+            missing = 'Cybereye'
+        elif 'requires two cyberlegs' in desc and count_foundation('cyberleg') < 2:
+            missing = 'две Cyberleg'
+        elif 'requires a cyberarm or cyberleg' in desc and not (
+                count_foundation('cyberarm') or count_foundation('cyberleg')):
+            missing = 'Cyberarm или Cyberleg'
+        elif 'requires a cyberarm' in desc and not count_foundation('cyberarm'):
+            missing = 'Cyberarm'
+        elif 'requires biomonitor' in desc and not (has_port or 'biomonitor' in names):
+            missing = 'Biomonitor или Neuroport'
+        elif 'requires skinweave or subdermal armor' in desc and not any(
+                name in names for name in ('skinweave', 'subdermal armor')):
+            missing = 'Skinweave или Subdermal Armor'
+        elif 'requires a scrambler/descrambler' in desc and not any(
+                'scrambler/descrambler' in name for name in inventory_names):
+            missing = 'Scrambler/Descrambler'
+        elif 'requires chyron' in desc and not (has_port or 'chyron' in names):
+            missing = 'Chyron или Neuroport'
+        body_match = re.search(r'requires body\s+(\d+)', desc)
+        if body_match and body < int(body_match.group(1)):
+            missing = f'BODY {body_match.group(1)}'
+        lace_match = re.search(r'requires body\s+\d+\s+and\s+(?:two|2|3)\s+(?:installations of )?grafted muscle', desc)
+        if lace_match:
+            needed = 3 if ' and 3 ' in lace_match.group(0) else 2
+            if names.count('grafted muscle & bone lace') < needed:
+                missing = f'{needed} установки Grafted Muscle & Bone Lace'
+        if missing:
+            raise ApiError(400, f'{item["name"]} требует: {missing}')
+
+
+def validate_creation_equipment(data):
+    """Не позволяет подменить HL, тип, SP или локацию купленного предмета."""
+    inventory_keys = {str(entry.get('key') or '') for entry in data.get('inventory') or []}
+    for chrome in data.get('cyberware') or []:
+        if chrome.get('creation_free') and chrome.get('key') == 'creation-neuroport':
+            continue
+        item = item_by_id(str(chrome.get('key') or ''))
+        if not item or item.get('cat') != 'cyberware':
+            raise ApiError(400, f'Неизвестный имплант: {chrome.get("key")}')
+        expected_type = str((item.get('fields') or {}).get('Type') or '')
+        if (_num(chrome.get('hl')) or 0) != (_num(item.get('hl')) or 0) or str(chrome.get('type') or '') != expected_type:
+            raise ApiError(400, f'Характеристики импланта {item["name"]} не совпадают с Data Pool')
+
+    armor = data.get('armor') or {}
+    for location in ('body', 'head'):
+        piece = armor.get(location)
+        if not piece:
+            continue
+        raw_key = str(piece.get('source_key') or piece.get('key') or '')
+        item = item_by_id(raw_key.split('@', 1)[0])
+        locations = item.get('armor_locations') if item else []
+        if not item or item.get('cat') != 'armor' or location not in locations or 'shield' in locations:
+            raise ApiError(400, f'Недопустимая броня для локации {location}')
+        if (_num(piece.get('sp')) or 0) != (_num(item.get('sp')) or 0):
+            raise ApiError(400, f'SP брони {item["name"]} не совпадает с Data Pool')
+        if _armor_penalties(piece) != _armor_penalties(item):
+            raise ApiError(400, f'Штрафы брони {item["name"]} не совпадают с Data Pool')
+        if str(piece.get('key') or '') not in inventory_keys:
+            raise ApiError(400, f'Надетая броня {item["name"]} отсутствует в стартовой закупке')
+
+
+def validate_creation_budget(data):
+    """Пересчитывает стартовые фонды по ценам каталога, не доверяя клиенту."""
+    gear_total = 0.0
+    fashion_total = 0.0
+    for entry in data.get('inventory') or []:
+        raw_key = str(entry.get('source_key') or entry.get('key') or '')
+        item = item_by_id(raw_key.split('@', 1)[0])
+        if not item or item.get('price') is None:
+            raise ApiError(400, f'Неизвестный предмет стартовой закупки: {raw_key}')
+        qty = max(1, min(99, _num(entry.get('qty')) or 1))
+        amount = float(item['price']) * qty
+        if item['cat'] == 'fashion':
+            fashion_total += amount
+        else:
+            gear_total += amount
+
+    chrome_total = 0.0
+    has_neuroport = False
+    for entry in data.get('cyberware') or []:
+        if entry.get('creation_free') and entry.get('key') == 'creation-neuroport':
+            has_neuroport = True
+            continue
+        item = item_by_id(str(entry.get('key') or ''))
+        if not item or item.get('cat') != 'cyberware' or item.get('price') is None:
+            raise ApiError(400, f'Неизвестный имплант стартовой закупки: {entry.get("key")}')
+        if item['name'].lower() == 'neuroport':
+            has_neuroport = True
+        ctype = str((item.get('fields') or {}).get('Type') or '').lower()
+        if 'fashionware' in ctype:
+            fashion_total += float(item['price'])
+        else:
+            chrome_total += float(item['price'])
+
+    if fashion_total > START_CASH_FASHION + 1e-9:
+        raise ApiError(400, f'Fashion/Fashionware превышает бюджет {START_CASH_FASHION}€$')
+    creation = data.get('creation') or {}
+    sold_soul = bool(creation.get('sold_soul'))
+    if (chrome_total > 0 or fashion_total > 0 or sold_soul) and not has_neuroport:
+        raise ApiError(400, 'В 2070-х хром при создании требует Neuroport')
+    chrome_bonus = 1500 if sold_soul else 0
+    main_spent = gear_total + max(0.0, chrome_total - chrome_bonus)
+    if main_spent > START_CASH_GEAR + 1e-9:
+        raise ApiError(400, f'Закупка превышает основной бюджет {START_CASH_GEAR}€$')
+    expected_cash = round(START_CASH_GEAR - main_spent, 2)
+    if abs(float(data.get('cash') or 0) - expected_cash) > 0.01:
+        raise ApiError(400, 'Остаток стартового бюджета рассчитан неверно')
+
+
+def validate_creation(data):
+    """Серверная проверка Complete Package, не применяемая к последующему росту."""
+    role = data.get('role')
+    if role not in ROLES or _num(data.get('role_rank')) != 4:
+        raise ApiError(400, 'Новый персонаж должен иметь одну роль с рангом 4')
+
+    stats = data.get('stats') or {}
+    if set(stats) != set(STATS):
+        raise ApiError(400, 'Нужно заполнить все 10 характеристик')
+    values = [_num(stats.get(stat)) for stat in STATS]
+    if any(value is None or value < 2 or value > 8 for value in values):
+        raise ApiError(400, 'При создании каждая характеристика должна быть от 2 до 8')
+    if sum(values) != STAT_POINTS:
+        raise ApiError(400, f'Нужно распределить ровно {STAT_POINTS} очка характеристик')
+
+    skills = data.get('skills') or {}
+    if creation_skill_cost(data) != SKILL_POINTS:
+        raise ApiError(400, f'Нужно распределить ровно {SKILL_POINTS} очков навыков')
+    for required in MUST_SKILLS:
+        if required == 'Language':
+            level = _num(skills.get('Language (Streetslang)')) or 0
+        elif required == 'Local Expert':
+            level = max([_num(v) or 0 for k, v in skills.items()
+                         if skill_base(k) == 'Local Expert'] or [0])
+        else:
+            level = _num(skills.get(required)) or 0
+        if level < 2:
+            label = 'Language (Streetslang)' if required == 'Language' else required
+            raise ApiError(400, f'Обязательный навык {label} должен быть минимум 2')
+    native = str(data.get('native_language') or '').strip()
+    if not native or (_num(skills.get(f'Language ({native})')) or 0) < 4:
+        raise ApiError(400, 'Выберите культурный язык с бесплатным уровнем 4')
+
+    mode = data.get('lifepath_mode')
+    lifepath = data.get('lifepath') or {}
+    common = {
+        'core': ('region', 'personality', 'clothing', 'hair', 'affectation', 'value',
+                 'people', 'person', 'possession', 'family', 'environment', 'crisis',
+                 'friends', 'enemies', 'enemy_cause', 'enemy_wronged',
+                 'enemy_resources', 'enemy_revenge', 'love', 'goal'),
+        'cemk': ('region', 'personality', 'wardrobe', 'hair_style', 'hair_color',
+                 'value', 'people', 'family', 'environment', 'crisis', 'friends',
+                 'friend_role', 'friend_circle', 'enemies', 'enemy_role',
+                 'enemy_circle', 'love', 'goal'),
+    }
+    if mode not in common or any(not str(lifepath.get(key) or '').strip()
+                                 for key in common[mode]):
+        raise ApiError(400, 'Заполните общий Lifepath выбранного источника')
+    region = str(lifepath.get('region') or '')
+    region_key = next((key for key in CULTURAL_LANGUAGES if region.startswith(key)), None)
+    if not region_key or native not in CULTURAL_LANGUAGES[region_key]:
+        raise ApiError(400, 'Культурный язык должен соответствовать происхождению Lifepath')
+    role_lifepath = data.get('role_lifepath') or {}
+    role_required = {
+        'Rockerboy': ('kind', 'act', 'venue', 'enemy'),
+        'Solo': ('kind', 'moral', 'enemy', 'territory'),
+        'Netrunner': ('kind', 'partner', 'workspace', 'clients', 'supplies', 'enemy'),
+        'Tech': ('kind', 'partner', 'workspace', 'clients', 'supplies', 'enemy'),
+        'Medtech': ('kind', 'partner', 'workspace', 'clients', 'supplies'),
+        'Media': ('kind', 'channel', 'ethics', 'stories'),
+        'Exec': ('kind', 'division', 'ethics', 'base', 'enemy', 'boss'),
+        'Lawman': ('position', 'jurisdiction', 'corruption', 'enemy', 'target'),
+        'Fixer': ('kind', 'partner', 'office', 'clients', 'enemy'),
+        'Nomad': ('size', 'domain', 'activity', 'duty', 'philosophy', 'enemy'),
+    }[role]
+    if not isinstance(role_lifepath, dict) or any(
+            not str(role_lifepath.get(key) or '').strip() for key in role_required):
+        raise ApiError(400, 'Заполните все поля Lifepath выбранной роли')
+
+    setup = data.get('role_setup') or {}
+    if role == 'Tech':
+        ranks = [_num(setup.get(k)) or 0 for k in
+                 ('field', 'upgrade', 'fabrication', 'invention')]
+        if sum(ranks) != 8 or any(rank < 0 or rank > 4 for rank in ranks):
+            raise ApiError(400, 'Tech распределяет 8 рангов Maker: по 2 за каждый ранг роли')
+    elif role == 'Medtech':
+        ranks = [_num(setup.get(k)) or 0 for k in ('surgery', 'pharma', 'cryo')]
+        if sum(ranks) != 4 or any(rank < 0 or rank > 4 for rank in ranks):
+            raise ApiError(400, 'Medtech распределяет 4 ранга Medicine')
+    elif role == 'Exec' and not str(setup.get('team_member') or '').strip():
+        raise ApiError(400, 'Exec должен выбрать стартового сотрудника Teamwork')
+    elif role == 'Nomad':
+        choices = setup.get('moto_choices')
+        if (not isinstance(choices, list) or len(choices) != 4 or
+                any(not str(choice or '').strip() for choice in choices)):
+            raise ApiError(400, 'Nomad должен заполнить 4 стартовых выбора Moto')
+
+    validate_creation_equipment(data)
+    validate_cyberware_requirements(data)
+    if (derive(data).get('humanity_cur') or 0) < 0:
+        raise ApiError(400, 'Нельзя завершить создание с Humanity ниже 0')
+    validate_creation_budget(data)
 
 
 # ---------------------------------------------------------------- http
@@ -583,7 +905,11 @@ class Handler(BaseHTTPRequestHandler):
                         continue
                     match = rx.match(path)
                     if match:
-                        fn(self, conn, qs, match, self.read_json() if method in ('POST', 'PUT') else None)
+                        if method in ('POST', 'PUT'):
+                            body = self.read_json() if int(self.headers.get('Content-Length') or 0) else {}
+                        else:
+                            body = None
+                        fn(self, conn, qs, match, body)
                         return
                 raise ApiError(404, 'Не найдено')
             except ApiError as e:
@@ -767,6 +1093,7 @@ class Handler(BaseHTTPRequestHandler):
     def api_create_character(self, conn, qs, m, body):
         u = self.require_user(conn)
         data = clean_character(body.get('data') if isinstance(body, dict) else body)
+        validate_creation(data)
         count = conn.execute('SELECT COUNT(*) n FROM characters WHERE owner_id=?',
                              (u['id'],)).fetchone()['n']
         if count >= 50:

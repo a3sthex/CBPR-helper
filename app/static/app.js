@@ -82,6 +82,15 @@ function num(v) {
   return isNaN(n) ? null : n;
 }
 
+function armorPenalties(piece) {
+  if (!piece) return {};
+  if (piece.penalties && typeof piece.penalties === 'object') {
+    return Object.fromEntries(['REF', 'DEX', 'MOVE'].map(s => [s, num(piece.penalties[s]) || 0]));
+  }
+  const legacy = num(piece.penalty) || 0;
+  return legacy ? { REF: legacy, DEX: legacy, MOVE: legacy } : {};
+}
+
 function derive(char) {
   const st = char.stats || {};
   const out = {};
@@ -91,40 +100,39 @@ function derive(char) {
     out.seriously_wounded = Math.ceil(out.hp_max / 2);
     out.death_save = body;
   }
-  const hl = (char.cyberware || []).reduce((a, c) => a + (num(c.hl) || 0), 0);
-  // срез максимума человечности: фэшнвер 0, боргвер 4, прочий хром 2
-  let humCut = 0;
+  let hl = 0, humCut = 0;
   for (const c of (char.cyberware || [])) {
+    if (c.humanity_exempt && c.key === 'creation-neuroport') continue;
+    hl += num(c.hl) || 0;
     const t = String(c.type || '').toLowerCase();
     if (t.includes('borgware')) humCut += 4;
     else if (!t.includes('fashionware')) humCut += 2;
   }
   const emp = num(st.EMP);
   if (emp != null) {
-    out.humanity_max = emp * 10 - hl - humCut;
+    const start = emp * 10;
+    out.humanity_max = start - humCut;
     let cur = num(char.humanity_cur);
-    if (cur == null) cur = out.humanity_max;
-    out.humanity_cur = Math.max(0, Math.min(cur, Math.max(0, out.humanity_max)));
-    out.emp_cur = Math.floor(out.humanity_cur / 10);
+    if (cur == null) cur = start - hl;
+    out.humanity_cur = Math.min(cur, out.humanity_max);
+    out.emp_cur = Math.max(0, Math.floor(out.humanity_cur / 10));
     out.hl_total = hl;
     out.hum_cut = humCut;
   }
   const armor = char.armor || {};
-  let penalty = 0;
-  const sps = [];
-  for (const slot of ['body_outer', 'body_inner']) {
-    const a = armor[slot];
-    if (a && num(a.sp) != null) { sps.push(num(a.sp)); penalty += num(a.penalty) || 0; }
+  const bodyPieces = [armor.body, armor.body_outer, armor.body_inner].filter(Boolean);
+  const headPieces = [armor.head].filter(Boolean);
+  const bodySP = bodyPieces.map(a => num(a.sp)).filter(v => v != null);
+  const headSP = headPieces.map(a => num(a.sp)).filter(v => v != null);
+  if (bodySP.length) out.sp_body = Math.max(...bodySP);
+  if (headSP.length) out.sp_head = Math.max(...headSP);
+  const penalties = { REF: 0, DEX: 0, MOVE: 0 };
+  for (const piece of [...bodyPieces, ...headPieces]) {
+    const pp = armorPenalties(piece);
+    for (const stat of Object.keys(penalties)) penalties[stat] = Math.min(penalties[stat], pp[stat] || 0);
   }
-  if (sps.length) {
-    sps.sort((a, b) => b - a);
-    out.sp_body = sps[0] + (sps.length > 1 ? Math.ceil(sps[1] / 2) : 0);
-  }
-  if (armor.head && num(armor.head.sp) != null) {
-    out.sp_head = num(armor.head.sp);
-    penalty += num(armor.head.penalty) || 0;
-  }
-  out.armor_penalty = penalty || 0;
+  out.armor_penalties = penalties;
+  out.armor_penalty = Math.min(...Object.values(penalties));
   return out;
 }
 
@@ -132,9 +140,9 @@ function blankChar() {
   return {
     handle: '', role: 'Solo', role_rank: 4, player: '',
     appearance: '', background: '', notes: '', languages: '',
-    stats: { INT: 6, REF: 6, DEX: 6, TECH: 6, COOL: 6, WILL: 6, LUCK: 6, MOVE: 6, BODY: 6, EMP: 6 },
+    stats: { INT: 6, REF: 6, DEX: 6, TECH: 6, COOL: 6, WILL: 7, LUCK: 6, MOVE: 6, BODY: 7, EMP: 6 },
     humanity_cur: null, hp_cur: null, cash: 2550,
-    skills: {}, inventory: [], cyberware: [], armor: { head: null, body_outer: null, body_inner: null },
+    skills: {}, inventory: [], cyberware: [], armor: { head: null, body: null },
     public: true,
   };
 }
@@ -694,8 +702,8 @@ async function viewCalc(view) {
       <div class="row small muted mb">${['1d10', '2d6', '3d6', '1d6+2'].map(d => `<button class="btn-sm" data-dpreset="${d}">${d}</button>`).join('')}</div>
       <div id="dr-out"></div>
       <hr>
-      <h2>🛡️ Наслоение брони</h2>
-      <p class="small muted">Верхний слой + нижний слой: итоговый SP = больший SP + половина меньшего (вверх).</p>
+      <h2>🛡️ Несколько слоёв брони</h2>
+      <p class="small muted">SP не складывается: на локации действует только наибольший SP. При пробитии все надетые слои на этой локации абляируются одновременно.</p>
       <div class="grid cols-2">
         <label class="f"><span>SP верхнего</span><input id="ar-o" type="number" value="11"></label>
         <label class="f"><span>SP нижнего</span><input id="ar-i" type="number" value="7"></label>
@@ -801,8 +809,8 @@ async function viewCalc(view) {
 
   const doArmor = () => {
     const o = num($('#ar-o').value) || 0, i = num($('#ar-i').value) || 0;
-    const hi = Math.max(o, i), lo = Math.min(o, i);
-    $('#ar-out').innerHTML = `SP: <b>${hi + Math.ceil(lo / 2)}</b> <span class="muted small">(${hi} + ⌈${lo}/2⌉)</span>`;
+    const hi = Math.max(o, i);
+    $('#ar-out').innerHTML = `Действующий SP: <b>${hi}</b> <span class="muted small">(максимум из ${o} и ${i}; SP не складывается)</span>`;
   };
   ['ar-o', 'ar-i'].forEach(id => $('#' + id).oninput = doArmor);
 
@@ -890,11 +898,11 @@ function tableHtml(rows) {
 
 const WIZARD_STEPS = [
   ['role',     '🎭 Роль',           'Выбери роль — она даёт ролевую способность и определяет стиль игры.'],
-  ['lifepath', '🧬 Lifepath',       'Прошлое персонажа: 13 пунктов. Выбери из списков или брось кости 🎲.'],
-  ['stats',    '📊 Характеристики', '62 очка на 10 статов, каждая 2–8. По умолчанию все по 5.'],
-  ['skills',   '🎯 Навыки',         '86 очков: обязательные минимумы по 2, макс. 6 + суб-навыки (языки, боевые искусства, локальные эксперты).'],
-  ['style',    '🕶️ Стиль',          '800€$ на одежду и косметические импланты (0 HL). Неиспользованный остаток сгорает.'],
-  ['shopping', '🛒 Закупка',        '2550€$ на оружие, броню, хром, программы, боеприпасы, одежду, транспорт и снаряжение.'],
+  ['lifepath', '🧬 Lifepath',       'Общий Lifepath CP:R или CEMK плюс полный набор таблиц выбранной роли.'],
+  ['stats',    '📊 Характеристики', 'Ровно 62 очка на 10 характеристик, каждая 2–8.'],
+  ['skills',   '🎯 Навыки',         'Ровно 86 очков: обязательные минимумы, максимум 6 и специализированные навыки.'],
+  ['style',    '🕶️ Стиль',          '800€$ на Fashion и весь Fashionware из Data Pool. Остаток сгорает.'],
+  ['shopping', '🛒 Закупка',        '2550€$ на снаряжение и хром; броня разделена на голову и тело. Neuroport по CEMK бесплатен.'],
   ['summary',  '✅ Итог',           'Проверь лист, впиши псевдоним и создай персонажа.'],
 ];
 
@@ -903,7 +911,7 @@ const WIZARD_STEPS = [
 const ROLE_ABILITIES = {
   Solo: {
     name: 'Combat Awareness (Боевое чутьё)',
-    desc: 'В начале каждого своего хода Соло распределяет очки Боевого чутья (равные рангу роли) между боевыми эффектами: Precision Attack (+1..+3 к атакам), Spot Weakness (снижение SP брони цели на 1..3), Damage Deflection (перенос попадания в руку/ногу), Fumble Recovery (защита от провалов на 1), Initiative Reaction (+ к инициативе) и Threat Detection (автоматическое обнаружение засад и слежки). Очки можно перераспределять каждый ход, подстраиваясь под ситуацию — Соло всегда на шаг впереди в бою.',
+    desc: 'При начале боя, вне боя или Действием в бою Соло распределяет очки Combat Awareness: Threat Detection даёт +1 к Perception за очко; Initiative Reaction — +1 к броску инициативы; Precision Attack — +1 к атакам за 3 очка; Spot Weakness — +1 к урону первой успешной атаки раунда за очко; Damage Deflection уменьшает первый полученный урон раунда на 1 за 2 очка; Fumble Recovery за 4 очка позволяет игнорировать критический провал атаки.',
   },
   Rockerboy: {
     name: 'Charismatic Impact (Харизматическое воздействие)',
@@ -915,11 +923,11 @@ const ROLE_ABILITIES = {
   },
   Tech: {
     name: 'Maker (Мастер)',
-    desc: 'Ранг роли распределяется между четырьмя специализациями: Field Expertise (полевой ремонт чего угодно, даже без инструментов), Upgrade Expertise (улучшение предметов — точность оружию, SP броне, новые функции), Fabrication Expertise (изготовление предметов с нуля дешевле рыночной цены) и Invention Expertise (изобретение уникальных вещей, которых нет в каталогах). Техник — человек, который заставляет Тёмное Будущее работать: чинит, апгрейдит и создаёт.',
+    desc: 'За каждый ранг Maker Tech получает по 1 рангу в двух разных специализациях. На старте это 8 распределений между Field Expertise, Upgrade Expertise, Fabrication Expertise и Invention Expertise, максимум 4 в каждой. Техник чинит, улучшает, изготавливает и изобретает предметы.',
   },
   Medtech: {
     name: 'Medicine (Медицина)',
-    desc: 'Ранг роли распределяется между тремя специализациями: Surgery (хирургия — единственный способ лечить тяжёлые критические травмы и устанавливать хром), Medical Tech / Pharmaceuticals (изготовление препаратов: стимуляторы, антибиотики, противоядия) и Cryosystem Operation (работа с криокамерами и криотанками — возвращение людей практически с того света). Медтех лечит и мясо, и хром, без лицензии и лишних вопросов.',
+    desc: 'Каждый ранг Medicine даёт 1 распределение между Surgery, Pharmaceuticals и Cryosystem Operation — 4 на старте. Каждый ранг Surgery даёт +2 к эксклюзивному навыку Surgery; Pharmaceuticals и Cryosystems вместе образуют навык Medical Tech и открывают препараты и криооборудование.',
   },
   Media: {
     name: 'Credibility (Авторитет)',
@@ -939,296 +947,42 @@ const ROLE_ABILITIES = {
   },
   Nomad: {
     name: 'Moto (Мото)',
-    desc: 'Семья Номада даёт ему доступ к транспорту. Ранг роли распределяется между количеством и классом машин (от байка до AV и яхты), которые семья готова предоставить, и бонусами к их использованию: вождение, ремонт и апгрейд силами клана. Номад может вызвать свой транспорт, поменять его на другой из гаража семьи, а при потере — со временем получить замену. Клан также подстрахует запчастями, ночлегом и парой крепких кулаков.',
+    desc: 'Каждый ранг Moto добавляет в семейный автопарк доступный транспорт или одно улучшение уже выбранного транспорта. Стартовый Nomad последовательно делает четыре таких выбора для рангов 1–4. Moto также добавляется к проверкам управления и ремонта транспорта; одновременно у Номада обычно находится одна семейная машина.',
   },
 };
 
 /* ---------- Lifepath: 13 пунктов (CP:R стр. 43–48) ---------- */
 
-const LP_FIELDS = [
-  ['region', 'Регион и культурный язык', [
-    'Северная Америка (языки: английский, испанский, навахо, кри, креольский)',
-    'Южная / Центральная Америка (языки: испанский, португальский, гуарани, кечуа)',
-    'Западная Европа (языки: английский, французский, немецкий, итальянский, испанский, норвежский)',
-    'Восточная Европа (языки: русский, украинский, польский, финский, румынский)',
-    'Ближний Восток / Северная Африка (языки: арабский, иврит, персидский, турецкий, берберский)',
-    'Африка южнее Сахары (языки: суахили, хауса, лингала, зулу, эве)',
-    'Южная Азия (языки: хинди, бенгальский, урду, тамильский, непальский)',
-    'Юго-Восточная Азия (языки: вьетнамский, тайский, индонезийский, тагальский, кхмерский)',
-    'Восточная Азия (языки: китайский, японский, корейский, монгольский)',
-    'Океания / Тихоокеанские острова (языки: английский, маори, гавайский, самоанский, таитянский)',
-  ]],
-  ['personality', 'Характер', [
-    'Застенчивый и скрытный',
-    'Бунтарь: антисоциальный и жестокий',
-    'Высокомерный, гордый и отчуждённый',
-    'Угрюмый, порывистый и упрямый',
-    'Придирчивый, суетливый и нервный',
-    'Спокойный и серьёзный',
-    'Легкомысленный и взбалмошный',
-    'Хитрый и лживый',
-    'Интеллектуал, отстранённый от мира',
-    'Дружелюбный и открытый',
-  ]],
-  ['clothing', 'Стиль одежды', [
-    'Generic Chic (универсальный масс-маркет)',
-    'Leisurewear (спортивный комфорт)',
-    'Urban Flash (уличный неон и кибермода)',
-    'Businesswear (деловой стиль)',
-    'High Fashion (высокая мода)',
-    'Bohemian (богемный стиль)',
-    'Bag Lady Chic (нарочитое рваньё)',
-    'Gang Colors (цвета своей банды)',
-    'Nomad Leathers (кожа и пыль дорог)',
-    'Asia Pop (азиатский поп-стиль)',
-  ]],
-  ['hair', 'Причёска', [
-    'Ирокез',
-    'Длинные и растрёпанные',
-    'Короткие и торчащие',
-    'Дикие, во все стороны',
-    'Бритая голова',
-    'Полосатые пряди',
-    'Дикие яркие цвета',
-    'Аккуратные и короткие',
-    'Короткие кудри',
-    'Длинные и прямые',
-  ]],
-  ['affectation', 'Особенность внешности', [
-    'Татуировки',
-    'Зеркальные очки',
-    'Ритуальные шрамы',
-    'Перчатки с шипами',
-    'Кольцо в носу',
-    'Пирсинг языка или другой пирсинг',
-    'Странные ногти',
-    'Ботинки или каблуки с шипами',
-    'Перчатки без пальцев',
-    'Странные контактные линзы',
-  ]],
-  ['value', 'Высшая ценность', [
-    'Деньги', 'Честь', 'Своё слово', 'Честность', 'Знания',
-    'Месть', 'Любовь', 'Власть', 'Семья', 'Дружба',
-  ]],
-  ['people', 'Отношение к людям', [
-    'Я люблю почти всех',
-    'Я ненавижу почти всех',
-    'Люди — инструменты: используй их для своих целей',
-    'Каждый человек ценен, каждая жизнь важна',
-    'Люди — препятствия, которые нужно сокрушать',
-    'Люди — овцы, а я волк',
-    'Хорошие люди есть — их просто нужно найти',
-    'Люди приятны, пока не разочаруют',
-    'Никому нельзя доверять до конца',
-    'Я держусь нескольких друзей, остальные — фон',
-  ]],
-  ['person', 'Ценный человек', [
-    'Возлюбленный / возлюбленная',
-    'Родитель',
-    'Брат или сестра',
-    'Ребёнок',
-    'Наставник',
-    'Лучший друг',
-    'Питомец',
-    'Группа, банда или семья',
-    'Кумир или историческая личность',
-    'Никого — ты ни к кому не привязываешься',
-  ]],
-  ['possession', 'Ценный предмет', [
-    'Оружие', 'Инструмент', 'Предмет одежды', 'Фотография', 'Дневник',
-    'Письмо', 'Украшение', 'Игрушка', 'Книга', 'Транспорт',
-  ]],
-  ['family', 'Происхождение семьи', [
-    'Корпоративные управленцы (Corporate Execs)',
-    'Корпоративные служащие (Corporate Managers)',
-    'Корпоративные техники (Corporate Technicians)',
-    'Номад-клан (Nomad Pack)',
-    'Банда-«семья» (Ganger Family)',
-    'Жители Боевой Зоны (Combat Zoners)',
-    'Городская беднота (Urban Homeless)',
-    'Обитатели мегабашни (Megastructure Warren Rats)',
-    'Реклэймеры — пионеры заброшенных городов (Reclaimers)',
-    'Эджраннеры (Edgerunners)',
-  ]],
-  ['crisis', 'Семейный кризис', [
-    'Семья потеряла всё из-за предательства',
-    'Семья потеряла всё из-за катастрофической ошибки',
-    'Семью убили или разогнали — выжил только ты',
-    'Семья в заложниках, тюрьме или рабстве у корпорации / банды',
-    'Ты сам порвал с семьёй и ушёл',
-    'Семья в бегах — вы скрываетесь',
-    'Семья изгнана из родного дома',
-    'Семья вымирает — ты последний носитель имени',
-    'Семья ведёт вендетту, и ты в неё втянут',
-    'Семья разбросана по миру — ты ищешь родных',
-  ]],
-  ['goal', 'Жизненная цель', [
-    'Избавиться от дурной репутации',
-    'Обрести власть и контроль',
-    'Выбраться с Улицы',
-    'Причинять боль и страдания тем, кто это заслужил',
-    'Изжить и забыть своё прошлое',
-    'Выследить виновных в твоих бедах',
-    'Получить то, что принадлежит тебе по праву',
-    'Спасти важного для тебя человека',
-    'Добиться славы и признания',
-    'Стать тем, кого боятся и уважают',
-  ]],
-];
-
-/* ---------- ролевые предыстории (13-й пункт Lifepath) ---------- */
-
-const LP_ROLE = {
-  Rockerboy:  ['Твой первый концерт / выступление', [
-    'Подпольный клуб в Боевой Зоне — тебя чуть не застрелили на сцене',
-    'Корпоративная вечеринка — ты выступал перед богатыми ублюдками',
-    'Уличный фестиваль — тебя услышали и позвали на запись',
-    'Похороны друга — ты пел, все плакали',
-    'ТВ-шоу — пять минут славы, которые едва не убили твою карьеру',
-    'Тюремный концерт — для сокамерников и охраны',
-    'Запись в подвале — демка, разошедшаяся по Сети',
-    'Прямой эфир взлома — ты пел, пока нетраннеры отвлекали корпов',
-    'Бар в Даунтауне — ты играл за еду и ночлег',
-    'Свадьба номадов — трёхдневный джем в движущемся караване',
-  ]],
-  Solo: ['Твой первый урок / кто тебя тренировал', [
-    'Отставной военный — бывший майор корпоративной армии',
-    'Уличный ветеран — старый соло из Боевой Зоны',
-    'Отец / мать — которые научили тебя держать ствол',
-    'Банда — ты прошёл обряд посвящения с боем',
-    'Спецшкола — корпоративная академия для будущих убийц',
-    'Тренировочный полигон армии НСША — ты дезертир',
-    'Монастырь боевых искусств — дзен и сталь',
-    'Самоучка — метод проб и ошибок, ошибок было много',
-    'Наставник-киборг — полчеловека, полмашины',
-    'Голодиски с тренировками — и никакой морали',
-  ]],
-  Netrunner: ['Как ты получил свой первый дек / взломал первую сеть', [
-    'Нашёл сломанный дек в мусоре — починил и вломился в сеть школы',
-    'Украл у корпората — и сразу заработал срок в розыске',
-    'Купил на улице за копейки — продавец не знал, что продаёт',
-    'Подарок от друга-нетраннера — тот погиб в Сети через неделю',
-    'Выиграл в карты / в кибер-бойне',
-    'Наследство от старого нетраннера, который «ушёл в Сеть»',
-    'Собрал сам из запчастей — работало через раз, но работало',
-    'Получил в корпоративной школе — за успехи в программировании',
-    'Военная разработка — ты тестировщик боевых программ',
-    'Заказ на взлом — первый заказ, который определил твою карьеру',
-  ]],
-  Tech: ['Что ты починил / создал впервые', [
-    'Свой первый хром — перепаял сломанный нейропорт',
-    'Тостер, который взорвал кухню — но ты понял, КАК он работает',
-    'Дрон-курьер — он прожил целых три дня до аварии',
-    'Кибердек — да, ты собрал дек с нуля',
-    'Оружие — самодельный пистолет из водопроводных труб',
-    'Броню — перешил кевларовый жилет под себя',
-    'Музыкальный синтезатор — для рокербоя из соседнего района',
-    'Генератор — в Мегабашне вечно отключают свет',
-    'Экзоскелет — строительный, но на него поставили пушку',
-    'Медицинский сканер — ты думал, это спасёт жизни. Ошибался.',
-  ]],
-  Medtech: ['Твой первый пациент / операция', [
-    'Уличная драка — друг с ножом в боку, ты ковырялся в ране на коленке',
-    'Передозировка — ты откачал наркомана в переулке',
-    'Роды — ты принимал роды прямо в такси',
-    'Киберпсихоз — пришлось отключать хром живьём',
-    'Падение с высоты — ты собирал по частям тело с тротуара',
-    'Ожоги — ты лечил ребёнка, который выбежал из горящего здания',
-    'Огнестрел — первое пулевое ранение, ты перевязывал себя сам',
-    'Ампутация — срочно, на кухонном столе, без наркоза',
-    'Эпидемия — ты работал во время вспышки неизвестного вируса',
-    'Легальная практика — ты работал в клинике, пока корпы не закрыли её',
-  ]],
-  Media: ['Твой первый материал / репортаж', [
-    'Блог — ты написал пост, который собрал миллион просмотров',
-    'Стрим перестрелки — ты оказался в нужном месте в нужное время',
-    'Интервью с сенсеем — ты поговорил с культовым эджраннером',
-    'Расследование — ты раскрыл коррупцию в местном участке',
-    'Фото — снимок, который напечатали на первой полосе',
-    'Подкаст — твои истории услышали тысячи людей',
-    'Провокация — ты написал фейк, который взорвал инфополе',
-    'Военкор — ты снимал бой из окопа',
-    'Рецензия — твой обзор хрома разошёлся на цитаты',
-    'Заказной материал — корпы заплатили, ты написал, что надо',
-  ]],
-  Exec: ['В какой корпорации ты начинал и почему ушёл', [
-    'Kang Tao — конкуренты предложили больше',
-    'Arasaka — ты был пешкой в большой игре и сбежал',
-    'Militech — тебя подставили и уволили с волчьим билетом',
-    'Biotechnica — ты узнал слишком много о генной инженерии',
-    'Xzotto — лотерейная корпорация, ты понял, что это лохотрон',
-    'CitiNet — бюрократия сожрала твою душу',
-    'Zetatech — отдел кибербезопасности, ты взламывал их же системы',
-    'Trauma Team — ты ушёл, потому что не вывозил видеть смерти',
-    'Orion Security — частная армия, ты был связным',
-    'Независимый консультант — ты никогда не работал на корпов. Пока что.',
-  ]],
-  Lawman: ['Кто был твоим первым напарником', [
-    'Ветеран — старый законник, который научил тебя выживать на улицах',
-    'Молодой идеалист — ты учил его, а он погиб в первой перестрелке',
-    'Коррумпированный коп — ты долго не замечал, а потом всё вскрылось',
-    'Инсайдер — твой напарник был агентом корпорации',
-    'Женщина-коп — ты влюбился, и это чуть не убило вас обоих',
-    'Робот-напарник — дрон-компаньон, который стал другом',
-    'Соло под прикрытием — эджраннер, который на самом деле работал на вас',
-    'Лучший друг детства — вы пошли в полицию вместе',
-    'Служебная собака — K9, верный друг, который спас тебе жизнь',
-    'Без напарника — ты всегда работал один, так проще',
-  ]],
-  Fixer: ['Твоя первая сделка', [
-    'Оружие — продал ствол уличному гангеру, который застрелил копа',
-    'Информация — продал данные, которые привели к смерти человека',
-    'Хром — впарил бракованный нейропорт доверчивому клиенту',
-    'Наркотики — мелкий дилер, ты подсадил на иглу десяток школьников',
-    'Услуги — нашёл соло для опасного заказа, тот не вернулся',
-    'Броня — сбывал списанные армейские бронежилеты',
-    'Контрабанда — перевёз груз через блокпосты',
-    'Искусство — продал украденную картину коллекционеру',
-    'Живой товар — ты помог людям бежать из города нелегально',
-    'Легальный бизнес — ты начал с мелкой лавки и торговал хламом',
-  ]],
-  Nomad: ['Из какого ты клана / каравана', [
-    'Клан «Металлические Псы» — перевозчики оружия по пустошам',
-    'Семья «Шоссейные Призраки» — контрабандисты, знающие все маршруты',
-    'Братство «Ветряные Крылья» — AV-пилоты и дальнобойщики',
-    'Караван «Соляные Псы» — торговцы водой и припасами',
-    'Клан «Разбитые Шины» — байкеры, живущие на скорости',
-    'Семья «Тихие Волны» — моряки и речники',
-    'Караван «Огненные Колёса» — пиротехники и каскадёры',
-    'Клан «Стальные Когти» — охотники за головами в пустошах',
-    'Одиночка — ты сам по себе, клан погиб или ты его покинул',
-    'Корпоративный транспортный отдел — ты бывший водитель корпов',
-  ]],
-};
+function lpFields(mode) {
+  return mode === 'core' ? CORE_LIFEPATH_FIELDS : CEMK_LIFEPATH_FIELDS;
+}
 
 function lpRoleField(role) {
-  const t = LP_ROLE[role];
-  return t ? ['rolebg', 'Ролевая предыстория: ' + t[0], t[1]] : ['rolebg', 'Ролевая предыстория', ['—']];
+  return ROLE_LIFEPATHS[role] || [];
 }
 
-function lpAllFields(role) {
-  return [...LP_FIELDS, lpRoleField(role)];
+function lpAllFields(role, mode) {
+  return lpFields(mode === 'cemk' ? 'cemk' : 'core');
 }
 
-function lifepathNarrative(lp, role) {
+function lifepathNarrative(lp, role, roleLp, mode) {
   const out = [];
-  for (const [key, label] of lpAllFields(role)) {
+  for (const [key, label] of lpAllFields(role, mode)) {
     if (lp && lp[key]) out.push([label, lp[key]]);
   }
+  for (const [key, label] of lpRoleField(role)) {
+    if (roleLp && roleLp[key]) out.push(['Роль · ' + label, roleLp[key]]);
+  }
+  if ((!roleLp || !Object.keys(roleLp).length) && lp && lp.rolebg) out.push(['Ролевая предыстория', lp.rolebg]);
   return out;
 }
 
 /* ---------- суб-навыки ---------- */
 
-const SUB_SKILL_BASES = [
-  ['Language', 'Языки', ['Streetslang', 'Английский', 'Русский', 'Испанский', 'Японский', 'Китайский', 'Немецкий', 'Французский', 'Арабский', 'Корейский', 'Португальский', 'Хинди', 'Иврит', 'Польский', 'Итальянский', 'Суахили', 'Тагальский', 'Вьетнамский', 'Турецкий', 'Навахо']],
-  ['Martial Arts', 'Боевые искусства', ['Karate', 'Judo', 'Taekwondo', 'Aikido']],
-  ['Local Expert', 'Локальные эксперты', ['Свой район', 'Уотсон', 'Сити-центр', 'Боевая Зона', 'Мегабашня H4', 'Пустоши', 'Пасифика', 'Хейвуд', 'Санто-Доминго', 'Норт-Оук']],
-];
+const SUB_SKILL_BASES = SPECIALIZED_SKILL_BASES;
+const WIZ_SUB_HIDDEN = new Set(SUB_SKILL_BASES.map(s => s[0]));
 
-const WIZ_SUB_HIDDEN = new Set(['Language', 'Martial Arts', 'Local Expert']);
-
-/* ---------- закупка: 8 категорий ---------- */
+/* ---------- закупка: категории ---------- */
 
 const WIZ_SHOP_CATS = [
   ['weapons',  '🔫 Оружие',      ['guns', 'melee', 'gun_upgrades']],
@@ -1236,12 +990,9 @@ const WIZ_SHOP_CATS = [
   ['chrome',   '🦾 Хром',        ['cyberware']],
   ['programs', '💾 Программы',   ['programs', 'net_stuff']],
   ['ammo',     '📦 Боеприпасы',  ['ammo', 'grenades']],
-  ['clothes',  '🧥 Одежда',      ['fashion']],
   ['vehicles', '🏍️ Транспорт',   ['vehicles', 'vehicles_upgrades']],
-  ['gear',     '🎒 Снаряжение',  ['gear', 'services']],
+  ['gear',     '🎒 Снаряжение и услуги', ['gear', 'services']],
 ];
-
-const WIZ_FASHIONWARE = ['biomonitor', 'chemskin', 'shift tacts', 'skinwatch', 'techhair', 'emp threading', 'light tattoo'];
 
 const GEAR_BUDGET = 2550;
 const FASHION_BUDGET = 800;
@@ -1252,9 +1003,23 @@ function byNameRu(a, b) {
 
 /* ===================== мастер: состояние ===================== */
 
+function defaultRoleSetup(role) {
+  if (role === 'Tech') return { field: 2, upgrade: 2, fabrication: 2, invention: 2 };
+  if (role === 'Medtech') return { surgery: 2, pharma: 1, cryo: 1 };
+  if (role === 'Exec') return { team_member: '' };
+  if (role === 'Nomad') return { moto_choices: ['', '', '', ''] };
+  return {};
+}
+
+function creationChromeBonus(wiz) { return wiz.soldSoul ? 1500 : 0; }
+function creationMainSpent(wiz) { return wiz.gearCost + Math.max(0, wiz.chromeCost - creationChromeBonus(wiz)); }
+function creationMainRemaining(wiz) { return GEAR_BUDGET - creationMainSpent(wiz); }
+
 function initWizard() {
   const stats = {};
-  (state.meta ? state.meta.stats : ['INT','REF','DEX','TECH','COOL','WILL','LUCK','MOVE','BODY','EMP']).forEach(s => stats[s] = 5);
+  (state.meta ? state.meta.stats : ['INT','REF','DEX','TECH','COOL','WILL','LUCK','MOVE','BODY','EMP']).forEach(s => stats[s] = 6);
+  stats.WILL = 7;
+  stats.BODY = 7;
   state.wizard = {
     step: 1,
     role: 'Solo',
@@ -1262,15 +1027,17 @@ function initWizard() {
     stats,
     skills: {},
     subSkills: [
-      { base: 'Language', name: 'Streetslang', lvl: 4, free: true },
-      { base: 'Local Expert', name: 'Свой район', lvl: 2 },
+      { base: 'Language', name: 'Streetslang', lvl: 2, locked: true },
+      { base: 'Local Expert', name: 'Свой район', lvl: 2, locked: true },
     ],
+    nativeLanguage: '',
     cyberware: [],       // хром из закупки {id, name, hl, price, type}
-    fashionware: [],     // косметика из шага «Стиль» {id, name, hl:0, price, type}
-    gear: [], fashion: [],
+    fashionware: [],     // косметика из шага «Стиль»
+    gear: [], fashion: [], armor: { body: null, head: null },
     chromeCost: 0, gearCost: 0, fashionCost: 0,
-    fashionBurned: false,
-    lifepath: {},
+    fashionBurned: false, soldSoul: false, freeNeuroport: true,
+    lifepathMode: 'cemk', lifepath: {}, roleLifepath: {},
+    roleSetup: defaultRoleSetup('Solo'),
     shopTab: 'weapons', shopQ: '', styleQ: '',
     created: false,
   };
@@ -1290,20 +1057,36 @@ function wizChar() {
   }
   const langs = w.subSkills.filter(s => s.base === 'Language' && s.name && s.lvl > 0)
     .map(s => `${s.name} (${s.lvl})`).join(', ');
-  const lpText = lifepathNarrative(lp, w.role).map(([k, v]) => `${k}: ${v}`).join('\n');
+  const lpText = lifepathNarrative(lp, w.role, w.roleLifepath, w.lifepathMode)
+    .map(([k, v]) => `${k}: ${v}`).join('\n');
+  const purchasedChrome = [...w.cyberware, ...w.fashionware].map(c => ({
+    key: c.id, name: c.name, hl: c.hl || 0, price: c.price, type: c.type || '',
+  }));
+  const cyberware = w.freeNeuroport
+    ? [{ key: 'creation-neuroport', name: 'Neuroport', hl: 0, price: 0,
+         type: 'Neuralware', humanity_exempt: true, creation_free: true }, ...purchasedChrome]
+    : purchasedChrome;
+  const appearance = w.lifepathMode === 'cemk'
+    ? [lp.wardrobe, lp.hair_style, lp.hair_color]
+    : [lp.clothing, lp.hair, lp.affectation];
   return {
     handle: w.handle || 'Безымянный-07',
-    role: w.role, role_rank: 4,
+    role: w.role, role_rank: 4, role_setup: Object.assign({}, w.roleSetup),
     stats: Object.assign({}, w.stats),
     hp_cur: null, humanity_cur: null,
-    skills,
-    cyberware: [...w.cyberware, ...w.fashionware].map(c => ({ key: c.id, name: c.name, hl: c.hl || 0, price: c.price, type: c.type || '' })),
+    skills, native_language: w.nativeLanguage,
+    cyberware,
     inventory: [...w.gear.map(i => ({ ...i })), ...w.fashion.map(i => ({ ...i }))],
-    armor: {},
-    cash: Math.max(0, GEAR_BUDGET - w.chromeCost - w.gearCost),
-    appearance: [lp.clothing, lp.hair, lp.affectation].filter(Boolean).join(' · '),
+    armor: { body: w.armor.body ? { ...w.armor.body } : null, head: w.armor.head ? { ...w.armor.head } : null },
+    cash: Math.max(0, creationMainRemaining(w)),
+    appearance: appearance.filter(Boolean).join(' · '),
     background: lpText,
-    lifepath: Object.assign({}, lp),
+    lifepath_mode: w.lifepathMode,
+    lifepath: Object.assign({}, lp), role_lifepath: Object.assign({}, w.roleLifepath),
+    creation: { sold_soul: !!w.soldSoul, free_neuroport: !!w.freeNeuroport,
+      gear_spent: w.gearCost, chrome_spent: w.chromeCost, fashion_spent: w.fashionCost },
+    lifestyle: 'Kibble (100€$)',
+    housing: w.role === 'Exec' ? 'Corporate Conapt (Teamwork)' : 'Studio Apartment (Rent, VEX)',
     notes: '', languages: langs, player: '',
     public: true,
   };
@@ -1325,7 +1108,7 @@ async function viewWizard() {
 function wizLiveHtml() {
   const wiz = state.wizard;
   const d = wizDerived();
-  const remainingGear = GEAR_BUDGET - wiz.chromeCost - wiz.gearCost;
+  const remainingGear = creationMainRemaining(wiz);
   const remainingFashion = wiz.fashionBurned ? 0 : (FASHION_BUDGET - wiz.fashionCost);
   return `<div class="derived">
     <span class="dstat"><span class="v">${d.hp_max || '—'}</span><span class="k">HP макс</span></span>
@@ -1369,7 +1152,6 @@ function renderWizard() {
       <div class="row" style="justify-content:space-between">
         <div>
           <button class="btn-sm" id="wiz-restart">⟳ Начать заново</button>
-          <button class="btn-sm" id="wiz-full-editor" title="Открыть полный редактор">✏️ Полный редактор</button>
         </div>
         <div class="row">
           ${wiz.step > 1 ? '<button id="wiz-prev" class="btn-sm">← Назад</button>' : ''}
@@ -1387,9 +1169,6 @@ function renderWizard() {
   const crt = $('#wiz-create');
   if (crt) crt.onclick = wizCreate;
   $('#wiz-restart').onclick = wizReset;
-  const fullEd = $('#wiz-full-editor');
-  if (fullEd) fullEd.onclick = () => { state.wizard = null; viewEditor('new'); };
-
   bindWizStep();
 }
 
@@ -1416,6 +1195,38 @@ function wizStepContent(step) {
 
 /* ---------- Шаг 1: Роль ---------- */
 
+function roleSetupSummary(role, setup) {
+  setup = setup || {};
+  if (role === 'Tech') return `Field ${setup.field || 0} · Upgrade ${setup.upgrade || 0} · Fabrication ${setup.fabrication || 0} · Invention ${setup.invention || 0}`;
+  if (role === 'Medtech') return `Surgery ${setup.surgery || 0} · Pharmaceuticals ${setup.pharma || 0} · Cryosystems ${setup.cryo || 0}`;
+  if (role === 'Exec') return setup.team_member ? `Сотрудник: ${setup.team_member}` : '';
+  if (role === 'Nomad') return Array.isArray(setup.moto_choices) ? `Moto: ${setup.moto_choices.filter(Boolean).join(' → ')}` : '';
+  return '';
+}
+
+function wizRoleSetupHtml() {
+  const w = state.wizard, s = w.roleSetup || {};
+  if (w.role === 'Tech') return `<div class="panel accent mt"><h3>Распределение Maker</h3>
+    <div class="small muted mb">На старте Tech получает по 1 рангу в двух разных специализациях за каждый ранг Maker: всего 8, максимум 4 в одной.</div>
+    <div class="grid cols-4">${[
+      ['field','Field Expertise'],['upgrade','Upgrade Expertise'],['fabrication','Fabrication Expertise'],['invention','Invention Expertise']
+    ].map(([k,n]) => `<label class="f"><span>${n}</span><input type="number" min="0" max="4" data-role-setup="${k}" value="${num(s[k]) || 0}"></label>`).join('')}</div>
+    <div class="small">Распределено: <b>${['field','upgrade','fabrication','invention'].reduce((a,k)=>a+(num(s[k])||0),0)}</b> / 8</div></div>`;
+  if (w.role === 'Medtech') return `<div class="panel accent mt"><h3>Распределение Medicine</h3>
+    <div class="small muted mb">Распредели 4 ранга между Surgery, Pharmaceuticals и Cryosystem Operation.</div>
+    <div class="grid cols-3">${[
+      ['surgery','Surgery'],['pharma','Pharmaceuticals'],['cryo','Cryosystem Operation']
+    ].map(([k,n]) => `<label class="f"><span>${n}</span><input type="number" min="0" max="4" data-role-setup="${k}" value="${num(s[k]) || 0}"></label>`).join('')}</div>
+    <div class="small">Распределено: <b>${['surgery','pharma','cryo'].reduce((a,k)=>a+(num(s[k])||0),0)}</b> / 4</div></div>`;
+  if (w.role === 'Exec') return `<div class="panel accent mt"><h3>Teamwork · стартовый сотрудник</h3>
+    <select id="role-team"><option value="">— выбрать —</option>${['Телохранитель','Водитель','Личный помощник','Техник','Нетраннер','Скрытый оперативник'].map(x=>`<option ${s.team_member===x?'selected':''}>${x}</option>`).join('')}</select>
+    <div class="small muted mt">Teamwork также предоставляет Businesswear и корпоративное жильё.</div></div>`;
+  if (w.role === 'Nomad') return `<div class="panel accent mt"><h3>Moto · четыре стартовых выбора</h3>
+    <div class="small muted mb">На каждом ранге выбери новый семейный транспорт доступного ранга или улучшение уже выбранной машины.</div>
+    <div class="grid cols-2">${[0,1,2,3].map(i => `<label class="f"><span>Ранг ${i+1}</span><input data-moto-choice="${i}" value="${esc((s.moto_choices || [])[i] || '')}" placeholder="Транспорт или улучшение"></label>`).join('')}</div></div>`;
+  return '';
+}
+
 function wizStepRoleHtml() {
   const wiz = state.wizard;
   return `
@@ -1433,41 +1244,89 @@ function wizStepRoleHtml() {
           <div class="small" style="margin-top:6px">${esc(ab.desc)}</div>
         </div>`;
       }).join('')}
-    </div>`;
+    </div>
+    ${wizRoleSetupHtml()}`;
 }
 
 /* ---------- Шаг 2: Lifepath ---------- */
 
-function wizRollLifepath(key) {
+function languagesForRegion(region) {
+  const key = Object.keys(CULTURAL_LANGUAGES).find(k => String(region || '').startsWith(k));
+  return key ? CULTURAL_LANGUAGES[key] : [];
+}
+
+function syncNativeLanguage() {
+  const w = state.wizard;
+  const langs = languagesForRegion(w.lifepath.region);
+  if (!langs.includes(w.nativeLanguage)) w.nativeLanguage = langs[0] || '';
+  let native = w.subSkills.find(s => s.native);
+  if (!native && w.nativeLanguage) {
+    native = { base: 'Language', name: w.nativeLanguage, lvl: 4, free: true, native: true, locked: true };
+    w.subSkills.push(native);
+  }
+  if (native) {
+    native.name = w.nativeLanguage;
+    native.lvl = 4;
+  }
+}
+
+function wizRollLifepath(key, roleSpecific) {
   const wiz = state.wizard;
-  const field = lpAllFields(wiz.role).find(f => f[0] === key);
+  const fields = roleSpecific ? lpRoleField(wiz.role) : lpAllFields(wiz.role, wiz.lifepathMode);
+  const field = fields.find(f => f[0] === key);
   if (!field) return;
   const opts = field[2];
-  wiz.lifepath[key] = opts[Math.floor(Math.random() * opts.length)];
+  let index = Math.floor(Math.random() * opts.length);
+  if (!roleSpecific && key === 'region' && wiz.lifepathMode === 'cemk') {
+    index = (1 + Math.floor(Math.random() * 6)) + (1 + Math.floor(Math.random() * 6)) - 2;
+  }
+  (roleSpecific ? wiz.roleLifepath : wiz.lifepath)[key] = opts[Math.min(index, opts.length - 1)];
+  if (!roleSpecific && key === 'region') syncNativeLanguage();
+}
+
+function lifepathFieldsHtml(fields, values, attr, diceAttr) {
+  return fields.map(([key, label, opts]) => `
+    <div class="lp-item">
+      <div class="lp-label">${esc(label)}</div>
+      <div class="row" style="align-items:center;gap:6px;flex-wrap:nowrap">
+        <select ${attr}="${key}" style="flex:1;min-width:0">
+          <option value="">— не выбрано —</option>
+          ${opts.map(o => `<option value="${esc(o)}" ${values[key] === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
+        </select>
+        <button class="btn-sm" ${diceAttr}="${key}" title="Бросить по таблице источника">🎲</button>
+      </div>
+    </div>`).join('');
 }
 
 function wizStepLifepathHtml() {
   const wiz = state.wizard;
-  const lp = wiz.lifepath;
-  const fields = lpAllFields(wiz.role);
+  const fields = lpAllFields(wiz.role, wiz.lifepathMode);
+  const roleFields = lpRoleField(wiz.role);
+  const langs = languagesForRegion(wiz.lifepath.region);
   return `
+    <div class="panel accent mb">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div><b>Источник общего Lifepath</b><div class="small muted">Ролевой Lifepath CP:R заполняется отдельно в обоих режимах.</div></div>
+        <div class="tabs" id="lp-mode">
+          <button data-lp-mode="cemk" class="${wiz.lifepathMode === 'cemk' ? 'active' : ''}">CEMK · 2070-е</button>
+          <button data-lp-mode="core" class="${wiz.lifepathMode === 'core' ? 'active' : ''}">CP:R · полный</button>
+        </div>
+      </div>
+    </div>
     <div class="row mb" style="justify-content:space-between;align-items:center">
-      <span class="muted small">13 пунктов прошлого. Выбирай из списков или жми 🎲 у каждого пункта.</span>
+      <span class="muted small">Выбирай результат или бросай по каждой таблице.</span>
       <button class="btn-primary btn-sm" id="lp-gen-all">🎲 Сгенерировать весь Lifepath</button>
     </div>
-    <div class="lp-grid">
-      ${fields.map(([key, label, opts]) => `
-        <div class="lp-item">
-          <div class="lp-label">${esc(label)}</div>
-          <div class="row" style="align-items:center;gap:6px;flex-wrap:nowrap">
-            <select data-lp="${key}" style="flex:1;min-width:0">
-              <option value="">— не выбрано —</option>
-              ${opts.map(o => `<option value="${esc(o)}" ${lp[key] === o ? 'selected' : ''}>${esc(o)}</option>`).join('')}
-            </select>
-            <button class="btn-sm" data-lp-dice="${key}" title="Бросить 1d10">🎲</button>
-          </div>
-        </div>`).join('')}
-    </div>`;
+    <h3>Общий Lifepath · ${wiz.lifepathMode === 'cemk' ? 'CEMK стр. 19–24' : 'CP:R стр. 43–52'}</h3>
+    <div class="lp-grid">${lifepathFieldsHtml(fields, wiz.lifepath, 'data-lp', 'data-lp-dice')}</div>
+    <div class="panel mt mb">
+      <label class="f"><span>Культурный язык · уровень 4 бесплатно</span>
+        <select id="lp-native" ${langs.length ? '' : 'disabled'}><option value="">${langs.length ? '— выбрать язык —' : 'Сначала выбери регион'}</option>
+        ${langs.map(x => `<option value="${esc(x)}" ${wiz.nativeLanguage === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}</select></label>
+      <div class="small muted">Streetslang остаётся отдельным обязательным навыком уровня 2 и оплачивается из 86 очков.</div>
+    </div>
+    <h3>Ролевой Lifepath · ${esc(wiz.role)} · CP:R</h3>
+    <div class="lp-grid">${lifepathFieldsHtml(roleFields, wiz.roleLifepath, 'data-role-lp', 'data-role-lp-dice')}</div>`;
 }
 
 /* ---------- Шаг 3: Статы ---------- */
@@ -1483,7 +1342,7 @@ function updateWizStatBar() {
   const el = $('#wiz-st-spent');
   if (el) {
     el.textContent = spent;
-    el.classList.toggle('warn-text', spent > budget);
+    el.classList.toggle('warn-text', spent !== budget);
   }
 }
 
@@ -1493,10 +1352,10 @@ function wizStepStatsHtml() {
   const budget = state.meta.stat_points || 62;
   return `
     <div class="row mb" style="justify-content:space-between">
-      <span class="muted small">Потрачено: <b id="wiz-st-spent" class="${spent > budget ? 'warn-text' : ''}">${spent}</b> / <b>${budget}</b> очков (каждая стата 2–8, по умолчанию 5)</span>
+      <span class="muted small">Потрачено: <b id="wiz-st-spent" class="${spent !== budget ? 'warn-text' : ''}">${spent}</b> / <b>${budget}</b> очков (каждая стата 2–8, требуется ровно 62)</span>
       <div class="row">
         <button class="btn-sm" id="wiz-st-roll">🎲 Сгенерировать</button>
-        <button class="btn-sm" id="wiz-st-reset">Сброс на 5</button>
+        <button class="btn-sm" id="wiz-st-reset">Сброс на 62</button>
       </div>
     </div>
     <div class="statgrid">
@@ -1523,16 +1382,20 @@ function wizSkillSpent() {
   }
   for (const s of wiz.subSkills) {
     let lvl = s.lvl || 0;
-    if (s.free) lvl = Math.max(0, lvl - 4); // родной язык: 4 уровня бесплатно
-    total += lvl * (s.base === 'Martial Arts' ? 2 : 1);
+    if (s.free) lvl = Math.max(0, lvl - 4); // культурный язык: 4 уровня бесплатно
+    const meta = state.meta.skills.find(x => x[1] === s.base);
+    total += lvl * (meta && meta[3] ? 2 : 1);
   }
   return total;
 }
 
 function wizMustOk(name) {
   const wiz = state.wizard;
-  if (WIZ_SUB_HIDDEN.has(name)) {
-    return wiz.subSkills.some(s => s.base === name && (s.lvl || 0) >= 2);
+  if (name === 'Language') {
+    return wiz.subSkills.some(s => s.base === 'Language' && s.name === 'Streetslang' && (s.lvl || 0) >= 2);
+  }
+  if (name === 'Local Expert') {
+    return wiz.subSkills.some(s => s.base === 'Local Expert' && (s.lvl || 0) >= 2);
   }
   return (wiz.skills[name] || 0) >= 2;
 }
@@ -1543,7 +1406,7 @@ function updateWizSkillHud() {
   const el = $('#wiz-sk-spent');
   if (el) {
     el.textContent = spent;
-    el.classList.toggle('warn-text', spent > budget);
+    el.classList.toggle('warn-text', spent !== budget);
   }
   $$('.wiz-must-chip').forEach(chip => {
     const ok = wizMustOk(chip.dataset.must);
@@ -1559,7 +1422,7 @@ function wizSubSkillsHtml() {
   return `
     <div class="panel mb">
       <h3 style="margin-top:0">🧩 Суб-навыки</h3>
-      <div class="small muted mb">Языки и локальные эксперты — обязательные минимумы (хотя бы один уровня 2). Родной язык — 4 уровня бесплатно. Боевые искусства — ×2 стоимость.</div>
+      <div class="small muted mb">Streetslang и Local Expert (свой дом) обязательны на уровне 2. Культурный язык из Lifepath имеет уровень 4 бесплатно. Martial Arts стоит ×2; Language, Local Expert, Science и Play Instrument всегда записываются с конкретной специализацией.</div>
       ${SUB_SKILL_BASES.map(([base, ru, presets]) => {
         const list = wiz.subSkills.map((s, i) => [s, i]).filter(([s]) => s.base === base);
         return `
@@ -1570,12 +1433,12 @@ function wizSubSkillsHtml() {
           </div>
           ${list.length ? list.map(([s, i]) => `
             <div class="row mt" style="align-items:center;gap:6px">
-              <input data-sub-name="${i}" list="wiz-dl-${esc(base).replace(/\s+/g, '-')}" value="${esc(s.name)}" placeholder="Название…" style="flex:1;min-width:0">
-              <select data-sub-lvl="${i}" style="width:90px">
+              <input data-sub-name="${i}" list="wiz-dl-${esc(base).replace(/\s+/g, '-')}" value="${esc(s.name)}" placeholder="Название…" style="flex:1;min-width:0" ${s.locked ? 'disabled' : ''}>
+              <select data-sub-lvl="${i}" style="width:90px" ${s.locked ? 'disabled' : ''}>
                 ${[0, 1, 2, 3, 4, 5, 6].map(r => `<option value="${r}" ${(s.lvl || 0) === r ? 'selected' : ''}>${r === 0 ? '—' : 'ур. ' + r}</option>`).join('')}
               </select>
-              ${s.free ? '<span class="chip" title="Родной язык — 4 уровня бесплатно">родной</span>' : ''}
-              <button class="btn-sm btn-danger" data-sub-del="${i}">✕</button>
+              ${s.free ? '<span class="chip" title="Культурный язык — 4 уровня бесплатно">родной</span>' : ''}
+              ${s.locked ? '<span class="chip">обязательный</span>' : `<button class="btn-sm btn-danger" data-sub-del="${i}">✕</button>`}
             </div>`).join('') : '<div class="muted small mt">— пусто —</div>'}
           <datalist id="wiz-dl-${esc(base).replace(/\s+/g, '-')}">${presets.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
         </div>`;
@@ -1596,6 +1459,8 @@ function wizStepSkillsHtml() {
     const ok = wizMustOk(s);
     return `<span class="wiz-must-chip chip ${ok ? 'ok' : 'bad'}" data-must="${esc(s)}">${ok ? '✓' : '✗'} ${esc(s)}</span>`;
   }).join('');
+  const recommended = (ROLE_RECOMMENDED_SKILLS[wiz.role] || [])
+    .map(s => `<span class="chip">${esc(s)}</span>`).join('');
 
   let lastCat = null;
   const rows = skills.map(([cat, name, stat, is2]) => {
@@ -1607,7 +1472,7 @@ function wizStepSkillsHtml() {
       <span class="sname">${isMust ? '<span class="must-tag" title="Обязательный минимум: 2 очка">★</span>' : ''}${esc(name)}${is2 ? ' <span class="muted small">(×2)</span>' : ''}</span>
       <span class="sstat">${stat}</span>
       <select data-wiz-skill="${esc(name)}" class="${lvl > maxLvl ? 'over-max' : ''}">
-        ${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(r => `<option value="${r}" ${lvl === r ? 'selected' : ''}>${r === 0 ? '—' : r}</option>`).join('')}
+        ${[0, 1, 2, 3, 4, 5, 6].map(r => `<option value="${r}" ${lvl === r ? 'selected' : ''}>${r === 0 ? '—' : r}</option>`).join('')}
       </select>
     </div>`;
   }).join('');
@@ -1615,10 +1480,12 @@ function wizStepSkillsHtml() {
   const ab = ROLE_ABILITIES[wiz.role] || { name: state.meta.roles[wiz.role] || '—' };
   return `
     <div class="row mb" style="justify-content:space-between;align-items:center">
-      <span class="muted small">Потрачено: <b id="wiz-sk-spent" class="${spent > budget ? 'warn-text' : ''}">${spent}</b> / <b>${budget}</b> очков. Макс. в навыке: <b>${maxLvl}</b></span>
+      <span class="muted small">Потрачено: <b id="wiz-sk-spent" class="${spent !== budget ? 'warn-text' : ''}">${spent}</b> / <b>${budget}</b> очков. Макс. в навыке: <b>${maxLvl}</b></span>
     </div>
     <div class="muted small mb">Обязательные минимумы (по 2 очка):</div>
     <div class="must-list mb">${mustChips}</div>
+    <div class="muted small mb">Рекомендованные навыки для роли ${esc(wiz.role)} (подсказка из таблиц, не обязательное правило):</div>
+    <div class="chips mb">${recommended}</div>
     ${wizSubSkillsHtml()}
     <div class="skill-row" style="border-bottom:1px solid var(--line)">
       <span class="sname"><b>${esc(ab.name)}</b> <span class="tag role">способность роли · ${esc(wiz.role)} · старт — 4</span></span>
@@ -1647,8 +1514,7 @@ async function wizLoadStyleLists() {
       clothes: fash.items.filter(i => i.price != null).sort(byNameRu),
       fashionware: cyber.items.filter(i =>
         (num(i.hl) || 0) === 0 &&
-        String((i.fields || {}).Type || '').toLowerCase().includes('fashionware') &&
-        WIZ_FASHIONWARE.some(n => String(i.name).toLowerCase().includes(n))
+        String((i.fields || {}).Type || '').toLowerCase().includes('fashionware')
       ).sort(byNameRu),
     };
   }
@@ -1679,7 +1545,7 @@ async function wizLoadStyleLists() {
     if (wiz.fashionCost + price > FASHION_BUDGET) { toast('Не хватает бюджета стиля (800€$)', true); return; }
     if (kind === 'fw') {
       if (wiz.fashionware.some(x => x.id === it.id)) { toast('Этот имплант уже вживлён', true); return; }
-      wiz.fashionware.push({ id: it.id, name: it.name, hl: 0, price, type: 'Fashionware' });
+      wiz.fashionware.push({ id: it.id, name: it.name, hl: 0, price, type: 'Fashionware', desc: it.desc || '' });
     } else {
       const ex = wiz.fashion.find(x => x.key === it.id);
       if (ex) ex.qty = (ex.qty || 1) + 1;
@@ -1724,7 +1590,7 @@ function wizStepStyleHtml() {
       </div>
       <div class="panel">
         <h3>💠 Косметические импланты (Fashionware, 0 HL)</h3>
-        <div class="small muted mb">Biomonitor, Chemskin, Shift Tacts, Skinwatch, Techhair, EMP Threading, Light Tattoo — не снижают человечность.</div>
+        <div class="small muted mb">Все предметы с типом Fashionware из Data Pool доступны здесь и не снижают Humanity.</div>
         <div id="wiz-style-fw" style="max-height:300px;overflow:auto">${spinner()}</div>
       </div>
     </div>
@@ -1733,6 +1599,39 @@ function wizStepStyleHtml() {
 }
 
 /* ---------- Шаг 6: Закупка снаряжения ---------- */
+
+function armorPurchaseVariants(items) {
+  const variants = [];
+  for (const location of ['body', 'head']) {
+    for (const item of items) {
+      const locs = item.armor_locations || ['body', 'head'];
+      if (item.armor_bundled || !locs.includes(location)) continue;
+      variants.push({ ...item, variant_id: `${item.id}@${location}`, purchase_location: location,
+        variant_name: `${item.name} — ${location === 'body' ? 'тело' : 'голова'}` });
+    }
+  }
+  for (const item of items.filter(i => i.armor_bundled)) {
+    variants.push({ ...item, variant_id: `${item.id}@set`, purchase_location: 'set',
+      variant_name: `${item.name} — комплект голова + тело` });
+  }
+  for (const item of items.filter(i => (i.armor_locations || []).includes('shield'))) {
+    variants.push({ ...item, variant_id: `${item.id}@shield`, purchase_location: 'shield',
+      variant_name: `${item.name} — щит` });
+  }
+  return variants;
+}
+
+function canAffordCreationItem(wiz, item, price) {
+  if (item.cat === 'cyberware') {
+    return wiz.gearCost + Math.max(0, wiz.chromeCost + price - creationChromeBonus(wiz)) <= GEAR_BUDGET;
+  }
+  return creationMainSpent(wiz) + price <= GEAR_BUDGET;
+}
+
+function armorPieceFromItem(it) {
+  return { key: it.variant_id, source_key: it.id, name: it.name, sp: it.sp || 0,
+    penalties: { ...(it.penalties || {}) }, bundled: !!it.armor_bundled };
+}
 
 async function wizLoadShopList() {
   const wiz = state.wizard;
@@ -1748,123 +1647,203 @@ async function wizLoadShopList() {
     }
   }
   let items = tab[2].flatMap(cid => wiz._shopCache[cid] || []).filter(i => i.price != null);
+  if (tab[0] === 'chrome') {
+    items = items.filter(i => !String((i.fields || {}).Type || '').toLowerCase().includes('fashionware') &&
+      String(i.name).toLowerCase() !== 'neuroport');
+  }
+  if (tab[0] === 'armor') items = armorPurchaseVariants(items);
   const q = (wiz.shopQ || '').trim().toLowerCase();
-  if (q) items = items.filter(i => String(i.name).toLowerCase().includes(q));
-  items.sort(byNameRu); // строго по алфавиту A-Z / А-Я
-  const remaining = GEAR_BUDGET - wiz.chromeCost - wiz.gearCost;
+  if (q) items = items.filter(i => String(i.variant_name || i.name).toLowerCase().includes(q));
+  if (tab[0] !== 'armor') items.sort(byNameRu);
 
   box.innerHTML = items.length
-    ? items.map(it => `
-      <div class="inv-row" style="cursor:pointer;${(it.price || 0) > remaining ? 'opacity:.5' : ''}" data-shop-add="${it.id}">
-        <span class="iname">${esc(it.name)}</span>
+    ? items.map(it => {
+      const affordable = canAffordCreationItem(wiz, it, it.price || 0);
+      const requirement = String(it.desc || '').match(/Requires?\s+[^.;]+/i);
+      return `<div class="inv-row" style="cursor:pointer;${affordable ? '' : 'opacity:.5'}" data-shop-add="${esc(it.variant_id || it.id)}">
+        <span class="iname">${esc(it.variant_name || it.name)}</span>
         ${it.damage ? `<span class="weap-dmg">${esc(it.damage)}</span>` : ''}
-        ${it.sp != null ? `<span class="chip">SP ${it.sp}</span>` : ''}
+        ${it.sp != null && it.purchase_location !== 'shield' ? `<span class="chip">SP ${it.sp}</span>` : ''}
         ${it.hl ? `<span class="hl-badge">HL ${it.hl}</span>` : ''}
-        <span class="${(it.price || 0) > remaining ? 'muted' : 'price'}">${money(it.price)}</span>
-        ${(it.price || 0) > remaining ? '<span class="tag" style="color:var(--red)">не хватает</span>' : ''}
-      </div>`).join('')
+        ${requirement ? `<span class="tag" title="${esc(requirement[0])}">требования</span>` : ''}
+        <span class="${affordable ? 'price' : 'muted'}">${money(it.price)}</span>
+        ${affordable ? '' : '<span class="tag" style="color:var(--red)">не хватает</span>'}
+      </div>`;
+    }).join('')
     : '<div class="empty">Ничего не нашлось.</div>';
 
-  const flat = items;
   $$('[data-shop-add]', box).forEach(row => row.onclick = () => {
-    const it = flat.find(x => x.id === row.dataset.shopAdd);
+    const it = items.find(x => (x.variant_id || x.id) === row.dataset.shopAdd);
     if (!it) return;
     const price = it.price || 0;
-    if (wiz.chromeCost + wiz.gearCost + price > GEAR_BUDGET) { toast('Не хватает бюджета закупки (2550€$)', true); return; }
+    if (!canAffordCreationItem(wiz, it, price)) { toast('Не хватает стартового бюджета', true); return; }
     if (it.cat === 'cyberware') {
-      wiz.cyberware.push({ id: it.id, name: it.name, hl: it.hl || 0, price, type: (it.fields && it.fields.Type) || '' });
+      wiz.cyberware.push({ id: it.id, name: it.name, hl: it.hl || 0, price, type: (it.fields && it.fields.Type) || '', desc: it.desc || '' });
       wiz.chromeCost += price;
+    } else if (it.cat === 'armor') {
+      if (wiz.gear.some(x => x.key === it.variant_id)) { toast('Этот экземпляр брони уже куплен', true); return; }
+      const entry = { key: it.variant_id, source_key: it.id, cat: 'armor', name: it.name,
+        display_name: it.variant_name, location: it.purchase_location, price, qty: 1,
+        sp: it.sp != null ? it.sp : null, penalties: { ...(it.penalties || {}) },
+        armor_bundled: !!it.armor_bundled };
+      wiz.gear.push(entry);
+      const piece = armorPieceFromItem(it);
+      if (it.purchase_location === 'body' || it.purchase_location === 'set') wiz.armor.body = piece;
+      if (it.purchase_location === 'head' || it.purchase_location === 'set') wiz.armor.head = piece;
+      wiz.gearCost += price;
     } else {
       const ex = wiz.gear.find(x => x.key === it.id);
       if (ex) ex.qty = (ex.qty || 1) + 1;
-      else wiz.gear.push({ key: it.id, cat: it.cat, name: it.name, price, qty: 1, damage: it.damage || null, sp: it.sp != null ? it.sp : null });
+      else wiz.gear.push({ key: it.id, cat: it.cat, name: it.name, price, qty: 1,
+        damage: it.damage || null, sp: it.sp != null ? it.sp : null });
       wiz.gearCost += price;
     }
     renderWizard();
-    toast('Добавлено: ' + it.name);
+    toast('Добавлено: ' + (it.variant_name || it.name));
   });
 }
 
 function wizStepShoppingHtml() {
   const wiz = state.wizard;
-  const remaining = GEAR_BUDGET - wiz.chromeCost - wiz.gearCost;
+  const remaining = creationMainRemaining(wiz);
+  const bonus = creationChromeBonus(wiz);
   const totalHl = wiz.cyberware.reduce((a, c) => a + (c.hl || 0), 0);
-
   const cartRows = [];
   wiz.cyberware.forEach((c, i) => cartRows.push(`
     <div class="inv-row"><span class="iname">🦾 ${esc(c.name)}</span>
-      <span class="hl-badge">HL ${c.hl || 0}</span>
-      <span class="chip">${esc(c.type || 'хром')}</span>
-      <span class="price">${money(c.price)}</span>
-      <button class="btn-sm btn-danger" data-shopdel="chrome|${i}">✕</button>
+      <span class="hl-badge">HL ${c.hl || 0}</span><span class="chip">${esc(c.type || 'хром')}</span>
+      <span class="price">${money(c.price)}</span><button class="btn-sm btn-danger" data-shopdel="chrome|${i}">✕</button>
     </div>`));
   wiz.gear.forEach((item, i) => cartRows.push(`
-    <div class="inv-row"><span class="iname">${esc(item.name)} ×${item.qty || 1}</span>
+    <div class="inv-row"><span class="iname">${esc(item.display_name || item.name)} ×${item.qty || 1}</span>
       ${item.damage ? `<span class="weap-dmg">${esc(item.damage)}</span>` : ''}
       ${item.sp != null ? `<span class="chip">SP ${item.sp}</span>` : ''}
       <span class="price">${money((item.price || 0) * (item.qty || 1))}</span>
       <button class="btn-sm btn-danger" data-shopdel="gear|${i}">✕</button>
     </div>`));
+  const equipped = [['body','Тело'],['head','Голова']].map(([k,label]) =>
+    `<span class="chip"><b>${label}:</b> ${wiz.armor[k] ? esc(wiz.armor[k].name) + ' · SP ' + wiz.armor[k].sp : 'не выбрано'}</span>`).join('');
 
   return `
+    <div class="panel accent mb">
+      <label class="checkbox mb"><input type="checkbox" id="wiz-neuroport" ${wiz.freeNeuroport ? 'checked' : ''}>
+        Бесплатный стартовый Neuroport по CEMK: 0€$, 0 HL, максимум Humanity не снижается</label>
+      <label class="checkbox"><input type="checkbox" id="wiz-soul" ${wiz.soldSoul ? 'checked' : ''}>
+        Продаться армии, банде или корпорации: +1500€$ только на хром, обязательный Neural Link/Neuroport, остаток сгорает</label>
+    </div>
     <div class="row mb" style="justify-content:space-between">
-      <span class="muted small">Бюджет закупки: <b>${money(GEAR_BUDGET)}</b> · Потрачено: <b>${money(wiz.chromeCost + wiz.gearCost)}</b> · Осталось: <b class="${remaining < 0 ? 'warn-text' : ''}">${money(remaining)}</b></span>
+      <span class="muted small">Основной бюджет: <b>${money(GEAR_BUDGET)}</b> · Учтено: <b>${money(creationMainSpent(wiz))}</b> · Осталось: <b class="${remaining < 0 ? 'warn-text' : ''}">${money(remaining)}</b>${bonus ? ` · фонд хрома: ${money(bonus)}` : ''}</span>
       <span class="muted small">Хром: ${wiz.cyberware.length} шт · HL <b class="hl-badge">${totalHl}</b></span>
     </div>
+    <div class="chips mb">${equipped}</div>
     <div class="tabs mb" id="wiz-shop-tabs">
       ${WIZ_SHOP_CATS.map(([id, ru]) => `<button data-shop-tab="${id}" class="${wiz.shopTab === id ? 'active' : ''}">${ru}</button>`).join('')}
     </div>
-    <div class="searchbar mb" style="margin-bottom:8px">
-      <input id="wiz-shop-q" placeholder="Фильтр внутри категории…" value="${esc(wiz.shopQ || '')}">
-    </div>
+    <div class="searchbar mb" style="margin-bottom:8px"><input id="wiz-shop-q" placeholder="Фильтр внутри категории…" value="${esc(wiz.shopQ || '')}"></div>
     <div id="wiz-shop-results" style="max-height:320px;overflow:auto">${spinner()}</div>
     <div class="mt"><h3>📋 Корзина закупки</h3></div>
-    <div id="wiz-shop-cart">${cartRows.length ? cartRows.join('') : '<div class="empty small">Пока пусто. Даже пушки нет.</div>'}</div>
-    <div class="small muted mt">Каждый имплант (кроме Fashionware) режет максимум человечности на 2, Borgware — на 4. HL вычитается из человечности напрямую. Остаток бюджета закупки станет наличными персонажа.</div>`;
+    <div id="wiz-shop-cart">${cartRows.length ? cartRows.join('') : '<div class="empty small">Пока пусто.</div>'}</div>
+    <div class="small muted mt">Броня показывается отдельными экземплярами для тела и головы; комплекты и щиты отмечены отдельно. На каждой локации работает только наибольший SP, штраф применяется один раз. HL уменьшает текущую Humanity, а импланты отдельно режут её максимум.</div>`;
 }
 
 /* ---------- Шаг 7: Итог ---------- */
+
+function cyberwareRequirementErrors(w) {
+  const chrome = [...w.cyberware, ...w.fashionware];
+  const names = chrome.map(c => String(c.name || '').toLowerCase());
+  const inventoryNames = [...w.gear, ...w.fashion].map(i => String(i.name || '').toLowerCase());
+  const hasPort = w.freeNeuroport || names.includes('neuroport');
+  const foundationNames = {
+    cybereye: new Set(['cybereye', 'sponsored cybereye']),
+    cyberarm: new Set(['cyberarm', 'neo-soviet cyberarm']),
+    cyberleg: new Set(['cyberleg', 'romanova cyberlegs']),
+    audio: new Set(['cyberaudio suite', 'discount cyberaudio suite']),
+    socket: new Set(['chipware socket', 'budget chipware socket']),
+  };
+  const count = key => names.filter(name => foundationNames[key].has(name)).length;
+  const errors = [], body = num(w.stats.BODY) || 0;
+  for (const item of chrome) {
+    const d = String(item.desc || '').toLowerCase().replace(/\n/g, ' ');
+    let missing = '';
+    if (d.includes('requires a modular finger cyberhand') && !names.includes('modular finger cyberhand')) missing = 'Modular Finger Cyberhand';
+    else if ((d.includes('requires a cyberaudio suite') || d.includes('cyberaudio option')) && !count('audio')) missing = 'Cyberaudio Suite';
+    else if (d.includes('cybereye option') && !count('cybereye')) missing = 'Cybereye';
+    else if (d.includes('cyberarm option') && !d.includes('can be installed as the only piece of cyberware in a meat arm') && !count('cyberarm')) missing = 'Cyberarm';
+    else if (d.includes('cyberleg option') && !count('cyberleg')) missing = 'Cyberleg';
+    else if (d.includes('cyberlimb option') && !(count('cyberarm') || count('cyberleg'))) missing = 'Cyberarm или Cyberleg';
+    else if (d.includes('neuralware option') && !(hasPort || names.includes('neural link'))) missing = 'Neural Link или Neuroport';
+    else if ((d.includes('requires chipware socket') || d.includes('requires a chipware socket')) && !count('socket')) missing = 'Chipware Socket';
+    else if ((d.includes('requires neural link') || d.includes('requires interface plugs and neural link')) && !(hasPort || names.includes('neural link'))) missing = 'Neural Link или Neuroport';
+    else if (d.includes('requires neuroport cyberdeck port') && !names.includes('neuroport cyberdeck port')) missing = 'Neuroport Cyberdeck Port';
+    else if (d.includes('requires neuroport') && !hasPort) missing = 'Neuroport';
+    else if (d.includes('requires two cybereyes') && count('cybereye') < 2) missing = 'две Cybereye';
+    else if (d.includes('requires a cybereye') && !count('cybereye')) missing = 'Cybereye';
+    else if (d.includes('requires two cyberlegs') && count('cyberleg') < 2) missing = 'две Cyberleg';
+    else if (d.includes('requires a cyberarm or cyberleg') && !(count('cyberarm') || count('cyberleg'))) missing = 'Cyberarm или Cyberleg';
+    else if (d.includes('requires a cyberarm') && !count('cyberarm')) missing = 'Cyberarm';
+    else if (d.includes('requires biomonitor') && !(hasPort || names.includes('biomonitor'))) missing = 'Biomonitor или Neuroport';
+    else if (d.includes('requires skinweave or subdermal armor') && !(names.includes('skinweave') || names.includes('subdermal armor'))) missing = 'Skinweave или Subdermal Armor';
+    else if (d.includes('requires a scrambler/descrambler') && !inventoryNames.some(n => n.includes('scrambler/descrambler'))) missing = 'Scrambler/Descrambler';
+    else if (d.includes('requires chyron') && !(hasPort || names.includes('chyron'))) missing = 'Chyron или Neuroport';
+    const bm = d.match(/requires body\s+(\d+)/);
+    if (bm && body < Number(bm[1])) missing = `BODY ${bm[1]}`;
+    const lm = d.match(/requires body\s+\d+\s+and\s+(two|2|3)\s+(?:installations of )?grafted muscle/);
+    if (lm) {
+      const needed = lm[1] === '3' ? 3 : 2;
+      if (names.filter(n => n === 'grafted muscle & bone lace').length < needed) missing = `${needed} установки Grafted Muscle & Bone Lace`;
+    }
+    if (missing) errors.push(`${item.name} требует: ${missing}`);
+  }
+  return errors;
+}
+
+function wizValidationErrors() {
+  const w = state.wizard;
+  const errors = [];
+  const statSpent = wizStatSpent(), skillSpent = wizSkillSpent();
+  if (statSpent !== (state.meta.stat_points || 62)) errors.push(`Характеристики: ${statSpent}/62 — нужно использовать ровно весь бюджет`);
+  if (skillSpent !== (state.meta.skill_points || 86)) errors.push(`Навыки: ${skillSpent}/86 — нужно использовать ровно весь бюджет`);
+  for (const s of (state.meta.must_skills || [])) if (!wizMustOk(s)) errors.push(`Обязательный навык не выполнен: ${s}`);
+  for (const [name, lvl] of Object.entries(wizChar().skills)) if (lvl > (state.meta.skill_max || 6)) errors.push(`${name}: максимум создания — 6`);
+  if (!w.nativeLanguage) errors.push('Не выбран культурный язык уровня 4');
+  if (!w.handle || !w.handle.trim()) errors.push('Не заполнен Handle');
+  const commonMissing = lpAllFields(w.role, w.lifepathMode).filter(([key]) => !w.lifepath[key]).length;
+  const roleMissing = lpRoleField(w.role).filter(([key]) => !w.roleLifepath[key]).length;
+  if (commonMissing) errors.push(`Общий Lifepath: не заполнено полей — ${commonMissing}`);
+  if (roleMissing) errors.push(`Lifepath роли ${w.role}: не заполнено полей — ${roleMissing}`);
+  if (creationMainRemaining(w) < 0) errors.push('Превышен основной бюджет закупки');
+  if ((w.cyberware.length || w.fashionware.length) && !w.freeNeuroport) errors.push('Хром 2070-х требует стартовый Neuroport');
+  errors.push(...cyberwareRequirementErrors(w));
+  if (w.role === 'Tech') {
+    const ranks = ['field','upgrade','fabrication','invention'].map(k => num(w.roleSetup[k]) || 0);
+    if (ranks.reduce((a,b)=>a+b,0) !== 8 || ranks.some(x => x > 4)) errors.push('Tech должен распределить 8 рангов Maker, максимум 4 в специализации');
+  }
+  if (w.role === 'Medtech') {
+    const ranks = ['surgery','pharma','cryo'].map(k => num(w.roleSetup[k]) || 0);
+    if (ranks.reduce((a,b)=>a+b,0) !== 4) errors.push('Medtech должен распределить 4 ранга Medicine');
+  }
+  if (w.role === 'Exec' && !w.roleSetup.team_member) errors.push('Exec должен выбрать сотрудника Teamwork');
+  if (w.role === 'Nomad' && (!Array.isArray(w.roleSetup.moto_choices) || w.roleSetup.moto_choices.length !== 4 || w.roleSetup.moto_choices.some(x => !String(x || '').trim()))) errors.push('Nomad должен заполнить все четыре стартовых выбора Moto');
+  return errors;
+}
 
 function wizStepSummaryHtml() {
   const wiz = state.wizard;
   const d = wizDerived();
   const c = wizChar();
+  const errors = wizValidationErrors();
   const warnings = [];
-
-  const statSpent = wizStatSpent();
-  const budgetStats = state.meta.stat_points || 62;
-  if (statSpent > budgetStats) warnings.push('⚠️ Перерасход характеристик: ' + statSpent + '/' + budgetStats);
-  if (statSpent < budgetStats) warnings.push(`💡 Неиспользовано ${budgetStats - statSpent} очков характеристик`);
-
-  const skillSpent = wizSkillSpent();
-  const budgetSkills = state.meta.skill_points || 86;
-  if (skillSpent > budgetSkills) warnings.push('⚠️ Перерасход навыков: ' + skillSpent + '/' + budgetSkills);
-  if (skillSpent < budgetSkills) warnings.push(`💡 Неиспользовано ${budgetSkills - skillSpent} очков навыков`);
-
-  for (const s of (state.meta.must_skills || [])) {
-    if (!wizMustOk(s)) warnings.push(`⚠️ Обязательный минимум не выполнен: ${s} (нужен уровень 2)`);
-  }
-
-  const maxLvl = state.meta.skill_max || 6;
-  for (const [name, lvl] of Object.entries(c.skills)) {
-    if (lvl > maxLvl) warnings.push(`⚠️ Навык ${name} превышает максимум создания (${maxLvl})`);
-  }
-
-  if (d.emp_cur != null && d.emp_cur <= 2) warnings.push('⚠️ EMP ≤ 2 — вы на грани киберпсихоза');
-  if (d.humanity_max != null && d.humanity_max < 0) warnings.push('⚠️ Отрицательная человечность — киберпсихоз');
-  if (!wiz.handle || !wiz.handle.trim()) warnings.push('⚠️ Заполни псевдоним (Handle)');
-
-  const lpMissing = lpAllFields(wiz.role).filter(([key]) => !wiz.lifepath[key]).length;
-  if (lpMissing) warnings.push(`💡 Lifepath заполнен не полностью (${13 - lpMissing}/13)`);
-
-  const totalCash = Math.max(0, GEAR_BUDGET - wiz.chromeCost - wiz.gearCost);
+  if (d.emp_cur != null && d.emp_cur <= 2) warnings.push('EMP ≤ 2 — персонаж близок к киберпсихозу');
+  if (d.humanity_cur != null && d.humanity_cur < 0) errors.push('Текущая Humanity ниже 0 — персонаж в состоянии киберпсихоза');
+  if (!wiz.armor.body) warnings.push('Не выбрана надетая броня для тела');
+  if (!wiz.armor.head) warnings.push('Не выбрана надетая броня для головы');
+  const totalCash = Math.max(0, creationMainRemaining(wiz));
   const statBlock = state.meta.stats.map(s => `<span class="chip"><b>${s}</b> ${wiz.stats[s] != null ? wiz.stats[s] : '—'}</span>`).join('');
   const skillChips = Object.entries(c.skills).filter(([, v]) => v > 0)
     .sort((a, b) => a[0].localeCompare(b[0], 'ru'))
     .map(([n, v]) => `<span class="chip">${esc(n)} <b>${v}</b></span>`).join('');
-  const armorItems = wiz.gear.filter(i => i.cat === 'armor');
-  const allChrome = [...wiz.cyberware, ...wiz.fashionware];
-  const lpRows = lifepathNarrative(wiz.lifepath, wiz.role);
+  const allChrome = c.cyberware;
+  const lpRows = lifepathNarrative(wiz.lifepath, wiz.role, wiz.roleLifepath, wiz.lifepathMode);
   const ab = ROLE_ABILITIES[wiz.role] || { name: state.meta.roles[wiz.role] || '—', desc: '' };
 
   return `
@@ -1879,12 +1858,13 @@ function wizStepSummaryHtml() {
             <span class="chip">HUM ${d.humanity_cur != null ? d.humanity_cur + '/' + d.humanity_max : '—'}</span>
             <span class="chip">EMP ${d.emp_cur != null ? d.emp_cur : '—'}</span>
           </div>
+          <div class="small muted mb">Культурный язык: <b>${esc(wiz.nativeLanguage || '—')}</b> · Lifestyle: <b>${esc(c.lifestyle)}</b> · Жильё: <b>${esc(c.housing)}</b></div>
           <h4>📊 Характеристики</h4>
           <div class="statgrid mb">${statBlock}</div>
           <h4>🎯 Навыки (${Object.values(c.skills).filter(v => v > 0).length})</h4>
           <div class="chips mb">${skillChips || '<span class="muted small">—</span>'}</div>
-          <h4>🛡️ Броня</h4>
-          <div class="chips mb">${armorItems.length ? armorItems.map(i => `<span class="chip">${esc(i.name)}${i.sp != null ? ' · SP ' + i.sp : ''} ×${i.qty || 1}</span>`).join('') : '<span class="muted small">— без брони —</span>'}</div>
+          <h4>🛡️ Надетая броня</h4>
+          <div class="chips mb"><span class="chip">Тело: ${wiz.armor.body ? esc(wiz.armor.body.name) + ' · SP ' + wiz.armor.body.sp : '—'}</span><span class="chip">Голова: ${wiz.armor.head ? esc(wiz.armor.head.name) + ' · SP ' + wiz.armor.head.sp : '—'}</span></div>
           <h4>🦾 Хром (HL ${allChrome.reduce((a, x) => a + (x.hl || 0), 0)})</h4>
           <div class="chips mb">${allChrome.length ? allChrome.map(x => `<span class="chip">${esc(x.name)} <b class="hl-badge">${x.hl || 0}</b></span>`).join('') : '<span class="muted small">— чист от хрома —</span>'}</div>
           <h4>🎒 Инвентарь</h4>
@@ -1906,7 +1886,9 @@ function wizStepSummaryHtml() {
         </div>
         <div class="panel" style="margin-top:14px">
           <h3>⚠️ Проверки</h3>
-          ${warnings.length ? warnings.map(w => `<div class="small mb">${w}</div>`).join('') : '<div class="green small">✅ Все проверки пройдены! Можно создавать.</div>'}
+          ${errors.map(w => `<div class="small mb" style="color:var(--red)">⛔ ${esc(w)}</div>`).join('')}
+          ${warnings.map(w => `<div class="small mb" style="color:var(--orange)">⚠️ ${esc(w)}</div>`).join('')}
+          ${!errors.length && !warnings.length ? '<div class="green small">✅ Все проверки пройдены! Можно создавать.</div>' : ''}
         </div>
         <div class="small muted mt">Остаток бюджета закупки записывается в наличные персонажа (${money(totalCash)}). Остаток бюджета стиля сгорел.</div>
       </div>
@@ -1925,24 +1907,59 @@ function bindWizStep() {
     const hdl = $('#wiz-handle');
     if (hdl) hdl.oninput = (e) => { wiz.handle = e.target.value; };
     $$('.role-card', body).forEach(card => card.onclick = () => {
-      wiz.role = card.dataset.role;
-      $$('.role-card', body).forEach(c => c.classList.toggle('selected', c.dataset.role === wiz.role));
+      if (wiz.role !== card.dataset.role) {
+        wiz.role = card.dataset.role;
+        wiz.roleLifepath = {};
+        wiz.roleSetup = defaultRoleSetup(wiz.role);
+      }
+      renderWizard();
+    });
+    $$('[data-role-setup]', body).forEach(inp => inp.oninput = () => {
+      wiz.roleSetup[inp.dataset.roleSetup] = Math.max(0, Math.min(4, num(inp.value) || 0));
+    });
+    const team = $('#role-team');
+    if (team) team.onchange = () => { wiz.roleSetup.team_member = team.value; };
+    $$('[data-moto-choice]', body).forEach(inp => inp.oninput = () => {
+      wiz.roleSetup.moto_choices = wiz.roleSetup.moto_choices || ['', '', '', ''];
+      wiz.roleSetup.moto_choices[Number(inp.dataset.motoChoice)] = inp.value;
     });
   }
 
   if (step === 2) {
+    $$('[data-lp-mode]', body).forEach(btn => btn.onclick = () => {
+      if (wiz.lifepathMode !== btn.dataset.lpMode) {
+        wiz.lifepathMode = btn.dataset.lpMode;
+        wiz.lifepath = {};
+        wiz.nativeLanguage = '';
+        wiz.subSkills = wiz.subSkills.filter(s => !s.native);
+      }
+      renderWizard();
+    });
     $$('[data-lp]', body).forEach(sel => sel.onchange = () => {
       wiz.lifepath[sel.dataset.lp] = sel.value;
+      if (sel.dataset.lp === 'region') syncNativeLanguage();
+      renderWizard();
+    });
+    $$('[data-role-lp]', body).forEach(sel => sel.onchange = () => {
+      wiz.roleLifepath[sel.dataset.roleLp] = sel.value;
     });
     $$('[data-lp-dice]', body).forEach(btn => btn.onclick = () => {
-      wizRollLifepath(btn.dataset.lpDice);
+      wizRollLifepath(btn.dataset.lpDice, false);
       renderWizard();
     });
+    $$('[data-role-lp-dice]', body).forEach(btn => btn.onclick = () => {
+      wizRollLifepath(btn.dataset.roleLpDice, true);
+      renderWizard();
+    });
+    const native = $('#lp-native');
+    if (native) native.onchange = () => { wiz.nativeLanguage = native.value; syncNativeLanguage(); renderWizard(); };
     const genAll = $('#lp-gen-all');
     if (genAll) genAll.onclick = () => {
-      lpAllFields(wiz.role).forEach(([key]) => wizRollLifepath(key));
+      lpAllFields(wiz.role, wiz.lifepathMode).forEach(([key]) => wizRollLifepath(key, false));
+      lpRoleField(wiz.role).forEach(([key]) => wizRollLifepath(key, true));
+      syncNativeLanguage();
       renderWizard();
-      toast('🎲 Lifepath сгенерирован полностью');
+      toast('🎲 Общий и ролевой Lifepath сгенерированы');
     };
   }
 
@@ -1961,7 +1978,11 @@ function bindWizStep() {
       state.meta.stats.forEach((s, i) => wiz.stats[s] = arr[i]);
       renderWizard();
     };
-    $('#wiz-st-reset').onclick = () => { state.meta.stats.forEach(s => wiz.stats[s] = 5); renderWizard(); };
+    $('#wiz-st-reset').onclick = () => {
+      state.meta.stats.forEach(s => wiz.stats[s] = 6);
+      wiz.stats.WILL = 7; wiz.stats.BODY = 7;
+      renderWizard();
+    };
     updateWizStatBar();
   }
 
@@ -2015,6 +2036,14 @@ function bindWizStep() {
   }
 
   if (step === 6) {
+    const neuroport = $('#wiz-neuroport');
+    if (neuroport) neuroport.onchange = () => { wiz.freeNeuroport = neuroport.checked; renderWizard(); };
+    const soul = $('#wiz-soul');
+    if (soul) soul.onchange = () => {
+      wiz.soldSoul = soul.checked;
+      if (wiz.soldSoul) wiz.freeNeuroport = true;
+      renderWizard();
+    };
     $$('[data-shop-tab]', body).forEach(btn => btn.onclick = () => {
       wiz.shopTab = btn.dataset.shopTab;
       wiz.shopQ = '';
@@ -2031,7 +2060,12 @@ function bindWizStep() {
         wiz.cyberware.splice(idx, 1);
       } else {
         const item = wiz.gear[idx];
-        if (item) wiz.gearCost = Math.max(0, wiz.gearCost - (item.price || 0) * (item.qty || 1));
+        if (item) {
+          wiz.gearCost = Math.max(0, wiz.gearCost - (item.price || 0) * (item.qty || 1));
+          for (const location of ['body', 'head']) {
+            if (wiz.armor[location] && wiz.armor[location].key === item.key) wiz.armor[location] = null;
+          }
+        }
         wiz.gear.splice(idx, 1);
       }
       renderWizard();
@@ -2049,6 +2083,23 @@ function bindWizStep() {
 
 function wizNext() {
   const wiz = state.wizard;
+  if (wiz.step === 1) {
+    const roleError = wizValidationErrors().find(e => e.includes('Tech должен') || e.includes('Medtech должен') || e.includes('Exec должен') || e.includes('Nomad должен'));
+    if (roleError) { toast(roleError, true); return; }
+  }
+  if (wiz.step === 2) {
+    const missing = lpAllFields(wiz.role, wiz.lifepathMode).filter(([k]) => !wiz.lifepath[k]).length +
+      lpRoleField(wiz.role).filter(([k]) => !wiz.roleLifepath[k]).length;
+    if (missing || !wiz.nativeLanguage) { toast('Заполни общий и ролевой Lifepath, включая культурный язык', true); return; }
+  }
+  if (wiz.step === 3 && wizStatSpent() !== (state.meta.stat_points || 62)) {
+    toast(`Нужно распределить ровно 62 очка характеристик; сейчас ${wizStatSpent()}`, true); return;
+  }
+  if (wiz.step === 4) {
+    if (wizSkillSpent() !== (state.meta.skill_points || 86)) { toast(`Нужно распределить ровно 86 очков навыков; сейчас ${wizSkillSpent()}`, true); return; }
+    const missing = (state.meta.must_skills || []).find(s => !wizMustOk(s));
+    if (missing) { toast(`Обязательный навык не выполнен: ${missing}`, true); return; }
+  }
   if (wiz.step === 5 && !wiz.fashionBurned) {
     const rest = FASHION_BUDGET - wiz.fashionCost;
     wiz.fashionBurned = true;
@@ -2083,18 +2134,10 @@ function wizRefreshLive() {
 
 async function wizCreate() {
   const wiz = state.wizard;
-  if (!wiz.handle || !wiz.handle.trim()) { toast('Заполни псевдоним (Handle)', true); return; }
-
-  const statSpent = wizStatSpent();
-  const budgetStats = state.meta.stat_points || 62;
-  if (statSpent > budgetStats) { toast(`Перерасход характеристик: ${statSpent}/${budgetStats}`, true); return; }
-
-  const skillSpent = wizSkillSpent();
-  const budgetSkills = state.meta.skill_points || 86;
-  if (skillSpent > budgetSkills) { toast(`Перерасход навыков: ${skillSpent}/${budgetSkills}`, true); return; }
-
-  for (const s of (state.meta.must_skills || [])) {
-    if (!wizMustOk(s)) { toast(`Обязательный навык ${s} должен быть минимум 2`, true); return; }
+  const errors = wizValidationErrors();
+  if (errors.length) {
+    toast(errors[0], true);
+    return;
   }
 
   const char = wizChar();
@@ -2128,10 +2171,12 @@ async function viewSheet(id) {
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ru'));
   const cw = ch.cyberware || [];
   const inv = ch.inventory || [];
-  const lpRows = ch.lifepath ? lifepathNarrative(ch.lifepath, ch.role) : [];
+  const lpRows = ch.lifepath ? lifepathNarrative(ch.lifepath, ch.role, ch.role_lifepath, ch.lifepath_mode) : [];
   const armor = ch.armor || {};
-  const armorSlots = [['head', 'Голова'], ['body_outer', 'Тело: верхний слой'], ['body_inner', 'Тело: нижний слой']]
-    .filter(([slot]) => armor[slot]);
+  const armorSlots = [
+    [armor.head, 'Голова'],
+    [armor.body || armor.body_outer || armor.body_inner, 'Тело'],
+  ].filter(([piece]) => piece);
 
   view.innerHTML = `
   <div class="page-head">
@@ -2163,6 +2208,7 @@ async function viewSheet(id) {
         <h2>🎭 ${esc(ch.role || '—')} — ${esc(state.meta.role_ru[ch.role] || '')}</h2>
         <div class="small muted mb">${esc(state.meta.role_desc[ch.role] || '')}</div>
         ${ab.name ? `<div class="tag mb" style="display:inline-block;color:var(--yellow);border-color:rgba(255,213,0,.4)">⚡ ${esc(ab.name)} · ранг ${ch.role_rank || 4}</div>` : ''}
+        ${roleSetupSummary(ch.role, ch.role_setup) ? `<div class="chip mb">${esc(roleSetupSummary(ch.role, ch.role_setup))}</div>` : ''}
         ${ab.desc ? `<div class="small mt">${esc(ab.desc)}</div>` : ''}
       </div>
       <div class="panel mb">
@@ -2190,10 +2236,10 @@ async function viewSheet(id) {
             ${i.sp != null ? `<span class="chip">SP ${i.sp}</span>` : ''}
             <span class="muted small">${money(i.price || 0)}</span>
           </div>`).join('') : '<div class="muted small">Пусто. Совсем.</div>'}
-        ${armorSlots.length ? `<h3 class="mt">🛡️ Надетая броня</h3>${armorSlots.map(([slot, ru]) => `
-          <div class="inv-row"><span class="iname">${ru}: ${esc(armor[slot].name)}</span>
-            <span class="chip">SP ${armor[slot].sp}</span>
-            ${armor[slot].penalty ? `<span class="chip">штраф ${armor[slot].penalty}</span>` : ''}
+        ${armorSlots.length ? `<h3 class="mt">🛡️ Надетая броня</h3>${armorSlots.map(([piece, ru]) => `
+          <div class="inv-row"><span class="iname">${ru}: ${esc(piece.name)}</span>
+            <span class="chip">SP ${piece.sp}</span>
+            ${Object.values(armorPenalties(piece)).some(v => v) ? `<span class="chip">${Object.entries(armorPenalties(piece)).map(([k,v]) => k + ' ' + v).join(' · ')}</span>` : ''}
           </div>`).join('')}` : ''}
       </div>
     </div>
@@ -2205,6 +2251,7 @@ async function viewSheet(id) {
       </div>
       ${ch.appearance ? `<div class="panel mb"><h2>🕶️ Внешность</h2><div class="desc">${esc(ch.appearance)}</div></div>` : ''}
       ${ch.languages ? `<div class="panel mb"><h2>🗣️ Языки</h2><div class="desc">${esc(ch.languages)}</div></div>` : ''}
+      ${(ch.lifestyle || ch.housing) ? `<div class="panel mb"><h2>🏠 Жизнь</h2><div class="kv"><b>Lifestyle</b><span>${esc(ch.lifestyle || '—')}</span><b>Жильё</b><span>${esc(ch.housing || '—')}</span></div></div>` : ''}
       ${lpRows.length && ch.background ? `<div class="panel mb"><h2>📖 Предыстория</h2><div class="desc" style="white-space:pre-wrap">${esc(ch.background)}</div></div>` : ''}
       ${ch.notes ? `<div class="panel mb"><h2>📝 Заметки</h2><div class="desc" style="white-space:pre-wrap">${esc(ch.notes)}</div></div>` : ''}
     </div>
@@ -2350,7 +2397,7 @@ function renderDerived() {
     ${stat('EMP текущий', d.emp_cur, d.emp_cur != null && d.emp_cur <= 2)}
     ${stat('SP тело', d.sp_body)}
     ${stat('SP голова', d.sp_head)}
-    ${stat('Штраф брони', d.armor_penalty || 0, d.armor_penalty > 0)}
+    ${stat('Штраф брони', Object.entries(d.armor_penalties || {}).map(([k,v]) => `${k} ${v}`).join(' · '), Object.values(d.armor_penalties || {}).some(v => v < 0))}
   </div>
   ${d.hum_cut ? `<div class="small muted" style="margin-top:6px">Срез макс. человечности за хром: −${d.hum_cut} (по 2 за хром, 4 за боргвер; HL: −${d.hl_total || 0}).</div>` : ''}
   ${d.emp_cur != null && d.emp_cur <= 2 ? '<div class="small" style="color:var(--magenta);margin-top:6px">⚠️ EMP ≤ 2 — на грани киберпсихоза. Осторожно с хромом.</div>' : ''}`;
@@ -2417,7 +2464,7 @@ function renderEditorTab() {
     box.innerHTML = `
     <div class="panel">
       <div class="row mb">
-        <span class="muted small">Стандарт создания: <b>${budget} очков</b>, каждая стата <b>2–8</b>. Потрачено: <b id="st-spent" class="${spent > budget ? 'warn-text' : ''}">${spent}</b>${spent > budget ? ' — перебор!' : ''}</span>
+        <span class="muted small">Стандарт создания: <b>${budget} очков</b>, каждая стата <b>2–8</b>. Потрачено: <b id="st-spent" class="${spent !== budget ? 'warn-text' : ''}">${spent}</b>${spent > budget ? ' — перебор!' : ''}</span>
         <button class="btn-sm" id="st-roll">🎲 Случайно (массив 8,7,7,6,6,6,6,6,5,5)</button>
         <button class="btn-sm" id="st-reset">Сброс на 6</button>
       </div>
@@ -2432,7 +2479,7 @@ function renderEditorTab() {
         <label class="f"><span>Текущее HP (пусто = максимум)</span><input id="f-hpcur" type="number" min="0" value="${c.hp_cur != null ? c.hp_cur : ''}" placeholder="авто"></label>
         <label class="f"><span>Текущая человечность (пусто = максимум)</span><input id="f-humcur" type="number" min="0" value="${c.humanity_cur != null ? c.humanity_cur : ''}" placeholder="авто"></label>
       </div>
-      <p class="small muted">HP = 10 + 5×⌈(BODY+WILL)/2⌉. Серьёзная рана = ½ HP (вверх), спасбросок смерти = BODY. Максимум человечности = EMP×10 − HL хрома − <b>2</b> за каждый хром (кроме фэшнвера, <b>4</b> за боргвер). Текущий EMP = человечность ÷ 10 (вниз).</p>
+      <p class="small muted">HP = 10 + 5×⌈(BODY+WILL)/2⌉. Текущая Humanity при установке уменьшается на HL. Максимальная Humanity отдельно уменьшается на <b>2</b> за обычный хром и на <b>4</b> за Borgware; Fashionware и бесплатный стартовый Neuroport CEMK исключены. Текущий EMP = Humanity ÷ 10 (вниз).</p>
     </div>`;
     $$('[data-stat]', box).forEach(inp => inp.oninput = () => {
       c.stats[inp.dataset.stat] = num(inp.value);
@@ -2449,69 +2496,70 @@ function renderEditorTab() {
       state.meta.stats.forEach((s, i) => c.stats[s] = arr[i]);
       renderEditorTab(); edChanged();
     };
-    $('#st-reset').onclick = () => { state.meta.stats.forEach(s => c.stats[s] = 6); renderEditorTab(); edChanged(); };
+    $('#st-reset').onclick = () => {
+      state.meta.stats.forEach(s => c.stats[s] = 6);
+      c.stats.WILL = 7; c.stats.BODY = 7;
+      renderEditorTab(); edChanged();
+    };
     $('#f-hpcur').oninput = (e) => { c.hp_cur = e.target.value === '' ? null : num(e.target.value); edChanged(); };
     $('#f-humcur').oninput = (e) => { c.humanity_cur = e.target.value === '' ? null : num(e.target.value); edChanged(); };
   }
   if (ed.tab === 'skills') {
-    const skills = state.meta.skills;
-    const dblCost = Object.fromEntries(skills.map(([cat, name, stat, is2]) => [name, !!is2]));
-    const must = new Set(state.meta.must_skills || []);
-    const budget = state.meta.skill_points || 86;
-    const maxLvl = state.meta.skill_max || 6;
-    const skillSpent = () => Object.entries(c.skills || {}).reduce((a, [k, v]) => a + (v || 0) * (dblCost[k] ? 2 : 1), 0);
+    c.skills = c.skills || {};
+    const allSkills = state.meta.skills;
+    const specialBases = new Set(SPECIALIZED_SKILL_BASES.map(x => x[0]));
+    const skills = allSkills.filter(([,name]) => !specialBases.has(name));
+    const byBase = Object.fromEntries(allSkills.map(x => [x[1], x]));
+    const baseOf = (name) => Object.keys(byBase).find(base => name === base || name.startsWith(base + ' ('));
+    const specialized = Object.entries(c.skills).filter(([name]) => specialBases.has(baseOf(name)))
+      .map(([name, lvl]) => ({ name, base: baseOf(name), spec: name === baseOf(name) ? 'без специализации' : name.slice(baseOf(name).length + 2, -1), lvl }));
+    const skillSpent = () => {
+      let total = 0;
+      for (const [name, value] of Object.entries(c.skills)) {
+        const base = baseOf(name), lvl = num(value) || 0;
+        total += lvl * (base && byBase[base][3] ? 2 : 1);
+        if (c.native_language && name === `Language (${c.native_language})`) total -= Math.min(4, lvl);
+      }
+      return total;
+    };
+    const requiredOk = (name) => {
+      if (name === 'Language') return (num(c.skills['Language (Streetslang)']) || 0) >= 2;
+      if (name === 'Local Expert') return Object.entries(c.skills).some(([k,v]) => baseOf(k) === name && (num(v)||0) >= 2);
+      return (num(c.skills[name]) || 0) >= 2;
+    };
     let lastCat = null;
     const rows = skills.map(([cat, name, stat, is2]) => {
       const head = cat !== lastCat ? `<div class="skill-cat">${esc(cat)}</div>` : '';
       lastCat = cat;
       const lvl = c.skills[name] || 0;
-      const over = lvl > maxLvl;
-      return head + `
-        <div class="skill-row" data-skill="${esc(name)}">
-          <span class="sname">${must.has(name) ? '<span class="must-tag" title="Обязательный минимум: 2 очка">★</span>' : ''}${esc(name)}${is2 ? ' <span class="muted small">(×2)</span>' : ''}${name === 'Language' ? ' <span class="muted small">· родной — 4 бесплатно</span>' : ''}</span>
-          <span class="sstat">${stat}</span>
-          <select data-rank="${esc(name)}" class="${over ? 'over-max' : ''}">
-            ${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(r => `<option value="${r}" ${lvl === r ? 'selected' : ''}>${r === 0 ? '—' : r}</option>`).join('')}
-          </select>
-        </div>`;
+      return head + `<div class="skill-row"><span class="sname">${(state.meta.must_skills||[]).includes(name) ? '<span class="must-tag">★</span>' : ''}${esc(name)}${is2 ? ' <span class="muted small">(×2)</span>' : ''}</span>
+        <span class="sstat">${stat}</span><select data-rank="${esc(name)}">${[0,1,2,3,4,5,6,7,8,9,10].map(r=>`<option value="${r}" ${lvl===r?'selected':''}>${r||'—'}</option>`).join('')}</select></div>`;
     }).join('');
-    const roleAbility = state.meta.roles[c.role] || '';
-    const refreshSkHud = () => {
-      const spent = skillSpent();
-      const el = $('#sk-spent');
-      if (el) {
-        el.textContent = spent;
-        el.classList.toggle('warn-text', spent > budget);
-      }
-      $$('.must-chip', box).forEach(chip => {
-        const ok = (c.skills[chip.dataset.must] || 0) >= 2;
-        chip.classList.toggle('ok', ok);
-        chip.classList.toggle('bad', !ok);
-        chip.innerHTML = (ok ? '✓ ' : '✗ ') + esc(chip.dataset.must);
-      });
-    };
-    const mustChips = (state.meta.must_skills || []).map(s =>
-      `<span class="must-chip ${(c.skills[s] || 0) >= 2 ? 'ok' : 'bad'}" data-must="${esc(s)}">${(c.skills[s] || 0) >= 2 ? '✓' : '✗'} ${esc(s)}</span>`).join('');
-    box.innerHTML = `
-    <div class="panel">
-      <div class="row mb" style="justify-content:space-between;align-items:center">
-        <span class="muted small">При создании: <b>${budget} очков</b>. ×2-навыки стоят 2 за уровень, максимум <b>${maxLvl}</b> в навыке. Потрачено: <b id="sk-spent">${skillSpent()}</b></span>
-      </div>
-      <div class="muted small mb">Обязательные минимумы (по 2 очка, итого 26):</div>
+    const specialRows = specialized.map((s, i) => `<div class="skill-row">
+      <span class="sname"><b>${esc(s.base)}</b> (${esc(s.spec)})${byBase[s.base][3] ? ' <span class="muted small">×2</span>' : ''}${c.native_language === s.spec && s.base === 'Language' ? ' <span class="chip">родной</span>' : ''}</span>
+      <span class="sstat">${byBase[s.base][2]}</span>
+      <select data-spec-rank="${i}">${[0,1,2,3,4,5,6,7,8,9,10].map(r=>`<option value="${r}" ${(num(s.lvl)||0)===r?'selected':''}>${r||'—'}</option>`).join('')}</select>
+      <button class="btn-sm btn-danger" data-spec-del="${i}">✕</button></div>`).join('');
+    const mustChips = (state.meta.must_skills || []).map(name => `<span class="must-chip ${requiredOk(name)?'ok':'bad'}">${requiredOk(name)?'✓':'✗'} ${esc(name === 'Language' ? 'Language (Streetslang)' : name)}</span>`).join('');
+    box.innerHTML = `<div class="panel"><div class="row mb" style="justify-content:space-between"><span class="muted small">При создании ровно <b>86</b>, максимум <b>6</b>. После создания редактор допускает развитие до 10. Потрачено при пересчёте: <b id="sk-spent">${skillSpent()}</b></span></div>
       <div class="must-list mb">${mustChips}</div>
-      <div class="skill-row" style="border-bottom:1px solid var(--line)">
-        <span class="sname"><b>${esc(roleAbility || '—')}</b> <span class="tag role">способность роли · ${esc(c.role)} · старт — 4</span></span>
-        <span class="sstat"></span>
-        <select id="sk-role"><option>${c.role_rank || 4}</option></select>
-      </div>
-      <div class="skill-list mt">${rows}</div>
-    </div>`;
-    $$('[data-rank]', box).forEach(sel => sel.onchange = () => {
-      c.skills[sel.dataset.rank] = Number(sel.value);
-      sel.classList.toggle('over-max', Number(sel.value) > maxLvl);
-      refreshSkHud();
-      edChanged();
-    });
+      <div class="panel mb"><div class="row" style="justify-content:space-between"><h3>Специализированные навыки</h3><button class="btn-sm" id="add-special-skill">＋ Добавить</button></div>
+        <label class="f"><span>Культурный язык (4 уровня бесплатно при создании)</span><input id="ed-native" value="${esc(c.native_language || '')}"></label>
+        ${specialRows || '<div class="muted small">Нет специализированных навыков.</div>'}</div>
+      <div class="skill-list">${rows}</div></div>`;
+    const refresh = () => { const el=$('#sk-spent'); if(el) el.textContent=skillSpent(); edChanged(); };
+    $$('[data-rank]', box).forEach(sel => sel.onchange = () => { c.skills[sel.dataset.rank]=Number(sel.value); refresh(); });
+    $$('[data-spec-rank]', box).forEach(sel => sel.onchange = () => { const x=specialized[Number(sel.dataset.specRank)]; if(x)c.skills[x.name]=Number(sel.value); refresh(); });
+    $$('[data-spec-del]', box).forEach(btn => btn.onclick = () => { const x=specialized[Number(btn.dataset.specDel)]; if(x)delete c.skills[x.name]; renderEditorTab(); edChanged(); });
+    $('#ed-native').oninput = e => { c.native_language=e.target.value.trim(); refresh(); };
+    $('#add-special-skill').onclick = () => {
+      const base = prompt('Базовый навык: Language, Local Expert, Martial Arts, Science или Play Instrument');
+      if (!base || !specialBases.has(base)) { if(base)toast('Неизвестный специализированный навык',true); return; }
+      const spec = prompt('Конкретный язык, район, стиль, наука или инструмент');
+      if (!spec || !spec.trim()) return;
+      c.skills[`${base} (${spec.trim()})`] = 1;
+      renderEditorTab(); edChanged();
+    };
   }
   if (ed.tab === 'gear') {
     box.innerHTML = `
@@ -2552,8 +2600,8 @@ function renderEditorTab() {
   if (ed.tab === 'armor') {
     box.innerHTML = `
     <div class="panel">
-      <p class="small muted">Слоты: голова, тело (верхний слой), тело (нижний слой). Наслоение: больший SP + половина меньшего (вверх). Штрафы брони суммируются и режут REF/DEX/MOVE.</p>
-      <div class="grid cols-3" id="armor-slots"></div>
+      <p class="small muted">Броня выбирается отдельно для головы и тела. SP слоёв не складывается: работает только наибольший SP локации, а все надетые слои абляируются вместе. Применяется один самый строгий штраф отдельно к REF, DEX и MOVE.</p>
+      <div class="grid cols-2" id="armor-slots"></div>
     </div>`;
     renderArmorSlots();
   }
@@ -2636,31 +2684,45 @@ function renderArmorSlots() {
   if (!box) return;
   const c = state.editor.char;
   c.armor = c.armor || {};
-  const slotDefs = [['head', 'Голова'], ['body_outer', 'Тело: верхний слой'], ['body_inner', 'Тело: нижний слой']];
+  if (!c.armor.body && (c.armor.body_outer || c.armor.body_inner)) {
+    const old = [c.armor.body_outer, c.armor.body_inner].filter(Boolean);
+    c.armor.body = old.sort((a, b) => (num(b.sp) || 0) - (num(a.sp) || 0))[0] || null;
+  }
+  const slotDefs = [['body', 'Тело'], ['head', 'Голова']];
   box.innerHTML = slotDefs.map(([slot, ru]) => {
     const a = c.armor[slot];
+    const penalty = a ? Object.entries(armorPenalties(a)).filter(([,v]) => v).map(([k,v]) => `${k} ${v}`).join(' · ') : '';
     return `<div class="card">
       <h3>${ru}</h3>
       ${a ? `<div class="row" style="justify-content:space-between">
-          <div><b>${esc(a.name)}</b><div class="small muted">SP ${a.sp} · штраф ${a.penalty || 0}</div></div>
+          <div><b>${esc(a.name)}</b><div class="small muted">SP ${a.sp}${penalty ? ' · ' + esc(penalty) : ''}</div></div>
           <button class="btn-sm btn-danger" data-clear="${slot}">✕</button></div>`
         : '<div class="muted small mb">— пусто —</div>'}
       <button class="btn-sm mt" data-pick="${slot}">Выбрать броню</button>
     </div>`;
   }).join('');
-  $$('[data-pick]', box).forEach(b => b.onclick = () => pickItem(['armor'], 'Броня', (it) => {
-    const penalty = num((it.fields || {}).Penalty) || 0;
-    state.editor.char.armor[b.dataset.pick] = { key: it.id, name: it.name, sp: it.sp || 0, penalty };
-    renderArmorSlots(); edChanged();
-  }));
+  $$('[data-pick]', box).forEach(b => {
+    const slot = b.dataset.pick;
+    b.onclick = () => pickItem(['armor'], `Броня: ${slot === 'body' ? 'тело' : 'голова'}`, (it) => {
+      const piece = { key: it.id + (it.armor_bundled ? '@set' : '@' + slot), source_key: it.id,
+        name: it.name, sp: it.sp || 0, penalties: { ...(it.penalties || {}) }, bundled: !!it.armor_bundled };
+      if (it.armor_bundled) { c.armor.body = { ...piece }; c.armor.head = { ...piece }; }
+      else c.armor[slot] = piece;
+      renderArmorSlots(); edChanged();
+    }, it => !(it.armor_locations || []).includes('shield') && (it.armor_locations || ['body','head']).includes(slot));
+  });
   $$('[data-clear]', box).forEach(b => b.onclick = () => {
-    delete state.editor.char.armor[b.dataset.clear];
+    const removed = c.armor[b.dataset.clear];
+    delete c.armor[b.dataset.clear];
+    if (removed && removed.bundled) {
+      for (const slot of ['body','head']) if (c.armor[slot] && c.armor[slot].key === removed.key) delete c.armor[slot];
+    }
     renderArmorSlots(); edChanged();
   });
 }
 
 /* выбор предмета из каталога */
-async function pickItem(cats, title, onPick) {
+async function pickItem(cats, title, onPick, predicate) {
   const m = openModal(`
     <h2>${esc(title)}</h2>
     <div class="searchbar"><input id="pk-q" placeholder="Поиск…" autofocus><button id="pk-go">Найти</button></div>
@@ -2672,6 +2734,7 @@ async function pickItem(cats, title, onPick) {
     const data = await api('/api/items?' + p);
     let items = data.items;
     if (cats && cats.length > 1) items = items.filter(i => cats.includes(i.cat));
+    if (predicate) items = items.filter(predicate);
     $('#pk-list', m).innerHTML = items.length ? items.map(it => `
       <div class="inv-row" style="cursor:pointer" data-id="${it.id}">
         <span class="iname">${esc(it.name)}</span>
@@ -2681,7 +2744,7 @@ async function pickItem(cats, title, onPick) {
       </div>`).join('') : '<div class="empty">Ничего не нашлось.</div>';
     $$('.inv-row', m).forEach(row => row.onclick = () => {
       const it = items.find(x => x.id === row.dataset.id);
-      if (it) { onPick(it); }
+      if (it) { onPick(it); closeModal(); }
     });
   };
   $('#pk-go', m).onclick = load;

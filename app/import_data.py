@@ -152,6 +152,46 @@ def parse_sp(v):
     return int(m.group(1)) if m else None
 
 
+def parse_armor_penalties(v):
+    """Нормализует раздельные штрафы брони к REF/DEX/MOVE.
+
+    В Data Pool встречаются как одинаковые штрафы (−2 ко всем трём STAT),
+    так и разные, например Hybrid Metalgear: −3 REF, −4 DEX, −4 MOVE.
+    """
+    if not v:
+        return {}
+    text = str(v).upper().replace('−', '-')
+    found = {stat: int(value) for value, stat in
+             re.findall(r'(-?\d+)\s*(REF|DEX|MOVE)', text)}
+    return found
+
+
+def armor_locations(name, desc, sp):
+    """Допустимые варианты покупки брони согласно описанию источника.
+
+    Обычная броня покупается отдельно для головы и тела. Описание предмета
+    может сузить локацию или объявить единый комплект на обе локации.
+    Щиты не являются носимой бронёй.
+    """
+    name_l = (name or '').lower()
+    desc_l = (desc or '').lower().replace('’', "'")
+    if 'shield' in name_l or sp == 0:
+        return ['shield'], False
+    bundled = ("isn't bought in two pieces" in desc_l or
+               'is not bought in two pieces' in desc_l or
+               'must always be worn on both' in desc_l)
+    if bundled:
+        return ['body', 'head'], True
+    if ('head and body are purchased separately' in desc_l or
+            'head or body armor' in desc_l):
+        return ['body', 'head'], False
+    if 'head armor' in desc_l or 'helmet' in name_l:
+        return ['head'], False
+    if 'body armor' in desc_l:
+        return ['body'], False
+    return ['body', 'head'], False
+
+
 def main():
     xlsx = os.path.abspath(XLSX)
     if not os.path.exists(xlsx):
@@ -191,6 +231,10 @@ def main():
                 it['hl'] = parse_hl(r.get('HL'))
             if cat == 'armor':
                 it['sp'] = parse_sp(r.get('SP'))
+                it['penalties'] = parse_armor_penalties(r.get('Penalty'))
+                locations, bundled = armor_locations(name, desc, it['sp'])
+                it['armor_locations'] = locations
+                it['armor_bundled'] = bundled
             if cat in ('guns', 'melee', 'grenades') and r.get('Damage'):
                 dm = re.search(r'(\d+d\d+(?:\s*[/×x]\s*\d+)?)', str(r['Damage']))
                 it['damage'] = dm.group(1) if dm else str(r['Damage']).strip()
