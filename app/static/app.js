@@ -1147,6 +1147,11 @@ function renderWizard() {
 
   view.innerHTML = `
   <div class="wizard-wrap">
+    <div class="page-head">
+      <div><h1>🧬 Мастер создания персонажа</h1>
+      <div class="sub">Пошаговое создание эджраннера в духе Cyberpunk RED Companion.</div></div>
+      <button onclick="location.hash='#/characters'">← К моим персонажам</button>
+    </div>
     <div class="wizard-nav">
       ${WIZARD_STEPS.map((s, i) => `
         <button class="wiz-step ${i+1 === wiz.step ? 'active' : ''} ${i+1 < wiz.step ? 'done' : ''}"
