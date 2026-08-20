@@ -624,7 +624,85 @@ deploy/install.sh --lan
 
 ---
 
-## 14. Приоритеты
+## 14. Preview перед публикацией Feed post и Contract
+
+### Требование
+
+Перед окончательной публикацией пользователь должен увидеть материал так, как его увидят остальные. Это особенно важно для изображений, длинного текста, выбранной Persona/Character, classified-полей и карточки Contract на карте.
+
+### Feed post preview
+
+В composer добавляется последовательность:
+
+```text
+Edit → Preview → Publish
+```
+
+Preview должен показывать:
+
+- выбранного Character/Persona и Portrait;
+- формат публикации;
+- Feed card;
+- полный detail view;
+- Headline, Lead и Body с реальными переносами;
+- изображение с итоговым соотношением сторон;
+- District;
+- Event Time и Publication Time;
+- reply/related post context;
+- desktop и mobile width toggle;
+- явную подпись `This post will publish immediately` для Player.
+
+Кнопки:
+
+```text
+Back to Edit
+Save Draft (если доступно)
+Publish Now
+```
+
+Возврат из Preview не должен очищать форму, изображение или crop-настройки.
+
+### Contract preview
+
+Редактор Contract получает несколько режимов предпросмотра:
+
+1. **List Card** — карточка в списке Contracts;
+2. **Map Signal** — marker, title и краткая информация;
+3. **Public View** — то, что видит любой пользователь;
+4. **Crew/Classified View** — то, что увидит подтверждённый Crew;
+5. **Service/GM View** — служебные поля и реальные участники.
+
+Preview должен показывать Cover в итоговом соотношении, Posting Persona, Risk, Reward, время, Crew Capacity, Requirements, Content Notes и все public/classified participants.
+
+Нужна заметная плашка:
+
+```text
+PREVIEW — NOT PUBLISHED
+```
+
+чтобы GM случайно не принял preview за уже опубликованный Contract.
+
+### Техническая рекомендация
+
+- Preview и опубликованная карточка должны использовать **одни и те же render functions**, иначе они быстро начнут отличаться.
+- Желательно добавить серверные endpoints `feed preview` и `contract preview`, которые выполняют ту же нормализацию, permission checks и validation, но ничего не записывают в БД.
+- Final Publish всё равно повторно валидирует данные: между Preview и Publish состояние Storyline/Contract/Media могло измениться.
+- Кнопка Publish блокируется после первого нажатия, чтобы не создавать дубликаты.
+- Загруженный draft media остаётся unattached и удаляется существующей очисткой, если пользователь закрыл редактор без публикации.
+- Ошибка публикации возвращает пользователя к форме без потери введённых данных.
+
+### Дополнительная возможность
+
+После реализации общей preview-системы её можно использовать и для:
+
+- Character Dossier visibility preview;
+- City Feed moderation preview;
+- печатного Character Sheet;
+- Admin preview «как видит Player/GM/Public».
+
+---
+
+## 15. Приоритеты
 
 ### P0 — до публичного доступа
 
@@ -640,9 +718,10 @@ deploy/install.sh --lan
 2. Предметные состояния и consumables.
 3. Market vendors + Database без универсальной покупки.
 4. Database tags/i18n/armor locations.
-5. Crew Registry portraits.
-6. Dedicated landscape print sheet.
-7. JSON import.
+5. Feed/Contract preview перед публикацией.
+6. Crew Registry portraits.
+7. Dedicated landscape print sheet.
+8. JSON import.
 
 ### P2 — расширение мира
 
@@ -663,7 +742,7 @@ deploy/install.sh --lan
 
 ---
 
-## 15. Предлагаемый порядок ближайшей реализации
+## 16. Предлагаемый порядок ближайшей реализации
 
 ### Пакет A — Catalog & Market Rework
 
@@ -682,7 +761,15 @@ deploy/install.sh --lan
 4. Consumable/use/equip/install.
 5. JSON import.
 
-### Пакет C — Visual/Print/Roster
+### Пакет C — Publishing Preview
+
+1. Вынести Feed/Contract cards и detail views в общие render functions.
+2. Добавить серверную validation preview без записи в БД.
+3. Сделать Feed preview: card/detail/mobile/desktop.
+4. Сделать Contract preview: card/map/public/classified/service.
+5. Сохранять состояние формы при возврате из preview и блокировать double publish.
+
+### Пакет D — Visual/Print/Roster
 
 1. Theme consistency audit.
 2. Исправить Open Contracts.
@@ -690,7 +777,7 @@ deploy/install.sh --lan
 4. Новый landscape print renderer.
 5. Visual regression по темам и разрешениям.
 
-### Пакет D — World Layer
+### Пакет E — World Layer
 
 1. Zoomable layered map.
 2. Housing.
@@ -699,7 +786,7 @@ deploy/install.sh --lan
 
 ---
 
-## 16. Открытые вопросы для следующего просмотра
+## 17. Открытые вопросы для следующего просмотра
 
 1. Какие предметы должны быть всегда доступны в Legal Retail, если Full Catalog больше не магазин?
 2. Сколько продавцов Night Market нужно в первой версии: 3, 5 или 6?
