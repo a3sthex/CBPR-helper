@@ -181,7 +181,7 @@ class NCNetCoreFlowTests(unittest.TestCase):
         joined = self.call(server.Handler.api_contract_join, {}, self.match(contract['id']), {
             'character_id': 1,
         })['payload']
-        self.assertEqual(joined['my_signup']['status'], 'crew')
+        self.assertEqual(joined['my_signups'][0]['status'], 'crew')
         self.assertEqual(joined['status'], 'crew_full')
         self.assertIn('classified_brief', joined)
 
@@ -190,11 +190,13 @@ class NCNetCoreFlowTests(unittest.TestCase):
         waitlisted = self.call(server.Handler.api_contract_join, {}, self.match(contract['id']), {
             'character_id': char2,
         })['payload']
-        self.assertEqual(waitlisted['my_signup']['status'], 'waitlist')
+        self.assertEqual(waitlisted['my_signups'][0]['status'], 'waitlist')
         self.assertNotIn('classified_brief', waitlisted)
 
         self.current = self.user('runner1')
-        self.call(server.Handler.api_contract_leave, {}, self.match(contract['id']), {})
+        self.call(server.Handler.api_contract_leave, {}, self.match(contract['id']), {
+            'signup_id': joined['my_signups'][0]['id'],
+        })
         promoted = self.conn.execute(
             "SELECT * FROM contract_signups WHERE contract_id=? AND user_id=4",
             (contract['id'],)).fetchone()
@@ -358,7 +360,9 @@ class NCNetCoreFlowTests(unittest.TestCase):
 
         self.current = self.user('runner2')
         with self.assertRaises(server.ApiError) as terminal_leave:
-            self.call(server.Handler.api_contract_leave, {}, self.match(contract['id']), {})
+            self.call(server.Handler.api_contract_leave, {}, self.match(contract['id']), {
+                'character_id': char2,
+            })
         self.assertEqual(terminal_leave.exception.status, 409)
         archived = self.call(server.Handler.api_delete_character, {}, self.match(char2), {})['payload']
         self.assertTrue(archived['archived'])

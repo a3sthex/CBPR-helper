@@ -27,8 +27,9 @@
 Только Python 3.8+ из стандартной библиотеки, ничего ставить не нужно:
 
 ```bash
-python3 app/server.py            # http://0.0.0.0:8000
+python3 app/server.py            # http://127.0.0.1:8000
 python3 app/server.py --port 8080
+python3 app/server.py --host 0.0.0.0  # только для изолированной dev-сети без production-данных
 ```
 
 - `app/import_data.py` — пересборка `app/data/items.json` из `Data Pool.xlsx` (запускается автоматически, если файла нет);
@@ -55,7 +56,7 @@ VK_CLIENT_ID=...                # VK OAuth app
 VK_CLIENT_SECRET=...
 VK_REDIRECT_URI=https://example.com/api/vk/oauth/callback
 NCNET_PUBLIC_URL=https://example.com
-CBPR_SECURE_COOKIES=1
+CBPR_SECURE_COOKIES=1           # install.sh включает автоматически
 ```
 
 Секреты не сохраняются в SQLite, frontend или Git. Без этих переменных NC//NET работает полностью, а VK outbox остаётся в состоянии pending.
@@ -88,7 +89,10 @@ cd CBPR-helper
 bash deploy/install.sh          # можно свой порт: bash deploy/install.sh 8080
 ```
 
-После установки сайт живёт по адресу `http://IP_СЕРВЕРА:8000` и **переживает перезагрузку сервера**.
+После установки backend **переживает перезагрузку сервера**, но слушает только
+`127.0.0.1:8000` и устанавливает только Secure session cookies. Порт приложения не
+следует открывать наружу: публичный доступ настраивается через домен и HTTPS reverse
+proxy по инструкции ниже.
 
 Полезные команды:
 
@@ -98,7 +102,7 @@ systemctl restart cbpr               # перезапустить сайт
 cd CBPR-helper && git pull && systemctl restart cbpr   # обновить до новой версии
 ```
 
-Если сайт не открывается снаружи — открой порт 8000 в панели хостинга (группа безопасности) и/или `ufw allow 8000/tcp`.
+Не добавляйте порт 8000 в `ufw` или security group: снаружи должны быть доступны только 80/443 для nginx.
 
 **Резервная копия** (все аккаунты, персонажи и посты лежат в одном файле `app/data/cbpr.db`):
 
@@ -109,18 +113,33 @@ tar -czf ~/cbpr-uploads-$(date +%F).tar.gz -C CBPR-helper/app/data uploads 2>/de
 systemctl start cbpr
 ```
 
-### Свой домен и HTTPS (по желанию)
+### Домен и HTTPS (обязательно для production)
+
+1. Привяжите A/AAAA-запись домена к серверу.
+2. Остановите nginx и получите сертификат (замените `ncnet.example.ru`):
 
 ```bash
-apt install -y nginx                # nginx на порту 80 проксирует сайт
+apt install -y nginx certbot
+systemctl stop nginx
+certbot certonly --standalone -d ncnet.example.ru
+```
+
+3. Во всех местах `deploy/nginx-cbpr.conf` замените `YOUR_DOMAIN` на домен, затем включите конфигурацию:
+
+```bash
 cp deploy/nginx-cbpr.conf /etc/nginx/sites-available/cbpr
+sed -i 's/YOUR_DOMAIN/ncnet.example.ru/g' /etc/nginx/sites-available/cbpr
 ln -sf /etc/nginx/sites-available/cbpr /etc/nginx/sites-enabled/cbpr
 rm -f /etc/nginx/sites-enabled/default
-nginx -t && systemctl reload nginx
+nginx -t && systemctl enable --now nginx
+```
 
-# HTTPS, когда домен привязан A-записью к IP сервера:
-apt install -y certbot python3-certbot-nginx
-certbot --nginx -d твой-домен.ru
+Конфигурация перенаправляет HTTP на HTTPS, добавляет HSTS и проксирует запросы на
+локальный Python backend. Так как сертификат получен через standalone challenge,
+продлевайте его с освобождением порта 80:
+
+```bash
+certbot renew --pre-hook 'systemctl stop nginx' --post-hook 'systemctl start nginx'
 ```
 
 ## Используемые правила

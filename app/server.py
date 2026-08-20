@@ -6,6 +6,7 @@
 """
 import argparse
 import base64
+import copy
 import hashlib
 import hmac
 import json
@@ -1585,6 +1586,59 @@ def nm_price_map():
 # ---------------------------------------------------------------- валидация персонажа
 
 MAX_CHAR_BYTES = 300_000
+CHARACTER_PROFILE_FIELDS = {'notes', 'portrait_media_id', 'public'}
+
+
+def clean_character_profile_patch(old_data, body):
+    """Return the small owner-editable Dossier patch.
+
+    Character mechanics are deliberately immutable through the generic PUT endpoint.
+    Progression, resources, inventory and rewards have dedicated server-side commands.
+    A legacy full ``data`` payload is accepted only when every non-profile field is
+    byte-for-byte equivalent to the stored sheet, so old clients cannot overwrite it.
+    """
+    if not isinstance(body, dict):
+        raise ApiError(400, 'Изменение досье должно быть объектом')
+    raw_size = len(json.dumps(body, ensure_ascii=False).encode())
+    if raw_size > MAX_CHAR_BYTES:
+        raise ApiError(413, 'Лист персонажа слишком большой')
+
+    if 'patch' in body:
+        patch = body.get('patch')
+        if not isinstance(patch, dict):
+            raise ApiError(400, 'patch должен быть объектом')
+        unknown = set(patch) - CHARACTER_PROFILE_FIELDS
+        if unknown:
+            raise ApiError(400, 'Механические поля изменяются только специальными операциями')
+    elif 'data' in body:
+        incoming = body.get('data')
+        if not isinstance(incoming, dict):
+            raise ApiError(400, 'Лист персонажа должен быть объектом')
+        changed = {key for key in set(old_data) | set(incoming)
+                   if old_data.get(key) != incoming.get(key)}
+        protected = changed - CHARACTER_PROFILE_FIELDS
+        if protected:
+            raise ApiError(400, 'Механические поля изменяются только специальными операциями')
+        patch = {key: incoming.get(key) for key in changed}
+    else:
+        patch = {key: value for key, value in body.items() if key != 'reason'}
+        unknown = set(patch) - CHARACTER_PROFILE_FIELDS
+        if unknown:
+            raise ApiError(400, 'Механические поля изменяются только специальными операциями')
+
+    clean = {}
+    if 'notes' in patch:
+        clean['notes'] = str(patch.get('notes') or '')[:20_000]
+    if 'portrait_media_id' in patch:
+        media_id = str(patch.get('portrait_media_id') or '')
+        if media_id and not re.fullmatch(r'[a-f0-9]{32}', media_id):
+            raise ApiError(400, 'Недопустимое изображение персонажа')
+        clean['portrait_media_id'] = media_id
+    if 'public' in patch:
+        if not isinstance(patch['public'], bool):
+            raise ApiError(400, 'public должен быть логическим значением')
+        clean['public'] = patch['public']
+    return clean
 
 
 def clean_character(data):
@@ -2368,6 +2422,23 @@ SERVER_ERROR_EN = {
     'Нет права завершить контракт': 'You cannot complete this Contract',
     'Результат контракта: completed/failed': 'Contract result must be completed or failed',
     'Выберите доступную персону для Aftermath': 'Choose an available Persona for the Aftermath',
+    'Изменение досье должно быть объектом': 'Dossier update must be an object',
+    'patch должен быть объектом': 'patch must be an object',
+    'Механические поля изменяются только специальными операциями': 'Mechanical fields can only be changed through dedicated operations',
+    'public должен быть логическим значением': 'public must be a boolean',
+    'Укажите одну конкретную запись: signup_id или character_id': 'Specify exactly one signup: signup_id or character_id',
+    'Связать публикацию с контрактом может его GM или участник Crew': 'Only the Contract GM or a Crew member can link a post to it',
+    'Сюжетную линию может связать её GM или Crew связанного контракта': 'Only the Storyline GM or Crew of its linked Contract can link a post to it',
+    'Награды должны быть списком до 100 записей': 'Rewards must be a list of no more than 100 entries',
+    'Некорректная награда': 'Invalid reward',
+    'Награду может получить только персонаж из Crew': 'Only a Crew character can receive a reward',
+    'Награда персонажа указана дважды': 'A character reward was specified twice',
+    'Некорректная сумма награды': 'Invalid reward amount',
+    'Награды Cash и IP должны быть неотрицательными числами, IP — целым': 'Cash and IP rewards must be nonnegative numbers, and IP must be an integer',
+    'Архивное досье не может получить награду': 'An archived Dossier cannot receive a reward',
+    'Деньги изменяются только через Market, Payroll или Aftermath': 'Cash can only be changed through Market, Payroll, or Aftermath',
+    'Legacy API доступен только для чтения; используйте NC//NET City Feed': 'Legacy API is read-only; use NC//NET City Feed',
+    'Legacy API доступен только для чтения; используйте NC//NET Contracts': 'Legacy API is read-only; use NC//NET Contracts',
     'Слишком много запросов; попробуйте позже': 'Too many requests; try again later',
     'Недопустимый источник запроса': 'Invalid request origin',
 }
@@ -3106,7 +3177,8 @@ class Handler(BaseHTTPRequestHandler):
             'signups': signup_payload,
             'crew_count': sum(1 for item in signup_payload if item['status'] == 'crew'),
             'waitlist_count': sum(1 for item in signup_payload if item['status'] == 'waitlist'),
-            'my_signup': next((item for item in signup_payload if user and item['user_id'] == user['id']), None),
+            'my_signups': [item for item in signup_payload
+                           if user and item['user_id'] == user['id']],
             'can_edit': can_edit, 'has_classified_access': classified,
             'gm_display_name': owner['display_name'] if owner and owner['show_display_name'] else None,
         }
@@ -3316,10 +3388,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_contract_leave(self, conn, qs, m, body):
         user = self.require_user(conn)
-        contract = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
-        signup = conn.execute(
-            "SELECT * FROM contract_signups WHERE contract_id=? AND user_id=? AND status IN ('crew','waitlist') "
-            'ORDER BY id DESC LIMIT 1', (int(m.group(1)), user['id'])).fetchone()
+        contract_id = int(m.group(1))
+        contract = conn.execute('SELECT * FROM contracts WHERE id=?', (contract_id,)).fetchone()
+        signup_id = _num((body or {}).get('signup_id'))
+        character_id = _num((body or {}).get('character_id'))
+        if bool(signup_id) == bool(character_id):
+            raise ApiError(400, 'Укажите одну конкретную запись: signup_id или character_id')
+        if signup_id:
+            signup = conn.execute(
+                "SELECT * FROM contract_signups WHERE id=? AND contract_id=? AND user_id=? "
+                "AND status IN ('crew','waitlist')",
+                (signup_id, contract_id, user['id'])).fetchone()
+        else:
+            signup = conn.execute(
+                "SELECT * FROM contract_signups WHERE character_id=? AND contract_id=? AND user_id=? "
+                "AND status IN ('crew','waitlist')",
+                (character_id, contract_id, user['id'])).fetchone()
         if not contract or not signup:
             raise ApiError(404, 'Запись на контракт не найдена')
         if contract['status'] not in ('open', 'crew_full', 'in_progress'):
@@ -3492,17 +3576,34 @@ class Handler(BaseHTTPRequestHandler):
         truth = str((body or {}).get('truth_status') or 'unknown') if user_is_gm(user) else 'unknown'
         if truth not in FEED_TRUTH:
             truth = 'unknown'
-        storyline_id = _num((body or {}).get('storyline_id'))
-        if storyline_id:
-            storyline = conn.execute('SELECT * FROM storylines WHERE id=?', (storyline_id,)).fetchone()
-            if not storyline or storyline['status'] == 'archived':
-                raise ApiError(400, 'Недоступная сюжетная линия')
         contract_id = _num((body or {}).get('contract_id'))
+        contract = None
+        can_link_contract = False
         if contract_id:
             contract = conn.execute('SELECT * FROM contracts WHERE id=?', (contract_id,)).fetchone()
             if not contract or (contract['status'] in ('draft', 'archived') and
                                 not can_edit_contract(conn, user, contract)):
                 raise ApiError(400, 'Контракт не найден')
+            can_link_contract = can_edit_contract(conn, user, contract)
+            if character_id and not can_link_contract:
+                can_link_contract = bool(conn.execute(
+                    "SELECT 1 FROM contract_signups WHERE contract_id=? AND character_id=? "
+                    "AND user_id=? AND status='crew'",
+                    (contract_id, character_id, user['id'])).fetchone())
+            if not can_link_contract:
+                raise ApiError(403, 'Связать публикацию с контрактом может его GM или участник Crew')
+
+        storyline_id = _num((body or {}).get('storyline_id'))
+        if storyline_id:
+            storyline = conn.execute('SELECT * FROM storylines WHERE id=?', (storyline_id,)).fetchone()
+            if not storyline or storyline['status'] == 'archived':
+                raise ApiError(400, 'Недоступная сюжетная линия')
+            can_link_storyline = can_edit_storyline(conn, user, storyline)
+            if (not can_link_storyline and contract and can_link_contract and
+                    contract['storyline_id'] == storyline['id']):
+                can_link_storyline = True
+            if not can_link_storyline:
+                raise ApiError(403, 'Сюжетную линию может связать её GM или Crew связанного контракта')
         reply_to_post_id = _num((body or {}).get('reply_to_post_id'))
         if reply_to_post_id and not conn.execute(
                 "SELECT 1 FROM feed_posts WHERE id=? AND status='published'",
@@ -3871,8 +3972,11 @@ class Handler(BaseHTTPRequestHandler):
         old_data = json.loads(row['data'])
         if old_data.get('archived'):
             raise ApiError(409, 'Архивное досье доступно только для чтения')
-        data = clean_character(body.get('data') if isinstance(body, dict) else body)
-        pub = 1 if data.get('public', False) else 0
+        patch = clean_character_profile_patch(old_data, body or {})
+        data = dict(old_data)
+        data.update(patch)
+        pub = 1 if patch.get('public', bool(row['public'])) else 0
+        data['public'] = bool(pub)
         old_media = str(old_data.get('portrait_media_id') or '')
         new_media = str(data.get('portrait_media_id') or '')
         if old_media and old_media != new_media:
@@ -3880,7 +3984,7 @@ class Handler(BaseHTTPRequestHandler):
                          (old_media, u['id'], row['id']))
         attach_character_media(conn, u['id'], row['id'], data)
         record_character_changes(conn, row['id'], u['id'], old_data, data,
-                                 str((body or {}).get('reason') or 'Character sheet update'))
+                                 str((body or {}).get('reason') or 'Dossier profile update'))
         conn.execute('UPDATE characters SET data=?, public=?, updated=? WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), pub, time.time(), row['id']))
         conn.commit()
@@ -3969,7 +4073,10 @@ class Handler(BaseHTTPRequestHandler):
                       str(subject or '')[:120] or None, str(reason or '')[:500], time.time()))
 
     def api_character_ip(self, conn, qs, m, body):
-        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        user = self.require_gm(conn)
+        row = self.get_char(conn, m.group(1))
+        if parse_json_object(row['data']).get('archived'):
+            raise ApiError(409, 'Архивное досье доступно только для чтения')
         data = ensure_progression(json.loads(row['data']))
         amount = _num((body or {}).get('amount')) or 0
         reason = str((body or {}).get('reason') or '').strip()
@@ -4122,7 +4229,7 @@ class Handler(BaseHTTPRequestHandler):
             current = _num(data.get('hp_cur')) if _num(data.get('hp_cur')) is not None else maximum
             data['hp_cur'] = max(-maximum, min(maximum, current + value))
         elif resource == 'cash':
-            data['cash'] = max(0, min(9_999_999, (float(data.get('cash') or 0) + value) if action == 'delta' else value))
+            raise ApiError(403, 'Деньги изменяются только через Market, Payroll или Aftermath')
         elif resource == 'reputation':
             data['reputation'] = max(0, min(10, data['reputation'] + value))
         elif resource == 'armor':
@@ -4828,6 +4935,45 @@ class Handler(BaseHTTPRequestHandler):
             event_at = now
         if not math.isfinite(event_at):
             event_at = now
+
+        crew_ids = {row['character_id'] for row in conn.execute(
+            "SELECT character_id FROM contract_signups WHERE contract_id=? AND status='crew'",
+            (contract['id'],)).fetchall() if row['character_id']}
+        rewards = (body or {}).get('rewards') or []
+        if not isinstance(rewards, list) or len(rewards) > 100:
+            raise ApiError(400, 'Награды должны быть списком до 100 записей')
+        validated_rewards = []
+        rewarded_characters = set()
+        for reward in rewards:
+            if not isinstance(reward, dict):
+                raise ApiError(400, 'Некорректная награда')
+            character_id = _num(reward.get('character_id'))
+            if character_id not in crew_ids:
+                raise ApiError(400, 'Награду может получить только персонаж из Crew')
+            if character_id in rewarded_characters:
+                raise ApiError(400, 'Награда персонажа указана дважды')
+            rewarded_characters.add(character_id)
+            try:
+                cash = float(reward.get('cash') or 0)
+                raw_ip = float(reward.get('ip') or 0)
+            except (TypeError, ValueError):
+                raise ApiError(400, 'Некорректная сумма награды')
+            if (not math.isfinite(cash) or not math.isfinite(raw_ip) or
+                    cash < 0 or raw_ip < 0 or not raw_ip.is_integer()):
+                raise ApiError(400, 'Награды Cash и IP должны быть неотрицательными числами, IP — целым')
+            ip = int(raw_ip)
+            if cash > 10_000_000 or ip > 1_000_000:
+                raise ApiError(400, 'Слишком большая сумма')
+            char_row = self.get_char(conn, character_id)
+            before = json.loads(char_row['data'])
+            data = ensure_progression(copy.deepcopy(before))
+            if data.get('archived'):
+                raise ApiError(409, 'Архивное досье не может получить награду')
+            current_cash = float(data.get('cash') or 0)
+            if not math.isfinite(current_cash) or current_cash + cash > 9_999_999:
+                raise ApiError(400, 'Слишком большая сумма')
+            validated_rewards.append((character_id, cash, ip, before, data))
+
         cur = conn.execute(
             "INSERT INTO feed_posts(format,status,creator_user_id,author_persona_id,storyline_id,contract_id,"
             "headline,body,truth_status,event_at,published_at,created,updated) "
@@ -4843,26 +4989,8 @@ class Handler(BaseHTTPRequestHandler):
                 (contract['storyline_id'], event_at,
                  headline, str((body or {}).get('private_note') or '')[:10000],
                  contract['id'], post_id, user['id'], now))
-        crew_ids = {row['character_id'] for row in conn.execute(
-            "SELECT character_id FROM contract_signups WHERE contract_id=? AND status='crew'",
-            (contract['id'],)).fetchall() if row['character_id']}
-        for reward in (body or {}).get('rewards') or []:
-            character_id = _num(reward.get('character_id'))
-            if character_id not in crew_ids:
-                continue
-            char_row = self.get_char(conn, character_id)
-            before = json.loads(char_row['data'])
-            data = ensure_progression(json.loads(char_row['data']))
-            if data.get('archived'):
-                continue
-            try:
-                cash = float(reward.get('cash') or 0)
-            except (TypeError, ValueError):
-                raise ApiError(400, 'Некорректная сумма')
-            ip = _num(reward.get('ip')) or 0
-            if not math.isfinite(cash) or abs(cash) > 10_000_000 or abs(ip) > 1_000_000:
-                raise ApiError(400, 'Слишком большая сумма')
-            data['cash'] = max(0, min(9_999_999, float(data.get('cash') or 0) + cash))
+        for character_id, cash, ip, before, data in validated_rewards:
+            data['cash'] = float(data.get('cash') or 0) + cash
             if ip:
                 ip_before = data['ip_available']; data['ip_available'] += ip
                 if ip > 0: data['ip_total_earned'] += ip
@@ -4881,56 +5009,31 @@ class Handler(BaseHTTPRequestHandler):
     NEWS_FIELDS = ('id', 'author_id', 'title', 'tag', 'body', 'created')
 
     def api_news(self, conn, qs, m, body):
+        user = self.current_user(conn)
         rows = conn.execute(
-            'SELECT n.*, u.display_name author FROM news n '
+            'SELECT n.*,u.display_name author,u.show_display_name author_public FROM news n '
             'JOIN users u ON u.id=n.author_id ORDER BY n.created DESC LIMIT 100').fetchall()
         out = []
-        for r in rows:
-            o = dict((k, r[k]) for k in self.NEWS_FIELDS)
-            o['author'] = r['author']
-            o['mine'] = False
-            out.append(o)
-        u = self.current_user(conn)
-        if u:
-            for o in out:
-                o['mine'] = o['author_id'] == u['id']
+        for row in rows:
+            item = dict((key, row[key]) for key in self.NEWS_FIELDS)
+            item['mine'] = bool(user and row['author_id'] == user['id'])
+            item['author'] = row['author'] if (row['author_public'] or item['mine']) else None
+            out.append(item)
         self.send_json({'news': out})
 
     def api_news_create(self, conn, qs, m, body):
-        u = self.require_user(conn)
-        title = str(body.get('title') or '').strip()[:140]
-        tag = str(body.get('tag') or '').strip()[:40] or None
-        text = str(body.get('body') or '').strip()[:20000]
-        if not title or not text:
-            raise ApiError(400, 'Заголовок и текст обязательны')
-        cur = conn.execute(
-            'INSERT INTO news(author_id, title, tag, body, created) VALUES(?,?,?,?,?)',
-            (u['id'], title, tag, text, time.time()))
-        conn.commit()
-        r = conn.execute('SELECT * FROM news WHERE id=?', (cur.lastrowid,)).fetchone()
-        created = dict((k, r[k]) for k in self.NEWS_FIELDS)
-        created['author'] = u['display_name']
-        self.send_json(created, status=201)
+        raise ApiError(410, 'Legacy API доступен только для чтения; используйте NC//NET City Feed')
 
     def api_news_delete(self, conn, qs, m, body):
-        u = self.require_user(conn)
-        r = conn.execute('SELECT * FROM news WHERE id=?', (int(m.group(1)),)).fetchone()
-        if not r:
-            raise ApiError(404, 'Новость не найдена')
-        if r['author_id'] != u['id'] and not user_is_gm(u):
-            raise ApiError(403, 'Можно удалять только свои посты')
-        conn.execute('DELETE FROM news WHERE id=?', (r['id'],))
-        conn.commit()
-        self.send_json({'ok': True})
-
-    # ------------------------------------------------------------ доска заказов
+        raise ApiError(410, 'Legacy API доступен только для чтения; используйте NC//NET City Feed')
 
     def job_payload(self, r, conn, user):
         n = conn.execute('SELECT COUNT(*) n FROM job_signups WHERE job_id=?',
                          (r['id'],)).fetchone()['n']
         p = {k: r[k] for k in ('id', 'author_id', 'title', 'when_text', 'system',
                                'description', 'slots', 'status', 'created')}
-        p['author'] = r['author']
+        p['author'] = r['author'] if (r['author_public'] or
+                      (user and user['id'] == r['author_id'])) else None
         p['signups'] = n
         p['mine'] = bool(user and user['id'] == r['author_id'])
         p['joined'] = bool(user and conn.execute(
@@ -4941,104 +5044,49 @@ class Handler(BaseHTTPRequestHandler):
     def api_jobs(self, conn, qs, m, body):
         user = self.current_user(conn)
         rows = conn.execute(
-            'SELECT j.*, u.display_name author FROM jobs j '
+            'SELECT j.*,u.display_name author,u.show_display_name author_public FROM jobs j '
             'JOIN users u ON u.id=j.author_id ORDER BY j.created DESC LIMIT 100').fetchall()
         self.send_json({'jobs': [self.job_payload(r, conn, user) for r in rows]})
 
     def api_jobs_create(self, conn, qs, m, body):
-        u = self.require_gm(conn)
-        title = str(body.get('title') or '').strip()[:140]
-        when_text = str(body.get('when_text') or '').strip()[:80] or None
-        system = str(body.get('system') or 'Cyberpunk RED').strip()[:40]
-        desc = str(body.get('description') or '').strip()[:8000]
-        slots = max(0, min(20, int(body.get('slots') or 0)))
-        if not title or not desc:
-            raise ApiError(400, 'Название и описание обязательны')
-        cur = conn.execute(
-            'INSERT INTO jobs(author_id, title, when_text, system, description, slots, '
-            'status, created) VALUES(?,?,?,?,?,?,?,?)',
-            (u['id'], title, when_text, system, desc, slots, 'open', time.time()))
-        conn.commit()
-        r = conn.execute(
-            'SELECT j.*, u.display_name author FROM jobs j JOIN users u ON u.id=j.author_id '
-            'WHERE j.id=?', (cur.lastrowid,)).fetchone()
-        self.send_json(self.job_payload(r, conn, u), status=201)
+        raise ApiError(410, 'Legacy API доступен только для чтения; используйте NC//NET Contracts')
 
     def api_job_detail(self, conn, qs, m, body):
         user = self.current_user(conn)
         r = conn.execute(
-            'SELECT j.*, u.display_name author FROM jobs j JOIN users u ON u.id=j.author_id '
-            'WHERE j.id=?', (int(m.group(1)),)).fetchone()
+            'SELECT j.*,u.display_name author,u.show_display_name author_public FROM jobs j '
+            'JOIN users u ON u.id=j.author_id WHERE j.id=?', (int(m.group(1)),)).fetchone()
         if not r:
             raise ApiError(404, 'Заказ не найден')
         p = self.job_payload(r, conn, user)
         signups = conn.execute(
-            'SELECT s.*, u.display_name user FROM job_signups s '
+            'SELECT s.*,u.display_name user,u.show_display_name user_public FROM job_signups s '
             'JOIN users u ON u.id=s.user_id WHERE s.job_id=? ORDER BY s.created',
             (r['id'],)).fetchall()
-        p['signups_list'] = [
-            {'id': s['id'], 'user': s['user'], 'user_id': s['user_id'],
-             'char_name': s['char_name'], 'note': s['note'], 'created': s['created'],
-             'mine': bool(user and user['id'] == s['user_id'])}
-            for s in signups]
+        p['signups_list'] = []
+        for signup in signups:
+            mine = bool(user and user['id'] == signup['user_id'])
+            owner_view = bool(user and user['id'] == r['author_id'])
+            p['signups_list'].append({
+                'id': signup['id'],
+                'user': signup['user'] if (signup['user_public'] or mine or owner_view) else None,
+                'user_id': signup['user_id'] if (mine or owner_view) else None,
+                'char_name': signup['char_name'], 'note': signup['note'],
+                'created': signup['created'], 'mine': mine,
+            })
         self.send_json(p)
 
     def api_job_join(self, conn, qs, m, body):
-        u = self.require_user(conn)
-        r = conn.execute('SELECT * FROM jobs WHERE id=?', (int(m.group(1)),)).fetchone()
-        if not r:
-            raise ApiError(404, 'Заказ не найден')
-        if r['status'] != 'open':
-            raise ApiError(400, 'Заказ закрыт')
-        if r['author_id'] == u['id']:
-            raise ApiError(400, 'Нельзя записаться на свой заказ')
-        n = conn.execute('SELECT COUNT(*) n FROM job_signups WHERE job_id=?',
-                         (r['id'],)).fetchone()['n']
-        if r['slots'] and n >= r['slots']:
-            raise ApiError(400, 'Все слоты заняты')
-        char_name = str(body.get('char_name') or '').strip()[:60] or None
-        note = str(body.get('note') or '').strip()[:500] or None
-        try:
-            conn.execute(
-                'INSERT INTO job_signups(job_id, user_id, char_name, note, created) '
-                'VALUES(?,?,?,?,?)', (r['id'], u['id'], char_name, note, time.time()))
-            conn.commit()
-        except sqlite3.IntegrityError:
-            raise ApiError(409, 'Вы уже записаны')
-        self.send_json({'ok': True})
+        raise ApiError(410, 'Legacy API доступен только для чтения; используйте NC//NET Contracts')
 
     def api_job_leave(self, conn, qs, m, body):
-        u = self.require_user(conn)
-        conn.execute('DELETE FROM job_signups WHERE job_id=? AND user_id=?',
-                     (int(m.group(1)), u['id']))
-        conn.commit()
-        self.send_json({'ok': True})
+        raise ApiError(410, 'Legacy API доступен только для чтения; используйте NC//NET Contracts')
 
     def api_job_status(self, conn, qs, m, body):
-        u = self.require_user(conn)
-        r = conn.execute('SELECT * FROM jobs WHERE id=?', (int(m.group(1)),)).fetchone()
-        if not r:
-            raise ApiError(404, 'Заказ не найден')
-        if r['author_id'] != u['id'] and not user_is_gm(u):
-            raise ApiError(403, 'Только автор может менять статус')
-        status = body.get('status')
-        if status not in ('open', 'closed'):
-            raise ApiError(400, 'Статус: open/closed')
-        conn.execute('UPDATE jobs SET status=? WHERE id=?', (status, r['id']))
-        conn.commit()
-        self.send_json({'ok': True})
+        raise ApiError(410, 'Legacy API доступен только для чтения; используйте NC//NET Contracts')
 
     def api_job_delete(self, conn, qs, m, body):
-        u = self.require_user(conn)
-        r = conn.execute('SELECT * FROM jobs WHERE id=?', (int(m.group(1)),)).fetchone()
-        if not r:
-            raise ApiError(404, 'Заказ не найден')
-        if r['author_id'] != u['id'] and not user_is_gm(u):
-            raise ApiError(403, 'Только автор может удалить заказ')
-        conn.execute('DELETE FROM job_signups WHERE job_id=?', (r['id'],))
-        conn.execute('DELETE FROM jobs WHERE id=?', (r['id'],))
-        conn.commit()
-        self.send_json({'ok': True})
+        raise ApiError(410, 'Legacy API доступен только для чтения; используйте NC//NET Contracts')
 
 
 def rx(p):
@@ -5149,7 +5197,7 @@ def vk_outbox_worker(stop_event):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--host', default='0.0.0.0')
+    ap.add_argument('--host', default='127.0.0.1')
     ap.add_argument('--port', type=int, default=8000)
     args = ap.parse_args()
     load_catalog()

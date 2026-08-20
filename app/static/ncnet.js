@@ -136,14 +136,13 @@ async function viewContractDetail(view,id){
   if(contract.can_edit){$('#ct-edit').onclick=()=>openContractEditor(contract);if($('#ct-aftermath'))$('#ct-aftermath').onclick=()=>openAftermath(contract);$('#ct-session').onclick=async()=>{try{if(contract.active_session_id){openSessionDashboard(contract.active_session_id);return;}const session=await api('/api/sessions',{method:'POST',body:{contract_id:contract.id,title:contract.title}});openSessionDashboard(session.id);}catch(e){toast(e.message,true);}};}
   const actions=$('#ct-actions'),activeContract=['open','crew_full','in_progress'].includes(contract.status);
   if(state.me&&!contract.can_edit&&activeContract){
-    if(contract.my_signup){
-      actions.innerHTML=`<button class="btn-danger" id="ct-leave">${T('Disconnect from Contract','Покинуть Contract')}</button>`;
-      $('#ct-leave').onclick=async()=>{try{await api(`/api/contracts/${contract.id}/leave`,{method:'POST'});route();}catch(e){toast(e.message,true);}};
-    }else{
-      let chars=[];try{chars=(await api('/api/characters')).characters.filter(c=>!c.data.archived);}catch(e){}
-      actions.innerHTML=chars.length?`<label class="f"><span>${T('Operator Dossier','Досье оператора')}</span><select id="ct-char">${chars.map(c=>`<option value="${c.id}">${esc(c.data.handle)}</option>`).join('')}</select></label><button class="btn-primary" id="ct-join">${T('REQUEST ACCESS','ЗАПРОСИТЬ ДОСТУП')}</button>`:`<a class="btn-primary" href="#/dossiers">${T('Create a Dossier first','Сначала создайте досье')}</a>`;
-      if($('#ct-join'))$('#ct-join').onclick=async()=>{try{await api(`/api/contracts/${contract.id}/join`,{method:'POST',body:{character_id:Number($('#ct-char').value)}});route();NC_AUDIO.tone(1040,.12);}catch(e){toast(e.message,true);}};
-    }
+    const mySignups=contract.my_signups||[];
+    let chars=[];try{chars=(await api('/api/characters')).characters.filter(c=>!c.data.archived&&!mySignups.some(signup=>signup.character_id===c.id));}catch(e){}
+    const connected=mySignups.map(signup=>`<div class="inv-row"><span class="iname user-content">${esc(signup.character_name)}</span><span class="tag">${esc(ncLabel(signup.status))}</span><button class="btn-danger" data-ct-leave="${signup.id}">${T('Disconnect','Отключить')}</button></div>`).join('');
+    const join=chars.length?`<label class="f"><span>${T('Operator Dossier','Досье оператора')}</span><select id="ct-char">${chars.map(c=>`<option value="${c.id}">${esc(c.data.handle)}</option>`).join('')}</select></label><button class="btn-primary" id="ct-join">${T('REQUEST ACCESS','ЗАПРОСИТЬ ДОСТУП')}</button>`:(!mySignups.length?`<a class="btn-primary" href="#/dossiers">${T('Create a Dossier first','Сначала создайте досье')}</a>`:'');
+    actions.innerHTML=connected+join;
+    $$('[data-ct-leave]',actions).forEach(button=>button.onclick=async()=>{try{await api(`/api/contracts/${contract.id}/leave`,{method:'POST',body:{signup_id:Number(button.dataset.ctLeave)}});route();}catch(e){toast(e.message,true);}});
+    if($('#ct-join'))$('#ct-join').onclick=async()=>{try{await api(`/api/contracts/${contract.id}/join`,{method:'POST',body:{character_id:Number($('#ct-char').value)}});route();NC_AUDIO.tone(1040,.12);}catch(e){toast(e.message,true);}};
   }
   if(contract.active_session_id&&contract.has_classified_access)actions.insertAdjacentHTML('beforeend',`<a class="btn-primary mt" href="#/session/${contract.active_session_id}">▶ ${T('LIVE SESSION VIEW','ЭКРАН АКТИВНОЙ СЕССИИ')}</a>`);
 }

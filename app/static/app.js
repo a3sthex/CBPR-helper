@@ -330,12 +330,10 @@ async function route() {
     if (seg0 === 'char') {
       const raw = seg1 || '';
       const charId = raw.split('?')[0];
-      const isEdit = raw.includes('?edit');
       if (!charId || charId === '' || charId === 'new') { await viewWizard(); return; }
-      if (isEdit) { await viewEditor(charId); return; }
       await viewSheet(charId); return;
     }
-    const fn = routes[seg0] || viewHome;
+    const fn = routes[activeRoute] || viewHome;
     await fn(view);
   } catch (e) {
     view.innerHTML = `<div class="empty">⚠️ ${esc(APP_I18N.translate(e.message))}</div>`;
@@ -2626,7 +2624,7 @@ async function viewSheet(id) {
     <div class="row">
       <button id="sheet-back">← ${T('Characters','Персонажи')}</button>
       <button class="btn-sm" id="sheet-print">🖨️ Print</button><button class="btn-sm" id="sheet-json">⬇ JSON</button><button class="btn-sm" id="sheet-network">◎ ${T('Network','Сеть')}</button>${owner||state.me?.is_gm?`<button class="btn-sm" id="sheet-ledger">◫ ${T('Ledger','Журнал')}</button>`:''}
-      ${mine ? `<label class="btn-sm">🖼️ Portrait<input id="sheet-portrait-file" type="file" accept="image/jpeg,image/png,image/webp" hidden></label><button class="btn-primary" id="sheet-edit">✏️ ${T('Edit','Редактировать')}</button>
+      ${mine ? `<label class="btn-sm">🖼️ Portrait<input id="sheet-portrait-file" type="file" accept="image/jpeg,image/png,image/webp" hidden></label><button class="btn-primary" id="sheet-visibility">${c.public?T('🔒 Make private','🔒 Сделать приватным'):T('👁 Make public','👁 Сделать публичным')}</button>
                 <button class="btn-danger" id="sheet-del">🗑️ ${T('Delete','Удалить')}</button>` : ''}
     </div>
   </div>
@@ -2642,7 +2640,7 @@ async function viewSheet(id) {
       <span class="dstat"><span class="v">${d.sp_body != null ? d.sp_body : '—'}</span><span class="k">${T('Body Armor SP','Броня SP тело')}</span></span>
       <span class="dstat"><span class="v">${d.sp_head != null ? d.sp_head : '—'}</span><span class="k">${T('Head Armor SP','Броня SP голова')}</span></span>
       <span class="dstat"><span class="v">${d.death_save != null ? d.death_save : '—'}</span><span class="k">Death Save</span></span>
-      <span class="dstat resource-stat"><span class="v">${money(ch.cash || 0)}</span><span class="k">Cash</span>${mine?`<span class="resource-actions"><button data-resource="cash|-100">−100</button><button data-resource="cash|-10">−10</button><button data-resource="cash|10">+10</button><button data-resource="cash|100">+100</button></span>`:''}</span>
+      <span class="dstat"><span class="v">${money(ch.cash || 0)}</span><span class="k">Cash</span></span>
       <span class="dstat"><span class="v">${ch.ip_available||0}</span><span class="k">Improvement Points</span>${mine?`<button class="btn-sm" id="sheet-improve">Improve</button>`:(state.me&&state.me.is_gm&&!ch.archived?`<button class="btn-sm" id="sheet-ip-gm">Adjust IP</button>`:'')}</span>
       <span class="dstat resource-stat"><span class="v">${ch.reputation||0}</span><span class="k">Reputation</span>${mine?`<span class="resource-actions"><button data-resource="reputation|-1">−1</button><button data-resource="reputation|1">+1</button></span>`:''}</span>
     </div>
@@ -2705,8 +2703,8 @@ async function viewSheet(id) {
   $$('[data-roll-check]', view).forEach(button => button.onclick = () => { const split=button.dataset.rollCheck.lastIndexOf('|');showCheckRoll(button.dataset.rollCheck.slice(0,split),Number(button.dataset.rollCheck.slice(split+1))); });
   $$('[data-resource]', view).forEach(button => button.onclick = () => { const [resource,value]=button.dataset.resource.split('|'); sheetResource(c.id,resource,value); });
   const improveBtn=$('#sheet-improve');if(improveBtn)improveBtn.onclick=()=>openImprovementModal(c);const gmIp=$('#sheet-ip-gm');if(gmIp)gmIp.onclick=()=>openIpAdjustment(c.id,()=>viewSheet(c.id));
-  const notes=$('#sheet-notes');if(notes){let timer;notes.oninput=()=>{clearTimeout(timer);$('#sheet-notes-status').textContent='Saving…';timer=setTimeout(async()=>{try{ch.notes=notes.value;await api('/api/characters/'+c.id,{method:'PUT',body:{data:ch}});$('#sheet-notes-status').textContent='Saved';}catch(e){$('#sheet-notes-status').textContent=e.message;}},700);};}
-  const portraitInput=$('#sheet-portrait-file');if(portraitInput)portraitInput.onchange=()=>openImageCrop(portraitInput.files[0],'character_portrait',async media=>{try{ch.portrait_media_id=media.id;await api('/api/characters/'+c.id,{method:'PUT',body:{data:ch}});viewSheet(c.id);}catch(e){toast(e.message,true);}});
+  const notes=$('#sheet-notes');if(notes){let timer;notes.oninput=()=>{clearTimeout(timer);$('#sheet-notes-status').textContent='Saving…';timer=setTimeout(async()=>{try{ch.notes=notes.value;await api('/api/characters/'+c.id,{method:'PUT',body:{patch:{notes:notes.value}}});$('#sheet-notes-status').textContent='Saved';}catch(e){$('#sheet-notes-status').textContent=e.message;}},700);};}
+  const portraitInput=$('#sheet-portrait-file');if(portraitInput)portraitInput.onchange=()=>openImageCrop(portraitInput.files[0],'character_portrait',async media=>{try{await api('/api/characters/'+c.id,{method:'PUT',body:{patch:{portrait_media_id:media.id}}});viewSheet(c.id);}catch(e){toast(e.message,true);}});
   const networkButton=$('#sheet-network');
   if(networkButton)networkButton.onclick=async()=>{
     try{
@@ -2727,8 +2725,13 @@ async function viewSheet(id) {
   $('#sheet-print').onclick = () => window.print();
   $('#sheet-json').onclick = () => { const blob = new Blob([JSON.stringify(ch, null, 2)], {type:'application/json'}), a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${(ch.handle || 'character').replace(/[^a-z0-9_-]+/gi,'-')}.json`; a.click(); URL.revokeObjectURL(a.href); };
   $('#sheet-back').onclick = () => go('/dossiers');
-  const editBtn = $('#sheet-edit');
-  if (editBtn) editBtn.onclick = () => { location.hash = '#/char/' + c.id + '?edit'; };
+  const visibilityBtn = $('#sheet-visibility');
+  if (visibilityBtn) visibilityBtn.onclick = async () => {
+    try {
+      await api('/api/characters/' + c.id, {method:'PUT', body:{patch:{public:!c.public}}});
+      viewSheet(c.id);
+    } catch (e) { toast(e.message, true); }
+  };
   const delBtn = $('#sheet-del');
   if (delBtn) delBtn.onclick = async () => {
     if (!confirm(T('Delete this Character? Dossiers with NC//NET history will be archived instead.','Удалить Character? Досье с историей NC//NET будет перемещено в архив.'))) return;
@@ -2880,10 +2883,11 @@ async function saveEditor() {
   const c = ed.char;
   if (!c.handle || !c.handle.trim()) { toast('Заполни псевдоним (Handle) на вкладке «Основное»', true); state.editor.tab = 'base'; renderEditorTab(); return; }
   try {
-    const body = { data: c };
-    const r = ed.id
-      ? await api('/api/characters/' + ed.id, { method: 'PUT', body })
-      : await api('/api/characters', { method: 'POST', body });
+    if (ed.id) {
+      toast(T('Mechanical fields use progression, Market, and GM operations.','Механические поля изменяются через развитие, Market и операции GM.'), true);
+      return;
+    }
+    const r = await api('/api/characters', { method: 'POST', body: {data:c} });
     state.editor.id = r.id;
     state.editor.dirty = false;
     history.replaceState(null, '', '#/char/' + r.id + '?edit');

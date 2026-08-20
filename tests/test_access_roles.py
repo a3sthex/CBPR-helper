@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import sqlite3
 import tempfile
@@ -169,13 +170,24 @@ class AccessRoleMigrationTests(unittest.TestCase):
             handler.require_user = lambda current: user
             handler.send_json = lambda payload, status=200, cookies=None: response.update(
                 payload=payload, status=status)
-            server.Handler.api_news_create(handler, conn, {}, None, {
-                'title': 'Street transmission', 'tag': 'Watson',
+            conn.execute(
+                'INSERT INTO characters(owner_id,public,data,created,updated) VALUES(?,1,?,1,1)',
+                (user['id'], json.dumps({'handle': 'Wire', 'role': 'Media', 'role_rank': 4,
+                 'stats': {'LUCK': 5}, 'skills': {}, 'inventory': [], 'cyberware': [],
+                 'armor': {}, 'cash': 0})))
+            conn.commit()
+            server.Handler.api_feed_create(handler, conn, {}, None, {
+                'author_character_id': 1, 'format': 'short',
                 'body': 'Published directly from the city feed.',
             })
             self.assertEqual(response['status'], 201)
-            self.assertEqual(conn.execute('SELECT COUNT(*) n FROM news').fetchone()['n'], 1)
-            self.assertEqual(response['payload']['author_id'], user['id'])
+            self.assertEqual(response['payload']['status'], 'published')
+            self.assertEqual(conn.execute('SELECT COUNT(*) n FROM feed_posts').fetchone()['n'], 1)
+            with self.assertRaises(server.ApiError) as legacy_write:
+                server.Handler.api_news_create(handler, conn, {}, None, {
+                    'title': 'Legacy bypass', 'body': 'Must be rejected.',
+                })
+            self.assertEqual(legacy_write.exception.status, 410)
             conn.close()
 
     def test_secure_cookie_rate_limit_and_origin_guard(self):

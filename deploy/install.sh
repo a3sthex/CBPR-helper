@@ -61,7 +61,8 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$REPO_DIR
-ExecStart=$PYTHON $REPO_DIR/app/server.py --port $PORT
+Environment=CBPR_SECURE_COOKIES=1
+ExecStart=$PYTHON $REPO_DIR/app/server.py --host 127.0.0.1 --port $PORT
 Restart=always
 RestartSec=3
 User=$RUN_USER
@@ -115,13 +116,10 @@ echo " ГОТОВО! Состояние службы:"
 echo "=========================================================="
 $SUDO systemctl --no-pager --lines=3 status cbpr.service || true
 
-IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 echo
-echo " Сайт открывается по адресу:  http://${IP:-IP_СЕРВЕРА}:$PORT"
+echo " Backend слушает только локально: http://127.0.0.1:$PORT"
+echo " Secure session cookies включены. Для доступа нужен HTTPS reverse proxy."
+echo " Настрой домен и deploy/nginx-cbpr.conf; не открывай порт $PORT наружу."
 echo " Логи в реальном времени:    journalctl -u cbpr -f"
 echo " Перезапуск:                 $SUDO systemctl restart cbpr"
 echo " Остановка:                  $SUDO systemctl stop cbpr"
-echo
-echo " Если сайт не открывается:"
-echo "  1) открой порт $PORT в панели управления хостинга (группа безопасности);"
-echo "  2) если активен ufw:       $SUDO ufw allow $PORT/tcp"
