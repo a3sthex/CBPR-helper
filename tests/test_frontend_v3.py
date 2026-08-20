@@ -14,6 +14,15 @@ SPEC.loader.exec_module(server)
 
 @unittest.skipUnless(shutil.which('node'), 'Node.js is required for frontend runtime contracts')
 class FrontendV3Contracts(unittest.TestCase):
+    def test_dossier_loading_placeholder_is_replaced(self):
+        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        view_characters = source.split('async function viewCharacters(view) {', 1)[1].split(
+            '/* ============================== редактор персонажа', 1)[0]
+        self.assertIn('view.innerHTML = spinner();', view_characters)
+        self.assertIn("const data = await api('/api/characters');", view_characters)
+        self.assertIn('view.innerHTML = `', view_characters)
+        self.assertNotIn("view.insertAdjacentHTML('afterbegin'", view_characters)
+
     def test_wizard_v3_runtime_contract(self):
         meta = {
             'stats': server.STATS,

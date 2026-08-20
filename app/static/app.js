@@ -2754,11 +2754,11 @@ async function viewCharacters(view) {
   const data = await api('/api/characters');
   const activeCount = data.characters.filter(character => !character.data.archived).length;
   const archivedCount = data.characters.length - activeCount;
-  view.insertAdjacentHTML('afterbegin', `
+  view.innerHTML = `
     <div class="page-head">
       <div><h1>🧬 ${T('My Characters','Мои персонажи')}</h1><div class="sub">${T('Active Dossiers','Активные досье')}: ${activeCount}/50${archivedCount ? ` · ${archivedCount} ${T('archived','в архиве')}` : ''}</div></div>
       <button class="btn-primary" onclick="location.hash='#/char/new'">+ ${T('New Edgerunner','Новый эджраннер')}</button>
-    </div>`);
+    </div>`;
   const listEl = document.createElement('div');
   listEl.className = 'grid cols-3';
   view.appendChild(listEl);
