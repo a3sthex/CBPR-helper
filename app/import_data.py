@@ -46,7 +46,7 @@ CATS = [
         ('Class', 'Класс'), ('Icon', 'Иконка')]),
 ]
 
-DESC_KEYS = ['Description & Data', 'Description & Effect', 'Description', 'Description & Effect.']
+DESC_KEYS = ['Description & Data', 'Description & Effect', 'Description', 'Description & Effect.', 'Effect']
 
 
 def load_workbook(path):
@@ -152,6 +152,151 @@ def parse_sp(v):
     return int(m.group(1)) if m else None
 
 
+def parse_damage(value):
+    """Нормализует бросок урона для карточки и справочного среднего."""
+    if not value:
+        return None
+    match = re.search(r'(?<!\w)(\d+)d(\d+)(?:\s*[/×x]\s*(\d+))?', str(value), re.I)
+    if not match:
+        return None
+    count, sides = int(match.group(1)), int(match.group(2))
+    multiplier = int(match.group(3) or 1)
+    return {
+        'notation': match.group(0).replace('×', 'x').replace(' ', ''),
+        'dice': count,
+        'sides': sides,
+        'multiplier': multiplier,
+        'average': round(count * (sides + 1) / 2 * multiplier, 1),
+    }
+
+
+def structured_requirements(cat, row, desc):
+    """Извлекает только явные требования; неоднозначные остаются в описании."""
+    text = str(desc or '').replace('\n', ' ')
+    low = text.lower()
+    requirements = []
+    known = [
+        ('neuroport cyberdeck port', 'Neuroport Cyberdeck Port'),
+        ('modular finger cyberhand', 'Modular Finger Cyberhand'),
+        ('cyberaudio suite', 'Cyberaudio Suite'),
+        ('chipware socket', 'Chipware Socket'),
+        ('neural link', 'Neural Link'),
+        ('neuroport', 'Neuroport'),
+        ('two cybereyes', '2× Cybereye'),
+        ('a cybereye', 'Cybereye'),
+        ('two cyberlegs', '2× Cyberleg'),
+        ('a cyberarm or cyberleg', 'Cyberarm or Cyberleg'),
+        ('a cyberarm', 'Cyberarm'),
+        ('biomonitor', 'Biomonitor'),
+        ('chyron', 'Chyron'),
+    ]
+    for needle, label in known:
+        if ('requires ' + needle) in low or (needle.endswith('suite') and 'cyberaudio option' in low):
+            requirements.append({'kind': 'item', 'value': label})
+    body = re.search(r'requires body\s+(\d+)', low)
+    if body:
+        requirements.append({'kind': 'stat', 'stat': 'BODY', 'minimum': int(body.group(1))})
+    slots = re.search(r'requires?\s+(\d+)\s+(?:cyberware\s+)?option slots?', low)
+    if not slots:
+        slots = re.search(r'(?:takes?|uses?)\s+(\d+)\s+(?:cyberware\s+)?option slots?', low)
+    slot_count = int(slots.group(1)) if slots else 0
+    ctype = str(row.get('Type') or '')
+    name = str(row.get('Name') or '').lower()
+    foundations = {
+        'neuroport', 'neural link', 'cybereye', 'sponsored cybereye',
+        'cyberaudio suite', 'discount cyberaudio suite', 'cyberarm',
+        'neo-soviet cyberarm', 'cyberleg', 'romanova cyberlegs',
+    }
+    host = None
+    if name not in foundations:
+        for token, label in [('cyberarm option', 'Cyberarm'), ('cyberleg option', 'Cyberleg'),
+                             ('cybereye option', 'Cybereye'), ('cyberaudio option', 'Cyberaudio Suite'),
+                             ('neuralware option', 'Neural Link or Neuroport')]:
+            if token in low or token in ctype.lower():
+                host = label
+                break
+    if host and not slot_count:
+        slot_count = 1
+    total_match = re.search(r'has\s+(\d+)\s+option slots?', low)
+    slots_total = int(total_match.group(1)) if total_match else 0
+    hosts_required = 2 if ('requires two cybereyes' in low or 'requires two cyberlegs' in low or 'must be paired' in low) else (1 if host else 0)
+    unique = bool(re.search(r'only one|cannot be installed more than once|only be installed once|multiple installations.+no additional benefit', low))
+    return requirements, {'host': host, 'hosts_required': hosts_required, 'slots_used': slot_count, 'slots_total': slots_total, 'unique': unique}
+
+
+def item_mechanics(cat, row, desc):
+    """Единая структурированная механика для каталога и серверной проверки."""
+    mechanics = {}
+    damage = parse_damage(row.get('Damage') or (desc if cat in ('grenades', 'gear') else None))
+    if damage:
+        mechanics['damage'] = damage
+    labels = {
+        'ROF': 'rof', 'Hands': 'hands', 'Mag': 'magazine', 'Skill': 'skill',
+        'Conceal': 'concealable', 'Quality': 'quality', 'SP': 'sp', 'SDP': 'sdp',
+        'Seats': 'seats', 'Speed (Combat)': 'combat_speed',
+        'Speed (Narrative)': 'narrative_speed', 'Install': 'installation',
+        'Nomad Access': 'nomad_access', 'Available': 'compatible_weapons',
+        'Availability': 'availability', 'Suitable ammo / weapon': 'compatible_weapons',
+        'PER': 'per', 'SPD': 'spd', 'ATK': 'atk', 'DEF': 'def', 'REZ': 'rez',
+        'Class': 'program_class', 'Type': 'type',
+    }
+    for source, target in labels.items():
+        value = row.get(source)
+        if value is not None and str(value).strip() not in ('', '—', 'N/A'):
+            mechanics[target] = str(value).strip()
+    if cat == 'ammo':
+        amount = re.search(r'(\d+)\s*(?:rounds?|arrows?|bolts?|rockets?|grenades?)', str(desc or ''), re.I)
+        mechanics['quantity_per_purchase'] = int(amount.group(1)) if amount else 10
+    if cat == 'fashion':
+        for style in ('Bag Lady Chic', 'Generic Chic', 'Leisurewear', 'Urban Flash',
+                      'Businesswear', 'High Fashion', 'Bohemian', 'Asia Pop',
+                      'Gang Colors', 'Nomad Leathers'):
+            if str(row.get('Name') or '').startswith(style):
+                mechanics['fashion_style'] = style
+                break
+    return mechanics
+
+
+def parse_armor_penalties(v):
+    """Нормализует раздельные штрафы брони к REF/DEX/MOVE.
+
+    В Data Pool встречаются как одинаковые штрафы (−2 ко всем трём STAT),
+    так и разные, например Hybrid Metalgear: −3 REF, −4 DEX, −4 MOVE.
+    """
+    if not v:
+        return {}
+    text = str(v).upper().replace('−', '-')
+    found = {stat: int(value) for value, stat in
+             re.findall(r'(-?\d+)\s*(REF|DEX|MOVE)', text)}
+    return found
+
+
+def armor_locations(name, desc, sp):
+    """Допустимые варианты покупки брони согласно описанию источника.
+
+    Обычная броня покупается отдельно для головы и тела. Описание предмета
+    может сузить локацию или объявить единый комплект на обе локации.
+    Щиты не являются носимой бронёй.
+    """
+    name_l = (name or '').lower()
+    desc_l = (desc or '').lower().replace('’', "'")
+    if 'shield' in name_l or sp == 0:
+        return ['shield'], False
+    bundled = ("isn't bought in two pieces" in desc_l or
+               'is not bought in two pieces' in desc_l or
+               'must always be worn on both' in desc_l)
+    if bundled:
+        return ['body', 'head'], True
+    if ('head and body are purchased separately' in desc_l or
+            'head or body armor' in desc_l):
+        return ['body', 'head'], False
+    if 'head armor' in desc_l or 'helmet' in name_l:
+        return ['head'], False
+    if 'body armor' in desc_l:
+        return ['body'], False
+    return ['body', 'head'], False
+
+
 def main():
     xlsx = os.path.abspath(XLSX)
     if not os.path.exists(xlsx):
@@ -187,10 +332,20 @@ def main():
                 val = r.get(key)
                 if val is not None and str(val).strip() not in ('', '—', 'N/A'):
                     it['fields'][key] = str(val).strip()
+            it['mechanics'] = item_mechanics(cat, r, desc)
+            requirements, capacity = structured_requirements(cat, r, desc)
+            it['requirements'] = requirements
+            if any(capacity.values()):
+                it['capacity'] = capacity
             if cat == 'cyberware':
+                it['cyberware_class'] = 'foundation' if capacity.get('slots_total') else ('option' if capacity.get('host') else 'standalone')
                 it['hl'] = parse_hl(r.get('HL'))
             if cat == 'armor':
                 it['sp'] = parse_sp(r.get('SP'))
+                it['penalties'] = parse_armor_penalties(r.get('Penalty'))
+                locations, bundled = armor_locations(name, desc, it['sp'])
+                it['armor_locations'] = locations
+                it['armor_bundled'] = bundled
             if cat in ('guns', 'melee', 'grenades') and r.get('Damage'):
                 dm = re.search(r'(\d+d\d+(?:\s*[/×x]\s*\d+)?)', str(r['Damage']))
                 it['damage'] = dm.group(1) if dm else str(r['Damage']).strip()
@@ -232,7 +387,7 @@ def main():
             'extra': extra,
         })
 
-    cats = [{'id': c[1], 'ru': c[2], 'emoji': c[3], 'sheet': c[0], 'count': 0} for c in CATS]
+    cats = [{'id': c[1], 'en': c[0], 'ru': c[2], 'emoji': c[3], 'sheet': c[0], 'count': 0} for c in CATS]
     for it in items:
         for c in cats:
             if c['id'] == it['cat']:

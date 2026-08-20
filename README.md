@@ -1,21 +1,26 @@
-# CBPR Helper
+# NC//NET
 
-Онлайн-помощник для кампаний по **Cyberpunk RED** (R. Talsorian Games). Весь контент — из
-данного репозитория: каталог предметов собирается из `Data Pool.xlsx`, стартовый ростер
-партии — из листа `Folio`.
+Иммерсивная сеть Найт-Сити 2070-х для общих кампаний по **Cyberpunk RED / CEMK**. ГМы размещают контракты от лица внутриигровых персон, игроки используют Character Dossiers, а сыгранные события превращаются в City Feed. Каталог предметов собирается из `Data Pool.xlsx`, стартовый ростер — из листа `Folio`.
+
+Полная архитектура, модель данных и миграции описаны в [`docs/ncnet-redesign.md`](docs/ncnet-redesign.md), а проверенные карты/правила и страницы источников — в [`docs/ncnet-sources.md`](docs/ncnet-sources.md). NC//NET обновляет существующую базу без reset.
 
 ## Что внутри
 
 | Раздел | Описание |
 | --- | --- |
-| 🧬 **Мои персонажи** | Создание и хранение листов персонажей: статы (INT…EMP), 66 навыков с обязательными минимумами и ×2-навыками, хром (HL и человечность считаются автоматически: −2 за хром, −4 за боргвер), броня с наслоением, снаряжение, кэш. У каждого пользователя — своё хранилище. |
+| 🛰️ **Network Shell** | Плотный diegetic HUD с desktop left rail, system telemetry, Active Dossier, command palette, явным NETWORK/GM OPS mode switch и mobile bottom navigation. |
+| 🧬 **Dossiers** | Шестишаговый мастер и интерактивный официальный-inspired Character Sheet: Portrait upload/crop, Corebook role art, EN/RU, persistent draft, Hybrid Lifepath, 62/86, parent-pools, Shopping compatibility, Cyberware hosts/paired slots, HP/LUCK/Armor/ammo trackers, dice rolls, IP progression, multiclass, JSON/Print и read-only архив с сохранением NC//NET history. |
+| 👤 **Profile** | Account avatar с квадратной crop-обработкой, privacy display name/avatar, Appearance, audio volume, VK linking и управляемые Admin роли. |
+| ♿ **Accessibility** | Skip link, видимый keyboard focus, Enter/Space activation для Contracts/Feed/Personas/map markers, modal focus trap/restore, ARIA live notifications и reduced-motion support. |
 | 📖 **Гайды** | Мини-гайды из «Spes Desperata»: пошаговое создание персонажа (роли, 62 очка статов, 86 очков навыков, стартовая закупка), боёвка FNFF (действия, DV-таблицы, крит. травмы, укрытия, транспорт) и нетраннинг (СЕТевые действия, Interface-способности). |
-| 📋 **Ростер** | Все публичные персонажи всех игроков. При старте импортируется ростер вашей партии из Folio (13 эджраннеров). |
+| 📋 **Crew Registry** | Все публичные персонажи всех игроков. При старте импортируется ростер вашей партии из Folio (13 эджраннеров). |
 | 🕶️ **Чёрный рынок** | Ночная витрина (обновляется ежедневно в 00:00 МСК, уличные цены ±50%), полный каталог на 1092 предмета, скупка хлама за 50%, выплаты от ГМ. |
 | 📚 **Справочник** | Поиск по 14 категориям с ценами, характеристиками, описаниями и ссылками на книги (`CP:R 341` = Corebook, `BC` = Black Chrome, `CEMK` = Edgerunners Mission Kit). |
-| 🎲 **Калькулятор** | Расчёт урона против SP (пробитие брони, абляция, состояния ранений со стабилизацией), критические травмы (2d6 по телу/голове), автоогонь, спасброски смерти, броски костей, таблицы DV по дальности и автоогню, наслоение брони. |
-| 📡 **Сводки с улиц** | Новости-пересказы событий партий от разных источников (теги по партии/району). |
-| 📞 **Доска заказов** | ГМ-ы публикуют анонсы партий, эджраннеры записываются (со своим персонажем). |
+| 🎲 **Quick Reference** | Damage/SP, Critical Injuries, Autofire, Death Saves, Range DV и General Difficulty с указанием книг и страниц; инструменты можно использовать как справочник или Resolver. |
+| ◈ **Personas / Storylines** | Private/Shared/System персоны, общий audit log, GM-соавторы сюжетных линий и публичная/закрытая хронология. |
+| 📡 **City Feed** | Шесть форматов, прямые Character-публикации, optional images с preset/custom crop, отображение полного соотношения без обрезки и полноразмерный lightbox, event/publication time, metadata, replies, revisions, moderation и скрытая GM truth. |
+| 📞 **Contracts** | Theme-aware карта с district/subdistrict markers; optional covers с preset/custom resolution crop, полным соотношением без обрезки и lightbox; Persona-роли, public/classified briefing, rewards, запись, waitlist, исторический Crew и Aftermath. |
+| ⚙️ **GM OPS** | Поиск и фильтры для Sessions/NPC Templates/Storylines, улучшенные Storyline/collaborator/timeline editors, стабильный initiative order, HP/SP/Shield/Ammo/LUCK/MOVE/Injuries controls, фильтруемый activity log, private GM JSON export и независимо настраиваемый Player View. |
 
 ## Запуск
 
@@ -28,7 +33,41 @@ python3 app/server.py --port 8080
 
 - `app/import_data.py` — пересборка `app/data/items.json` из `Data Pool.xlsx` (запускается автоматически, если файла нет);
 - `app/data/cbpr.db` — SQLite, создаётся при первом старте (в git не хранится);
-- аккаунт с ролью **ГМ** даёт доступ к размещению заказов и выплатам евробаксов персонажам.
+- новый аккаунт всегда получает роль **Player**;
+- **GM** и **Admin** назначаются только через Admin Console;
+- перед первой выдачей прав существующий аккаунт явно указывается в `CBPR_ADMIN_USERS` и сервер перезапускается;
+- альтернативный путь БД для smoke/tests задаётся через `CBPR_DB_PATH`.
+
+Пример безопасного назначения первого Admin после регистрации аккаунта `operator`:
+
+```bash
+CBPR_ADMIN_USERS=operator python3 app/server.py
+```
+
+Для systemd переменная задаётся в конфигурации службы, после чего сервис перезапускается. Не добавляйте имена администраторов вместе с секретами или токенами в Git.
+
+Опциональная интеграция с общей беседой VK и OAuth-привязка пользователей включаются только серверными переменными:
+
+```bash
+VK_COMMUNITY_TOKEN=...          # токен сообщества
+VK_PEER_ID=...                  # peer_id общей беседы
+VK_CLIENT_ID=...                # VK OAuth app
+VK_CLIENT_SECRET=...
+VK_REDIRECT_URI=https://example.com/api/vk/oauth/callback
+NCNET_PUBLIC_URL=https://example.com
+CBPR_SECURE_COOKIES=1
+```
+
+Секреты не сохраняются в SQLite, frontend или Git. Без этих переменных NC//NET работает полностью, а VK outbox остаётся в состоянии pending.
+
+Проверка правил и каталога:
+
+```bash
+python3 -m unittest discover -s tests -v
+node --check app/static/creation-data.js
+node --check app/static/ncnet.js
+node --check app/static/app.js
+```
 
 ## Установка на Ubuntu Server (сайт работает постоянно)
 
@@ -66,6 +105,7 @@ cd CBPR-helper && git pull && systemctl restart cbpr   # обновить до �
 ```bash
 systemctl stop cbpr
 cp CBPR-helper/app/data/cbpr.db ~/cbpr-backup-$(date +%F).db
+tar -czf ~/cbpr-uploads-$(date +%F).tar.gz -C CBPR-helper/app/data uploads 2>/dev/null || true
 systemctl start cbpr
 ```
 
@@ -83,13 +123,21 @@ apt install -y certbot python3-certbot-nginx
 certbot --nginx -d твой-домен.ru
 ```
 
-## Используемые правила (Cyberpunk RED, по гайду «Spes Desperata»)
+## Используемые правила
 
-- Создание: **62 очка** характеристик (каждая 2–8); **86 очков** навыков (минимум 2 в 13 обязательных, максимум 6 в навыке, ×2-навыки стоят 2 очка, родной язык — 4 бесплатно). Старт: **2550€$** на снаряжение + **800€$** на Fashion/Fashionware.
+Правила создания сверены с `Spes Desperata`, **Cyberpunk RED Corebook** (Lifepath стр. 43–69, Complete Package стр. 78–104, броня стр. 96), **CEMK Rule Book** (Lifepath стр. 19–24, правила 2070-х и Neuroport стр. 25+) и описаниями предметов из **Black Chrome/Data Pool**.
+
+- Создание: все характеристики начинают с 5, но итог должен содержать ровно **62 очка** (каждая 2–8); навыки — ровно **86 очков** (минимум 2 в 13 обязательных, максимум 6, ×2-навыки стоят 2 очка). Language, Local Expert, Martial Arts, Science и Play Instrument используют покупаемый parent-pool, распределяемый между специализациями; культурный язык 4 бесплатен, Streetslang 2 оплачивается. Старт: **2550€$** на снаряжение + **800€$** на Fashion/Fashionware. Бесплатный и платный Neuroport взаимоисключающие.
+- Draft мастера версионирован и автоматически хранится в `localStorage` отдельно для каждого пользователя до успешного создания или подтверждённого полного сброса. Draft v2 автоматически мигрирует на шестишаговую v3-схему; старые персонажи и старые Lifepath-значения остаются читаемыми.
+- Интерфейс по умолчанию английский, переключатель `EN/RU` сохраняется локально; гайды намеренно остаются на русском. Новые персонажи по умолчанию приватные.
+- Каталог содержит нормализованные `mechanics`, `requirements`, `capacity` и совместимость: Damage notation/dice/average, ROF, Hands, Magazine, ammo links, Cyberware foundations, paired hosts и Option Slots. Клиентские ограничения повторно проверяются сервером.
+- Character Portrait обрабатывается в браузере (crop/zoom/rotate), хранится вне Git в `app/data/uploads/` и наследует приватность персонажа. Неиспользованные draft uploads очищаются через 7 дней.
+- После создания доступны расход LUCK, HP, Armor/Shield, магазины и reserve ammo, Skill/Attack/Damage rolls, immutable IP ledger, parent-pool progression, свободное перераспределение children и multiclass с active Role Rank 4 gate.
+- Appearance Settings содержат presets и Custom Theme для всех основных цветов, font scale, density, glow и reduced motion; сервер хранит настройки профиля, localStorage используется как fallback.
 - HP = `10 + 5×⌈(BODY+WILL)/2⌉`; серьёзная рана — половина HP (вверх); смертельное ранение — HP < 1 (−4 ко всем действиям, −6 MOVE, спасброски смерти); спасбросок смерти = `1d10 ≤ BODY − штраф` (10 — всегда провал).
-- Максимум человечности = `EMP×10 − Σ HL хрома − 2 за каждый хром (кроме фэшнвера) − 4 за боргвер`; текущий EMP = человечность ÷ 10 (вниз).
+- Текущая человечность после установки = `EMP×10 − Σ HL`; максимум человечности = `EMP×10 − 2 за каждый обычный хром − 4 за Borgware`. Fashionware и бесплатный стартовый Neuroport CEMK исключены; текущий EMP = человечность ÷ 10 (вниз).
 - Критические травмы: 2+ шестёрки на кубах урона = 2d6 по таблице + 5 HP (броня не снижает).
-- Наслоение брони: больший SP + половина меньшего (вверх); штрафы брони — по максимальному.
+- Броня покупается отдельно для головы и тела; SP слоёв не складывается — действует наибольший. Все слои локации абляируются вместе, а самый строгий штраф к REF/DEX/MOVE применяется один раз.
 - Урон: если урон > SP — броня пробита и абляируется на 1, иначе броня держит.
 - Ближний бой: SP цели делится на 2 (вверх).
 - Автоогонь: урон = `2d6 × (бросок − DV)`, максимум множителя ×3 (SMG) / ×4 (винтовки, пулемёты).
