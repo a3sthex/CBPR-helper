@@ -4169,6 +4169,76 @@ class Handler(BaseHTTPRequestHandler):
             'SELECT * FROM session_combatants WHERE session_id=? '
             'ORDER BY initiative DESC,sort_order,id', (session_id,)).fetchall()
 
+    def session_activity_payload(self, row):
+        before = parse_json_object(row['before_json'])
+        after = parse_json_object(row['after_json'])
+        event_type = row['event_type']
+        changes = []
+
+        def display_value(key, value):
+            if key in ('conditions_json', 'injuries_json'):
+                value = parse_json_list(value)
+            if key == 'visible':
+                return bool(value)
+            if key == 'player_view_config':
+                return session_view_config(value)
+            if isinstance(value, (dict, list)):
+                return value
+            return value
+
+        if event_type == 'session_update':
+            for key in ('title', 'status', 'round', 'active_turn',
+                        'player_view_config', 'notes'):
+                if key not in after:
+                    continue
+                old_value = before.get(key)
+                new_value = after.get(key)
+                if key == 'notes':
+                    if str(old_value or '') != str(new_value or ''):
+                        changes.append({'field': 'notes', 'before': None, 'after': 'updated'})
+                    continue
+                if key == 'player_view_config':
+                    old_config = session_view_config(old_value)
+                    new_config = session_view_config(new_value)
+                    for setting in SESSION_VIEW_DEFAULTS:
+                        if old_config[setting] != new_config[setting]:
+                            changes.append({'field': f'player_view.{setting}',
+                                            'before': old_config[setting],
+                                            'after': new_config[setting]})
+                    continue
+                old_value = display_value(key, old_value)
+                new_value = display_value(key, new_value)
+                if old_value != new_value:
+                    changes.append({'field': key, 'before': old_value, 'after': new_value})
+        elif event_type in ('combatant_create', 'combatant_delete'):
+            snapshot = after if event_type == 'combatant_create' else before
+            changes.append({
+                'field': 'combatant', 'before': None if event_type == 'combatant_create'
+                else snapshot.get('name'),
+                'after': snapshot.get('name') if event_type == 'combatant_create' else None,
+            })
+        else:
+            fields = (
+                'name', 'initiative', 'hp_current', 'hp_max',
+                'sp_head', 'sp_head_max', 'sp_body', 'sp_body_max',
+                'shield_current', 'shield_max', 'ammo_current', 'ammo_max',
+                'luck_current', 'luck_max', 'move', 'death_penalty',
+                'conditions_json', 'injuries_json', 'visible', 'sort_order',
+            )
+            for key in fields:
+                old_value = display_value(key, before.get(key))
+                new_value = display_value(key, after.get(key))
+                if old_value != new_value:
+                    changes.append({'field': key[:-5] if key.endswith('_json') else key,
+                                    'before': old_value, 'after': new_value})
+                if len(changes) >= 20:
+                    break
+        return {
+            'id': row['id'], 'combatant_id': row['combatant_id'],
+            'event_type': event_type, 'actor': row['actor'],
+            'note': row['note'], 'created': row['created'], 'changes': changes,
+        }
+
     def session_payload(self, conn, row, user, player_view=False):
         can_edit = self.can_edit_nc_session(conn, user, row)
         config = session_view_config(row['player_view_config'])
@@ -4235,7 +4305,7 @@ class Handler(BaseHTTPRequestHandler):
                 'SELECT a.*,u.display_name actor FROM session_activity a '
                 'JOIN users u ON u.id=a.actor_user_id WHERE session_id=? '
                 'ORDER BY a.id DESC LIMIT 200', (row['id'],)).fetchall()
-            payload['activity'] = [dict(item) for item in activity]
+            payload['activity'] = [self.session_activity_payload(item) for item in activity]
         return payload
 
     def can_edit_npc_template(self, user, template):
@@ -4400,7 +4470,12 @@ class Handler(BaseHTTPRequestHandler):
         status = str((body or {}).get('status', row['status']))
         if status not in ('preparing', 'active', 'paused', 'completed', 'archived'):
             raise ApiError(400, 'Некорректный статус сессии')
-        before = self.session_payload(conn, row, user)
+        before = {
+            'title': row['title'], 'status': row['status'], 'round': row['round'],
+            'active_turn': row['active_turn'],
+            'player_view_config': session_view_config(row['player_view_config']),
+            'notes': row['notes'],
+        }
         title = str((body or {}).get('title', row['title'])).strip()[:180] or row['title']
         round_number = max(0, _num((body or {}).get('round', row['round'])) or 0)
         combatant_count = conn.execute(
@@ -4410,15 +4485,21 @@ class Handler(BaseHTTPRequestHandler):
         active_turn = min(active_turn, max(0, combatant_count - 1))
         config = session_view_config(
             (body or {}).get('player_view_config', row['player_view_config']))
+        notes = str((body or {}).get('notes', row['notes']))[:20000]
+        now = time.time()
+        after = {
+            'title': title, 'status': status, 'round': round_number,
+            'active_turn': active_turn, 'player_view_config': config, 'notes': notes,
+        }
         conn.execute(
             'UPDATE nc_sessions SET title=?,status=?,round=?,active_turn=?,player_view_config=?,notes=?,updated=? WHERE id=?',
-            (title, status, round_number, active_turn, json.dumps(config),
-             str((body or {}).get('notes', row['notes']))[:20000], time.time(), row['id']))
+            (title, status, round_number, active_turn, json.dumps(config), notes, now, row['id']))
         conn.execute(
             'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,after_json,note,created) '
             'VALUES(?,?,?,?,?,?,?)',
             (row['id'], user['id'], 'session_update', json.dumps(before, ensure_ascii=False),
-             json.dumps(body or {}, ensure_ascii=False), str((body or {}).get('activity_note') or '')[:500], time.time()))
+             json.dumps(after, ensure_ascii=False),
+             str((body or {}).get('activity_note') or '')[:500], now))
         conn.commit(); updated = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (row['id'],)).fetchone()
         self.send_json(self.session_payload(conn, updated, user))
 

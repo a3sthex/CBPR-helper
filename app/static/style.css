@@ -32,6 +32,10 @@ body {
   flex-direction: column;
 }
 a { color: var(--cyan); text-decoration: none; }
+.skip-link { position:fixed;left:12px;top:8px;z-index:10000;padding:9px 14px;background:var(--panel);border:2px solid var(--cyan);transform:translateY(-160%);transition:transform .15s; }
+.skip-link:focus { transform:translateY(0); }
+:focus-visible { outline:2px solid var(--yellow);outline-offset:3px; }
+[role="button"]:focus-visible { box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--yellow); }
 h1, h2, h3 { font-family: 'Orbitron', 'Rajdhani', sans-serif; letter-spacing: .5px; }
 h1 { font-size: 26px; } h2 { font-size: 20px; } h3 { font-size: 17px; }
 hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }

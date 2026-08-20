@@ -195,6 +195,10 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertIn('#/contracts', shell)
         self.assertIn('#/feed', shell)
         self.assertIn('/ncnet.js', shell)
+        self.assertIn('class="skip-link"', shell)
+        self.assertIn('aria-live="polite"', shell)
+        self.assertIn('role="dialog"', source)
+        self.assertIn('MODAL_FOCUSABLE', source)
         network = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')
         self.assertIn('publish immediately', network)
         for district in ('watson', 'westbrook', 'city-center', 'heywood',
@@ -205,6 +209,10 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertIn('show_injuries', network)
         self.assertIn('/clone', network)
         self.assertIn('account_avatar', source)
+        self.assertIn('ncBindActivation', network)
+        self.assertIn('role="button" tabindex="0"', network)
+        self.assertIn('ss-activity-search', network)
+        self.assertIn('ss-export', network)
 
 
 if __name__ == '__main__':

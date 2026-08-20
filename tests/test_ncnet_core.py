@@ -246,6 +246,22 @@ class NCNetCoreFlowTests(unittest.TestCase):
         self.assertNotIn('notes', player_view)
 
         self.current = self.user('gm')
+        activity_detail = self.call(server.Handler.api_session_detail, {},
+                                    self.match(session['id']), {})['payload']
+        self.assertGreaterEqual(len(activity_detail['activity']), 3)
+        self.assertNotIn('before_json', activity_detail['activity'][0])
+        session_event = next(item for item in activity_detail['activity']
+                             if item['event_type'] == 'session_update')
+        self.assertTrue(any(change['field'] == 'round' for change in session_event['changes']))
+        combatant_event = next(item for item in activity_detail['activity']
+                               if item['event_type'] == 'combatant_update')
+        self.assertTrue(any(change['field'] == 'hp_current'
+                            for change in combatant_event['changes']))
+        stored_session_event = self.conn.execute(
+            "SELECT before_json FROM session_activity WHERE event_type='session_update' "
+            'ORDER BY id DESC LIMIT 1').fetchone()
+        self.assertNotIn('activity', json.loads(stored_session_event['before_json']))
+
         aftermath_body = {
             'result': 'completed', 'author_persona_id': persona['id'],
             'headline': 'Watson Relay Restored',

@@ -37,17 +37,53 @@ function toastUndo(message, undo) {
   const root=$('#toast-root'),el=document.createElement('div');el.className='toast';el.innerHTML=`<span>${esc(message)}</span> <button class="btn-sm">Undo</button>`;root.appendChild(el);$('button',el).onclick=()=>{undo();el.remove();};setTimeout(()=>el.remove(),7000);
 }
 
+let modalReturnFocus = null;
+const MODAL_FOCUSABLE = 'button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
 function openModal(html, wide) {
   const root = $('#modal-root');
-  root.innerHTML = `<div class="modal${wide ? ' wide' : ''}"><button class="close" title="${T('Close','Закрыть')}">✕</button>${html}</div>`;
+  if (!root.classList.contains('open')) modalReturnFocus = document.activeElement;
+  root.innerHTML = `<div class="modal${wide ? ' wide' : ''}" role="dialog" aria-modal="true" tabindex="-1"><button class="close" type="button" aria-label="${T('Close','Закрыть')}" title="${T('Close','Закрыть')}">✕</button>${html}</div>`;
   root.classList.add('open');
+  root.setAttribute('aria-hidden', 'false');
   APP_I18N.apply(root);
   $('.close', root).onclick = closeModal;
   root.onmousedown = (e) => { if (e.target === root) closeModal(); };
-  return root.firstElementChild;
+  const modal = root.firstElementChild;
+  const heading = $('h1,h2,h3', modal);
+  if (heading) {
+    heading.id = heading.id || `modal-title-${Date.now()}`;
+    modal.setAttribute('aria-labelledby', heading.id);
+  } else {
+    modal.setAttribute('aria-label', T('Dialog','Диалог'));
+  }
+  setTimeout(() => {
+    const target = $('[autofocus]', modal) || $('input:not([disabled]),select:not([disabled]),textarea:not([disabled])', modal) || $(MODAL_FOCUSABLE, modal) || modal;
+    if (target && target.focus) target.focus();
+  }, 0);
+  return modal;
 }
-function closeModal() { const r = $('#modal-root'); r.classList.remove('open'); r.innerHTML = ''; }
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+function closeModal() {
+  const root = $('#modal-root');
+  if (!root) return;
+  root.classList.remove('open');
+  root.setAttribute('aria-hidden', 'true');
+  root.innerHTML = '';
+  const target = modalReturnFocus;
+  modalReturnFocus = null;
+  if (target && target.isConnected && target.focus) target.focus();
+}
+document.addEventListener('keydown', (event) => {
+  const root = $('#modal-root');
+  if (!root || !root.classList.contains('open')) return;
+  if (event.key === 'Escape') { event.preventDefault(); closeModal(); return; }
+  if (event.key !== 'Tab') return;
+  const focusable = $$(MODAL_FOCUSABLE, root).filter(element => element.offsetParent !== null);
+  if (!focusable.length) { event.preventDefault(); root.firstElementChild.focus(); return; }
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+});
 
 async function openThemeSettings() {
   const current=APP_THEME.get(), labels={bg:'Background',bg2:'Secondary Background',panel:'Panel',panel2:'Raised Panel',line:'Borders',text:'Text',muted:'Muted Text',primary:'Primary Accent',secondary:'Secondary Accent',accent:'Accent',success:'Success',danger:'Danger',warning:'Warning'};
@@ -201,9 +237,15 @@ async function route() {
   const [seg0, seg1] = hash.split('/');
   const view = $('#view');
   const activeRoute = routeAliases[seg0] || seg0;
-  $$('#nav a').forEach(a => a.classList.toggle('active', a.dataset.route === activeRoute));
+  $$('#nav a').forEach(anchor => {
+    const active = anchor.dataset.route === activeRoute;
+    anchor.classList.toggle('active', active);
+    if (active) anchor.setAttribute('aria-current', 'page');
+    else anchor.removeAttribute('aria-current');
+  });
   window.scrollTo(0, 0);
   closeModal();
+  view.setAttribute('aria-busy', 'true');
   try {
     if (seg0 === 'contracts' && seg1) { await viewContractDetail(view, seg1); return; }
     if (seg0 === 'feed' && seg1) { await viewFeedDetail(view, seg1); return; }
@@ -223,6 +265,7 @@ async function route() {
     view.innerHTML = `<div class="empty">⚠️ ${esc(APP_I18N.translate(e.message))}</div>`;
   } finally {
     APP_I18N.apply(view);
+    view.setAttribute('aria-busy', 'false');
   }
 }
 
@@ -238,11 +281,11 @@ function renderUserbox() {
   }
   const ini = (state.me.display_name || state.me.username || '?').slice(0, 1).toUpperCase();
   box.innerHTML = `
-    <span class="userchip" id="userchip" title="${T('Profile','Профиль')}">
+    <button class="userchip" id="userchip" type="button" title="${T('Profile','Профиль')}" aria-label="${T('Open Profile','Открыть профиль')}">
       ${state.me.avatar_media_id?`<img class="avatar" src="/api/media/${esc(state.me.avatar_media_id)}" alt="">`:`<span class="avatar">${esc(ini)}</span>`}
       <span>${esc(state.me.display_name)}</span>
       ${state.me.is_admin ? '<span class="gm-badge">ADMIN</span>' : (state.me.is_gm ? `<span class="gm-badge">${T('GM','ГМ')}</span>` : '')}
-    </span>
+    </button>
     <button class="btn-sm" id="notifications-btn" title="${T('Notifications','Уведомления')}">◉</button>
     ${state.me.is_gm ? `<a class="btn-sm" href="#/gm">GM OPS</a>` : ''}
     <button class="btn-sm" id="logout-btn">${T('Sign out','Выйти')}</button>`;

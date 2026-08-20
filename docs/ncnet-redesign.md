@@ -766,7 +766,8 @@ Player View управляется конфигурацией GM и никогд
 - stable turn order/resources and round transitions;
 - Previous/Next Turn controls;
 - configurable Player View with server-side field filtering;
-- session activity log;
+- structured/filterable session activity log without recursive raw snapshots;
+- private GM JSON export and copyable Player View link;
 - completion outcome.
 
 ### Phase 7 — VK, Aftermath, sound and polish ✅
@@ -777,7 +778,8 @@ Player View управляется конфигурацией GM и никогд
 - one-shot Aftermath creation flow with immutable completed Crew;
 - audio system;
 - publication visual themes;
-- final accessibility/mobile/localization pass.
+- keyboard-operable network cards/map markers, skip link, focus-visible states and modal focus trap/restore;
+- ARIA live notifications plus final mobile/localization pass.
 
 ## 13. Acceptance criteria первого вертикального пакета
 
