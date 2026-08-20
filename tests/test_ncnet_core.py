@@ -20,6 +20,11 @@ class NCNetCoreFlowTests(unittest.TestCase):
         ])
         self.assertIn('p. 129', server.RULE_SOURCES['general_dv'])
         self.assertIn('Corebook', server.RULE_SOURCES['critical_injuries'])
+        self.assertIn('orbital-air-space-center', server.NC_LOCATION_IDS)
+        self.assertIn('badlands-near-pacifica', server.NC_LOCATION_IDS)
+        self.assertEqual(server.clean_location_id('Westbrook-Japantown'), 'westbrook-japantown')
+        with self.assertRaises(server.ApiError):
+            server.clean_location_id('unknown-sector')
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -160,12 +165,13 @@ class NCNetCoreFlowTests(unittest.TestCase):
             'title': 'Restore the Relay', 'teaser': 'Watson needs a crew.',
             'public_brief': 'Reach the relay and bring it online.',
             'classified_brief': 'The relay contains a trapped AI.',
-            'status': 'open', 'district_id': 'watson', 'risk_level': 'high',
+            'status': 'open', 'district_id': 'watson-little-china', 'risk_level': 'high',
             'reward_mode': 'range', 'reward_min': 1000, 'reward_max': 2000,
             'crew_capacity': 1, 'storyline_id': storyline['id'],
             'participants': [{'persona_id': persona['id'], 'role_key': 'poster'}],
         })['payload']
         self.assertEqual(contract['status'], 'open')
+        self.assertEqual(contract['district_id'], 'watson-little-china')
         self.assertIsNone(contract['cover_media_id'])
         self.assertTrue(contract['has_classified_access'])
 
@@ -195,10 +201,11 @@ class NCNetCoreFlowTests(unittest.TestCase):
         self.current = self.user('runner2')
         post = self.call(server.Handler.api_feed_create, {}, None, {
             'author_character_id': 2, 'format': 'short',
-            'body': 'The relay is singing again.', 'district_id': 'watson',
+            'body': 'The relay is singing again.', 'district_id': 'watson-kabuki',
             'contract_id': contract['id'], 'storyline_id': storyline['id'],
         })['payload']
         self.assertEqual(post['status'], 'published')
+        self.assertEqual(post['district_id'], 'watson-kabuki')
         self.assertIsNone(post['image_media_id'])
         self.assertEqual(post['author']['display_name'], 'K')
 

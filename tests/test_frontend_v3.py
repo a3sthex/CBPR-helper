@@ -72,6 +72,10 @@ if (!wizStepStatsHtml().includes('data-stat-lock')) throw new Error('STAT locks 
 if (!wizStepSkillsHtml().includes('data-skill-filter')) throw new Error('Skill filters missing');
 if (!wizStepShoppingHtml().includes('shopping-layout')) throw new Error('Shopping was not merged');
 if (!wizStepSummaryHtml().includes('Visibility')) throw new Error('Summary visibility missing');
+if (!NC_LOCATIONS.find(location => location.id === 'orbital-air-space-center')) throw new Error('Orbital Air Space Center missing');
+if (!ncLocationMatches('watson','watson-kabuki')) throw new Error('parent district filter does not include subdistrict');
+if (!ncDistrictName('badlands-near-pacifica').includes('Near Pacifica')) throw new Error('subdistrict label missing');
+if (!ncLocationOptions('westbrook-japantown').includes('optgroup')) throw new Error('grouped location options missing');
 const hasCyrillic = value => /[А-Яа-яЁё]/.test(String(value));
 const englishVisibleText = html => String(html)
   .replace(/<style[\\s\\S]*?<\\/style>/g, '')

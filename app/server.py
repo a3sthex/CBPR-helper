@@ -990,6 +990,17 @@ STORYLINE_STATUSES = {'active', 'paused', 'completed', 'archived'}
 CONTRACT_STATUSES = {'draft', 'open', 'crew_full', 'in_progress', 'completed', 'failed', 'cancelled', 'archived'}
 CONTRACT_REWARD_MODES = {'exact', 'range', 'negotiable', 'hidden'}
 CONTRACT_RISKS = {'low', 'moderate', 'high', 'extreme', 'classified'}
+NC_LOCATION_IDS = {
+    'watson', 'watson-arasaka-waterfront', 'watson-northside-industrial',
+    'watson-little-china', 'watson-kabuki',
+    'westbrook', 'westbrook-japantown', 'westbrook-north-oak', 'westbrook-charter-hill',
+    'city-center', 'city-center-downtown', 'city-center-corpo-plaza',
+    'heywood', 'heywood-wellsprings', 'heywood-vista-del-rey', 'heywood-the-glen',
+    'santo-domingo', 'santo-domingo-arroyo', 'santo-domingo-rancho-coronado',
+    'pacifica', 'pacifica-coastview', 'pacifica-west-wind-estate',
+    'badlands', 'badlands-near-westbrook', 'badlands-near-santo-domingo',
+    'badlands-near-pacifica', 'orbital-air-space-center',
+}
 FEED_FORMATS = {'short', 'article', 'blog', 'bulletin', 'statement', 'rumor'}
 FEED_TRUTH = {'true', 'partially_true', 'false', 'propaganda', 'unknown'}
 SESSION_VIEW_DEFAULTS = {
@@ -1023,6 +1034,13 @@ def parse_json_list(value):
         return parsed if isinstance(parsed, list) else []
     except (TypeError, ValueError):
         return []
+
+
+def clean_location_id(value):
+    location_id = str(value or '').strip().lower()[:80]
+    if location_id and location_id not in NC_LOCATION_IDS:
+        raise ApiError(400, 'Некорректная локация Night City')
+    return location_id or None
 
 
 def optional_timestamp(value, fallback=None):
@@ -2261,6 +2279,7 @@ SERVER_ERROR_EN = {
     'Слишком большая сумма': 'Amount is too large',
     'Некорректная сумма': 'Invalid amount',
     'Некорректное время события': 'Invalid event time',
+    'Некорректная локация Night City': 'Invalid Night City location',
     'Слишком много персонажей (максимум 50)': 'Too many characters (maximum 50)',
     'Сначала отсоедините изображение': 'Detach the image first',
     'Статус: open/closed': 'Status must be open or closed',
@@ -3126,7 +3145,7 @@ class Handler(BaseHTTPRequestHandler):
             'teaser': str(get('teaser'))[:500],
             'public_brief': str(get('public_brief'))[:30000],
             'classified_brief': str(get('classified_brief'))[:30000],
-            'district_id': str(get('district_id'))[:80],
+            'district_id': clean_location_id(get('district_id')) or '',
             'risk_level': risk, 'reward_mode': reward_mode,
             'reward_exact': optional_number('reward_exact'),
             'reward_min': optional_number('reward_min'),
@@ -3497,7 +3516,7 @@ class Handler(BaseHTTPRequestHandler):
             'truth_status,event_at,published_at,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (fmt, status, user['id'], persona_id, character_id,
              storyline_id, contract_id, reply_to_post_id,
-             str((body or {}).get('district_id') or '')[:80] or None,
+             clean_location_id((body or {}).get('district_id')),
              headline, str((body or {}).get('lead') or '')[:500] or None, text,
              str((body or {}).get('image_media_id') or '')[:64] or None,
              truth, event_at, published, now, now))
@@ -3553,7 +3572,7 @@ class Handler(BaseHTTPRequestHandler):
             'UPDATE feed_posts SET format=?,status=?,headline=?,lead=?,body=?,district_id=?,event_at=?,'
             'image_media_id=?,truth_status=?,published_at=?,updated=? WHERE id=?',
             (fmt, status, headline, str((body or {}).get('lead', row['lead'] or ''))[:500] or None,
-             text, str((body or {}).get('district_id', row['district_id'] or ''))[:80] or None,
+             text, clean_location_id((body or {}).get('district_id', row['district_id'] or '')),
              event_at, image_media_id, truth, published, time.time(), row['id']))
         updated = conn.execute('SELECT * FROM feed_posts WHERE id=?', (row['id'],)).fetchone()
         after = self.feed_post_payload(conn, updated, user)

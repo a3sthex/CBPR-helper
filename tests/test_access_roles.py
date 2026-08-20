@@ -221,12 +221,19 @@ class AccessRoleMigrationTests(unittest.TestCase):
         network_css = (ROOT / 'app/static/ncnet.css').read_text(encoding='utf-8')
         self.assertIn('nc-feed-image-frame', network)
         self.assertIn('feed-image-lightbox', network)
+        self.assertIn('ncBindMapControls', network)
+        self.assertIn('theme-map', network)
+        self.assertIn('mix-blend-mode:color', network_css)
         self.assertIn('object-fit:contain', network_css)
         self.assertNotIn('.nc-feed-image{width:100%;max-height:380px;object-fit:cover', network_css)
         self.assertIn('publish immediately', network)
         for district in ('watson', 'westbrook', 'city-center', 'heywood',
-                         'santo-domingo', 'pacifica', 'badlands'):
+                         'santo-domingo', 'pacifica', 'badlands', 'orbital-air-space-center'):
             self.assertIn("id:'" + district + "'", network)
+        for location in ('watson-little-china', 'westbrook-japantown',
+                         'badlands-near-westbrook', 'badlands-near-santo-domingo',
+                         'badlands-near-pacifica'):
+            self.assertIn(location, network)
         self.assertIn('NC_AUDIO', network)
         self.assertIn('openSessionDashboard', network)
         self.assertIn('show_injuries', network)

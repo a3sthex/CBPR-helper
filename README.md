@@ -19,7 +19,7 @@
 | 🎲 **Quick Reference** | Damage/SP, Critical Injuries, Autofire, Death Saves, Range DV и General Difficulty с указанием книг и страниц; инструменты можно использовать как справочник или Resolver. |
 | ◈ **Personas / Storylines** | Private/Shared/System персоны, общий audit log, GM-соавторы сюжетных линий и публичная/закрытая хронология. |
 | 📡 **City Feed** | Шесть форматов, прямые Character-публикации, optional images с preset/custom crop, отображение полного соотношения без обрезки и полноразмерный lightbox, event/publication time, metadata, replies, revisions, moderation и скрытая GM truth. |
-| 📞 **Contracts** | Карта NightCity.io v0.04.1 с интерактивным marker overlay, необязательные cover images с nested crop editor, произвольные Persona-роли, public/classified briefing, reward modes, мгновенная запись Character, waitlist, исторический Crew и Aftermath. |
+| 📞 **Contracts** | Theme-aware карта NightCity.io v0.04.1 с markers для district/subdistrict, Badlands sectors и Orbital Air Space Center; optional covers, Persona-роли, public/classified briefing, rewards, мгновенная запись, waitlist, исторический Crew и Aftermath. |
 | ⚙️ **GM OPS** | Поиск и фильтры для Sessions/NPC Templates/Storylines, улучшенные Storyline/collaborator/timeline editors, стабильный initiative order, HP/SP/Shield/Ammo/LUCK/MOVE/Injuries controls, фильтруемый activity log, private GM JSON export и независимо настраиваемый Player View. |
 
 ## Запуск

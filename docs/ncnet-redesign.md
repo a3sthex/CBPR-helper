@@ -748,8 +748,9 @@ Player View управляется конфигурацией GM и никогд
 
 - проверка официального map source;
 - пользователь подтверждает districts/boundaries;
-- SVG layers;
-- markers и filters;
+- theme-aware raster layer with Original/Theme palette switch;
+- calibrated markers for parent districts, canonical subdistricts, three Badlands sectors and Orbital Air Space Center;
+- grouped location filters and backward-compatible parent district IDs;
 - mobile list alternative;
 - City Feed side panel.
 

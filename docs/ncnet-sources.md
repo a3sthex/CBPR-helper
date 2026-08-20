@@ -13,6 +13,8 @@
 
 Текущая карта NC//NET использует подтверждённую владельцем кампании карту **NightCity.io v0.04.1** (design credit внутри самого изображения: `DESIGN_SETH`) с сохранённым брендингом и ссылкой на источник. Локальная копия: `app/static/maps/night-city-v04-nightcityio.jpg`; поверх неё NC//NET рисует только интерактивные Contract markers. Проверочный архив публикации карты: https://mycyberpunk.de/cyberpunk-2077-news/night-city-io-eine-cyberpunk-2077-map-im-tron-legacy-design/ . Это fan-created 2077-era district artwork, а не официальный asset R. Talsorian Games/CDPR.
 
+Канонические subdistrict IDs соответствуют подписям карты: Watson (Arasaka Waterfront, Northside Industrial District, Little China, Kabuki), Westbrook (Japantown, North Oak, Charter Hill), City Center (Downtown, Corpo Plaza), Heywood (Wellsprings, Vista del Rey, The Glen), Santo Domingo (Arroyo, Rancho Coronado), Pacifica (Coastview, West Wind Estate). По решению владельца кампании Badlands разделены на `Near Westbrook`, `Near Santo Domingo`, `Near Pacifica`; `Orbital Air Space Center` является отдельной локацией. Старые parent district IDs остаются валидными для обратной совместимости.
+
 ## Quick Reference
 
 - General Difficulty Values: Cyberpunk RED Corebook, p. 129.
