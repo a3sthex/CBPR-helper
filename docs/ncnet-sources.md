@@ -11,7 +11,7 @@
 - Структура district/subdistrict дополнительно сверена по индексу карты Cyberpunk 2077: City Center (Corpo Plaza, Downtown), Heywood (Wellsprings, Vista del Rey, The Glen), Pacifica (West Wind Estate, Coastview), Santo Domingo (Arroyo, Rancho Coronado), Watson (Little China, Kabuki, Northside, Arasaka Waterfront), Westbrook (Japantown, North Oak, Charter Hill), Badlands:  
   https://game-maps.com/C77/Cyberpunk-2077-World-Map.asp
 
-Текущая карта NC//NET — оригинальный интерактивный SVG. Она использует проверенные названия и относительную топологию районов, но не копирует copyrighted map image. Геометрия может быть заменена после подтверждения владельцем конкретного официального изображения.
+Текущая карта NC//NET использует подтверждённую владельцем кампании карту **NightCity.io v0.04.1** (design credit внутри самого изображения: `DESIGN_SETH`) с сохранённым брендингом и ссылкой на источник. Локальная копия: `app/static/maps/night-city-v04-nightcityio.jpg`; поверх неё NC//NET рисует только интерактивные Contract markers. Проверочный архив публикации карты: https://mycyberpunk.de/cyberpunk-2077-news/night-city-io-eine-cyberpunk-2077-map-im-tron-legacy-design/ . Это fan-created 2077-era district artwork, а не официальный asset R. Talsorian Games/CDPR.
 
 ## Quick Reference
 

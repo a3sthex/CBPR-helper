@@ -107,6 +107,17 @@ class NCNetCoreFlowTests(unittest.TestCase):
             'title': 'Watson Blackout', 'code_name': 'BLACKOUT',
             'public_summary': 'Watson goes dark.',
         })['payload']
+        timeline_event = self.call(server.Handler.api_storyline_timeline_create, {},
+                                   self.match(storyline['id']), {
+            'public_text': 'Grid instability reported.', 'event_at': 1000,
+        })['payload']
+        self.assertTrue(timeline_event['id'])
+        with self.assertRaises(server.ApiError) as invalid_timeline_time:
+            self.call(server.Handler.api_storyline_timeline_create, {},
+                      self.match(storyline['id']), {
+                          'public_text': 'Impossible timestamp', 'event_at': 'nan',
+                      })
+        self.assertEqual(invalid_timeline_time.exception.status, 400)
 
         self.current = self.user('admin')
         private_template = self.call(server.Handler.api_npc_template_create, {}, None, {

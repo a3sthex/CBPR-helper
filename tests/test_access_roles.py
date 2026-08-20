@@ -100,6 +100,13 @@ class AccessRoleMigrationTests(unittest.TestCase):
                 server.assign_account_role(conn, bob, 2, 'gm', 'Would remove last Admin')
             self.assertEqual(raised.exception.status, 409)
             self.assertEqual(conn.execute('SELECT COUNT(*) n FROM account_role_audit').fetchone()['n'], 4)
+            handler = object.__new__(server.Handler)
+            handler.require_admin = lambda current: bob
+            with self.assertRaises(server.ApiError) as missing_reason:
+                server.Handler.api_admin_user_role(
+                    handler, conn, {}, mock.Mock(group=lambda index: '1'),
+                    {'account_role': 'gm', 'reason': ''})
+            self.assertEqual(missing_reason.exception.status, 400)
             conn.close()
 
     def test_registration_cannot_self_assign_gm(self):
@@ -216,6 +223,13 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertIn('feed-truth-save', network)
         self.assertIn('Revision History', network)
         self.assertIn('data-comment-hide', network)
+        self.assertIn('/maps/night-city-v04-nightcityio.jpg', network)
+        self.assertIn('gm-ops-search', network)
+        self.assertIn('sl-collab-search', network)
+        self.assertIn('admin-user-search', source)
+        map_path = ROOT / 'app/static/maps/night-city-v04-nightcityio.jpg'
+        self.assertTrue(map_path.is_file())
+        self.assertEqual(server.image_info(map_path.read_bytes())[2:], (1920, 1920))
 
 
 if __name__ == '__main__':

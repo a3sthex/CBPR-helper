@@ -2277,6 +2277,7 @@ SERVER_ERROR_EN = {
     'Это не ваш персонаж': 'This is not your character',
     'Только для администраторов NC//NET': 'NC//NET Admin role required',
     'Роли аккаунтов назначает только администратор NC//NET': 'Only an NC//NET Admin can assign account roles',
+    'Укажите причину изменения доступа': 'Provide a reason for the access change',
     'Некорректные настройки уведомлений': 'Invalid notification settings',
     'Пользователь не найден': 'User not found',
     'Недопустимая роль аккаунта': 'Invalid account role',
@@ -2721,9 +2722,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_admin_user_role(self, conn, qs, m, body):
         actor = self.require_admin(conn)
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if not reason:
+            raise ApiError(400, 'Укажите причину изменения доступа')
         updated = assign_account_role(
-            conn, actor, int(m.group(1)), (body or {}).get('account_role'),
-            (body or {}).get('reason') or 'Admin role assignment')
+            conn, actor, int(m.group(1)), (body or {}).get('account_role'), reason)
         self.send_json(self.me_payload(updated))
 
     # ------------------------------------------------------------ NC//NET notifications / VK
@@ -3016,7 +3019,8 @@ class Handler(BaseHTTPRequestHandler):
         cur = conn.execute(
             'INSERT INTO storyline_timeline(storyline_id,event_at,public_text,private_text,contract_id,'
             'feed_post_id,created_by,created) VALUES(?,?,?,?,?,?,?,?)',
-            (row['id'], (body or {}).get('event_at'), public_text, private_text,
+            (row['id'], optional_timestamp((body or {}).get('event_at'), time.time()),
+             public_text, private_text,
              _num((body or {}).get('contract_id')), _num((body or {}).get('feed_post_id')),
              user['id'], time.time()))
         conn.execute('UPDATE storylines SET updated=? WHERE id=?', (time.time(), row['id']))
