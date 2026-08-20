@@ -9,3 +9,11 @@ __pycache__/
 *.pyc
 .venv/
 nohup.out
+
+# локальные артефакты редакторов/ОС и временные smoke-файлы
+.DS_Store
+.idea/
+.vscode/
+*.log
+.tmp-*
+*.db-journal
