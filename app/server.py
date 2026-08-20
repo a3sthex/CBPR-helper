@@ -1306,8 +1306,8 @@ def clean_persona_input(body, existing=None):
     return {
         'access': access, 'kind': kind, 'handle': handle,
         'display_name': display_name,
-        'avatar_media_id': str(get('avatar_media_id'))[:64] or None,
-        'cover_media_id': str(get('cover_media_id'))[:64] or None,
+        'avatar_media_id': str(get('avatar_media_id') or '')[:64] or None,
+        'cover_media_id': str(get('cover_media_id') or '')[:64] or None,
         'accent_color': accent.lower(),
         'short_bio': str(get('short_bio'))[:500],
         'public_bio': str(get('public_bio'))[:10000],
@@ -3161,7 +3161,7 @@ class Handler(BaseHTTPRequestHandler):
             'service_contact': str(get('service_contact'))[:500],
             'service_vtt_url': str(get('service_vtt_url'))[:1000],
             'service_notes': str(get('service_notes'))[:5000],
-            'cover_media_id': str(get('cover_media_id'))[:64] or None,
+            'cover_media_id': str(get('cover_media_id') or '')[:64] or None,
         }
 
     def replace_contract_participants(self, conn, contract_id, user, participants):

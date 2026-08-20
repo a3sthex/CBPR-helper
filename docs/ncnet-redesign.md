@@ -737,10 +737,11 @@ Player View управляется конфигурацией GM и никогд
 - structured owner/GM revision history, one-level comments and reasoned post/comment hide moderation;
 - GM-only truth classification with a dedicated audited endpoint;
 - moderation lock prevents a post owner from republishing GM-hidden content while preserving owner archive rights;
-- optional Feed images with Original/16:9/3:2/4:3/1:1/4:5 presets and user-defined 64–4000 px output (≤12 MP, 1:5–5:1), plus lead, district and event time validation;
+- optional Feed and Contract images with Original/16:9/3:2/4:3/1:1/4:5 presets and user-defined 64–4000 px output (≤12 MP, 1:5–5:1), plus lead, district and event time validation;
 - adaptive WebP compression keeps processed uploads under the media limit;
-- Feed cards and detail pages use `object-fit: contain`, preserve the complete authored ratio, and expose a keyboard-accessible full-size lightbox;
+- Feed and Contract cards/detail pages use `object-fit: contain`, preserve the complete authored ratio, and expose keyboard-accessible full-size lightboxes;
 - nested crop modal preserves the underlying Feed/Contract editor and its unsaved form state;
+- explicit JSON `null` for optional Persona/Contract media normalizes to no attachment instead of the string `"None"`;
 - legacy News migration;
 - Persona/Character author pages.
 

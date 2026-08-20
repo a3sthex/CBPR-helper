@@ -105,6 +105,7 @@ class NCNetCoreFlowTests(unittest.TestCase):
         persona = self.call(server.Handler.api_persona_create, {}, None, {
             'handle': 'dex-fixer', 'display_name': 'Dex', 'access': 'shared',
             'kind': 'person', 'public_bio': 'A Night City fixer.',
+            'avatar_media_id': None, 'cover_media_id': None,
         })['payload']
         self.assertEqual(persona['handle'], 'dex-fixer')
 
@@ -168,6 +169,7 @@ class NCNetCoreFlowTests(unittest.TestCase):
             'status': 'open', 'district_id': 'watson-little-china', 'risk_level': 'high',
             'reward_mode': 'range', 'reward_min': 1000, 'reward_max': 2000,
             'crew_capacity': 1, 'storyline_id': storyline['id'],
+            'cover_media_id': None,
             'participants': [{'persona_id': persona['id'], 'role_key': 'poster'}],
         })['payload']
         self.assertEqual(contract['status'], 'open')
