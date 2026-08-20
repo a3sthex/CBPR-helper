@@ -8,6 +8,7 @@
 
 | Раздел | Описание |
 | --- | --- |
+| 🛰️ **Network Shell** | Плотный diegetic HUD с desktop left rail, system telemetry, Active Dossier, command palette, явным NETWORK/GM OPS mode switch и mobile bottom navigation. |
 | 🧬 **Dossiers** | Шестишаговый мастер и интерактивный официальный-inspired Character Sheet: Portrait upload/crop, Corebook role art, EN/RU, persistent draft, Hybrid Lifepath, 62/86, parent-pools, Shopping compatibility, Cyberware hosts/paired slots, HP/LUCK/Armor/ammo trackers, dice rolls, IP progression, multiclass, JSON/Print и read-only архив с сохранением NC//NET history. |
 | 👤 **Profile** | Account avatar с квадратной crop-обработкой, privacy display name/avatar, Appearance, audio volume, VK linking и управляемые Admin роли. |
 | ♿ **Accessibility** | Skip link, видимый keyboard focus, Enter/Space activation для Contracts/Feed/Personas/map markers, modal focus trap/restore, ARIA live notifications и reduced-motion support. |

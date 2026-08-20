@@ -607,24 +607,30 @@ Player View управляется конфигурацией GM и никогд
 ### 9.1 Desktop dashboard
 
 ```text
-┌──────────────────────────────────────────────────────────────┐
-│ NC//NET  Connection  Active Dossier  Alerts  Audio  Account │
-├──────────────┬──────────────────────────────┬────────────────┤
-│ Filters      │ Accurate Night City Map      │ City Feed      │
-│ Contract     │ Contract/Event markers       │ Mixed cards    │
-│ preview      │ Zoom / Pan / layers          │ Replies        │
-├──────────────┴──────────────────────────────┴────────────────┤
-│ DATABASE  MARKET  CREW  GM OPS (permission-gated)           │
-└──────────────────────────────────────────────────────────────┘
+┌ NC//NET ─ NETWORK / GM OPS ─ CITY TIME ─ ACTIVE DOSSIER ─ ⌕ ─ ACCOUNT ┐
+├──────────────┬──────────────────────────────────────┬──────────────────┤
+│ CITY         │                                      │ ACTIVE SIGNALS   │
+│ CONTRACTS    │     NIGHT CITY MAP / WORKSPACE       │ CITY FEED        │
+│ FEED         │     Contract markers and pages       │ CONTEXT STATUS   │
+│ DOSSIERS     │                                      │                  │
+│ ───────────  │                                      │                  │
+│ DATA LAYER   │                                      │                  │
+└──────────────┴──────────────────────────────────────┴──────────────────┘
 ```
+
+- desktop использует постоянную left rail с четырьмя основными маршрутами;
+- Database, Market, Quick Reference, Crew, Personas и Archive сгруппированы в Data Layer;
+- верхняя system bar содержит время Найт-Сити, Active Dossier, command palette, sensory controls и аккаунт;
+- GM получает явный переключатель `NETWORK / GM OPS`, а не россыпь служебных кнопок в публичной навигации;
+- главная строится как карта 2/3 + колонка Active Signals/City Feed 1/3;
+- выбран плотный HUD, но labels, keyboard focus и обычные HTML controls остаются приоритетом.
 
 ### 9.2 Mobile
 
-- Contracts list;
-- City Feed;
-- Map как отдельная вкладка;
-- Dossier quick access;
-- нижняя навигация;
+- фиксированная нижняя навигация City / Contracts / Feed / Dossier / More;
+- Data Layer открывается отдельной панелью More;
+- карта и сигналы складываются в одну колонку;
+- Active Dossier доступен через Dossier route, если не помещается в system bar;
 - все действия доступны без hover.
 
 ### 9.3 Audio lifecycle

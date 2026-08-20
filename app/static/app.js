@@ -237,12 +237,16 @@ async function route() {
   const [seg0, seg1] = hash.split('/');
   const view = $('#view');
   const activeRoute = routeAliases[seg0] || seg0;
-  $$('#nav a').forEach(anchor => {
+  $$('[data-route]').forEach(anchor => {
     const active = anchor.dataset.route === activeRoute;
     anchor.classList.toggle('active', active);
     if (active) anchor.setAttribute('aria-current', 'page');
     else anchor.removeAttribute('aria-current');
   });
+  document.body.dataset.workspace = activeRoute === 'gm' ? 'gm' : 'network';
+  const moreButton=$('#mobile-more-toggle');if(moreButton)moreButton.classList.toggle('active',['database','market','quick-reference','crew','personas','guides','profile','gm','admin'].includes(activeRoute));
+  $$('[data-workspace]').forEach(button=>button.classList.toggle('active',button.dataset.workspace===(activeRoute==='gm'?'gm':'network')));
+  const mobileMore=$('#mobile-more-menu');if(mobileMore)mobileMore.hidden=true;
   window.scrollTo(0, 0);
   closeModal();
   view.setAttribute('aria-busy', 'true');
@@ -273,12 +277,16 @@ function go(path) { location.hash = path; }
 
 /* ============================== шапка / юзер ============================== */
 
+async function performLogout(){try{await api('/api/logout',{method:'POST'});}catch(error){}state.me=null;renderUserbox();route();toast(T('Signed out.','Вы вышли из системы.'));}
+
 function renderUserbox() {
-  const box = $('#userbox');
+  const box = $('#userbox'),workspace=$('#workspace-switch'),dossier=$('#active-dossier-wrap'),mobileGm=$('#mobile-gm-link'),mobileLogout=$('#mobile-logout');
   if (!state.me) {
+    if(workspace)workspace.hidden=true;if(dossier)dossier.hidden=true;if(mobileGm)mobileGm.hidden=true;if(mobileLogout)mobileLogout.hidden=true;
     box.innerHTML = `<a class="btn-primary" style="padding:7px 14px;border-radius:8px;color:#041018" href="#/login">${T('Sign in','Войти')}</a>`;
     return;
   }
+  if(workspace)workspace.hidden=!state.me.is_gm;if(mobileGm)mobileGm.hidden=!state.me.is_gm;if(mobileLogout){mobileLogout.hidden=false;mobileLogout.onclick=performLogout;}
   const ini = (state.me.display_name || state.me.username || '?').slice(0, 1).toUpperCase();
   box.innerHTML = `
     <button class="userchip" id="userchip" type="button" title="${T('Profile','Профиль')}" aria-label="${T('Open Profile','Открыть профиль')}">
@@ -286,82 +294,44 @@ function renderUserbox() {
       <span>${esc(state.me.display_name)}</span>
       ${state.me.is_admin ? '<span class="gm-badge">ADMIN</span>' : (state.me.is_gm ? `<span class="gm-badge">${T('GM','ГМ')}</span>` : '')}
     </button>
-    <button class="btn-sm" id="notifications-btn" title="${T('Notifications','Уведомления')}">◉</button>
-    ${state.me.is_gm ? `<a class="btn-sm" href="#/gm">GM OPS</a>` : ''}
+    <button class="btn-sm" id="notifications-btn" title="${T('Notifications','Уведомления')}" aria-label="${T('Notifications','Уведомления')}">◉</button>
     <button class="btn-sm" id="logout-btn">${T('Sign out','Выйти')}</button>`;
   $('#userchip').onclick = () => go('/profile');
   if ($('#notifications-btn') && typeof openNotifications === 'function') $('#notifications-btn').onclick = openNotifications;
-  $('#logout-btn').onclick = async () => {
-    try { await api('/api/logout', { method: 'POST' }); } catch (e) {}
-    state.me = null;
-    renderUserbox();
-    route();
-    toast(T('Signed out.','Вы вышли из системы.'));
-  };
+  $('#logout-btn').onclick = performLogout;
+}
+
+function updateCityClock(){const clock=$('#city-clock');if(clock)clock.textContent=new Intl.DateTimeFormat(APP_I18N.current()==='ru'?'ru-RU':'en-GB',{timeZone:'Europe/Moscow',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date())+' NC';}
+
+async function refreshShellDossiers(){
+  const wrap=$('#active-dossier-wrap'),select=$('#active-dossier');if(!wrap||!select||!state.me){if(wrap)wrap.hidden=true;return;}
+  try{const characters=(await api('/api/characters')).characters.filter(character=>!character.data.archived);if(!characters.length){wrap.hidden=true;return;}const saved=Number(localStorage.getItem('ncnet:active-dossier')),active=characters.some(character=>character.id===saved)?saved:characters[0].id;select.innerHTML=characters.map(character=>`<option value="${character.id}" ${character.id===active?'selected':''}>${esc(character.data.handle||T('Unnamed','Безымянный'))}</option>`).join('');wrap.hidden=false;localStorage.setItem('ncnet:active-dossier',String(active));select.onchange=()=>{localStorage.setItem('ncnet:active-dossier',select.value);go(`/char/${select.value}`);};}catch(error){wrap.hidden=true;}
+}
+
+function openCommandPalette(){
+  const commands=[['','⌂',T('City Network','Городская сеть')],['contracts','◎',T('Contracts','Контракты')],['feed','≋',T('City Feed','Городская лента')],['dossiers','◇',T('Dossiers','Досье')],['database','▦',T('Database','База данных')],['market','◈',T('Night Market','Ночной рынок')],['quick-reference','◫',T('Quick Reference','Быстрые правила')],['crew','⌘',T('Crew Registry','Реестр команд')],['personas','◉','Personas'],['guides','▤',T('Archive','Архив')]];if(state.me?.is_gm)commands.push(['gm','⚙','GM OPS']);if(state.me?.is_admin)commands.push(['admin','⚿',T('Admin Console','Панель Admin')]);
+  const modal=openModal(`<h2>${T('Command Palette','Командная строка')}</h2><input id="command-search" type="search" autofocus placeholder="${T('Jump to a network module…','Перейти к модулю сети…')}" aria-label="${T('Search commands','Поиск команд')}"><div id="command-list" class="command-list mt">${commands.map(([route,icon,label])=>`<button data-command-route="${route}" data-command-search="${esc(label.toLowerCase())}"><span>${icon}</span><b>${esc(label)}</b><small>#/${route}</small></button>`).join('')}</div>`);const search=$('#command-search',modal);search.oninput=()=>{const query=search.value.trim().toLowerCase();$$('[data-command-route]',modal).forEach(button=>button.hidden=Boolean(query&&!button.dataset.commandSearch.includes(query)));};$$('[data-command-route]',modal).forEach(button=>button.onclick=()=>{closeModal();go('/'+button.dataset.commandRoute);});
+}
+
+function initShellControls(){
+  updateCityClock();setInterval(updateCityClock,1000);
+  const command=$('#command-toggle');if(command)command.onclick=openCommandPalette;
+  document.addEventListener('keydown',event=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){event.preventDefault();openCommandPalette();}});
+  $$('[data-workspace]').forEach(button=>button.onclick=()=>go(button.dataset.workspace==='gm'?'/gm':'/'));
+  const more=$('#mobile-more-toggle'),menu=$('#mobile-more-menu');if(more&&menu)more.onclick=()=>{menu.hidden=!menu.hidden;};
+  $$('#mobile-more-menu a').forEach(link=>link.onclick=()=>{menu.hidden=true;});
 }
 
 /* ============================== главная ============================== */
 
 async function viewHome(view) {
   view.innerHTML = spinner();
-  const [stats, feed, contracts] = await Promise.all([
-    api('/api/stats'), api('/api/feed'), api('/api/contracts'),
-  ]);
-  const lastNews = feed.posts.slice(0, 3);
-  const openJobs = contracts.contracts.filter(item => ['open','crew_full'].includes(item.status)).slice(0, 3);
-  view.innerHTML = `
-  <div class="hero ncnet-hero">
-    <div class="small muted">NC//NET · 2070s · ${T('SECURE CITY RELAY','ЗАЩИЩЁННЫЙ ГОРОДСКОЙ КАНАЛ')}</div>
-    <h1>NC//NET <span class="accent">${T('connected','подключено')}</span></h1>
-    <p>${T('Encrypted contracts, street transmissions, crew dossiers, and the databases that keep Night City moving. What happens at the table becomes part of the city.','Зашифрованные контракты, городские передачи, досье команд и базы данных, поддерживающие жизнь Найт-Сити. События за игровым столом становятся частью города.')}</p>
-    <div class="row">
-      <button class="btn-primary" onclick="location.hash='#/contracts'">${T('Browse Contracts','Открыть контракты')}</button>
-      <button onclick="location.hash='#/feed'">${T('Open City Feed','Открыть City Feed')}</button>
-      <button onclick="location.hash='#/dossiers'">${T('Access Dossiers','Открыть досье')}</button>
-    </div>
-    <div class="statbar mt">
-      <span class="sb"><span class="v">${nf.format(stats.items)}</span><span class="k">${T('items','предметов')}</span></span>
-      <span class="sb"><span class="v">${nf.format(stats.characters)}</span><span class="k">${T('characters','персонажей')}</span></span>
-      <span class="sb"><span class="v">${nf.format(stats.users)}</span><span class="k">${T('edgerunners','эджраннеров')}</span></span>
-      <span class="sb"><span class="v">${nf.format(stats.feed_posts ?? stats.news)}</span><span class="k">${T('transmissions','передач')}</span></span>
-      <span class="sb"><span class="v">${nf.format(stats.open_contracts ?? stats.open_jobs)}</span><span class="k">${T('open Contracts','открытых контрактов')}</span></span>
-    </div>
-  </div>
-  <div class="grid cols-2">
-    <div class="panel">
-      <div class="row" style="justify-content:space-between">
-        <h2 style="margin:0">📡 ${T('City Feed','Городская лента')}</h2>
-        <a href="#/feed" class="small">${T('open feed →','открыть ленту →')}</a>
-      </div>
-      ${lastNews.length ? lastNews.map(n => `
-        <div class="post mt" style="cursor:pointer" onclick="location.hash='#/feed/${n.id}'">
-          <div class="meta"><span class="tag">${esc(n.format)}</span>${n.district_id?`<span>${esc(n.district_id)}</span>`:''}<span class="user-content">${esc(n.author?.display_name||'NC//NET')}</span>·<span>${timeAgo(n.published_at||n.created)}</span></div>
-          <div class="title user-content">${esc(n.headline||n.body.slice(0,90))}</div>
-          <div class="desc user-content" style="max-height:70px;overflow:hidden">${esc(n.body)}</div>
-        </div>`).join('') : `<div class="empty mt">${T('No city transmissions yet. ','Городских передач пока нет. ')}<a href="#/feed">${T('Publish from your Character','Опубликовать от лица персонажа')}</a>.</div>`}
-    </div>
-    <div class="panel">
-      <div class="row" style="justify-content:space-between">
-        <h2 style="margin:0">🎯 ${T('Active Contracts','Активные контракты')}</h2>
-        <a href="#/contracts" class="small">${T('all contracts →','все контракты →')}</a>
-      </div>
-      ${openJobs.length ? openJobs.map(j => `
-        <div class="card job mt" style="cursor:pointer" onclick="location.hash='#/contracts/${j.id}'">
-          <div class="meta"><span class="tag">${esc(typeof ncLabel==='function'?ncLabel(j.risk_level).toUpperCase():j.risk_level.toUpperCase())}</span>${j.district_id?`<span>${esc(j.district_id)}</span>`:''}${j.scheduled_at?`<span>⏱ ${new Date(j.scheduled_at*1000).toLocaleString()}</span>`:''}<span class="user-content">${esc(j.participants[0]?.display_name||'NC//NET')}</span></div>
-          <h3 class="user-content" style="margin:4px 0">${esc(j.title)}</h3>
-          <div class="small muted">${j.crew_capacity ? `${T('crew:','команда:')} ${j.crew_count}/${j.crew_capacity}` : T('unlimited crew','без ограничения команды')} · ${j.waitlist_count ? `${T('waitlist:','резерв:')} ${j.waitlist_count}` : esc(typeof ncLabel==='function'?ncLabel(j.status):j.status)}</div>
-        </div>`).join('') : `<div class="empty mt">${T('No active Contracts. ','Активных контрактов нет. ')}${state.me && state.me.is_gm ? `<a href="#/contracts">${T('Open the GM relay','Открыть канал GM')}</a>.` : ''}</div>`}
-    </div>
-  </div>
-  <div class="feature-cards mt">
-    <a class="card" href="#/contracts"><div class="ico">🎯</div><h3>${T('Contracts','Контракты')}</h3><div class="muted small">${T('Operations from Night City contacts with Crew, waitlist, classified briefing, rewards, and Aftermath.','Операции от контактов Найт-Сити с Crew, резервом, закрытым брифингом, наградами и Aftermath.')}</div></a>
-    <a class="card" href="#/feed"><div class="ico">📡</div><h3>${T('City Feed','Городская лента')}</h3><div class="muted small">${T('Immediate Character and Persona transmissions, six formats, comments, replies, and post-publication moderation.','Мгновенные передачи Characters и Personas, шесть форматов, комментарии, ответы и модерация после публикации.')}</div></a>
-    <a class="card" href="#/dossiers"><div class="ico">🧬</div><h3>${T('Dossiers','Досье')}</h3><div class="muted small">${T('Create and maintain the edgerunners who enter the network.','Создание и ведение эджраннеров, подключённых к сети.')}</div></a>
-    <a class="card" href="#/market"><div class="ico">🕶️</div><h3>${T('Night Market','Чёрный рынок')}</h3><div class="muted small">${T('A new sale every night, with canonical purchases and resale.','Ночная витрина, каноничные покупки и продажа снаряжения.')}</div></a>
-    <a class="card" href="#/database"><div class="ico">📚</div><h3>${T('Database','База данных')}</h3><div class="muted small">${T('1,092 sourced items from Night City databases.','1092 предмета с источниками в базах Найт-Сити.')}</div></a>
-    <a class="card" href="#/quick-reference"><div class="ico">🎲</div><h3>${T('Quick Reference','Быстрые правила')}</h3><div class="muted small">${T('Damage, Critical Injuries, Autofire, DV tables, and dice rolls.','Урон, критические травмы, Autofire, таблицы DV и броски.')}</div></a>
-    <a class="card" href="#/crew"><div class="ico">📋</div><h3>${T('Crew Registry','Реестр команд')}</h3><div class="muted small">${T('Public edgerunner dossiers from across the network.','Публичные досье эджраннеров со всей сети.')}</div></a>
-  </div>`;
+  const [stats, feed, contracts] = await Promise.all([api('/api/stats'),api('/api/feed'),api('/api/contracts')]);
+  const transmissions=feed.posts.slice(0,5),activeContracts=contracts.contracts.filter(contract=>['open','crew_full','in_progress'].includes(contract.status)).slice(0,6);
+  view.innerHTML=`<div class="page-head city-network-head"><div><div class="small muted">NC//NET // CITY NETWORK // RELAY 07</div><h1>${T('Night City Live Grid','Живая сеть Найт-Сити')}</h1><div class="sub">${T('Contracts, transmissions and operator traffic in one encrypted city layer.','Контракты, передачи и трафик операторов в одном зашифрованном слое города.')}</div></div><div class="row"><a class="btn-sm" href="#/feed">${T('TRANSMIT','ПЕРЕДАТЬ')} ↗</a><a class="btn-primary" href="#/contracts">${T('OPEN CONTRACTS','ОТКРЫТЬ CONTRACTS')} →</a></div></div><div class="network-telemetry-strip"><span><b>${nf.format(stats.open_contracts??stats.open_jobs)}</b>${T('OPEN SIGNALS','ОТКРЫТЫХ СИГНАЛОВ')}</span><span><b>${nf.format(stats.feed_posts??stats.news)}</b>${T('TRANSMISSIONS','ПЕРЕДАЧ')}</span><span><b>${nf.format(stats.characters)}</b>${T('DOSSIERS','ДОСЬЕ')}</span><span><b>${nf.format(stats.users)}</b>${T('OPERATORS','ОПЕРАТОРОВ')}</span><span><b>${nf.format(stats.items)}</b>${T('DATABASE OBJECTS','ОБЪЕКТОВ БАЗЫ')}</span></div><div class="city-network-grid"><section class="city-map-console"><div class="console-head"><span>GEOSPATIAL RELAY</span><span class="green">● LIVE</span></div><div id="home-city-map">${typeof ncMapHtml==='function'?ncMapHtml(activeContracts):''}</div></section><aside class="city-signal-column"><section class="signal-module"><div class="console-head"><span>${T('ACTIVE SIGNALS','АКТИВНЫЕ СИГНАЛЫ')}</span><a href="#/contracts">ALL →</a></div><div class="signal-stack">${activeContracts.length?activeContracts.map((contract,index)=>`<button class="city-signal" data-home-contract="${contract.id}"><span class="signal-index">${String(index+1).padStart(2,'0')}</span><span><b class="user-content">${esc(contract.title)}</b><small>${esc(typeof ncDistrictName==='function'?ncDistrictName(contract.district_id):contract.district_id||T('Classified','Секретно'))} · ${esc(typeof ncLabel==='function'?ncLabel(contract.risk_level):contract.risk_level)}</small></span><span class="tag">${contract.crew_count}/${contract.crew_capacity||'∞'}</span></button>`).join(''):`<div class="empty">${T('No active signals.','Нет активных сигналов.')}</div>`}</div></section><section class="signal-module"><div class="console-head"><span>${T('CITY FEED','ГОРОДСКАЯ ЛЕНТА')}</span><a href="#/feed">ALL →</a></div><div class="signal-stack">${transmissions.length?transmissions.map(post=>`<button class="feed-signal" data-home-feed="${post.id}"><span class="tag">${esc(post.format.toUpperCase())}</span><span><b class="user-content">${esc(post.headline||post.body.slice(0,70))}</b><small class="user-content">${esc(post.author?.display_name||'NC//NET')} · ${timeAgo(post.published_at||post.created)}</small></span></button>`).join(''):`<div class="empty">${T('No transmissions.','Нет передач.')}</div>`}</div></section></aside></div><div class="data-layer-strip"><span>DATA LAYER</span><a href="#/market">NIGHT MARKET</a><a href="#/database">DATABASE</a><a href="#/quick-reference">QUICK REF</a><a href="#/crew">CREW REGISTRY</a><a href="#/personas">PERSONAS</a></div>`;
+  if(typeof ncBindActivation==='function')ncBindActivation('[data-contract-open]',view,element=>go(`/contracts/${element.dataset.contractOpen}`));
+  $$('[data-home-contract]',view).forEach(button=>button.onclick=()=>go(`/contracts/${button.dataset.homeContract}`));
+  $$('[data-home-feed]',view).forEach(button=>button.onclick=()=>go(`/feed/${button.dataset.homeFeed}`));
 }
 
 /* ============================== справочник ============================== */
@@ -3457,6 +3427,7 @@ function viewLogin(view) {
       state.me = await api('/api/login', { method: 'POST', body: { username: $('#lg-u').value, password: $('#lg-p').value } });
       if(state.me.theme)APP_THEME.setFromProfile(state.me.theme);
       renderUserbox();
+      refreshShellDossiers();
       toast(T('Welcome back, ','С возвращением, ') + state.me.display_name);
       go('/dossiers');
     } catch (e) { toast(e.message, true); }
@@ -3470,6 +3441,7 @@ function viewLogin(view) {
         password: $('#rg-p').value } });
       if(state.me.theme)APP_THEME.setFromProfile(state.me.theme);
       renderUserbox();
+      refreshShellDossiers();
       toast(T('Welcome to Night City.','Добро пожаловать в Ночной город.'));
       go('/dossiers');
     } catch (e) { toast(e.message, true); }
@@ -3533,6 +3505,7 @@ async function viewAdmin(view) {
 (async function init() {
   window.addEventListener('hashchange', route);
   window.addEventListener('beforeunload', saveWizardDraft);
+  initShellControls();
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveWizardDraft(); });
   const themeToggle = $('#theme-toggle');
   if (themeToggle) themeToggle.onclick = openThemeSettings;
@@ -3543,6 +3516,7 @@ async function viewAdmin(view) {
   if (languageToggle) languageToggle.onclick = () => APP_I18N.toggle();
   window.addEventListener('app-language-change', async () => {
     APP_I18N.apply();
+    updateCityClock();
     try {
       const meta = await api('/api/meta');
       state.meta = meta;
@@ -3562,5 +3536,6 @@ async function viewAdmin(view) {
     return;
   }
   renderUserbox();
+  refreshShellDossiers();
   route();
 })();
