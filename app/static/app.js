@@ -120,16 +120,67 @@ async function openThemeSettings() {
 }
 
 function openImageCrop(file, kind, onUploaded) {
-  if (!file || !/^image\/(jpeg|png|webp)$/.test(file.type) || file.size > 10_000_000) { toast(T('Choose a JPEG, PNG, or WebP file up to 10 MB.','Выберите JPEG, PNG или WebP до 10 MB.'),true); return; }
-  const reader=new FileReader();reader.onload=()=>{const image=new Image();image.onload=()=>{
-    let aspect=kind==='account_avatar'?'1:1':'4:5',zoom=1,rotation=0,dx=0,dy=0,drag=null;
-    const modal=openModal(`<h2>${T('Crop Image','Обрезка изображения')}</h2><div class="image-crop-stage"><canvas id="crop-canvas" width="400" height="${aspect==='1:1'?400:500}"></canvas></div><div class="segmented mt"><button data-aspect="4:5" class="${aspect==='4:5'?'active':''}">Portrait 4:5</button><button data-aspect="1:1" class="${aspect==='1:1'?'active':''}">Square 1:1</button><button id="crop-rotate">↻ 90°</button></div><label class="f mt"><span>Zoom</span><input id="crop-zoom" type="range" min="1" max="3" step=".01" value="1"></label><p class="small muted">${T('Drag the image to reposition it.','Перетаскивайте изображение для позиционирования.')}</p><div class="row"><button id="crop-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="crop-upload">${T('Upload','Загрузить')}</button></div>`,true),canvas=$('#crop-canvas',modal),ctx=canvas.getContext('2d');
-    const draw=(target=canvas)=>{const square=aspect==='1:1',w=target.width,h=square?target.width:Math.round(target.width*1.25);if(target.height!==h)target.height=h;const c=target.getContext('2d');c.clearRect(0,0,w,h);c.save();c.translate(w/2+dx*(w/400),h/2+dy*(h/(square?400:500)));c.rotate(rotation*Math.PI/180);const rotated=rotation%180!==0,iw=rotated?image.height:image.width,ih=rotated?image.width:image.height,base=Math.max(w/iw,h/ih)*zoom;c.drawImage(image,-image.width*base/2,-image.height*base/2,image.width*base,image.height*base);c.restore();};
-    draw();canvas.onpointerdown=e=>{drag={x:e.clientX,y:e.clientY,dx,dy};canvas.setPointerCapture(e.pointerId);};canvas.onpointermove=e=>{if(!drag)return;dx=drag.dx+e.clientX-drag.x;dy=drag.dy+e.clientY-drag.y;draw();};canvas.onpointerup=()=>drag=null;
-    $$('[data-aspect]',modal).forEach(btn=>btn.onclick=()=>{aspect=btn.dataset.aspect;$$('[data-aspect]',modal).forEach(x=>x.classList.toggle('active',x===btn));dx=dy=0;draw();});
-    $('#crop-zoom',modal).oninput=e=>{zoom=Number(e.target.value);draw();};$('#crop-rotate',modal).onclick=()=>{rotation=(rotation+90)%360;dx=dy=0;draw();};$('#crop-cancel',modal).onclick=closeModal;
-    $('#crop-upload',modal).onclick=async()=>{const out=document.createElement('canvas');out.width=1000;out.height=aspect==='1:1'?1000:1250;draw(out);const button=$('#crop-upload',modal);button.disabled=true;button.textContent=T('Uploading…','Загрузка…');try{const media=await api('/api/media',{method:'POST',body:{kind,data_url:out.toDataURL('image/webp',.85)}});closeModal();onUploaded(media);}catch(e){button.disabled=false;button.textContent=T('Upload','Загрузить');toast(e.message,true);}};
-  };image.src=reader.result;};reader.readAsDataURL(file);
+  if (!file || !/^image\/(jpeg|png|webp)$/.test(file.type) || file.size > 10_000_000) {
+    toast(T('Choose a JPEG, PNG, or WebP file up to 10 MB.','Выберите JPEG, PNG или WebP до 10 MB.'),true);return;
+  }
+  const flexible = kind === 'feed_image' || kind === 'news_image';
+  const reader = new FileReader();
+  reader.onerror = () => toast(T('Could not read the image.','Не удалось прочитать изображение.'),true);
+  reader.onload = () => {
+    const image = new Image();
+    image.onerror = () => toast(T('Could not decode the image.','Не удалось декодировать изображение.'),true);
+    image.onload = () => {
+      const originalScale = Math.min(1, 2400 / Math.max(image.width, image.height));
+      const originalSize = [Math.max(64, Math.round(image.width * originalScale)), Math.max(64, Math.round(image.height * originalScale))];
+      const presets = flexible ? {
+        original: originalSize, '16:9': [1920,1080], '3:2': [1800,1200],
+        '4:3': [1600,1200], '1:1': [1400,1400], '4:5': [1200,1500],
+      } : {'4:5':[1000,1250], '1:1':[1000,1000]};
+      let mode = flexible ? 'original' : (kind === 'account_avatar' ? '1:1' : '4:5');
+      let [outputWidth,outputHeight] = presets[mode];
+      let zoom=1,rotation=0,dx=0,dy=0,drag=null;
+      const presetButtons = Object.keys(presets).map(id=>`<button type="button" data-crop-preset="${id}" class="${mode===id?'active':''}">${id==='original'?T('Original','Оригинал'):id}</button>`).join('');
+      const modal = openModal(`<h2>${T('Crop Image','Обрезка изображения')}</h2><div class="image-crop-stage"><canvas id="crop-canvas" width="400" height="400"></canvas></div><div class="segmented mt crop-presets">${presetButtons}${flexible?`<button type="button" data-crop-preset="custom">${T('Custom','Свои')}</button>`:''}<button type="button" id="crop-rotate">↻ 90°</button></div>${flexible?`<div class="grid cols-2 mt"><label class="f"><span>${T('Output Width','Ширина результата')}</span><input id="crop-output-width" type="number" min="64" max="4000" step="1" value="${outputWidth}"></label><label class="f"><span>${T('Output Height','Высота результата')}</span><input id="crop-output-height" type="number" min="64" max="4000" step="1" value="${outputHeight}"></label></div><p class="small muted">${T('News images may use any ratio from 1:5 to 5:1 and up to 12 megapixels.','Для новостей разрешено любое соотношение от 1:5 до 5:1 и до 12 мегапикселей.')}</p>`:''}<label class="f mt"><span>Zoom</span><input id="crop-zoom" type="range" min="1" max="3" step=".01" value="1"></label><p id="crop-output-info" class="small muted"></p><p class="small muted">${T('Drag the image to reposition it.','Перетаскивайте изображение для позиционирования.')}</p><div class="row"><button id="crop-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="crop-upload">${T('Upload','Загрузить')}</button></div>`,true);
+      const canvas=$('#crop-canvas',modal);
+      const ratio=()=>outputWidth/outputHeight;
+      const validSize=()=>outputWidth>=64&&outputHeight>=64&&outputWidth<=4000&&outputHeight<=4000&&outputWidth*outputHeight<=12_000_000&&ratio()>=.2&&ratio()<=5;
+      const updateInfo=()=>{const info=$('#crop-output-info',modal);info.textContent=`${outputWidth} × ${outputHeight}px · ${(outputWidth/outputHeight).toFixed(3)}:1 · ${((outputWidth*outputHeight)/1_000_000).toFixed(2)} MP`;info.className=validSize()?'small muted':'small warn-text';};
+      const draw=(target=canvas)=>{
+        const preview=target===canvas,w=preview?400:outputWidth,h=preview?Math.max(1,Math.round(w/ratio())):outputHeight;
+        if(target.width!==w)target.width=w;if(target.height!==h)target.height=h;
+        const context=target.getContext('2d');context.clearRect(0,0,w,h);context.save();
+        const previewHeight=Math.max(1,Math.round(400/ratio()));
+        context.translate(w/2+dx*(w/400),h/2+dy*(h/previewHeight));context.rotate(rotation*Math.PI/180);
+        const rotated=rotation%180!==0,effectiveWidth=rotated?image.height:image.width,effectiveHeight=rotated?image.width:image.height;
+        const scale=Math.max(w/effectiveWidth,h/effectiveHeight)*zoom;
+        context.drawImage(image,-image.width*scale/2,-image.height*scale/2,image.width*scale,image.height*scale);context.restore();
+      };
+      const selectMode=id=>{if(presets[id]){mode=id;[outputWidth,outputHeight]=presets[id];if(flexible){$('#crop-output-width',modal).value=outputWidth;$('#crop-output-height',modal).value=outputHeight;}}else mode='custom';$$('[data-crop-preset]',modal).forEach(button=>button.classList.toggle('active',button.dataset.cropPreset===mode));dx=dy=0;draw();updateInfo();};
+      draw();updateInfo();
+      canvas.onpointerdown=event=>{drag={x:event.clientX,y:event.clientY,dx,dy};canvas.setPointerCapture(event.pointerId);};
+      canvas.onpointermove=event=>{if(!drag)return;dx=drag.dx+event.clientX-drag.x;dy=drag.dy+event.clientY-drag.y;draw();};
+      canvas.onpointerup=()=>drag=null;
+      $$('[data-crop-preset]',modal).forEach(button=>button.onclick=()=>selectMode(button.dataset.cropPreset));
+      if(flexible){const customSize=()=>{outputWidth=Math.round(Number($('#crop-output-width',modal).value)||0);outputHeight=Math.round(Number($('#crop-output-height',modal).value)||0);mode='custom';$$('[data-crop-preset]',modal).forEach(button=>button.classList.toggle('active',button.dataset.cropPreset==='custom'));dx=dy=0;if(validSize())draw();updateInfo();};$('#crop-output-width',modal).onchange=customSize;$('#crop-output-height',modal).onchange=customSize;}
+      $('#crop-zoom',modal).oninput=event=>{zoom=Number(event.target.value);draw();};
+      $('#crop-rotate',modal).onclick=()=>{rotation=(rotation+90)%360;dx=dy=0;draw();};
+      $('#crop-cancel',modal).onclick=closeModal;
+      $('#crop-upload',modal).onclick=async()=>{
+        if(!validSize()){toast(T('Choose dimensions between 64 and 4000 px, no more than 12 MP, and an aspect ratio between 1:5 and 5:1.','Выберите размеры от 64 до 4000 px, не более 12 MP и соотношение сторон от 1:5 до 5:1.'),true);return;}
+        const out=document.createElement('canvas');out.width=outputWidth;out.height=outputHeight;draw(out);
+        const button=$('#crop-upload',modal);button.disabled=true;button.textContent=T('Encoding…','Кодирование…');
+        try{
+          let dataUrl='',quality=.9,bytes=Infinity;
+          while(quality>=.5&&bytes>2_300_000){dataUrl=out.toDataURL('image/webp',quality);const comma=dataUrl.indexOf(',');bytes=Math.ceil((dataUrl.length-comma-1)*3/4);quality-=.1;}
+          if(bytes>2_300_000)throw new Error(T('The selected resolution cannot fit the processed-image limit. Reduce width or height.','Выбранное разрешение не помещается в лимит обработанного изображения. Уменьшите ширину или высоту.'));
+          button.textContent=T('Uploading…','Загрузка…');
+          const media=await api('/api/media',{method:'POST',body:{kind,data_url:dataUrl}});closeModal();onUploaded(media);
+        }catch(error){button.disabled=false;button.textContent=T('Upload','Загрузить');toast(error.message,true);}
+      };
+    };
+    image.src=reader.result;
+  };
+  reader.readAsDataURL(file);
 }
 
 async function api(path, opts) {

@@ -213,6 +213,10 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertIn("root.insertAdjacentHTML('beforeend'", source)
         self.assertIn('previous.hidden = true', source)
         self.assertIn('closeModal(true)', source)
+        self.assertIn("kind === 'feed_image' || kind === 'news_image'", source)
+        self.assertIn("'16:9': [1920,1080]", source)
+        self.assertIn('crop-output-width', source)
+        self.assertIn('12_000_000', source)
         network = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')
         self.assertIn('publish immediately', network)
         for district in ('watson', 'westbrook', 'city-center', 'heywood',
