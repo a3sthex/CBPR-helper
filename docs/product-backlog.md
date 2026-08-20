@@ -702,7 +702,172 @@ PREVIEW — NOT PUBLISHED
 
 ---
 
-## 15. Приоритеты
+## 15. Admin editing, Persona organizations и Fallen Edgerunners
+
+### 15.1 Admin редактирует персонажей других игроков
+
+Admin должен иметь возможность открыть любой Character Sheet в режиме редактирования. Это полезно для исправления повреждённых/старых данных, помощи новому игроку, разрешения спорных изменений и ведения персонажа отсутствующего участника.
+
+Рекомендуемые правила:
+
+- отдельная кнопка `Edit as Admin`, чтобы просмотр не превратился в редактирование случайно;
+- обязательная причина перед сохранением;
+- полный before/after diff в Character Ledger;
+- actor всегда остаётся реальным Admin, изменение нельзя записывать от имени владельца;
+- владелец получает уведомление;
+- GM/Admin может откатить change set;
+- Admin может редактировать active, archived, retired и deceased Dossiers, но для архивных/умерших нужен дополнительный confirm;
+- право редактировать Dossier не даёт автоматического права публиковаться в Feed от имени Character — impersonation остаётся отдельным разрешением;
+- для массового ремонта старых данных нужен migration/admin tool, а не ручное открытие каждого листа.
+
+Вопрос для настройки кампании: разрешать ли обычным GM редактировать чужие Dossiers или оставить это только Admin. Безопасный default — owner + Admin, а GM-доступ выдаётся отдельно или настройкой кампании.
+
+### 15.2 Personas и организации
+
+Организации уже могут существовать как Persona (`organization`, `gang`, `corporation`, `government`, `outlet`), поэтому не нужно создавать параллельную сущность только ради названия организации. Нужна структурированная связь membership между Personas.
+
+Предлагаемая таблица:
+
+```text
+persona_memberships
+- id
+- member_persona_id
+- organization_persona_id
+- role_title
+- status: active | former | secret | expelled | deceased
+- visibility: public | gm | classified
+- since_at / until_at
+- note
+- sort_order
+```
+
+Возможности:
+
+- одна Persona состоит в нескольких организациях;
+- публичная и секретная принадлежность разделены;
+- должность/ранг внутри организации;
+- история переходов между фракциями;
+- бывшие участники;
+- организация показывает roster участников;
+- профиль участника показывает affiliations;
+- организация используется как Vendor, Contract client, Feed author или Storyline participant;
+- связи можно отображать на карте и faction graph.
+
+Поле `affiliation` можно временно оставить для совместимости, затем мигрировать в memberships.
+
+Дополнительное развитие:
+
+- parent/child organizations;
+- подразделения и филиалы;
+- allies/enemies/owned_by relationships;
+- организация-владелец Night Market Vendor;
+- репутация Character у конкретной организации.
+
+### 15.3 Fallen Edgerunners / Memorial Wall
+
+Смерть персонажа не должна выглядеть как обычное удаление. Нужен отдельный lifecycle status:
+
+```text
+active
+retired
+missing
+deceased
+archived
+```
+
+При выборе `Mark as Deceased` открывается форма:
+
+```text
+Date and time of death
+Location
+Cause / circumstances
+Epitaph / signature
+Last words (optional)
+Public obituary text
+Visibility
+Related Contract / Session / Feed post
+```
+
+После подтверждения:
+
+- создаётся immutable death event в Character Ledger;
+- Dossier становится read-only по механике, но memorial-текст можно дополнять;
+- Character убирается из Active Dossiers и активной записи на будущие Contracts;
+- исторические Contracts, Feed posts и Sessions сохраняются;
+- при необходимости публикуется obituary в City Feed;
+- Character появляется в отдельной категории Crew Registry: `Fallen Edgerunners` / `Memorial Wall`;
+- показываются Portrait, Role, дата смерти, эпитафия, основные достижения и ссылки на историю;
+- owner/Admin могут управлять видимостью реального имени игрока независимо от memorial.
+
+Смерть должна быть обратима только Admin/GM с обязательной причиной: это защищает от случайного клика, но позволяет отменить ошибку или сюжетное возвращение.
+
+Для `retired` и `missing` лучше иметь отдельные секции, чтобы не приравнивать уход игрока к смерти персонажа.
+
+### 15.4 Afterlife Legacy Drink
+
+Особо отличившимся Fallen Edgerunners GM/Admin может присвоить Afterlife Legacy.
+
+Предлагаемые поля:
+
+```text
+afterlife_legacy
+- character_id
+- drink_name
+- ingredients
+- preparation
+- served_as / glass
+- garnish
+- quote
+- legend_story
+- awarded_by
+- awarded_at
+- image_media_id
+```
+
+В Memorial Wall появляется badge:
+
+```text
+AFTERLIFE LEGEND
+Signature Drink: The V
+```
+
+Отдельная страница `Afterlife Menu` может показывать:
+
+- Portrait персонажа;
+- название напитка;
+- рецепт;
+- цитату;
+- краткую историю, за что его помнят;
+- связанные Contract/Feed события.
+
+Рекомендации:
+
+- напиток не выдаётся автоматически каждому умершему персонажу — это отдельная награда за легендарность;
+- назначает GM/Admin;
+- рецепт можно редактировать до публикации, после публикации изменения аудируются;
+- допустим безалкогольный вариант и произвольные внутриигровые ингредиенты;
+- владелец Character может предложить рецепт, а GM утвердить его;
+- не смешивать Memorial status и Afterlife award: персонаж может быть Fallen Edgerunner без собственного напитка.
+
+### Связанный автоматический flow
+
+После завершения Session GM может выполнить:
+
+```text
+Mark Character as Deceased
+→ record death event
+→ preserve Contract history
+→ compose obituary preview
+→ publish to City Feed
+→ add to Memorial Wall
+→ optionally award Afterlife Legacy
+```
+
+Этот flow должен быть транзакционным и не удалять существующую историю при ошибке на одном из шагов.
+
+---
+
+## 16. Приоритеты
 
 ### P0 — до публичного доступа
 
@@ -714,7 +879,7 @@ PREVIEW — NOT PUBLISHED
 
 ### P1 — основной продуктовый пакет
 
-1. Trust + Audit character editor.
+1. Trust + Audit character editor, включая Admin edit чужих Dossiers.
 2. Предметные состояния и consumables.
 3. Market vendors + Database без универсальной покупки.
 4. Database tags/i18n/armor locations.
@@ -727,10 +892,12 @@ PREVIEW — NOT PUBLISHED
 
 1. Map zoom/pan/layers.
 2. Housing map.
-3. Contract Crew Chat.
-4. Calendar.
-5. Notifications badge.
-6. Fillable PDF import.
+3. Persona organization memberships.
+4. Fallen Edgerunners / Memorial Wall / Afterlife Menu.
+5. Contract Crew Chat.
+6. Calendar.
+7. Notifications badge.
+8. Fillable PDF import.
 
 ### P3 — технический долг
 
@@ -742,7 +909,7 @@ PREVIEW — NOT PUBLISHED
 
 ---
 
-## 16. Предлагаемый порядок ближайшей реализации
+## 17. Предлагаемый порядок ближайшей реализации
 
 ### Пакет A — Catalog & Market Rework
 
@@ -784,9 +951,18 @@ PREVIEW — NOT PUBLISHED
 3. Vendor locations.
 4. Contract Crew Channel.
 
+### Пакет F — Organizations & Legacy
+
+1. Добавить Persona memberships и organization roster.
+2. Перенести строковый `affiliation` в структурированные связи.
+3. Добавить Dossier statuses: active/retired/missing/deceased/archived.
+4. Реализовать death flow и Memorial Wall в Crew Registry.
+5. Добавить obituary preview и связь с Feed/Contract/Session.
+6. Реализовать Afterlife Legacy award и Afterlife Menu.
+
 ---
 
-## 17. Открытые вопросы для следующего просмотра
+## 18. Открытые вопросы для следующего просмотра
 
 1. Какие предметы должны быть всегда доступны в Legal Retail, если Full Catalog больше не магазин?
 2. Сколько продавцов Night Market нужно в первой версии: 3, 5 или 6?
@@ -800,3 +976,8 @@ PREVIEW — NOT PUBLISHED
 10. Housing влияет на ежемесячные расходы автоматически или остаётся narrative?
 11. Может ли Admin permanent-purge audit history?
 12. Нужен ли отдельный Stash для жилья/crew вместо единого Inventory?
+13. Могут ли обычные GM редактировать чужие Dossiers или только Admin?
+14. Кто может отметить Character как deceased: owner, GM или Admin?
+15. Должен ли deceased Dossier полностью блокировать механику или разрешать посмертные исправления владельцу?
+16. Кто утверждает Afterlife drink: любой GM, владелец Storyline или только Admin?
+17. Может ли Persona иметь несколько публичных и секретных memberships одновременно?
