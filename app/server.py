@@ -9,6 +9,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import secrets
@@ -948,6 +949,12 @@ CONTRACT_REWARD_MODES = {'exact', 'range', 'negotiable', 'hidden'}
 CONTRACT_RISKS = {'low', 'moderate', 'high', 'extreme', 'classified'}
 FEED_FORMATS = {'short', 'article', 'blog', 'bulletin', 'statement', 'rumor'}
 FEED_TRUTH = {'true', 'partially_true', 'false', 'propaganda', 'unknown'}
+SESSION_VIEW_DEFAULTS = {
+    'show_initiative': True,
+    'show_ally_hp': True,
+    'show_armor': True,
+    'show_conditions': True,
+}
 
 
 def parse_json_object(value, default=None):
@@ -968,6 +975,14 @@ def parse_json_list(value):
         return parsed if isinstance(parsed, list) else []
     except (TypeError, ValueError):
         return []
+
+
+def session_view_config(value):
+    raw = parse_json_object(value)
+    return {
+        key: raw[key] if isinstance(raw.get(key), bool) else default
+        for key, default in SESSION_VIEW_DEFAULTS.items()
+    }
 
 
 def ensure_system_persona(conn, handle, display_name, kind):
@@ -1199,6 +1214,7 @@ def record_character_changes(conn, character_id, actor_user_id, before, after,
         'skills': 'skill', 'skill_pools': 'skill', 'stats': 'stat',
         'reputation': 'reputation', 'inventory': 'inventory',
         'cyberware': 'cyberware', 'armor': 'armor',
+        'archived': 'status', 'public': 'status',
     }
     recorded = set()
     for key, category in tracked.items():
@@ -2124,6 +2140,7 @@ SERVER_ERROR_EN = {
     'Предмет не найден в инвентаре': 'Item not found in Inventory',
     'Пустая корзина': 'The Cart is empty',
     'Слишком большая сумма': 'Amount is too large',
+    'Некорректная сумма': 'Invalid amount',
     'Слишком много персонажей (максимум 50)': 'Too many characters (maximum 50)',
     'Сначала отсоедините изображение': 'Detach the image first',
     'Статус: open/closed': 'Status must be open or closed',
@@ -2170,9 +2187,17 @@ SERVER_ERROR_EN = {
     'Контракт не найден': 'Contract not found',
     'Нет права редактировать этот контракт': 'You cannot edit this Contract',
     'Контракт недоступен для записи': 'Contract is not open for signup',
+    'Завершённый контракт хранит неизменяемый состав': 'A finished Contract preserves its historical Crew',
     'Этот персонаж уже записан': 'This Character is already signed up',
     'Запись на контракт не найдена': 'Contract signup not found',
     'Размер команды меньше уже записанного Crew': 'Crew Capacity is below the current Crew size',
+    'Архивное досье доступно только для чтения': 'Archived Dossier is read-only',
+    'Архивное досье нельзя записать на контракт': 'Archived Dossier cannot join a Contract',
+    'Архивное досье нельзя использовать как автора': 'Archived Dossier cannot publish content',
+    'Aftermath уже опубликован или контракт не активен': 'Aftermath is already published or the Contract is not active',
+    'Недоступный NPC template': 'Unavailable NPC template',
+    'Некорректные данные участника сессии': 'Invalid session combatant data',
+    'Участник сессии не найден': 'Session combatant not found',
     'Недоступная персона в контракте': 'Unavailable Persona in Contract',
     'Недоступная сюжетная линия': 'Unavailable Storyline',
     'Выберите одного автора публикации': 'Choose exactly one post author',
@@ -2896,6 +2921,9 @@ class Handler(BaseHTTPRequestHandler):
         active_session = conn.execute(
             "SELECT id,status FROM nc_sessions WHERE contract_id=? AND status IN ('preparing','active','paused') "
             'ORDER BY id DESC LIMIT 1', (row['id'],)).fetchone()
+        aftermath_published = bool(conn.execute(
+            "SELECT 1 FROM vk_outbox WHERE event_key IN (?,?) LIMIT 1",
+            (f'contract:{row["id"]}:completed', f'contract:{row["id"]}:failed')).fetchone())
         payload = {
             'id': row['id'], 'owner_user_id': row['owner_user_id'],
             'storyline_id': row['storyline_id'], 'status': row['status'],
@@ -2911,6 +2939,7 @@ class Handler(BaseHTTPRequestHandler):
             'created': row['created'], 'updated': row['updated'],
             'active_session_id': active_session['id'] if active_session else None,
             'active_session_status': active_session['status'] if active_session else None,
+            'aftermath_published': aftermath_published,
             'participants': [{
                 'id': item['id'], 'persona_id': item['persona_id'],
                 'role_key': item['role_key'], 'role_label': item['role_label'],
@@ -2981,11 +3010,14 @@ class Handler(BaseHTTPRequestHandler):
         }
 
     def replace_contract_participants(self, conn, contract_id, user, participants):
+        existing_ids = {row['persona_id'] for row in conn.execute(
+            'SELECT persona_id FROM contract_participants WHERE contract_id=?',
+            (contract_id,)).fetchall()}
         conn.execute('DELETE FROM contract_participants WHERE contract_id=?', (contract_id,))
         for index, item in enumerate(participants or []):
             persona = conn.execute('SELECT * FROM personas WHERE id=?',
                                    (_num(item.get('persona_id')),)).fetchone()
-            if not persona or not can_manage_persona(user, persona):
+            if not persona or (not can_manage_persona(user, persona) and persona['id'] not in existing_ids):
                 raise ApiError(400, 'Недоступная персона в контракте')
             visibility = 'classified' if item.get('visibility') == 'classified' else 'public'
             role_key = str(item.get('role_key') or 'custom')[:40]
@@ -3086,6 +3118,8 @@ class Handler(BaseHTTPRequestHandler):
         character = self.get_char(conn, (body or {}).get('character_id'))
         if character['owner_id'] != user['id']:
             raise ApiError(403, 'Это не ваш персонаж')
+        if parse_json_object(character['data']).get('archived'):
+            raise ApiError(409, 'Архивное досье нельзя записать на контракт')
         existing = conn.execute(
             "SELECT * FROM contract_signups WHERE contract_id=? AND character_id=? AND status IN ('crew','waitlist')",
             (contract['id'], character['id'])).fetchone()
@@ -3133,6 +3167,8 @@ class Handler(BaseHTTPRequestHandler):
             'ORDER BY id DESC LIMIT 1', (int(m.group(1)), user['id'])).fetchone()
         if not contract or not signup:
             raise ApiError(404, 'Запись на контракт не найдена')
+        if contract['status'] not in ('open', 'crew_full', 'in_progress'):
+            raise ApiError(409, 'Завершённый контракт хранит неизменяемый состав')
         was_crew = signup['status'] == 'crew'; now = time.time()
         conn.execute("UPDATE contract_signups SET status='withdrawn',updated=? WHERE id=?",
                      (now, signup['id']))
@@ -3181,6 +3217,8 @@ class Handler(BaseHTTPRequestHandler):
         character = self.get_char(conn, character_id)
         if character['owner_id'] != user['id']:
             raise ApiError(403, 'Это не ваш персонаж')
+        if parse_json_object(character['data']).get('archived'):
+            raise ApiError(409, 'Архивное досье нельзя использовать как автора')
         return None, character['id']
 
     def feed_post_payload(self, conn, row, user, include_comments=False):
@@ -3550,8 +3588,9 @@ class Handler(BaseHTTPRequestHandler):
         u = self.require_user(conn)
         data = clean_character(body.get('data') if isinstance(body, dict) else body)
         validate_creation(data)
-        count = conn.execute('SELECT COUNT(*) n FROM characters WHERE owner_id=?',
-                             (u['id'],)).fetchone()['n']
+        owned_rows = conn.execute('SELECT data FROM characters WHERE owner_id=?',
+                                  (u['id'],)).fetchall()
+        count = sum(1 for item in owned_rows if not parse_json_object(item['data']).get('archived'))
         if count >= 50:
             raise ApiError(400, 'Слишком много персонажей (максимум 50)')
         now = time.time()
@@ -3590,6 +3629,8 @@ class Handler(BaseHTTPRequestHandler):
         if row['owner_id'] != u['id']:
             raise ApiError(403, 'Это не ваш персонаж')
         old_data = json.loads(row['data'])
+        if old_data.get('archived'):
+            raise ApiError(409, 'Архивное досье доступно только для чтения')
         data = clean_character(body.get('data') if isinstance(body, dict) else body)
         pub = 1 if data.get('public', False) else 0
         old_media = str(old_data.get('portrait_media_id') or '')
@@ -3611,15 +3652,56 @@ class Handler(BaseHTTPRequestHandler):
         row = self.get_char(conn, m.group(1))
         if row['owner_id'] != u['id']:
             raise ApiError(403, 'Это не ваш персонаж')
+        network_refs = sum(conn.execute(query, (row['id'],)).fetchone()['n'] for query in (
+            'SELECT COUNT(*) n FROM contract_signups WHERE character_id=?',
+            'SELECT COUNT(*) n FROM feed_posts WHERE author_character_id=?',
+            'SELECT COUNT(*) n FROM feed_comments WHERE author_character_id=?',
+            'SELECT COUNT(*) n FROM session_combatants WHERE character_id=?',
+        ))
+        if network_refs:
+            data = json.loads(row['data'])
+            data['archived'] = True
+            data['public'] = False
+            data['archive_reason'] = 'Preserved because this Dossier has NC//NET history.'
+            now = time.time()
+            active = conn.execute(
+                "SELECT s.* FROM contract_signups s JOIN contracts c ON c.id=s.contract_id "
+                "WHERE s.character_id=? AND s.status IN ('crew','waitlist') "
+                "AND c.status IN ('open','crew_full','in_progress')",
+                (row['id'],)).fetchall()
+            for signup in active:
+                conn.execute("UPDATE contract_signups SET status='withdrawn',updated=? WHERE id=?",
+                             (now, signup['id']))
+                if signup['status'] == 'crew':
+                    promoted = conn.execute(
+                        "SELECT * FROM contract_signups WHERE contract_id=? AND status='waitlist' "
+                        'ORDER BY queue_position,joined_at LIMIT 1', (signup['contract_id'],)).fetchone()
+                    if promoted:
+                        conn.execute("UPDATE contract_signups SET status='crew',updated=? WHERE id=?",
+                                     (now, promoted['id']))
+                        add_notification(conn, promoted['user_id'], 'contract_promoted',
+                                         'Promoted from waitlist', 'A Crew place became available.',
+                                         f'#/contracts/{signup["contract_id"]}')
+                    else:
+                        conn.execute("UPDATE contracts SET status='open',updated=? WHERE id=? AND status='crew_full'",
+                                     (now, signup['contract_id']))
+            conn.execute('UPDATE characters SET public=0,data=?,updated=? WHERE id=?',
+                         (json.dumps(data, ensure_ascii=False), now, row['id']))
+            record_character_changes(conn, row['id'], u['id'], json.loads(row['data']), data,
+                                     'Dossier archived with NC//NET history')
+            conn.commit()
+            self.send_json({'ok': True, 'archived': True})
+            return
         media_rows = conn.execute("SELECT * FROM media WHERE attached_type='character' AND attached_id=?", (row['id'],)).fetchall()
         conn.execute("DELETE FROM media WHERE attached_type='character' AND attached_id=?", (row['id'],))
         conn.execute('DELETE FROM ip_ledger WHERE character_id=?', (row['id'],))
+        conn.execute('DELETE FROM character_ledger WHERE character_id=?', (row['id'],))
         conn.execute('DELETE FROM characters WHERE id=?', (row['id'],))
         conn.commit()
         for media in media_rows:
             try: os.remove(os.path.join(UPLOAD_DIR, media['filename']))
             except FileNotFoundError: pass
-        self.send_json({'ok': True})
+        self.send_json({'ok': True, 'archived': False})
 
     def save_character_data(self, conn, row, data, actor_id=None, reason='Character progression'):
         if actor_id is not None:
@@ -3636,6 +3718,8 @@ class Handler(BaseHTTPRequestHandler):
         row = self.get_char(conn, cid)
         if row['owner_id'] != user['id'] and not (allow_gm and user_is_gm(user)):
             raise ApiError(403, 'Нет права изменять этого персонажа')
+        if parse_json_object(row['data']).get('archived'):
+            raise ApiError(409, 'Архивное досье доступно только для чтения')
         return user, row
 
     def add_ip_ledger(self, conn, character_id, actor_id, amount, before, after,
@@ -3845,6 +3929,8 @@ class Handler(BaseHTTPRequestHandler):
         row = self.get_char(conn, body.get('char_id'))
         if row['owner_id'] != u['id']:
             raise ApiError(403, 'Это не ваш персонаж')
+        if parse_json_object(row['data']).get('archived'):
+            raise ApiError(409, 'Архивное досье доступно только для чтения')
         before_data = json.loads(row['data'])
         data = json.loads(row['data'])
         cart = body.get('items') or []
@@ -3896,6 +3982,8 @@ class Handler(BaseHTTPRequestHandler):
         row = self.get_char(conn, body.get('char_id'))
         if row['owner_id'] != u['id']:
             raise ApiError(403, 'Это не ваш персонаж')
+        if parse_json_object(row['data']).get('archived'):
+            raise ApiError(409, 'Архивное досье доступно только для чтения')
         before_data = json.loads(row['data'])
         data = json.loads(row['data'])
         key = str(body.get('key') or '')
@@ -3921,8 +4009,13 @@ class Handler(BaseHTTPRequestHandler):
     def api_payroll(self, conn, qs, m, body):
         u = self.require_gm(conn)
         row = self.get_char(conn, body.get('char_id'))
-        amount = float(body.get('amount') or 0)
-        if abs(amount) > 1e7:
+        if parse_json_object(row['data']).get('archived'):
+            raise ApiError(409, 'Архивное досье доступно только для чтения')
+        try:
+            amount = float(body.get('amount') or 0)
+        except (TypeError, ValueError):
+            raise ApiError(400, 'Некорректная сумма')
+        if not math.isfinite(amount) or abs(amount) > 1e7:
             raise ApiError(400, 'Слишком большая сумма')
         before_data = json.loads(row['data'])
         data = json.loads(row['data'])
@@ -3947,22 +4040,29 @@ class Handler(BaseHTTPRequestHandler):
             return can_edit_contract(conn, user, contract)
         return False
 
+    def ordered_session_combatants(self, conn, session_id):
+        return conn.execute(
+            'SELECT * FROM session_combatants WHERE session_id=? '
+            'ORDER BY initiative DESC,sort_order,id', (session_id,)).fetchall()
+
     def session_payload(self, conn, row, user, player_view=False):
         can_edit = self.can_edit_nc_session(conn, user, row)
-        config = parse_json_object(row['player_view_config'])
-        combatants = conn.execute(
-            'SELECT * FROM session_combatants WHERE session_id=? ORDER BY sort_order,id',
-            (row['id'],)).fetchall()
+        config = session_view_config(row['player_view_config'])
+        combatants = self.ordered_session_combatants(conn, row['id'])
+        active_turn = min(max(0, _num(row['active_turn']) or 0), max(0, len(combatants) - 1))
         out_combatants = []
-        for item in combatants:
+        for index, item in enumerate(combatants):
             if player_view and not item['visible']:
                 continue
             data = {
                 'id': item['id'], 'kind': item['kind'], 'character_id': item['character_id'],
-                'name': item['name'], 'initiative': item['initiative'],
-                'visible': bool(item['visible']), 'sort_order': item['sort_order'],
+                'name': item['name'], 'visible': bool(item['visible']),
+                'sort_order': item['sort_order'],
+                'active': bool(combatants) and index == active_turn,
             }
-            if can_edit or not player_view:
+            if not player_view or config['show_initiative']:
+                data['initiative'] = item['initiative']
+            if not player_view:
                 data.update({
                     'hp_current': item['hp_current'], 'hp_max': item['hp_max'],
                     'sp_head': item['sp_head'], 'sp_body': item['sp_body'],
@@ -3972,22 +4072,24 @@ class Handler(BaseHTTPRequestHandler):
                     'death_penalty': item['death_penalty'],
                     'secret': parse_json_object(item['secret_json']),
                 })
-            elif player_view:
-                is_character = item['kind'] == 'character'
-                if is_character and config.get('show_ally_hp', True):
+            else:
+                if item['kind'] == 'character' and config['show_ally_hp']:
                     data.update({'hp_current': item['hp_current'], 'hp_max': item['hp_max']})
-                if config.get('show_armor', True):
+                if config['show_armor']:
                     data.update({'sp_head': item['sp_head'], 'sp_body': item['sp_body']})
-                if config.get('show_conditions', True):
+                if config['show_conditions']:
                     data['conditions'] = parse_json_list(item['conditions_json'])
             out_combatants.append(data)
+        visible_active_turn = next(
+            (index for index, item in enumerate(out_combatants) if item['active']), None)
         payload = {
             'id': row['id'], 'contract_id': row['contract_id'], 'title': row['title'],
-            'status': row['status'], 'round': row['round'], 'active_turn': row['active_turn'],
+            'status': row['status'], 'round': row['round'],
+            'active_turn': visible_active_turn if player_view else active_turn,
             'player_view_config': config, 'combatants': out_combatants,
             'created': row['created'], 'updated': row['updated'], 'can_edit': can_edit,
         }
-        if can_edit:
+        if can_edit and not player_view:
             payload['notes'] = row['notes']
             activity = conn.execute(
                 'SELECT a.*,u.display_name actor FROM session_activity a '
@@ -4039,10 +4141,9 @@ class Handler(BaseHTTPRequestHandler):
             if not contract or not can_edit_contract(conn, user, contract):
                 raise ApiError(403, 'Нет доступа к контракту сессии')
         title = str((body or {}).get('title') or (contract['title'] if contract else 'NC//NET Session')).strip()[:180]
-        config = (body or {}).get('player_view_config') or {
-            'show_initiative': True, 'show_ally_hp': True,
-            'show_armor': True, 'show_conditions': True,
-        }
+        if not title:
+            title = contract['title'] if contract else 'NC//NET Session'
+        config = session_view_config((body or {}).get('player_view_config'))
         now = time.time()
         cur = conn.execute(
             'INSERT INTO nc_sessions(contract_id,owner_user_id,title,status,player_view_config,notes,created,updated) '
@@ -4085,12 +4186,18 @@ class Handler(BaseHTTPRequestHandler):
         if status not in ('preparing', 'active', 'paused', 'completed', 'archived'):
             raise ApiError(400, 'Некорректный статус сессии')
         before = self.session_payload(conn, row, user)
+        title = str((body or {}).get('title', row['title'])).strip()[:180] or row['title']
+        round_number = max(0, _num((body or {}).get('round', row['round'])) or 0)
+        combatant_count = conn.execute(
+            'SELECT COUNT(*) n FROM session_combatants WHERE session_id=?',
+            (row['id'],)).fetchone()['n']
+        active_turn = max(0, _num((body or {}).get('active_turn', row['active_turn'])) or 0)
+        active_turn = min(active_turn, max(0, combatant_count - 1))
+        config = session_view_config(
+            (body or {}).get('player_view_config', row['player_view_config']))
         conn.execute(
             'UPDATE nc_sessions SET title=?,status=?,round=?,active_turn=?,player_view_config=?,notes=?,updated=? WHERE id=?',
-            (str((body or {}).get('title', row['title']))[:180], status,
-             max(0, _num((body or {}).get('round', row['round'])) or 0),
-             max(0, _num((body or {}).get('active_turn', row['active_turn'])) or 0),
-             json.dumps((body or {}).get('player_view_config') or parse_json_object(row['player_view_config'])),
+            (title, status, round_number, active_turn, json.dumps(config),
              str((body or {}).get('notes', row['notes']))[:20000], time.time(), row['id']))
         conn.execute(
             'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,after_json,note,created) '
@@ -4105,15 +4212,33 @@ class Handler(BaseHTTPRequestHandler):
         session = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
         if not session or not self.can_edit_nc_session(conn, user, session):
             raise ApiError(403, 'Нет права редактировать сессию')
+        before_rows = self.ordered_session_combatants(conn, session['id'])
+        old_index = min(max(0, session['active_turn']), max(0, len(before_rows) - 1))
+        active_id = before_rows[old_index]['id'] if before_rows else None
         template = None
-        if _num((body or {}).get('template_id')):
-            template = conn.execute('SELECT * FROM npc_templates WHERE id=?',
-                                    (_num((body or {}).get('template_id')),)).fetchone()
+        template_id = _num((body or {}).get('template_id'))
+        if template_id:
+            template = conn.execute(
+                "SELECT * FROM npc_templates WHERE id=? AND (access='shared' OR owner_user_id=?)",
+                (template_id, user['id'])).fetchone()
+            if not template:
+                raise ApiError(403, 'Недоступный NPC template')
         source = parse_json_object(template['data_json']) if template else (body or {})
         name = str((body or {}).get('name') or (template['name'] if template else '')).strip()[:120]
         if not name:
             raise ApiError(400, 'Участнику сессии нужно имя')
+        conditions = source.get('conditions') or []
+        injuries = source.get('injuries') or []
+        secret = source.get('secret') or {}
+        if not isinstance(conditions, list) or not isinstance(injuries, list) or not isinstance(secret, dict):
+            raise ApiError(400, 'Некорректные данные участника сессии')
+        conditions = [str(value)[:120] for value in conditions[:20]]
+        injuries = [str(value)[:120] for value in injuries[:20]]
+        if len(json.dumps(secret, ensure_ascii=False)) > 20000:
+            raise ApiError(400, 'Некорректные данные участника сессии')
         maximum = max(0, _num(source.get('hp_max')) or 0)
+        current = _num(source.get('hp_current'))
+        current = maximum if current is None else max(0, min(maximum or current, current))
         order = conn.execute('SELECT COALESCE(MAX(sort_order),-1)+1 n FROM session_combatants WHERE session_id=?',
                              (session['id'],)).fetchone()['n']
         cur = conn.execute(
@@ -4121,14 +4246,25 @@ class Handler(BaseHTTPRequestHandler):
             'sp_head,sp_body,shield_current,ammo_current,move,conditions_json,injuries_json,death_penalty,'
             'visible,secret_json,sort_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (session['id'], 'npc', template['id'] if template else None, name,
-             _num(source.get('initiative')) or 0,
-             _num(source.get('hp_current')) if _num(source.get('hp_current')) is not None else maximum,
-             maximum, _num(source.get('sp_head')) or 0, _num(source.get('sp_body')) or 0,
-             _num(source.get('shield_current')) or 0, _num(source.get('ammo_current')) or 0,
-             _num(source.get('move')) or 0, json.dumps(source.get('conditions') or []),
-             json.dumps(source.get('injuries') or []), _num(source.get('death_penalty')) or 0,
+             max(-1000, min(1000, _num(source.get('initiative')) or 0)), current, maximum,
+             max(0, _num(source.get('sp_head')) or 0), max(0, _num(source.get('sp_body')) or 0),
+             max(0, _num(source.get('shield_current')) or 0),
+             max(0, _num(source.get('ammo_current')) or 0), max(0, _num(source.get('move')) or 0),
+             json.dumps(conditions), json.dumps(injuries),
+             max(0, _num(source.get('death_penalty')) or 0),
              0 if source.get('visible') is False else 1,
-             json.dumps(source.get('secret') or {}), order))
+             json.dumps(secret, ensure_ascii=False), order))
+        after_rows = self.ordered_session_combatants(conn, session['id'])
+        active_turn = next((index for index, item in enumerate(after_rows) if item['id'] == active_id), 0)
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET active_turn=?,updated=? WHERE id=?',
+                     (active_turn, now, session['id']))
+        created = dict(conn.execute('SELECT * FROM session_combatants WHERE id=?', (cur.lastrowid,)).fetchone())
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,combatant_id,event_type,after_json,note,created) '
+            'VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], cur.lastrowid, 'combatant_create',
+             json.dumps(created, ensure_ascii=False), '', now))
         conn.commit(); self.send_json({'id': cur.lastrowid}, status=201)
 
     def api_session_combatant_update(self, conn, qs, m, body):
@@ -4138,29 +4274,51 @@ class Handler(BaseHTTPRequestHandler):
                                  (int(m.group(2)), int(m.group(1)))).fetchone()
         if not session or not combatant or not self.can_edit_nc_session(conn, user, session):
             raise ApiError(403, 'Нет права редактировать участника')
+        ordered_before = self.ordered_session_combatants(conn, session['id'])
+        old_index = min(max(0, session['active_turn']), max(0, len(ordered_before) - 1))
+        active_id = ordered_before[old_index]['id'] if ordered_before else None
         before = dict(combatant)
-        numeric = ['initiative','hp_current','hp_max','sp_head','sp_body','shield_current','ammo_current','move','death_penalty','sort_order']
+        numeric = ['initiative', 'hp_current', 'hp_max', 'sp_head', 'sp_body',
+                   'shield_current', 'ammo_current', 'move', 'death_penalty', 'sort_order']
         values = {key: _num((body or {}).get(key, combatant[key])) or 0 for key in numeric}
+        values['initiative'] = max(-1000, min(1000, values['initiative']))
+        for key in numeric:
+            if key != 'initiative':
+                values[key] = max(0, values[key])
         hp_limit = values['hp_max'] if values['hp_max'] > 0 else values['hp_current']
-        values['hp_current'] = max(0, min(hp_limit, values['hp_current']))
+        values['hp_current'] = min(hp_limit, values['hp_current'])
+        conditions = (body or {}).get('conditions', parse_json_list(combatant['conditions_json']))
+        injuries = (body or {}).get('injuries', parse_json_list(combatant['injuries_json']))
+        secret = (body or {}).get('secret', parse_json_object(combatant['secret_json']))
+        if not isinstance(conditions, list) or not isinstance(injuries, list) or not isinstance(secret, dict):
+            raise ApiError(400, 'Некорректные данные участника сессии')
+        conditions = [str(value)[:120] for value in conditions[:20]]
+        injuries = [str(value)[:120] for value in injuries[:20]]
+        if len(json.dumps(secret, ensure_ascii=False)) > 20000:
+            raise ApiError(400, 'Некорректные данные участника сессии')
+        visible = (body or {}).get('visible', bool(combatant['visible']))
+        visible = visible if isinstance(visible, bool) else bool(combatant['visible'])
+        name = str((body or {}).get('name', combatant['name'])).strip()[:120] or combatant['name']
         conn.execute(
             'UPDATE session_combatants SET name=?,initiative=?,hp_current=?,hp_max=?,sp_head=?,sp_body=?,'
             'shield_current=?,ammo_current=?,move=?,conditions_json=?,injuries_json=?,death_penalty=?,visible=?,secret_json=?,sort_order=? WHERE id=?',
-            (str((body or {}).get('name', combatant['name']))[:120], values['initiative'],
-             values['hp_current'], values['hp_max'], values['sp_head'], values['sp_body'],
-             values['shield_current'], values['ammo_current'], values['move'],
-             json.dumps((body or {}).get('conditions', parse_json_list(combatant['conditions_json']))),
-             json.dumps((body or {}).get('injuries', parse_json_list(combatant['injuries_json']))),
-             values['death_penalty'], 1 if (body or {}).get('visible', bool(combatant['visible'])) else 0,
-             json.dumps((body or {}).get('secret', parse_json_object(combatant['secret_json']))),
+            (name, values['initiative'], values['hp_current'], values['hp_max'],
+             values['sp_head'], values['sp_body'], values['shield_current'], values['ammo_current'],
+             values['move'], json.dumps(conditions), json.dumps(injuries), values['death_penalty'],
+             1 if visible else 0, json.dumps(secret, ensure_ascii=False),
              values['sort_order'], combatant['id']))
+        ordered_after = self.ordered_session_combatants(conn, session['id'])
+        active_turn = next((index for index, item in enumerate(ordered_after) if item['id'] == active_id), 0)
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET active_turn=?,updated=? WHERE id=?',
+                     (active_turn, now, session['id']))
         after = dict(conn.execute('SELECT * FROM session_combatants WHERE id=?', (combatant['id'],)).fetchone())
         conn.execute(
             'INSERT INTO session_activity(session_id,actor_user_id,combatant_id,event_type,before_json,after_json,note,created) '
             'VALUES(?,?,?,?,?,?,?,?)',
             (session['id'], user['id'], combatant['id'], 'combatant_update',
              json.dumps(before, ensure_ascii=False), json.dumps(after, ensure_ascii=False),
-             str((body or {}).get('note') or '')[:500], time.time()))
+             str((body or {}).get('note') or '')[:500], now))
         conn.commit(); self.send_json({'ok': True})
 
     def api_session_combatant_delete(self, conn, qs, m, body):
@@ -4168,8 +4326,30 @@ class Handler(BaseHTTPRequestHandler):
         session = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
         if not session or not self.can_edit_nc_session(conn, user, session):
             raise ApiError(403, 'Нет права редактировать сессию')
+        ordered_before = self.ordered_session_combatants(conn, session['id'])
+        combatant_id = int(m.group(2))
+        combatant = next((item for item in ordered_before if item['id'] == combatant_id), None)
+        if not combatant:
+            raise ApiError(404, 'Участник сессии не найден')
+        old_index = min(max(0, session['active_turn']), max(0, len(ordered_before) - 1))
+        active_id = ordered_before[old_index]['id'] if ordered_before else None
         conn.execute('DELETE FROM session_combatants WHERE id=? AND session_id=?',
-                     (int(m.group(2)), session['id']))
+                     (combatant_id, session['id']))
+        ordered_after = self.ordered_session_combatants(conn, session['id'])
+        if active_id != combatant_id:
+            active_turn = next((index for index, item in enumerate(ordered_after)
+                                if item['id'] == active_id), 0)
+        else:
+            active_turn = old_index % len(ordered_after) if ordered_after else 0
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET active_turn=?,updated=? WHERE id=?',
+                     (active_turn, now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,combatant_id,event_type,before_json,note,created) '
+            'VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], combatant_id, 'combatant_delete',
+             json.dumps(dict(combatant), ensure_ascii=False),
+             str((body or {}).get('note') or '')[:500], now))
         conn.commit(); self.send_json({'ok': True})
 
     def api_session_player_view(self, conn, qs, m, body):
@@ -4191,6 +4371,12 @@ class Handler(BaseHTTPRequestHandler):
         contract = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
         if not contract or not can_edit_contract(conn, user, contract):
             raise ApiError(403, 'Нет права завершить контракт')
+        aftermath_exists = conn.execute(
+            "SELECT 1 FROM vk_outbox WHERE event_key IN (?,?) LIMIT 1",
+            (f'contract:{contract["id"]}:completed', f'contract:{contract["id"]}:failed')).fetchone()
+        if aftermath_exists or contract['status'] not in (
+                'open', 'crew_full', 'in_progress', 'completed', 'failed'):
+            raise ApiError(409, 'Aftermath уже опубликован или контракт не активен')
         result = str((body or {}).get('result') or 'completed').lower()
         if result not in ('completed', 'failed'):
             raise ApiError(400, 'Результат контракта: completed/failed')
@@ -4201,19 +4387,25 @@ class Handler(BaseHTTPRequestHandler):
         headline = str((body or {}).get('headline') or f'Aftermath: {contract["title"]}')[:240]
         text = str((body or {}).get('body') or contract['public_brief'] or contract['teaser']).strip()[:30000]
         now = time.time()
+        try:
+            event_at = float((body or {}).get('event_at') or now)
+        except (TypeError, ValueError):
+            event_at = now
+        if not math.isfinite(event_at):
+            event_at = now
         cur = conn.execute(
             "INSERT INTO feed_posts(format,status,creator_user_id,author_persona_id,storyline_id,contract_id,"
             "headline,body,truth_status,event_at,published_at,created,updated) "
             "VALUES('article','published',?,?,?,?,?,?,'unknown',?,?,?,?)",
             (user['id'], persona_id, contract['storyline_id'], contract['id'], headline, text,
-             (body or {}).get('event_at') or now, now, now, now))
+             event_at, now, now, now))
         post_id = cur.lastrowid
         conn.execute('UPDATE contracts SET status=?,updated=? WHERE id=?', (result, now, contract['id']))
         if contract['storyline_id']:
             conn.execute(
                 'INSERT INTO storyline_timeline(storyline_id,event_at,public_text,private_text,contract_id,'
                 'feed_post_id,created_by,created) VALUES(?,?,?,?,?,?,?,?)',
-                (contract['storyline_id'], (body or {}).get('event_at') or now,
+                (contract['storyline_id'], event_at,
                  headline, str((body or {}).get('private_note') or '')[:10000],
                  contract['id'], post_id, user['id'], now))
         crew_ids = {row['character_id'] for row in conn.execute(
@@ -4223,9 +4415,19 @@ class Handler(BaseHTTPRequestHandler):
             character_id = _num(reward.get('character_id'))
             if character_id not in crew_ids:
                 continue
-            char_row = self.get_char(conn, character_id); before = json.loads(char_row['data']); data = ensure_progression(json.loads(char_row['data']))
-            cash = float(reward.get('cash') or 0); ip = _num(reward.get('ip')) or 0
-            data['cash'] = max(0, float(data.get('cash') or 0) + cash)
+            char_row = self.get_char(conn, character_id)
+            before = json.loads(char_row['data'])
+            data = ensure_progression(json.loads(char_row['data']))
+            if data.get('archived'):
+                continue
+            try:
+                cash = float(reward.get('cash') or 0)
+            except (TypeError, ValueError):
+                raise ApiError(400, 'Некорректная сумма')
+            ip = _num(reward.get('ip')) or 0
+            if not math.isfinite(cash) or abs(cash) > 10_000_000 or abs(ip) > 1_000_000:
+                raise ApiError(400, 'Слишком большая сумма')
+            data['cash'] = max(0, min(9_999_999, float(data.get('cash') or 0) + cash))
             if ip:
                 ip_before = data['ip_available']; data['ip_available'] += ip
                 if ip > 0: data['ip_total_earned'] += ip

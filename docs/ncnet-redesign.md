@@ -544,7 +544,7 @@ Published
 
 ## 8. GM Quick Reference и Session Dashboard
 
-### 8.1 Quick Reference — первая очередь
+### 8.1 Quick Reference — реализовано
 
 - Ranged Attack DV;
 - Autofire DV;
@@ -564,7 +564,7 @@ Published
 - automated regression на таблицы;
 - повторная ручная сверка с PDF.
 
-### 8.2 Session Dashboard — следующая очередь
+### 8.2 Session Dashboard — реализовано
 
 ```text
 sessions
@@ -599,7 +599,7 @@ sessions
 - Critical Injuries;
 - Death Save Penalty.
 
-Player View управляется конфигурацией GM и никогда не возвращает скрытые NPC fields через API.
+Player View управляется конфигурацией GM и никогда не возвращает скрытые NPC fields через API. Initiative order вычисляется сервером; активный участник сохраняется при добавлении, удалении и изменении Initiative. Dashboard даёт Previous/Next Turn, автоматический переход раундов и независимые переключатели видимости Initiative, ally HP, Armor и Conditions.
 
 ## 9. Визуальная оболочка
 
@@ -747,7 +747,8 @@ Player View управляется конфигурацией GM и никогд
 - permanent Character Ledger;
 - Market transaction events;
 - contract history;
-- authored posts/comments.
+- authored posts/comments;
+- history-aware deletion: Dossier без ссылок удаляется, а с Contract/Feed/Session history становится private read-only archive без разрушения attribution.
 
 ### Phase 5 — GM Quick Reference ✅
 
@@ -761,8 +762,9 @@ Player View управляется конфигурацией GM и никогд
 
 - Session from Contract;
 - NPC templates;
-- turn order/resources;
-- configurable Player View;
+- stable turn order/resources and round transitions;
+- Previous/Next Turn controls;
+- configurable Player View with server-side field filtering;
 - session activity log;
 - completion outcome.
 
@@ -771,7 +773,7 @@ Player View управляется конфигурацией GM и никогд
 - transactional VK outbox;
 - group conversation events;
 - OAuth link for mentions;
-- Aftermath creation flow;
+- one-shot Aftermath creation flow with immutable completed Crew;
 - audio system;
 - publication visual themes;
 - final accessibility/mobile/localization pass.

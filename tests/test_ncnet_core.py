@@ -129,8 +129,9 @@ class NCNetCoreFlowTests(unittest.TestCase):
         self.assertIn('classified_brief', joined)
 
         self.current = self.user('runner2')
+        char2 = 2
         waitlisted = self.call(server.Handler.api_contract_join, {}, self.match(contract['id']), {
-            'character_id': 2,
+            'character_id': char2,
         })['payload']
         self.assertEqual(waitlisted['my_signup']['status'], 'waitlist')
         self.assertNotIn('classified_brief', waitlisted)
@@ -171,14 +172,41 @@ class NCNetCoreFlowTests(unittest.TestCase):
         changed = self.conn.execute('SELECT * FROM session_combatants WHERE id=?',
                                     (npc['id'],)).fetchone()
         self.assertEqual(changed['hp_current'], 20)
+        session_detail = self.call(server.Handler.api_session_detail, {},
+                                   self.match(session['id']), {})['payload']
+        self.assertEqual([item['id'] for item in session_detail['combatants']], [npc['id'], 1])
+        self.assertFalse(session_detail['combatants'][0]['active'])
+        self.assertTrue(session_detail['combatants'][1]['active'])
+        self.call(server.Handler.api_session_update, {}, self.match(session['id']), {
+            'round': 1, 'active_turn': 0,
+            'player_view_config': {
+                'show_initiative': False, 'show_ally_hp': True,
+                'show_armor': False, 'show_conditions': True,
+            },
+        })
+        self.current = self.user('runner2')
+        player_view = self.call(server.Handler.api_session_player_view, {},
+                                self.match(session['id']), {})['payload']
+        self.assertTrue(player_view['combatants'][0]['active'])
+        self.assertNotIn('initiative', player_view['combatants'][0])
+        self.assertNotIn('sp_body', player_view['combatants'][0])
+        self.assertNotIn('secret', player_view['combatants'][0])
+        self.assertNotIn('notes', player_view)
 
-        aftermath = self.call(server.Handler.api_contract_aftermath, {}, self.match(contract['id']), {
+        self.current = self.user('gm')
+        aftermath_body = {
             'result': 'completed', 'author_persona_id': persona['id'],
             'headline': 'Watson Relay Restored',
             'body': 'Local residents report that the grid is stable.',
             'rewards': [{'character_id': 2, 'cash': 500, 'ip': 20}],
-        })['payload']
+        }
+        aftermath = self.call(server.Handler.api_contract_aftermath, {},
+                              self.match(contract['id']), aftermath_body)['payload']
         self.assertEqual(aftermath['result'], 'completed')
+        with self.assertRaises(server.ApiError) as duplicate_aftermath:
+            self.call(server.Handler.api_contract_aftermath, {},
+                      self.match(contract['id']), aftermath_body)
+        self.assertEqual(duplicate_aftermath.exception.status, 409)
         self.assertTrue(self.conn.execute('SELECT 1 FROM feed_posts WHERE id=?',
                                          (aftermath['post_id'],)).fetchone())
         character = json.loads(self.conn.execute('SELECT data FROM characters WHERE id=2').fetchone()['data'])
@@ -186,6 +214,34 @@ class NCNetCoreFlowTests(unittest.TestCase):
         self.assertEqual(character['ip_available'], 20)
         self.assertGreater(self.conn.execute('SELECT COUNT(*) n FROM character_ledger').fetchone()['n'], 0)
         self.assertGreater(self.conn.execute('SELECT COUNT(*) n FROM vk_outbox').fetchone()['n'], 0)
+
+        self.current = self.user('runner2')
+        with self.assertRaises(server.ApiError) as terminal_leave:
+            self.call(server.Handler.api_contract_leave, {}, self.match(contract['id']), {})
+        self.assertEqual(terminal_leave.exception.status, 409)
+        archived = self.call(server.Handler.api_delete_character, {}, self.match(char2), {})['payload']
+        self.assertTrue(archived['archived'])
+        kept = self.conn.execute('SELECT * FROM characters WHERE id=?', (char2,)).fetchone()
+        self.assertTrue(json.loads(kept['data'])['archived'])
+        self.assertFalse(kept['public'])
+        historical_signup = self.conn.execute(
+            'SELECT status FROM contract_signups WHERE contract_id=? AND character_id=?',
+            (contract['id'], char2)).fetchone()
+        self.assertEqual(historical_signup['status'], 'crew')
+        with self.assertRaises(server.ApiError) as readonly:
+            self.call(server.Handler.api_character_resource, {}, self.match(char2), {
+                'resource': 'hp', 'value': -1,
+            })
+        self.assertEqual(readonly.exception.status, 409)
+        self.current = self.user('gm')
+        with self.assertRaises(server.ApiError) as payroll_readonly:
+            self.call(server.Handler.api_payroll, {}, None, {
+                'char_id': char2, 'amount': 100,
+            })
+        self.assertEqual(payroll_readonly.exception.status, 409)
+        self.current = self.user('runner2')
+        post_after_archive = self.call(server.Handler.api_feed_detail, {}, self.match(post['id']), {})['payload']
+        self.assertEqual(post_after_archive['author']['display_name'], 'K')
 
 
 if __name__ == '__main__':

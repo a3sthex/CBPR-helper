@@ -311,8 +311,8 @@ async function viewHome(view) {
     </div>
   </div>
   <div class="feature-cards mt">
-    <a class="card" href="#/contracts"><div class="ico">🎯</div><h3>${T('Contracts','Контракты')}</h3><div class="muted small">${T('Operations posted by Night City contacts. The full Contract system is the next foundation milestone.','Операции от контактов Найт-Сити. Полная система Contracts — следующий этап фундамента.')}</div></a>
-    <a class="card" href="#/feed"><div class="ico">📡</div><h3>${T('City Feed','Городская лента')}</h3><div class="muted small">${T('Direct transmissions publish without pre-approval; Character identities are the next milestone.','Передачи выходят без предварительного одобрения; авторство Characters — следующий этап.')}</div></a>
+    <a class="card" href="#/contracts"><div class="ico">🎯</div><h3>${T('Contracts','Контракты')}</h3><div class="muted small">${T('Operations from Night City contacts with Crew, waitlist, classified briefing, rewards, and Aftermath.','Операции от контактов Найт-Сити с Crew, резервом, закрытым брифингом, наградами и Aftermath.')}</div></a>
+    <a class="card" href="#/feed"><div class="ico">📡</div><h3>${T('City Feed','Городская лента')}</h3><div class="muted small">${T('Immediate Character and Persona transmissions, six formats, comments, replies, and post-publication moderation.','Мгновенные передачи Characters и Personas, шесть форматов, комментарии, ответы и модерация после публикации.')}</div></a>
     <a class="card" href="#/dossiers"><div class="ico">🧬</div><h3>${T('Dossiers','Досье')}</h3><div class="muted small">${T('Create and maintain the edgerunners who enter the network.','Создание и ведение эджраннеров, подключённых к сети.')}</div></a>
     <a class="card" href="#/market"><div class="ico">🕶️</div><h3>${T('Night Market','Чёрный рынок')}</h3><div class="muted small">${T('A new sale every night, with canonical purchases and resale.','Ночная витрина, каноничные покупки и продажа снаряжения.')}</div></a>
     <a class="card" href="#/database"><div class="ico">📚</div><h3>${T('Database','База данных')}</h3><div class="muted small">${T('1,092 sourced items from Night City databases.','1092 предмета с источниками в базах Найт-Сити.')}</div></a>
@@ -2519,7 +2519,8 @@ async function viewSheet(id) {
     return;
   }
   const ch = c.data, d = c.derived;
-  const mine = state.me && state.me.id === c.owner_id;
+  const owner = state.me && state.me.id === c.owner_id;
+  const mine = owner && !ch.archived;
   const ab = ROLE_ABILITIES[ch.role] || { name: state.meta.roles[ch.role] || '', desc: '' };
   const hpCur = ch.hp_cur == null ? d.hp_max : ch.hp_cur;
   const cw = ch.cyberware || [];
@@ -2534,11 +2535,11 @@ async function viewSheet(id) {
   view.innerHTML = `
   <div class="page-head official-sheet-head">
     ${ch.portrait_media_id?`<img class="sheet-portrait" src="/api/media/${esc(ch.portrait_media_id)}" alt="${esc(ch.handle||'Character')}">`:''}
-    <div><h1>📄 <span class="user-content">${esc(ch.handle || T('Unnamed','Безымянный'))}${ch.first_name || ch.last_name ? ` · ${esc([ch.first_name, ch.last_name].filter(Boolean).join(' '))}` : ''}</span></h1>
+    <div><h1>📄 <span class="user-content">${esc(ch.handle || T('Unnamed','Безымянный'))}${ch.first_name || ch.last_name ? ` · ${esc([ch.first_name, ch.last_name].filter(Boolean).join(' '))}` : ''}</span>${ch.archived?` <span class="tag">${T('ARCHIVED','АРХИВ')}</span>`:''}</h1>
       <div class="sub">Character Sheet · ${(ch.roles||[]).map(role=>`${esc(role.name)} ${role.rank}${role.name===ch.active_role?' ★':''}`).join(' · ')||`${esc(ch.role||'—')} ${ch.role_rank||4}`} · ${T('owner','владелец')}: <span class="user-content">${esc(c.owner_name||'—')}</span>${ch.player?' · '+T('player','игрок')+': <span class="user-content">'+esc(ch.player)+'</span>':''}</div></div>
     <div class="row">
       <button id="sheet-back">← ${T('Characters','Персонажи')}</button>
-      <button class="btn-sm" id="sheet-print">🖨️ Print</button><button class="btn-sm" id="sheet-json">⬇ JSON</button><button class="btn-sm" id="sheet-network">◎ ${T('Network','Сеть')}</button>${mine||state.me?.is_gm?`<button class="btn-sm" id="sheet-ledger">◫ ${T('Ledger','Журнал')}</button>`:''}
+      <button class="btn-sm" id="sheet-print">🖨️ Print</button><button class="btn-sm" id="sheet-json">⬇ JSON</button><button class="btn-sm" id="sheet-network">◎ ${T('Network','Сеть')}</button>${owner||state.me?.is_gm?`<button class="btn-sm" id="sheet-ledger">◫ ${T('Ledger','Журнал')}</button>`:''}
       ${mine ? `<label class="btn-sm">🖼️ Portrait<input id="sheet-portrait-file" type="file" accept="image/jpeg,image/png,image/webp" hidden></label><button class="btn-primary" id="sheet-edit">✏️ ${T('Edit','Редактировать')}</button>
                 <button class="btn-danger" id="sheet-del">🗑️ ${T('Delete','Удалить')}</button>` : ''}
     </div>
@@ -2556,7 +2557,7 @@ async function viewSheet(id) {
       <span class="dstat"><span class="v">${d.sp_head != null ? d.sp_head : '—'}</span><span class="k">${T('Head Armor SP','Броня SP голова')}</span></span>
       <span class="dstat"><span class="v">${d.death_save != null ? d.death_save : '—'}</span><span class="k">Death Save</span></span>
       <span class="dstat resource-stat"><span class="v">${money(ch.cash || 0)}</span><span class="k">Cash</span>${mine?`<span class="resource-actions"><button data-resource="cash|-100">−100</button><button data-resource="cash|-10">−10</button><button data-resource="cash|10">+10</button><button data-resource="cash|100">+100</button></span>`:''}</span>
-      <span class="dstat"><span class="v">${ch.ip_available||0}</span><span class="k">Improvement Points</span>${mine?`<button class="btn-sm" id="sheet-improve">Improve</button>`:(state.me&&state.me.is_gm?`<button class="btn-sm" id="sheet-ip-gm">Adjust IP</button>`:'')}</span>
+      <span class="dstat"><span class="v">${ch.ip_available||0}</span><span class="k">Improvement Points</span>${mine?`<button class="btn-sm" id="sheet-improve">Improve</button>`:(state.me&&state.me.is_gm&&!ch.archived?`<button class="btn-sm" id="sheet-ip-gm">Adjust IP</button>`:'')}</span>
       <span class="dstat resource-stat"><span class="v">${ch.reputation||0}</span><span class="k">Reputation</span>${mine?`<span class="resource-actions"><button data-resource="reputation|-1">−1</button><button data-resource="reputation|1">+1</button></span>`:''}</span>
     </div>
   </div>
@@ -2644,10 +2645,10 @@ async function viewSheet(id) {
   if (editBtn) editBtn.onclick = () => { location.hash = '#/char/' + c.id + '?edit'; };
   const delBtn = $('#sheet-del');
   if (delBtn) delBtn.onclick = async () => {
-    if (!confirm('Удалить персонажа навсегда?')) return;
+    if (!confirm(T('Delete this Character? Dossiers with NC//NET history will be archived instead.','Удалить Character? Досье с историей NC//NET будет перемещено в архив.'))) return;
     try {
-      await api('/api/characters/' + c.id, { method: 'DELETE' });
-      toast('Персонаж удалён');
+      const result = await api('/api/characters/' + c.id, { method: 'DELETE' });
+      toast(result.archived ? T('Dossier archived to preserve NC//NET history.','Досье архивировано для сохранения истории NC//NET.') : T('Character deleted.','Персонаж удалён.'));
       go('/dossiers');
     } catch (e) { toast(e.message, true); }
   };
@@ -2662,9 +2663,11 @@ async function viewCharacters(view) {
   }
   view.innerHTML = spinner();
   const data = await api('/api/characters');
+  const activeCount = data.characters.filter(character => !character.data.archived).length;
+  const archivedCount = data.characters.length - activeCount;
   view.insertAdjacentHTML('afterbegin', `
     <div class="page-head">
-      <div><h1>🧬 ${T('My Characters','Мои персонажи')}</h1><div class="sub">${T('Personal storage','Личное хранилище')}: ${data.characters.length}/50</div></div>
+      <div><h1>🧬 ${T('My Characters','Мои персонажи')}</h1><div class="sub">${T('Active Dossiers','Активные досье')}: ${activeCount}/50${archivedCount ? ` · ${archivedCount} ${T('archived','в архиве')}` : ''}</div></div>
       <button class="btn-primary" onclick="location.hash='#/char/new'">+ ${T('New Edgerunner','Новый эджраннер')}</button>
     </div>`);
   const listEl = document.createElement('div');
@@ -2677,10 +2680,10 @@ async function viewCharacters(view) {
   listEl.innerHTML = data.characters.map(c => {
     const d = c.derived, ch = c.data;
     return `
-    <div class="card" data-id="${c.id}">
+    <div class="card ${ch.archived?'archived':''}" data-id="${c.id}">
       <div class="head row" style="justify-content:space-between">
         <h3 style="cursor:pointer" class="open user-content">${esc(ch.handle || T('Unnamed','Безымянный'))}</h3>
-        <span class="muted small">${c.public ? '👁 публичный' : '🔒 приватный'}</span>
+        <span class="muted small">${ch.archived ? `◫ ${T('ARCHIVED','АРХИВ')}` : (c.public ? T('👁 public','👁 публичный') : T('🔒 private','🔒 приватный'))}</span>
       </div>
       <div class="chips">
         <span class="tag role">${esc(ch.role || '—')} ${ch.role_rank || 4}</span>
@@ -2691,18 +2694,18 @@ async function viewCharacters(view) {
       </div>
       <div class="muted small mt">обновлён ${timeAgo(c.updated)}</div>
       <div class="row mt">
-        <button class="btn-sm btn-primary open">Открыть</button>
-        <button class="btn-sm btn-danger del">Удалить</button>
+        <button class="btn-sm btn-primary open">${T('Open','Открыть')}</button>
+        ${ch.archived ? '' : `<button class="btn-sm btn-danger del">${T('Delete','Удалить')}</button>`}
       </div>
     </div>`;
   }).join('');
   $$('.card .open', view).forEach(el => el.onclick = () => go('/char/' + el.closest('.card').dataset.id));
   $$('.card .del', view).forEach(el => el.onclick = async () => {
     const card = el.closest('.card');
-    if (!confirm('Удалить персонажа навсегда?')) return;
+    if (!confirm(T('Delete this Character? Dossiers with NC//NET history will be archived instead.','Удалить Character? Досье с историей NC//NET будет перемещено в архив.'))) return;
     try {
-      await api('/api/characters/' + card.dataset.id, { method: 'DELETE' });
-      toast('Персонаж удалён');
+      const result = await api('/api/characters/' + card.dataset.id, { method: 'DELETE' });
+      toast(result.archived ? T('Dossier archived to preserve NC//NET history.','Досье архивировано для сохранения истории NC//NET.') : T('Character deleted.','Персонаж удалён.'));
       viewCharacters(view);
     } catch (e) { toast(e.message, true); }
   });
@@ -3219,7 +3222,7 @@ async function showRosterModal(id) {
 
 async function viewNews(view) {
   view.innerHTML = `
-  <div class="page-head"><div><h1>📡 ${T('City Feed','Городская лента')}</h1><div class="sub">${T('Posts publish immediately without GM pre-approval. Character identities, Persona formats, and threaded comments arrive in the next phase.','Посты публикуются сразу, без предварительного одобрения GM. Characters, форматы Personas и ветки комментариев появятся на следующем этапе.')}</div></div></div>
+  <div class="page-head"><div><h1>📡 ${T('Legacy City Archive','Архив старой городской ленты')}</h1><div class="sub">${T('Compatibility view for posts created before the NC//NET City Feed migration.','Режим совместимости для постов, созданных до миграции City Feed NC//NET.')}</div></div></div>
   <div id="news-compose"></div>
   <div id="news-list">${spinner()}</div>`;
   const composeBox = $('#news-compose');

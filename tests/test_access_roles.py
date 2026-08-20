@@ -156,13 +156,13 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertNotIn('id="rg-gm"', source)
         self.assertNotIn('id="pf-gm"', source)
         self.assertIn("admin: viewAdmin", source)
-        self.assertIn('without GM pre-approval', source)
         shell = (ROOT / 'app/static/index.html').read_text(encoding='utf-8')
         self.assertIn('NC<b>//NET</b>', shell)
         self.assertIn('#/contracts', shell)
         self.assertIn('#/feed', shell)
         self.assertIn('/ncnet.js', shell)
         network = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')
+        self.assertIn('publish immediately', network)
         for district in ('watson', 'westbrook', 'city-center', 'heywood',
                          'santo-domingo', 'pacifica', 'badlands'):
             self.assertIn("id:'" + district + "'", network)

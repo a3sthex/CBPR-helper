@@ -8,7 +8,7 @@
 
 | Раздел | Описание |
 | --- | --- |
-| 🧬 **Dossiers** | Шестишаговый мастер и интерактивный официальный-inspired Character Sheet: Portrait upload/crop, Corebook role art, EN/RU, persistent draft, Hybrid Lifepath, 62/86, parent-pools, Shopping compatibility, Cyberware hosts/paired slots, HP/LUCK/Armor/ammo trackers, dice rolls, IP progression, multiclass и JSON/Print. |
+| 🧬 **Dossiers** | Шестишаговый мастер и интерактивный официальный-inspired Character Sheet: Portrait upload/crop, Corebook role art, EN/RU, persistent draft, Hybrid Lifepath, 62/86, parent-pools, Shopping compatibility, Cyberware hosts/paired slots, HP/LUCK/Armor/ammo trackers, dice rolls, IP progression, multiclass, JSON/Print и read-only архив с сохранением NC//NET history. |
 | 📖 **Гайды** | Мини-гайды из «Spes Desperata»: пошаговое создание персонажа (роли, 62 очка статов, 86 очков навыков, стартовая закупка), боёвка FNFF (действия, DV-таблицы, крит. травмы, укрытия, транспорт) и нетраннинг (СЕТевые действия, Interface-способности). |
 | 📋 **Crew Registry** | Все публичные персонажи всех игроков. При старте импортируется ростер вашей партии из Folio (13 эджраннеров). |
 | 🕶️ **Чёрный рынок** | Ночная витрина (обновляется ежедневно в 00:00 МСК, уличные цены ±50%), полный каталог на 1092 предмета, скупка хлама за 50%, выплаты от ГМ. |
@@ -16,8 +16,8 @@
 | 🎲 **Quick Reference** | Damage/SP, Critical Injuries, Autofire, Death Saves, Range DV и General Difficulty с указанием книг и страниц; инструменты можно использовать как справочник или Resolver. |
 | ◈ **Personas / Storylines** | Private/Shared/System персоны, общий audit log, GM-соавторы сюжетных линий и публичная/закрытая хронология. |
 | 📡 **City Feed** | Шесть внутриигровых форматов, прямые Character-публикации без предварительной модерации, комментарии, revisions и post-publication hide moderation. |
-| 📞 **Contracts** | Произвольные Persona-роли, public/classified briefing, reward modes, мгновенная запись Character, автоматический waitlist, Service Information и Aftermath. |
-| ⚙️ **GM OPS** | Active Sessions из Contracts, NPC templates, инициатива, HP/SP/resources, activity log и настраиваемый Player View. |
+| 📞 **Contracts** | Произвольные Persona-роли, public/classified briefing, reward modes, мгновенная запись Character, автоматический waitlist, Service Information, неизменяемый исторический Crew после завершения и одноразовый Aftermath. |
+| ⚙️ **GM OPS** | Active Sessions из Contracts, private/shared NPC templates, стабильный initiative order, Previous/Next Turn с переходом раундов, HP/SP/conditions, activity log и настраиваемый Player View без утечки скрытых полей. |
 
 ## Запуск
 

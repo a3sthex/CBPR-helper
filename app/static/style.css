@@ -101,6 +101,8 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
   padding: 14px 16px; transition: border-color .15s, transform .15s;
 }
 .card:hover { border-color: var(--cyan); }
+.card.archived { border-style: dashed; filter: saturate(.55); opacity: .78; }
+.card.archived:hover { opacity: 1; }
 .card h3 { margin: 0 0 6px; }
 .tag {
   display: inline-block; font-size: 12px; border-radius: 5px; padding: 1px 8px;
