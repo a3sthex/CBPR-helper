@@ -218,6 +218,11 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertIn('crop-output-width', source)
         self.assertIn('12_000_000', source)
         network = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')
+        network_css = (ROOT / 'app/static/ncnet.css').read_text(encoding='utf-8')
+        self.assertIn('nc-feed-image-frame', network)
+        self.assertIn('feed-image-lightbox', network)
+        self.assertIn('object-fit:contain', network_css)
+        self.assertNotIn('.nc-feed-image{width:100%;max-height:380px;object-fit:cover', network_css)
         self.assertIn('publish immediately', network)
         for district in ('watson', 'westbrook', 'city-center', 'heywood',
                          'santo-domingo', 'pacifica', 'badlands'):
