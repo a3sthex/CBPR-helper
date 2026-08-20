@@ -17,7 +17,7 @@
 | 📚 **Справочник** | Поиск по 14 категориям с ценами, характеристиками, описаниями и ссылками на книги (`CP:R 341` = Corebook, `BC` = Black Chrome, `CEMK` = Edgerunners Mission Kit). |
 | 🎲 **Quick Reference** | Damage/SP, Critical Injuries, Autofire, Death Saves, Range DV и General Difficulty с указанием книг и страниц; инструменты можно использовать как справочник или Resolver. |
 | ◈ **Personas / Storylines** | Private/Shared/System персоны, общий audit log, GM-соавторы сюжетных линий и публичная/закрытая хронология. |
-| 📡 **City Feed** | Шесть внутриигровых форматов, прямые Character-публикации без предварительной модерации, комментарии, revisions и post-publication hide moderation. |
+| 📡 **City Feed** | Шесть внутриигровых форматов, прямые Character-публикации без предварительной модерации, event/publication time, editable media/metadata, one-level replies, owner-visible revision history, comment/post moderation и скрытая от игроков GM truth classification. |
 | 📞 **Contracts** | Произвольные Persona-роли, public/classified briefing, reward modes, мгновенная запись Character, автоматический waitlist, Service Information, неизменяемый исторический Crew после завершения и одноразовый Aftermath. |
 | ⚙️ **GM OPS** | Active Sessions из Contracts, редактируемые/клонируемые private/shared NPC templates, стабильный initiative order, Previous/Next Turn с переходом раундов, HP/SP/Shield/Ammo/LUCK/MOVE/Injuries controls, фильтруемый activity log, private GM JSON export и независимо настраиваемый Player View без утечки скрытых полей. |
 

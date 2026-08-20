@@ -728,8 +728,10 @@ Player View управляется конфигурацией GM и никогд
 
 - post formats;
 - direct Character publishing without pre-moderation;
-- post revisions, comments and hide moderation;
-- truth status;
+- structured owner/GM revision history, one-level comments and reasoned post/comment hide moderation;
+- GM-only truth classification with a dedicated audited endpoint;
+- moderation lock prevents a post owner from republishing GM-hidden content while preserving owner archive rights;
+- editable Feed image, lead, district and event time with server-side timestamp/link validation;
 - legacy News migration;
 - Persona/Character author pages.
 

@@ -195,6 +195,57 @@ class NCNetCoreFlowTests(unittest.TestCase):
         })['payload']
         self.assertEqual(comment['body'], 'Not for long.')
 
+        self.current = self.user('runner2')
+        feed_media_id = 'b' * 32
+        self.conn.execute(
+            'INSERT INTO media(id,owner_id,kind,mime,filename,size,width,height,created) '
+            "VALUES(?,4,'feed_image','image/webp','feed.webp',100,100,100,1)",
+            (feed_media_id,))
+        self.conn.commit()
+        edited_post = self.call(server.Handler.api_feed_update, {}, self.match(post['id']), {
+            'format': 'short', 'body': 'The relay is singing clearly again.',
+            'lead': 'Signal restored', 'event_at': 12345,
+            'image_media_id': feed_media_id, 'status': 'published',
+        })['payload']
+        self.assertEqual(edited_post['event_at'], 12345)
+        attached_feed_media = self.conn.execute('SELECT * FROM media WHERE id=?',
+                                                (feed_media_id,)).fetchone()
+        self.assertEqual((attached_feed_media['attached_type'], attached_feed_media['attached_id']),
+                         ('feed_post', post['id']))
+
+        self.current = self.user('gm')
+        truth = self.call(server.Handler.api_feed_truth_update, {}, self.match(post['id']), {
+            'truth_status': 'partially_true', 'reason': 'Known omissions',
+        })['payload']
+        self.assertEqual(truth['truth_status'], 'partially_true')
+        self.call(server.Handler.api_feed_comment_hide, {},
+                  self.match(post['id'], comment['id']), {'reason': 'Operational security'})
+        gm_post = self.call(server.Handler.api_feed_detail, {}, self.match(post['id']), {})['payload']
+        self.assertEqual(gm_post['truth_status'], 'partially_true')
+        self.assertTrue(any(revision['action'] == 'truth' for revision in gm_post['revisions']))
+
+        self.current = self.user('runner2')
+        owner_post = self.call(server.Handler.api_feed_detail, {}, self.match(post['id']), {})['payload']
+        self.assertNotIn('truth_status', owner_post)
+        self.assertTrue(any(revision['action'] == 'update' for revision in owner_post['revisions']))
+        self.assertFalse(any(revision['action'] == 'truth' for revision in owner_post['revisions']))
+
+        self.current = self.user('runner1')
+        player_post = self.call(server.Handler.api_feed_detail, {}, self.match(post['id']), {})['payload']
+        hidden_comment = next(item for item in player_post['comments'] if item['id'] == comment['id'])
+        self.assertTrue(hidden_comment['hidden'])
+        self.assertEqual(hidden_comment['hidden_reason'], 'Operational security')
+
+        self.current = self.user('gm')
+        self.call(server.Handler.api_feed_hide, {}, self.match(post['id']), {
+            'reason': 'Temporary operational blackout',
+        })
+        self.current = self.user('runner2')
+        moderation_locked = self.call(server.Handler.api_feed_update, {}, self.match(post['id']), {
+            'format': 'short', 'body': 'Attempted republication', 'status': 'published',
+        })['payload']
+        self.assertEqual(moderation_locked['status'], 'hidden')
+
         self.current = self.user('gm')
         session = self.call(server.Handler.api_session_create, {}, None, {
             'contract_id': contract['id'], 'title': 'Relay Run',

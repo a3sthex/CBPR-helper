@@ -213,6 +213,9 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertIn('role="button" tabindex="0"', network)
         self.assertIn('ss-activity-search', network)
         self.assertIn('ss-export', network)
+        self.assertIn('feed-truth-save', network)
+        self.assertIn('Revision History', network)
+        self.assertIn('data-comment-hide', network)
 
 
 if __name__ == '__main__':

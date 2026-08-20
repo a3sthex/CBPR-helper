@@ -1025,6 +1025,18 @@ def parse_json_list(value):
         return []
 
 
+def optional_timestamp(value, fallback=None):
+    if value is None or value == '':
+        return fallback
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError):
+        raise ApiError(400, 'Некорректное время события')
+    if not math.isfinite(timestamp) or abs(timestamp) > 8_640_000_000_000:
+        raise ApiError(400, 'Некорректное время события')
+    return timestamp
+
+
 def session_view_config(value):
     raw = parse_json_object(value)
     return {
@@ -2248,6 +2260,7 @@ SERVER_ERROR_EN = {
     'Пустая корзина': 'The Cart is empty',
     'Слишком большая сумма': 'Amount is too large',
     'Некорректная сумма': 'Invalid amount',
+    'Некорректное время события': 'Invalid event time',
     'Слишком много персонажей (максимум 50)': 'Too many characters (maximum 50)',
     'Сначала отсоедините изображение': 'Detach the image first',
     'Статус: open/closed': 'Status must be open or closed',
@@ -2317,6 +2330,7 @@ SERVER_ERROR_EN = {
     'Публикация не найдена': 'Post not found',
     'Нет права редактировать эту публикацию': 'You cannot edit this post',
     'Некорректная публикация': 'Invalid post',
+    'Некорректный GM truth status': 'Invalid GM truth status',
     'Укажите причину скрытия': 'Provide a reason for hiding this content',
     'Комментарий не может быть пустым': 'Comment cannot be empty',
     'Комментарий не найден': 'Comment not found',
@@ -3339,6 +3353,27 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(409, 'Архивное досье нельзя использовать как автора')
         return None, character['id']
 
+    def feed_revision_payload(self, row, include_truth=False):
+        before = parse_json_object(row['before_json'])
+        after = parse_json_object(row['after_json'])
+        changes = []
+        fields = ('format', 'status', 'headline', 'lead', 'body', 'district_id',
+                  'event_at', 'image_media_id', 'truth_status')
+        for key in fields:
+            if key == 'truth_status' and not include_truth:
+                continue
+            old_value, new_value = before.get(key), after.get(key)
+            if old_value == new_value:
+                continue
+            if key == 'body':
+                old_value = str(old_value or '')[:240]
+                new_value = str(new_value or '')[:240]
+            changes.append({'field': key, 'before': old_value, 'after': new_value})
+        return {
+            'id': row['id'], 'action': row['action'], 'actor': row['actor'],
+            'reason': row['reason'], 'created': row['created'], 'changes': changes,
+        }
+
     def feed_post_payload(self, conn, row, user, include_comments=False):
         persona = conn.execute('SELECT * FROM personas WHERE id=?',
                                (row['author_persona_id'],)).fetchone() if row['author_persona_id'] else None
@@ -3376,6 +3411,16 @@ class Handler(BaseHTTPRequestHandler):
             payload['comments'] = [self.feed_comment_payload(conn, item, user) for item in comments
                                    if not item['hidden_at'] or user_is_gm(user) or
                                    (user and item['creator_user_id'] == user['id'])]
+            if can_edit or user_is_gm(user):
+                revisions = conn.execute(
+                    'SELECT r.*,u.display_name actor FROM feed_post_revisions r '
+                    'JOIN users u ON u.id=r.actor_user_id WHERE r.post_id=? '
+                    'ORDER BY r.id DESC LIMIT 100', (row['id'],)).fetchall()
+                payload['revisions'] = [
+                    self.feed_revision_payload(item, include_truth=user_is_gm(user))
+                    for item in revisions
+                    if user_is_gm(user) or item['action'] != 'truth'
+                ]
         return payload
 
     def feed_comment_payload(self, conn, row, user):
@@ -3389,7 +3434,8 @@ class Handler(BaseHTTPRequestHandler):
             'parent_comment_id': row['parent_comment_id'], 'body': row['body'],
             'created': row['created'], 'updated': row['updated'],
             'hidden': bool(row['hidden_at']),
-            'hidden_reason': row['hidden_reason'] if user_is_gm(user) else None,
+            'hidden_reason': row['hidden_reason'] if (user_is_gm(user) or
+                              (user and row['creator_user_id'] == user['id'])) else None,
             'author': persona_payload(persona, False) if persona else ({
                 'id': character['id'], 'kind': 'character',
                 'display_name': char_data.get('handle') or 'Unknown Edgerunner',
@@ -3423,18 +3469,34 @@ class Handler(BaseHTTPRequestHandler):
         truth = str((body or {}).get('truth_status') or 'unknown') if user_is_gm(user) else 'unknown'
         if truth not in FEED_TRUTH:
             truth = 'unknown'
+        storyline_id = _num((body or {}).get('storyline_id'))
+        if storyline_id:
+            storyline = conn.execute('SELECT * FROM storylines WHERE id=?', (storyline_id,)).fetchone()
+            if not storyline or storyline['status'] == 'archived':
+                raise ApiError(400, 'Недоступная сюжетная линия')
+        contract_id = _num((body or {}).get('contract_id'))
+        if contract_id:
+            contract = conn.execute('SELECT * FROM contracts WHERE id=?', (contract_id,)).fetchone()
+            if not contract or (contract['status'] in ('draft', 'archived') and
+                                not can_edit_contract(conn, user, contract)):
+                raise ApiError(400, 'Контракт не найден')
+        reply_to_post_id = _num((body or {}).get('reply_to_post_id'))
+        if reply_to_post_id and not conn.execute(
+                "SELECT 1 FROM feed_posts WHERE id=? AND status='published'",
+                (reply_to_post_id,)).fetchone():
+            raise ApiError(400, 'Публикация не найдена')
+        event_at = optional_timestamp((body or {}).get('event_at'))
         now = time.time(); published = now if status == 'published' else None
         cur = conn.execute(
             'INSERT INTO feed_posts(format,status,creator_user_id,author_persona_id,author_character_id,'
             'storyline_id,contract_id,reply_to_post_id,district_id,headline,lead,body,image_media_id,'
             'truth_status,event_at,published_at,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (fmt, status, user['id'], persona_id, character_id,
-             _num((body or {}).get('storyline_id')), _num((body or {}).get('contract_id')),
-             _num((body or {}).get('reply_to_post_id')),
+             storyline_id, contract_id, reply_to_post_id,
              str((body or {}).get('district_id') or '')[:80] or None,
              headline, str((body or {}).get('lead') or '')[:500] or None, text,
              str((body or {}).get('image_media_id') or '')[:64] or None,
-             truth, (body or {}).get('event_at'), published, now, now))
+             truth, event_at, published, now, now))
         attach_network_media(conn, user['id'], 'feed_post', cur.lastrowid,
                              [str((body or {}).get('image_media_id') or '')], {'feed_image'})
         row = conn.execute('SELECT * FROM feed_posts WHERE id=?', (cur.lastrowid,)).fetchone()
@@ -3466,19 +3528,50 @@ class Handler(BaseHTTPRequestHandler):
         fmt = str((body or {}).get('format', row['format']))
         headline = str((body or {}).get('headline', row['headline'] or '')).strip()[:240] or None
         text = str((body or {}).get('body', row['body'])).strip()[:30000]
-        status = str((body or {}).get('status', row['status']))
-        if fmt not in FEED_FORMATS or status not in ('draft', 'published', 'archived') or not text:
+        requested_status = str((body or {}).get('status', row['status']))
+        status = requested_status
+        if row['status'] == 'hidden' and not user_is_gm(user) and requested_status != 'archived':
+            status = 'hidden'
+        if (fmt not in FEED_FORMATS or status not in ('draft', 'published', 'archived', 'hidden') or
+                not text or (fmt in ('article', 'blog', 'bulletin') and not headline)):
             raise ApiError(400, 'Некорректная публикация')
+        image_media_id = str((body or {}).get('image_media_id', row['image_media_id'] or ''))[:64] or None
+        event_at = (optional_timestamp((body or {}).get('event_at'))
+                    if 'event_at' in (body or {}) else row['event_at'])
+        truth = row['truth_status']
+        if user_is_gm(user) and 'truth_status' in (body or {}):
+            candidate = str((body or {}).get('truth_status') or 'unknown')
+            truth = candidate if candidate in FEED_TRUTH else 'unknown'
+        attach_network_media(conn, user['id'], 'feed_post', row['id'],
+                             [image_media_id], {'feed_image'})
         published = row['published_at'] or (time.time() if status == 'published' else None)
         conn.execute(
-            'UPDATE feed_posts SET format=?,status=?,headline=?,lead=?,body=?,district_id=?,event_at=?,published_at=?,updated=? WHERE id=?',
+            'UPDATE feed_posts SET format=?,status=?,headline=?,lead=?,body=?,district_id=?,event_at=?,'
+            'image_media_id=?,truth_status=?,published_at=?,updated=? WHERE id=?',
             (fmt, status, headline, str((body or {}).get('lead', row['lead'] or ''))[:500] or None,
              text, str((body or {}).get('district_id', row['district_id'] or ''))[:80] or None,
-             (body or {}).get('event_at', row['event_at']), published, time.time(), row['id']))
+             event_at, image_media_id, truth, published, time.time(), row['id']))
         updated = conn.execute('SELECT * FROM feed_posts WHERE id=?', (row['id'],)).fetchone()
         after = self.feed_post_payload(conn, updated, user)
         record_feed_revision(conn, row['id'], user['id'], 'update', before, after)
         conn.commit(); self.send_json(after)
+
+    def api_feed_truth_update(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM feed_posts WHERE id=?', (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Публикация не найдена')
+        truth = str((body or {}).get('truth_status') or 'unknown')
+        if truth not in FEED_TRUTH:
+            raise ApiError(400, 'Некорректный GM truth status')
+        before = self.feed_post_payload(conn, row, user)
+        conn.execute('UPDATE feed_posts SET truth_status=?,updated=? WHERE id=?',
+                     (truth, time.time(), row['id']))
+        updated = conn.execute('SELECT * FROM feed_posts WHERE id=?', (row['id'],)).fetchone()
+        after = self.feed_post_payload(conn, updated, user)
+        record_feed_revision(conn, row['id'], user['id'], 'truth', before, after,
+                             str((body or {}).get('reason') or 'GM truth classification')[:500])
+        conn.commit(); self.send_json({'ok': True, 'truth_status': truth})
 
     def api_feed_hide(self, conn, qs, m, body):
         user = self.require_gm(conn)
@@ -4966,6 +5059,7 @@ ROUTES = [
     ('POST', rx(r'/api/feed'), Handler.api_feed_create),
     ('GET', rx(r'/api/feed/(\d+)'), Handler.api_feed_detail),
     ('PUT', rx(r'/api/feed/(\d+)'), Handler.api_feed_update),
+    ('POST', rx(r'/api/feed/(\d+)/truth'), Handler.api_feed_truth_update),
     ('POST', rx(r'/api/feed/(\d+)/hide'), Handler.api_feed_hide),
     ('POST', rx(r'/api/feed/(\d+)/comments'), Handler.api_feed_comment_create),
     ('POST', rx(r'/api/feed/(\d+)/comments/(\d+)/hide'), Handler.api_feed_comment_hide),
