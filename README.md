@@ -18,8 +18,8 @@
 | 📚 **Справочник** | Поиск по 14 категориям с ценами, характеристиками, описаниями и ссылками на книги (`CP:R 341` = Corebook, `BC` = Black Chrome, `CEMK` = Edgerunners Mission Kit). |
 | 🎲 **Quick Reference** | Damage/SP, Critical Injuries, Autofire, Death Saves, Range DV и General Difficulty с указанием книг и страниц; инструменты можно использовать как справочник или Resolver. |
 | ◈ **Personas / Storylines** | Private/Shared/System персоны, общий audit log, GM-соавторы сюжетных линий и публичная/закрытая хронология. |
-| 📡 **City Feed** | Шесть внутриигровых форматов, прямые Character-публикации без предварительной модерации, event/publication time, editable media/metadata, one-level replies, owner-visible revision history, comment/post moderation и скрытая от игроков GM truth classification. |
-| 📞 **Contracts** | Подтверждённая владельцем карта NightCity.io v0.04.1 с интерактивным marker overlay, произвольные Persona-роли, public/classified briefing, reward modes, мгновенная запись Character, автоматический waitlist, Service Information, неизменяемый исторический Crew и одноразовый Aftermath. |
+| 📡 **City Feed** | Шесть внутриигровых форматов, прямые Character-публикации без предварительной модерации, необязательные изображения с nested crop editor, event/publication time, editable media/metadata, one-level replies, revision history, moderation и скрытая GM truth classification. |
+| 📞 **Contracts** | Карта NightCity.io v0.04.1 с интерактивным marker overlay, необязательные cover images с nested crop editor, произвольные Persona-роли, public/classified briefing, reward modes, мгновенная запись Character, waitlist, исторический Crew и Aftermath. |
 | ⚙️ **GM OPS** | Поиск и фильтры для Sessions/NPC Templates/Storylines, улучшенные Storyline/collaborator/timeline editors, стабильный initiative order, HP/SP/Shield/Ammo/LUCK/MOVE/Injuries controls, фильтруемый activity log, private GM JSON export и независимо настраиваемый Player View. |
 
 ## Запуск

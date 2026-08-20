@@ -37,49 +37,70 @@ function toastUndo(message, undo) {
   const root=$('#toast-root'),el=document.createElement('div');el.className='toast';el.innerHTML=`<span>${esc(message)}</span> <button class="btn-sm">Undo</button>`;root.appendChild(el);$('button',el).onclick=()=>{undo();el.remove();};setTimeout(()=>el.remove(),7000);
 }
 
-let modalReturnFocus = null;
+let modalSequence = 0;
 const MODAL_FOCUSABLE = 'button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+const topModal = root => root && root.lastElementChild;
 
 function openModal(html, wide) {
   const root = $('#modal-root');
-  if (!root.classList.contains('open')) modalReturnFocus = document.activeElement;
-  root.innerHTML = `<div class="modal${wide ? ' wide' : ''}" role="dialog" aria-modal="true" tabindex="-1"><button class="close" type="button" aria-label="${T('Close','Закрыть')}" title="${T('Close','Закрыть')}">✕</button>${html}</div>`;
+  const previous = topModal(root);
+  const returnFocus = document.activeElement;
+  if (previous) {
+    previous.hidden = true;
+    previous.setAttribute('aria-hidden', 'true');
+    previous.setAttribute('aria-modal', 'false');
+  }
+  root.insertAdjacentHTML('beforeend', `<div class="modal${wide ? ' wide' : ''}" role="dialog" aria-modal="true" tabindex="-1"><button class="close" type="button" aria-label="${T('Close','Закрыть')}" title="${T('Close','Закрыть')}">✕</button>${html}</div>`);
+  const modal = topModal(root);
+  modal._returnFocus = returnFocus;
   root.classList.add('open');
   root.setAttribute('aria-hidden', 'false');
-  APP_I18N.apply(root);
-  $('.close', root).onclick = closeModal;
-  root.onmousedown = (e) => { if (e.target === root) closeModal(); };
-  const modal = root.firstElementChild;
+  APP_I18N.apply(modal);
+  $('.close', modal).onclick = () => closeModal();
+  root.onmousedown = event => { if (event.target === root) closeModal(); };
   const heading = $('h1,h2,h3', modal);
   if (heading) {
-    heading.id = heading.id || `modal-title-${Date.now()}`;
+    heading.id = heading.id || `modal-title-${++modalSequence}`;
     modal.setAttribute('aria-labelledby', heading.id);
   } else {
     modal.setAttribute('aria-label', T('Dialog','Диалог'));
   }
   setTimeout(() => {
+    if (!modal.isConnected || modal.hidden) return;
     const target = $('[autofocus]', modal) || $('input:not([disabled]),select:not([disabled]),textarea:not([disabled])', modal) || $(MODAL_FOCUSABLE, modal) || modal;
     if (target && target.focus) target.focus();
   }, 0);
   return modal;
 }
-function closeModal() {
+function closeModal(all = false) {
   const root = $('#modal-root');
   if (!root) return;
-  root.classList.remove('open');
-  root.setAttribute('aria-hidden', 'true');
-  root.innerHTML = '';
-  const target = modalReturnFocus;
-  modalReturnFocus = null;
-  if (target && target.isConnected && target.focus) target.focus();
+  const current = topModal(root);
+  if (!current) return;
+  const outermost = root.firstElementChild;
+  const target = all ? outermost?._returnFocus : current._returnFocus;
+  if (all) root.innerHTML = '';
+  else current.remove();
+  const previous = topModal(root);
+  if (previous) {
+    previous.hidden = false;
+    previous.setAttribute('aria-hidden', 'false');
+    previous.setAttribute('aria-modal', 'true');
+  } else {
+    root.classList.remove('open');
+    root.setAttribute('aria-hidden', 'true');
+  }
+  const fallback = previous && ($(MODAL_FOCUSABLE, previous) || previous);
+  const focusTarget = target && target.isConnected && target.offsetParent !== null ? target : fallback;
+  if (focusTarget && focusTarget.focus) focusTarget.focus();
 }
-document.addEventListener('keydown', (event) => {
-  const root = $('#modal-root');
-  if (!root || !root.classList.contains('open')) return;
+document.addEventListener('keydown', event => {
+  const root = $('#modal-root'), modal = topModal(root);
+  if (!root || !root.classList.contains('open') || !modal) return;
   if (event.key === 'Escape') { event.preventDefault(); closeModal(); return; }
   if (event.key !== 'Tab') return;
-  const focusable = $$(MODAL_FOCUSABLE, root).filter(element => element.offsetParent !== null);
-  if (!focusable.length) { event.preventDefault(); root.firstElementChild.focus(); return; }
+  const focusable = $$(MODAL_FOCUSABLE, modal).filter(element => element.offsetParent !== null);
+  if (!focusable.length) { event.preventDefault(); modal.focus(); return; }
   const first = focusable[0], last = focusable[focusable.length - 1];
   if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
   else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
@@ -248,7 +269,7 @@ async function route() {
   $$('[data-workspace]').forEach(button=>button.classList.toggle('active',button.dataset.workspace===(activeRoute==='gm'?'gm':'network')));
   const mobileMore=$('#mobile-more-menu');if(mobileMore)mobileMore.hidden=true;
   window.scrollTo(0, 0);
-  closeModal();
+  closeModal(true);
   view.setAttribute('aria-busy', 'true');
   try {
     if (seg0 === 'contracts' && seg1) { await viewContractDetail(view, seg1); return; }

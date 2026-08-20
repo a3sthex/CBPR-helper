@@ -210,6 +210,9 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertIn('id="active-dossier"', shell)
         self.assertIn('role="dialog"', source)
         self.assertIn('MODAL_FOCUSABLE', source)
+        self.assertIn("root.insertAdjacentHTML('beforeend'", source)
+        self.assertIn('previous.hidden = true', source)
+        self.assertIn('closeModal(true)', source)
         network = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')
         self.assertIn('publish immediately', network)
         for district in ('watson', 'westbrook', 'city-center', 'heywood',
@@ -227,6 +230,8 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertIn('feed-truth-save', network)
         self.assertIn('Revision History', network)
         self.assertIn('data-comment-hide', network)
+        self.assertIn('Contract Image (optional)', network)
+        self.assertIn('Attach Image (optional)', network)
         self.assertIn('/maps/night-city-v04-nightcityio.jpg', network)
         self.assertIn('gm-ops-search', network)
         self.assertIn('sl-collab-search', network)

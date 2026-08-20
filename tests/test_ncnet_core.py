@@ -166,6 +166,7 @@ class NCNetCoreFlowTests(unittest.TestCase):
             'participants': [{'persona_id': persona['id'], 'role_key': 'poster'}],
         })['payload']
         self.assertEqual(contract['status'], 'open')
+        self.assertIsNone(contract['cover_media_id'])
         self.assertTrue(contract['has_classified_access'])
 
         self.current = self.user('runner1')
@@ -198,6 +199,7 @@ class NCNetCoreFlowTests(unittest.TestCase):
             'contract_id': contract['id'], 'storyline_id': storyline['id'],
         })['payload']
         self.assertEqual(post['status'], 'published')
+        self.assertIsNone(post['image_media_id'])
         self.assertEqual(post['author']['display_name'], 'K')
 
         self.current = self.user('runner1')

@@ -737,7 +737,8 @@ Player View управляется конфигурацией GM и никогд
 - structured owner/GM revision history, one-level comments and reasoned post/comment hide moderation;
 - GM-only truth classification with a dedicated audited endpoint;
 - moderation lock prevents a post owner from republishing GM-hidden content while preserving owner archive rights;
-- editable Feed image, lead, district and event time with server-side timestamp/link validation;
+- optional Feed images, lead, district and event time with server-side timestamp/link validation;
+- nested crop modal preserves the underlying Feed/Contract editor and its unsaved form state;
 - legacy News migration;
 - Persona/Character author pages.
 
