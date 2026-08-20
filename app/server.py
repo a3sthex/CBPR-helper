@@ -394,6 +394,7 @@ CREATE TABLE IF NOT EXISTS users(
   vk_linked_at REAL,
   notification_prefs TEXT NOT NULL DEFAULT '{}',
   theme_json TEXT NOT NULL DEFAULT '{}',
+  avatar_media_id TEXT,
   created REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions(
@@ -686,6 +687,7 @@ CREATE TABLE IF NOT EXISTS npc_templates(
   name TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT '',
   data_json TEXT NOT NULL DEFAULT '{}',
+  archived INTEGER NOT NULL DEFAULT 0,
   created REAL NOT NULL,
   updated REAL NOT NULL
 );
@@ -713,9 +715,15 @@ CREATE TABLE IF NOT EXISTS session_combatants(
   hp_current INTEGER NOT NULL DEFAULT 0,
   hp_max INTEGER NOT NULL DEFAULT 0,
   sp_head INTEGER NOT NULL DEFAULT 0,
+  sp_head_max INTEGER NOT NULL DEFAULT 0,
   sp_body INTEGER NOT NULL DEFAULT 0,
+  sp_body_max INTEGER NOT NULL DEFAULT 0,
   shield_current INTEGER NOT NULL DEFAULT 0,
+  shield_max INTEGER NOT NULL DEFAULT 0,
   ammo_current INTEGER NOT NULL DEFAULT 0,
+  ammo_max INTEGER NOT NULL DEFAULT 0,
+  luck_current INTEGER NOT NULL DEFAULT 0,
+  luck_max INTEGER NOT NULL DEFAULT 0,
   move INTEGER NOT NULL DEFAULT 0,
   conditions_json TEXT NOT NULL DEFAULT '[]',
   injuries_json TEXT NOT NULL DEFAULT '[]',
@@ -780,6 +788,7 @@ MIGRATION_NETWORK_CORE = 2
 MIGRATION_CITY_FEED = 3
 MIGRATION_OPERATIONS = 4
 MIGRATION_NOTIFICATIONS = 5
+MIGRATION_TACTICAL_PROFILES = 6
 DB_BACKUP_LIMIT = 5
 _RATE_LIMIT_BUCKETS = {}
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -855,6 +864,12 @@ def backup_database(conn, label):
     return path
 
 
+def ensure_column(conn, table, name, definition):
+    columns = {row['name'] for row in conn.execute(f'PRAGMA table_info({table})')}
+    if name not in columns:
+        conn.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
+
+
 def apply_schema_migrations(conn, make_backup=True):
     """Idempotently upgrade legacy databases without resetting campaign data."""
     conn.execute('CREATE TABLE IF NOT EXISTS schema_migrations('
@@ -870,6 +885,7 @@ def apply_schema_migrations(conn, make_backup=True):
         (MIGRATION_CITY_FEED, 'city feed posts comments and revisions'),
         (MIGRATION_OPERATIONS, 'character ledger and session operations'),
         (MIGRATION_NOTIFICATIONS, 'site notifications and VK outbox'),
+        (MIGRATION_TACTICAL_PROFILES, 'profile media and tactical session resources'),
     ]
     pending = [version for version, _ in migrations if version not in applied]
     if make_backup and pending:
@@ -899,12 +915,39 @@ def apply_schema_migrations(conn, make_backup=True):
         conn.executescript(OPERATIONS_SCHEMA)
     if MIGRATION_NOTIFICATIONS not in applied:
         conn.executescript(NOTIFICATION_SCHEMA)
+    if MIGRATION_TACTICAL_PROFILES not in applied:
+        ensure_column(conn, 'users', 'avatar_media_id', 'TEXT')
+        ensure_column(conn, 'npc_templates', 'archived', 'INTEGER NOT NULL DEFAULT 0')
+        ensure_column(conn, 'session_combatants', 'sp_head_max', 'INTEGER NOT NULL DEFAULT 0')
+        ensure_column(conn, 'session_combatants', 'sp_body_max', 'INTEGER NOT NULL DEFAULT 0')
+        ensure_column(conn, 'session_combatants', 'shield_max', 'INTEGER NOT NULL DEFAULT 0')
+        ensure_column(conn, 'session_combatants', 'ammo_max', 'INTEGER NOT NULL DEFAULT 0')
+        ensure_column(conn, 'session_combatants', 'luck_current', 'INTEGER NOT NULL DEFAULT 0')
+        ensure_column(conn, 'session_combatants', 'luck_max', 'INTEGER NOT NULL DEFAULT 0')
     # Re-run additive CREATE IF NOT EXISTS blocks so patch-level tables added to an
     # already-applied migration remain safe during development and rolling deploys.
     conn.executescript(NETWORK_SCHEMA)
     conn.executescript(FEED_SCHEMA)
     conn.executescript(OPERATIONS_SCHEMA)
     conn.executescript(NOTIFICATION_SCHEMA)
+    # Recover safely if a rolling/patch deployment recorded the migration before
+    # every additive column reached a particular database.
+    ensure_column(conn, 'users', 'avatar_media_id', 'TEXT')
+    ensure_column(conn, 'npc_templates', 'archived', 'INTEGER NOT NULL DEFAULT 0')
+    ensure_column(conn, 'session_combatants', 'sp_head_max', 'INTEGER NOT NULL DEFAULT 0')
+    ensure_column(conn, 'session_combatants', 'sp_body_max', 'INTEGER NOT NULL DEFAULT 0')
+    ensure_column(conn, 'session_combatants', 'shield_max', 'INTEGER NOT NULL DEFAULT 0')
+    ensure_column(conn, 'session_combatants', 'ammo_max', 'INTEGER NOT NULL DEFAULT 0')
+    ensure_column(conn, 'session_combatants', 'luck_current', 'INTEGER NOT NULL DEFAULT 0')
+    ensure_column(conn, 'session_combatants', 'luck_max', 'INTEGER NOT NULL DEFAULT 0')
+    conn.execute('UPDATE session_combatants SET sp_head_max=sp_head '
+                 'WHERE sp_head_max=0 AND sp_head>0')
+    conn.execute('UPDATE session_combatants SET sp_body_max=sp_body '
+                 'WHERE sp_body_max=0 AND sp_body>0')
+    conn.execute('UPDATE session_combatants SET shield_max=shield_current '
+                 'WHERE shield_max=0 AND shield_current>0')
+    conn.execute('UPDATE session_combatants SET ammo_max=ammo_current '
+                 'WHERE ammo_max=0 AND ammo_current>0')
     for version, name in migrations:
         if version not in applied:
             conn.execute(
@@ -953,7 +996,12 @@ SESSION_VIEW_DEFAULTS = {
     'show_initiative': True,
     'show_ally_hp': True,
     'show_armor': True,
+    'show_shield': True,
+    'show_ammo': False,
+    'show_move': True,
+    'show_luck': True,
     'show_conditions': True,
+    'show_injuries': True,
 }
 
 
@@ -982,6 +1030,62 @@ def session_view_config(value):
     return {
         key: raw[key] if isinstance(raw.get(key), bool) else default
         for key, default in SESSION_VIEW_DEFAULTS.items()
+    }
+
+
+def clean_npc_template_input(body, existing=None):
+    base = dict(existing or {})
+    name = str((body or {}).get('name', base.get('name', '')) or '').strip()[:120]
+    if not name:
+        raise ApiError(400, 'NPC template нужно имя')
+    access = str((body or {}).get('access', base.get('access', 'private'))).lower()
+    if access not in ('private', 'shared'):
+        raise ApiError(400, 'Некорректный NPC template')
+    existing_data = parse_json_object(base.get('data_json'))
+    source = (body or {}).get('data')
+    if source is None:
+        source = existing_data
+    if not isinstance(source, dict):
+        raise ApiError(400, 'Некорректный NPC template')
+    data = {**existing_data, **source}
+    provided_keys = set(data)
+    numeric = ('initiative', 'hp_current', 'hp_max', 'sp_head', 'sp_head_max',
+               'sp_body', 'sp_body_max', 'shield_current', 'shield_max', 'ammo_current', 'ammo_max',
+               'luck_current', 'luck_max', 'move', 'death_penalty')
+    for key in numeric:
+        value = _num(data.get(key)) or 0
+        data[key] = max(-1000, min(1000, value)) if key == 'initiative' else max(0, value)
+    for current_key, maximum_key in (('hp_current', 'hp_max'),
+                                     ('sp_head', 'sp_head_max'),
+                                     ('sp_body', 'sp_body_max'),
+                                     ('shield_current', 'shield_max'),
+                                     ('ammo_current', 'ammo_max'),
+                                     ('luck_current', 'luck_max')):
+        maximum = data[maximum_key]
+        if current_key not in provided_keys and maximum:
+            data[current_key] = maximum
+        if not maximum and data[current_key]:
+            maximum = data[current_key]
+            data[maximum_key] = maximum
+        if maximum:
+            data[current_key] = min(maximum, data[current_key])
+    for key in ('conditions', 'injuries'):
+        values = data.get(key) or []
+        if not isinstance(values, list):
+            raise ApiError(400, 'Некорректный NPC template')
+        data[key] = [str(value)[:120] for value in values[:20]]
+    secret = data.get('secret') or {}
+    if not isinstance(secret, dict):
+        raise ApiError(400, 'Некорректный NPC template')
+    data['secret'] = secret
+    data['visible'] = data.get('visible') is not False
+    if len(json.dumps(data, ensure_ascii=False)) > 20000:
+        raise ApiError(400, 'Некорректный NPC template')
+    return {
+        'name': name,
+        'access': access,
+        'role': str((body or {}).get('role', base.get('role', '')) or '')[:80],
+        'data': data,
     }
 
 
@@ -1999,12 +2103,7 @@ def attach_character_media(conn, user_id, character_id, data):
 
 def attach_network_media(conn, user_id, entity_type, entity_id, media_ids, allowed_kinds):
     desired = {str(value or '') for value in media_ids if value}
-    attached = conn.execute('SELECT * FROM media WHERE attached_type=? AND attached_id=?',
-                            (entity_type, entity_id)).fetchall()
-    for media in attached:
-        if media['id'] not in desired:
-            conn.execute('UPDATE media SET attached_type=NULL,attached_id=NULL WHERE id=?',
-                         (media['id'],))
+    validated = []
     for media_id in desired:
         media = conn.execute('SELECT * FROM media WHERE id=?', (media_id,)).fetchone()
         if not media or media['kind'] not in allowed_kinds:
@@ -2014,6 +2113,14 @@ def attach_network_media(conn, user_id, entity_type, entity_id, media_ids, allow
             raise ApiError(403, 'Изображение принадлежит другому аккаунту')
         if media['attached_type'] and not already:
             raise ApiError(409, 'Изображение уже прикреплено')
+        validated.append(media_id)
+    attached = conn.execute('SELECT * FROM media WHERE attached_type=? AND attached_id=?',
+                            (entity_type, entity_id)).fetchall()
+    for media in attached:
+        if media['id'] not in desired:
+            conn.execute('UPDATE media SET attached_type=NULL,attached_id=NULL WHERE id=?',
+                         (media['id'],))
+    for media_id in validated:
         conn.execute('UPDATE media SET attached_type=?,attached_id=? WHERE id=?',
                      (entity_type, entity_id, media_id))
 
@@ -2196,6 +2303,10 @@ SERVER_ERROR_EN = {
     'Архивное досье нельзя использовать как автора': 'Archived Dossier cannot publish content',
     'Aftermath уже опубликован или контракт не активен': 'Aftermath is already published or the Contract is not active',
     'Недоступный NPC template': 'Unavailable NPC template',
+    'NPC template не найден': 'NPC template not found',
+    'Нет права редактировать NPC template': 'You cannot edit this NPC template',
+    'Некорректный NPC template': 'Invalid NPC template',
+    'NPC template нужно имя': 'NPC template requires a name',
     'Некорректные данные участника сессии': 'Invalid session combatant data',
     'Участник сессии не найден': 'Session combatant not found',
     'Недоступная персона в контракте': 'Unavailable Persona in Contract',
@@ -2513,6 +2624,7 @@ class Handler(BaseHTTPRequestHandler):
             'account_role': role, 'is_gm': role in ('gm', 'admin'),
             'is_admin': role == 'admin',
             'show_display_name': bool(_row_value(u, 'show_display_name', 0)),
+            'avatar_media_id': _row_value(u, 'avatar_media_id'),
             'vk_linked': bool(_row_value(u, 'vk_user_id')),
             'notification_prefs': notification_prefs,
             'theme': theme,
@@ -2533,6 +2645,12 @@ class Handler(BaseHTTPRequestHandler):
         if 'show_display_name' in (body or {}):
             conn.execute('UPDATE users SET show_display_name=? WHERE id=?',
                          (1 if body['show_display_name'] else 0, u['id']))
+        if 'avatar_media_id' in (body or {}):
+            avatar_media_id = str(body.get('avatar_media_id') or '')[:64] or None
+            attach_network_media(conn, u['id'], 'account', u['id'],
+                                 [avatar_media_id], {'account_avatar'})
+            conn.execute('UPDATE users SET avatar_media_id=? WHERE id=?',
+                         (avatar_media_id, u['id']))
         if 'notification_prefs' in (body or {}):
             prefs = body.get('notification_prefs') or {}
             if not isinstance(prefs, dict) or len(json.dumps(prefs)) > 5000:
@@ -3466,6 +3584,12 @@ class Handler(BaseHTTPRequestHandler):
             char = conn.execute('SELECT owner_id,public FROM characters WHERE id=?', (row['attached_id'],)).fetchone()
             public_media = bool(char and char['public'])
             allowed = bool(char and (public_media or (user and user['id'] == char['owner_id'])))
+        elif row['attached_type'] == 'account' and row['attached_id']:
+            account = conn.execute('SELECT id,show_display_name FROM users WHERE id=?',
+                                   (row['attached_id'],)).fetchone()
+            public_media = bool(account and account['show_display_name'])
+            allowed = bool(account and user and
+                           (user['id'] == account['id'] or public_media))
         elif row['attached_type'] == 'persona' and row['attached_id']:
             persona = conn.execute('SELECT * FROM personas WHERE id=?', (row['attached_id'],)).fetchone()
             public_media = bool(persona and persona['access'] in ('shared', 'system') and persona['status'] != 'archived')
@@ -4065,8 +4189,11 @@ class Handler(BaseHTTPRequestHandler):
             if not player_view:
                 data.update({
                     'hp_current': item['hp_current'], 'hp_max': item['hp_max'],
-                    'sp_head': item['sp_head'], 'sp_body': item['sp_body'],
-                    'shield_current': item['shield_current'], 'ammo_current': item['ammo_current'],
+                    'sp_head': item['sp_head'], 'sp_head_max': item['sp_head_max'],
+                    'sp_body': item['sp_body'], 'sp_body_max': item['sp_body_max'],
+                    'shield_current': item['shield_current'], 'shield_max': item['shield_max'],
+                    'ammo_current': item['ammo_current'], 'ammo_max': item['ammo_max'],
+                    'luck_current': item['luck_current'], 'luck_max': item['luck_max'],
                     'move': item['move'], 'conditions': parse_json_list(item['conditions_json']),
                     'injuries': parse_json_list(item['injuries_json']),
                     'death_penalty': item['death_penalty'],
@@ -4076,9 +4203,22 @@ class Handler(BaseHTTPRequestHandler):
                 if item['kind'] == 'character' and config['show_ally_hp']:
                     data.update({'hp_current': item['hp_current'], 'hp_max': item['hp_max']})
                 if config['show_armor']:
-                    data.update({'sp_head': item['sp_head'], 'sp_body': item['sp_body']})
+                    data.update({'sp_head': item['sp_head'], 'sp_head_max': item['sp_head_max'],
+                                 'sp_body': item['sp_body'], 'sp_body_max': item['sp_body_max']})
+                if config['show_shield']:
+                    data.update({'shield_current': item['shield_current'],
+                                 'shield_max': item['shield_max']})
+                if config['show_ammo']:
+                    data.update({'ammo_current': item['ammo_current'], 'ammo_max': item['ammo_max']})
+                if config['show_move']:
+                    data['move'] = item['move']
+                if config['show_luck'] and item['luck_max']:
+                    data.update({'luck_current': item['luck_current'], 'luck_max': item['luck_max']})
                 if config['show_conditions']:
                     data['conditions'] = parse_json_list(item['conditions_json'])
+                if config['show_injuries']:
+                    data['injuries'] = parse_json_list(item['injuries_json'])
+                    data['death_penalty'] = item['death_penalty']
             out_combatants.append(data)
         visible_active_turn = next(
             (index for index, item in enumerate(out_combatants) if item['active']), None)
@@ -4098,33 +4238,91 @@ class Handler(BaseHTTPRequestHandler):
             payload['activity'] = [dict(item) for item in activity]
         return payload
 
-    def api_npc_templates(self, conn, qs, m, body):
-        user = self.require_gm(conn)
-        rows = conn.execute(
-            "SELECT * FROM npc_templates WHERE access='shared' OR owner_user_id=? ORDER BY updated DESC",
-            (user['id'],)).fetchall()
-        self.send_json({'templates': [{
+    def can_edit_npc_template(self, user, template):
+        return bool(user and template and user_is_gm(user) and
+                    (user_is_admin(user) or template['owner_user_id'] == user['id']))
+
+    def npc_template_payload(self, row, user):
+        return {
             'id': row['id'], 'owner_user_id': row['owner_user_id'],
             'access': row['access'], 'name': row['name'], 'role': row['role'],
             'data': parse_json_object(row['data_json']), 'updated': row['updated'],
-        } for row in rows]})
+            'can_edit': self.can_edit_npc_template(user, row),
+        }
+
+    def api_npc_templates(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        rows = conn.execute(
+            "SELECT * FROM npc_templates WHERE archived=0 AND "
+            "(? OR access='shared' OR owner_user_id=?) ORDER BY updated DESC",
+            (1 if user_is_admin(user) else 0, user['id'])).fetchall()
+        self.send_json({'templates': [self.npc_template_payload(row, user) for row in rows]})
 
     def api_npc_template_create(self, conn, qs, m, body):
         user = self.require_gm(conn)
-        name = str((body or {}).get('name') or '').strip()[:120]
-        if not name:
-            raise ApiError(400, 'NPC template нужно имя')
-        access = 'shared' if (body or {}).get('access') == 'shared' else 'private'
-        data = (body or {}).get('data') or {}
-        if not isinstance(data, dict) or len(json.dumps(data)) > 20000:
-            raise ApiError(400, 'Некорректный NPC template')
+        cleaned = clean_npc_template_input(body or {})
         now = time.time()
         cur = conn.execute(
             'INSERT INTO npc_templates(owner_user_id,access,name,role,data_json,created,updated) '
             'VALUES(?,?,?,?,?,?,?)',
-            (user['id'], access, name, str((body or {}).get('role') or '')[:80],
-             json.dumps(data, ensure_ascii=False), now, now))
-        conn.commit(); self.send_json({'id': cur.lastrowid}, status=201)
+            (user['id'], cleaned['access'], cleaned['name'], cleaned['role'],
+             json.dumps(cleaned['data'], ensure_ascii=False), now, now))
+        conn.commit()
+        row = conn.execute('SELECT * FROM npc_templates WHERE id=?', (cur.lastrowid,)).fetchone()
+        self.send_json(self.npc_template_payload(row, user), status=201)
+
+    def api_npc_template_update(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM npc_templates WHERE id=? AND archived=0',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'NPC template не найден')
+        if not self.can_edit_npc_template(user, row):
+            raise ApiError(403, 'Нет права редактировать NPC template')
+        cleaned = clean_npc_template_input(body or {}, row)
+        conn.execute(
+            'UPDATE npc_templates SET access=?,name=?,role=?,data_json=?,updated=? WHERE id=?',
+            (cleaned['access'], cleaned['name'], cleaned['role'],
+             json.dumps(cleaned['data'], ensure_ascii=False), time.time(), row['id']))
+        conn.commit()
+        updated = conn.execute('SELECT * FROM npc_templates WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(self.npc_template_payload(updated, user))
+
+    def api_npc_template_clone(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute(
+            "SELECT * FROM npc_templates WHERE id=? AND archived=0 AND "
+            "(? OR access='shared' OR owner_user_id=?)",
+            (int(m.group(1)), 1 if user_is_admin(user) else 0, user['id'])).fetchone()
+        if not row:
+            raise ApiError(404, 'NPC template не найден')
+        cleaned = clean_npc_template_input({
+            'name': str((body or {}).get('name') or f'{row["name"]} Copy'),
+            'role': row['role'],
+            'access': (body or {}).get('access') or 'private',
+            'data': parse_json_object(row['data_json']),
+        })
+        now = time.time()
+        cur = conn.execute(
+            'INSERT INTO npc_templates(owner_user_id,access,name,role,data_json,created,updated) '
+            'VALUES(?,?,?,?,?,?,?)',
+            (user['id'], cleaned['access'], cleaned['name'], cleaned['role'],
+             json.dumps(cleaned['data'], ensure_ascii=False), now, now))
+        conn.commit()
+        cloned = conn.execute('SELECT * FROM npc_templates WHERE id=?', (cur.lastrowid,)).fetchone()
+        self.send_json(self.npc_template_payload(cloned, user), status=201)
+
+    def api_npc_template_delete(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM npc_templates WHERE id=? AND archived=0',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'NPC template не найден')
+        if not self.can_edit_npc_template(user, row):
+            raise ApiError(403, 'Нет права редактировать NPC template')
+        conn.execute('UPDATE npc_templates SET archived=1,updated=? WHERE id=?',
+                     (time.time(), row['id']))
+        conn.commit(); self.send_json({'ok': True, 'archived': True})
 
     def api_sessions(self, conn, qs, m, body):
         user = self.require_gm(conn)
@@ -4158,15 +4356,32 @@ class Handler(BaseHTTPRequestHandler):
                 (contract_id,)).fetchall()
             for index, signup in enumerate(signups):
                 char = ensure_progression(json.loads(signup['data'])); derived = derive(char)
+                shield = (char.get('armor') or {}).get('shield') or {}
+                shield_max = (_num(shield.get('maximum')) or _num(shield.get('sdp')) or
+                              _num(shield.get('sp')) or 0) if isinstance(shield, dict) else 0
+                shield_current = (_num(shield.get('current')) if isinstance(shield, dict) else None)
+                shield_current = shield_max if shield_current is None else max(0, min(shield_max, shield_current))
+                weapon_states = [value for value in (char.get('weapon_state') or {}).values()
+                                 if isinstance(value, dict)]
+                ammo_current = sum(max(0, _num(value.get('magazine')) or 0) for value in weapon_states)
+                ammo_max = sum(max(0, _num(value.get('magazine_max')) or 0) for value in weapon_states)
+                luck_max = max(0, _num((char.get('stats') or {}).get('LUCK')) or 0)
+                injuries = char.get('critical_injuries') or []
+                injuries = injuries if isinstance(injuries, list) else []
                 conn.execute(
                     "INSERT INTO session_combatants(session_id,kind,character_id,name,initiative,hp_current,"
-                    "hp_max,sp_head,sp_body,shield_current,ammo_current,move,visible,sort_order) "
-                    "VALUES(?,'character',?,?,?,?,?,?,?,?,?,?,1,?)",
+                    "hp_max,sp_head,sp_head_max,sp_body,sp_body_max,shield_current,shield_max,ammo_current,"
+                    "ammo_max,luck_current,luck_max,move,injuries_json,death_penalty,visible,sort_order) "
+                    "VALUES(?,'character',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)",
                     (session_id, signup['character_id'], char.get('handle') or 'Edgerunner', 0,
                      char.get('hp_cur') if char.get('hp_cur') is not None else (derived.get('hp_max') or 0),
                      derived.get('hp_max') or 0, derived.get('sp_head') or 0,
-                     derived.get('sp_body') or 0, 0, 0,
-                     _num((char.get('stats') or {}).get('MOVE')) or 0, index))
+                     derived.get('sp_head') or 0, derived.get('sp_body') or 0,
+                     derived.get('sp_body') or 0, shield_current, shield_max,
+                     ammo_current, ammo_max, max(0, min(luck_max, _num(char.get('luck_cur')) or 0)),
+                     luck_max, _num((char.get('stats') or {}).get('MOVE')) or 0,
+                     json.dumps([str(value)[:120] for value in injuries[:20]], ensure_ascii=False),
+                     max(0, _num(char.get('death_penalty')) or 0), index))
         conn.commit(); row = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (session_id,)).fetchone()
         self.send_json(self.session_payload(conn, row, user), status=201)
 
@@ -4219,8 +4434,9 @@ class Handler(BaseHTTPRequestHandler):
         template_id = _num((body or {}).get('template_id'))
         if template_id:
             template = conn.execute(
-                "SELECT * FROM npc_templates WHERE id=? AND (access='shared' OR owner_user_id=?)",
-                (template_id, user['id'])).fetchone()
+                "SELECT * FROM npc_templates WHERE id=? AND archived=0 "
+                "AND (? OR access='shared' OR owner_user_id=?)",
+                (template_id, 1 if user_is_admin(user) else 0, user['id'])).fetchone()
             if not template:
                 raise ApiError(403, 'Недоступный NPC template')
         source = parse_json_object(template['data_json']) if template else (body or {})
@@ -4239,18 +4455,28 @@ class Handler(BaseHTTPRequestHandler):
         maximum = max(0, _num(source.get('hp_max')) or 0)
         current = _num(source.get('hp_current'))
         current = maximum if current is None else max(0, min(maximum or current, current))
+        sp_head = max(0, _num(source.get('sp_head')) or 0)
+        sp_head_max = max(sp_head, _num(source.get('sp_head_max')) or 0)
+        sp_body = max(0, _num(source.get('sp_body')) or 0)
+        sp_body_max = max(sp_body, _num(source.get('sp_body_max')) or 0)
+        shield_current = max(0, _num(source.get('shield_current')) or 0)
+        shield_max = max(shield_current, _num(source.get('shield_max')) or 0)
+        ammo_current = max(0, _num(source.get('ammo_current')) or 0)
+        ammo_max = max(ammo_current, _num(source.get('ammo_max')) or 0)
+        luck_current = max(0, _num(source.get('luck_current')) or 0)
+        luck_max = max(luck_current, _num(source.get('luck_max')) or 0)
         order = conn.execute('SELECT COALESCE(MAX(sort_order),-1)+1 n FROM session_combatants WHERE session_id=?',
                              (session['id'],)).fetchone()['n']
         cur = conn.execute(
             'INSERT INTO session_combatants(session_id,kind,template_id,name,initiative,hp_current,hp_max,'
-            'sp_head,sp_body,shield_current,ammo_current,move,conditions_json,injuries_json,death_penalty,'
-            'visible,secret_json,sort_order) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            'sp_head,sp_head_max,sp_body,sp_body_max,shield_current,shield_max,ammo_current,ammo_max,'
+            'luck_current,luck_max,move,conditions_json,injuries_json,death_penalty,visible,secret_json,sort_order) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (session['id'], 'npc', template['id'] if template else None, name,
              max(-1000, min(1000, _num(source.get('initiative')) or 0)), current, maximum,
-             max(0, _num(source.get('sp_head')) or 0), max(0, _num(source.get('sp_body')) or 0),
-             max(0, _num(source.get('shield_current')) or 0),
-             max(0, _num(source.get('ammo_current')) or 0), max(0, _num(source.get('move')) or 0),
-             json.dumps(conditions), json.dumps(injuries),
+             sp_head, sp_head_max, sp_body, sp_body_max, shield_current, shield_max,
+             ammo_current, ammo_max, luck_current, luck_max,
+             max(0, _num(source.get('move')) or 0), json.dumps(conditions), json.dumps(injuries),
              max(0, _num(source.get('death_penalty')) or 0),
              0 if source.get('visible') is False else 1,
              json.dumps(secret, ensure_ascii=False), order))
@@ -4278,8 +4504,9 @@ class Handler(BaseHTTPRequestHandler):
         old_index = min(max(0, session['active_turn']), max(0, len(ordered_before) - 1))
         active_id = ordered_before[old_index]['id'] if ordered_before else None
         before = dict(combatant)
-        numeric = ['initiative', 'hp_current', 'hp_max', 'sp_head', 'sp_body',
-                   'shield_current', 'ammo_current', 'move', 'death_penalty', 'sort_order']
+        numeric = ['initiative', 'hp_current', 'hp_max', 'sp_head', 'sp_head_max',
+                   'sp_body', 'sp_body_max', 'shield_current', 'shield_max', 'ammo_current', 'ammo_max',
+                   'luck_current', 'luck_max', 'move', 'death_penalty', 'sort_order']
         values = {key: _num((body or {}).get(key, combatant[key])) or 0 for key in numeric}
         values['initiative'] = max(-1000, min(1000, values['initiative']))
         for key in numeric:
@@ -4287,6 +4514,13 @@ class Handler(BaseHTTPRequestHandler):
                 values[key] = max(0, values[key])
         hp_limit = values['hp_max'] if values['hp_max'] > 0 else values['hp_current']
         values['hp_current'] = min(hp_limit, values['hp_current'])
+        for current_key, maximum_key in (('sp_head', 'sp_head_max'),
+                                         ('sp_body', 'sp_body_max'),
+                                         ('shield_current', 'shield_max'),
+                                         ('ammo_current', 'ammo_max'),
+                                         ('luck_current', 'luck_max')):
+            if values[maximum_key] > 0:
+                values[current_key] = min(values[maximum_key], values[current_key])
         conditions = (body or {}).get('conditions', parse_json_list(combatant['conditions_json']))
         injuries = (body or {}).get('injuries', parse_json_list(combatant['injuries_json']))
         secret = (body or {}).get('secret', parse_json_object(combatant['secret_json']))
@@ -4300,10 +4534,14 @@ class Handler(BaseHTTPRequestHandler):
         visible = visible if isinstance(visible, bool) else bool(combatant['visible'])
         name = str((body or {}).get('name', combatant['name'])).strip()[:120] or combatant['name']
         conn.execute(
-            'UPDATE session_combatants SET name=?,initiative=?,hp_current=?,hp_max=?,sp_head=?,sp_body=?,'
-            'shield_current=?,ammo_current=?,move=?,conditions_json=?,injuries_json=?,death_penalty=?,visible=?,secret_json=?,sort_order=? WHERE id=?',
+            'UPDATE session_combatants SET name=?,initiative=?,hp_current=?,hp_max=?,sp_head=?,sp_head_max=?,'
+            'sp_body=?,sp_body_max=?,shield_current=?,shield_max=?,ammo_current=?,ammo_max=?,luck_current=?,'
+            'luck_max=?,move=?,conditions_json=?,injuries_json=?,death_penalty=?,visible=?,secret_json=?,'
+            'sort_order=? WHERE id=?',
             (name, values['initiative'], values['hp_current'], values['hp_max'],
-             values['sp_head'], values['sp_body'], values['shield_current'], values['ammo_current'],
+             values['sp_head'], values['sp_head_max'], values['sp_body'], values['sp_body_max'],
+             values['shield_current'], values['shield_max'],
+             values['ammo_current'], values['ammo_max'], values['luck_current'], values['luck_max'],
              values['move'], json.dumps(conditions), json.dumps(injuries), values['death_penalty'],
              1 if visible else 0, json.dumps(secret, ensure_ascii=False),
              values['sort_order'], combatant['id']))
@@ -4652,6 +4890,9 @@ ROUTES = [
     ('POST', rx(r'/api/feed/(\d+)/comments/(\d+)/hide'), Handler.api_feed_comment_hide),
     ('GET', rx(r'/api/npc-templates'), Handler.api_npc_templates),
     ('POST', rx(r'/api/npc-templates'), Handler.api_npc_template_create),
+    ('PUT', rx(r'/api/npc-templates/(\d+)'), Handler.api_npc_template_update),
+    ('POST', rx(r'/api/npc-templates/(\d+)/clone'), Handler.api_npc_template_clone),
+    ('DELETE', rx(r'/api/npc-templates/(\d+)'), Handler.api_npc_template_delete),
     ('GET', rx(r'/api/sessions'), Handler.api_sessions),
     ('POST', rx(r'/api/sessions'), Handler.api_session_create),
     ('GET', rx(r'/api/sessions/(\d+)'), Handler.api_session_detail),

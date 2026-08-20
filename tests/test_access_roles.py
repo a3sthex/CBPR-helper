@@ -39,6 +39,10 @@ class AccessRoleMigrationTests(unittest.TestCase):
             server.DB_PATH = path
             try:
                 server.apply_schema_migrations(conn, make_backup=True)
+                conn.execute(
+                    'INSERT INTO session_combatants(session_id,name,sp_head,sp_body,'
+                    'shield_current,ammo_current) VALUES(1,\'Legacy NPC\',7,11,10,20)')
+                conn.commit()
                 server.apply_schema_migrations(conn, make_backup=True)
             finally:
                 server.DB_PATH = original_path
@@ -46,11 +50,22 @@ class AccessRoleMigrationTests(unittest.TestCase):
                      for row in conn.execute('SELECT * FROM users')}
             self.assertEqual(roles, {'alice': 'gm', 'bob': 'player'})
             self.assertEqual(
-                conn.execute('SELECT COUNT(*) n FROM schema_migrations').fetchone()['n'], 5)
+                conn.execute('SELECT COUNT(*) n FROM schema_migrations').fetchone()['n'], 6)
             self.assertEqual(len(list(Path(directory).glob('campaign.db.backup-*'))), 1)
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(users)')}
             self.assertTrue({'account_role', 'show_display_name', 'vk_user_id',
-                             'notification_prefs', 'theme_json'} <= columns)
+                             'notification_prefs', 'theme_json', 'avatar_media_id'} <= columns)
+            combatant_columns = {row['name'] for row in conn.execute(
+                'PRAGMA table_info(session_combatants)')}
+            self.assertTrue({'sp_head_max', 'sp_body_max', 'shield_max', 'ammo_max',
+                             'luck_current', 'luck_max'} <= combatant_columns)
+            template_columns = {row['name'] for row in conn.execute(
+                'PRAGMA table_info(npc_templates)')}
+            self.assertIn('archived', template_columns)
+            legacy_npc = conn.execute("SELECT * FROM session_combatants WHERE name='Legacy NPC'").fetchone()
+            self.assertEqual((legacy_npc['sp_head_max'], legacy_npc['sp_body_max'],
+                              legacy_npc['shield_max'], legacy_npc['ammo_max']),
+                             (7, 11, 10, 20))
             conn.close()
 
     def test_admin_bootstrap_is_explicit_and_audited(self):
@@ -110,6 +125,25 @@ class AccessRoleMigrationTests(unittest.TestCase):
             with self.assertRaises(server.ApiError) as raised:
                 server.Handler.api_profile(handler, conn, {}, None, {'is_gm': True})
             self.assertEqual(raised.exception.status, 403)
+            media_id = 'a' * 32
+            conn.execute(
+                'INSERT INTO media(id,owner_id,kind,mime,filename,size,width,height,created) '
+                "VALUES(?,?,'account_avatar','image/webp','avatar.webp',100,100,100,1)",
+                (media_id, row['id']))
+            conn.commit()
+            server.Handler.api_profile(handler, conn, {}, None, {
+                'avatar_media_id': media_id, 'show_display_name': True,
+            })
+            attached = conn.execute('SELECT * FROM media WHERE id=?', (media_id,)).fetchone()
+            self.assertEqual((attached['attached_type'], attached['attached_id']),
+                             ('account', row['id']))
+            self.assertEqual(response['payload']['avatar_media_id'], media_id)
+            with self.assertRaises(server.ApiError):
+                server.Handler.api_profile(handler, conn, {}, None, {
+                    'avatar_media_id': 'f' * 32,
+                })
+            still_attached = conn.execute('SELECT * FROM media WHERE id=?', (media_id,)).fetchone()
+            self.assertEqual(still_attached['attached_type'], 'account')
             conn.close()
 
     def test_player_post_is_published_without_gm_approval(self):
@@ -168,6 +202,9 @@ class AccessRoleMigrationTests(unittest.TestCase):
             self.assertIn("id:'" + district + "'", network)
         self.assertIn('NC_AUDIO', network)
         self.assertIn('openSessionDashboard', network)
+        self.assertIn('show_injuries', network)
+        self.assertIn('/clone', network)
+        self.assertIn('account_avatar', source)
 
 
 if __name__ == '__main__':

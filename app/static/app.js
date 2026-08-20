@@ -65,8 +65,8 @@ async function openThemeSettings() {
 function openImageCrop(file, kind, onUploaded) {
   if (!file || !/^image\/(jpeg|png|webp)$/.test(file.type) || file.size > 10_000_000) { toast(T('Choose a JPEG, PNG, or WebP file up to 10 MB.','Выберите JPEG, PNG или WebP до 10 MB.'),true); return; }
   const reader=new FileReader();reader.onload=()=>{const image=new Image();image.onload=()=>{
-    let aspect='4:5',zoom=1,rotation=0,dx=0,dy=0,drag=null;
-    const modal=openModal(`<h2>${T('Crop Image','Обрезка изображения')}</h2><div class="image-crop-stage"><canvas id="crop-canvas" width="400" height="500"></canvas></div><div class="segmented mt"><button data-aspect="4:5" class="active">Portrait 4:5</button><button data-aspect="1:1">Square 1:1</button><button id="crop-rotate">↻ 90°</button></div><label class="f mt"><span>Zoom</span><input id="crop-zoom" type="range" min="1" max="3" step=".01" value="1"></label><p class="small muted">${T('Drag the image to reposition it.','Перетаскивайте изображение для позиционирования.')}</p><div class="row"><button id="crop-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="crop-upload">${T('Upload','Загрузить')}</button></div>`,true),canvas=$('#crop-canvas',modal),ctx=canvas.getContext('2d');
+    let aspect=kind==='account_avatar'?'1:1':'4:5',zoom=1,rotation=0,dx=0,dy=0,drag=null;
+    const modal=openModal(`<h2>${T('Crop Image','Обрезка изображения')}</h2><div class="image-crop-stage"><canvas id="crop-canvas" width="400" height="${aspect==='1:1'?400:500}"></canvas></div><div class="segmented mt"><button data-aspect="4:5" class="${aspect==='4:5'?'active':''}">Portrait 4:5</button><button data-aspect="1:1" class="${aspect==='1:1'?'active':''}">Square 1:1</button><button id="crop-rotate">↻ 90°</button></div><label class="f mt"><span>Zoom</span><input id="crop-zoom" type="range" min="1" max="3" step=".01" value="1"></label><p class="small muted">${T('Drag the image to reposition it.','Перетаскивайте изображение для позиционирования.')}</p><div class="row"><button id="crop-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="crop-upload">${T('Upload','Загрузить')}</button></div>`,true),canvas=$('#crop-canvas',modal),ctx=canvas.getContext('2d');
     const draw=(target=canvas)=>{const square=aspect==='1:1',w=target.width,h=square?target.width:Math.round(target.width*1.25);if(target.height!==h)target.height=h;const c=target.getContext('2d');c.clearRect(0,0,w,h);c.save();c.translate(w/2+dx*(w/400),h/2+dy*(h/(square?400:500)));c.rotate(rotation*Math.PI/180);const rotated=rotation%180!==0,iw=rotated?image.height:image.width,ih=rotated?image.width:image.height,base=Math.max(w/iw,h/ih)*zoom;c.drawImage(image,-image.width*base/2,-image.height*base/2,image.width*base,image.height*base);c.restore();};
     draw();canvas.onpointerdown=e=>{drag={x:e.clientX,y:e.clientY,dx,dy};canvas.setPointerCapture(e.pointerId);};canvas.onpointermove=e=>{if(!drag)return;dx=drag.dx+e.clientX-drag.x;dy=drag.dy+e.clientY-drag.y;draw();};canvas.onpointerup=()=>drag=null;
     $$('[data-aspect]',modal).forEach(btn=>btn.onclick=()=>{aspect=btn.dataset.aspect;$$('[data-aspect]',modal).forEach(x=>x.classList.toggle('active',x===btn));dx=dy=0;draw();});
@@ -239,7 +239,7 @@ function renderUserbox() {
   const ini = (state.me.display_name || state.me.username || '?').slice(0, 1).toUpperCase();
   box.innerHTML = `
     <span class="userchip" id="userchip" title="${T('Profile','Профиль')}">
-      <span class="avatar">${esc(ini)}</span>
+      ${state.me.avatar_media_id?`<img class="avatar" src="/api/media/${esc(state.me.avatar_media_id)}" alt="">`:`<span class="avatar">${esc(ini)}</span>`}
       <span>${esc(state.me.display_name)}</span>
       ${state.me.is_admin ? '<span class="gm-badge">ADMIN</span>' : (state.me.is_gm ? `<span class="gm-badge">${T('GM','ГМ')}</span>` : '')}
     </span>
@@ -3438,9 +3438,11 @@ function viewRegister(view) { viewLogin(view); }
 async function viewProfile(view) {
   if (!state.me) { view.innerHTML = `<div class="empty">${T('Sign in required.','Нужен вход.')} <a href="#/login">${T('Sign in','Войти')}</a></div>`; return; }
   const role = String(state.me.account_role || (state.me.is_gm ? 'gm' : 'player')).toUpperCase();
+  let avatarMediaId = state.me.avatar_media_id || null;
   view.innerHTML = `
   <div class="panel" style="max-width:620px;margin:0 auto">
     <div class="row" style="justify-content:space-between"><h2>${T('NC//NET Profile','Профиль NC//NET')}</h2><span class="tag role">${esc(role)}</span></div>
+    <div class="profile-avatar-editor mb"><div id="pf-avatar-preview">${avatarMediaId?`<img src="/api/media/${esc(avatarMediaId)}" alt="">`:`<span>${esc((state.me.display_name||state.me.username||'?').slice(0,1).toUpperCase())}</span>`}</div><div><label class="btn-sm">${T('Upload Account Avatar','Загрузить аватар аккаунта')}<input id="pf-avatar-file" type="file" accept="image/jpeg,image/png,image/webp" hidden></label>${avatarMediaId?`<button class="btn-sm" id="pf-avatar-remove">${T('Remove Avatar','Удалить аватар')}</button>`:''}<p class="small muted">${T('Square crop recommended. Avatar visibility follows display-name privacy.','Рекомендуется квадратная обрезка. Видимость аватара следует настройке display name.')}</p></div></div>
     <label class="f"><span>${T('Display name','Отображаемое имя')}</span><input id="pf-d" value="${esc(state.me.display_name)}"></label>
     <label class="f"><span>${T('Network access','Доступ к сети')}</span><input value="${esc(role)}" disabled></label>
     <label class="checkbox mb"><input type="checkbox" id="pf-show-name" ${state.me.show_display_name ? 'checked' : ''}> ${T('Show my account display name to other members of my Contracts','Показывать display name аккаунта другим участникам моих контрактов')}</label>
@@ -3448,6 +3450,8 @@ async function viewProfile(view) {
     <div class="panel mb"><div class="row" style="justify-content:space-between"><div><b>VK</b><div class="small muted">${state.me.vk_linked ? T('Connected for NC//NET mentions','Подключён для упоминаний NC//NET') : T('Connect VK to allow mentions in the campaign conversation.','Подключите VK для упоминаний в беседе кампании.')}</div></div>${state.me.vk_linked?'✓':`<button class="btn-sm" id="pf-vk-connect">${T('Connect VK','Подключить VK')}</button>`}</div></div>
     <div class="row"><button class="btn-primary" id="pf-save">${T('Save','Сохранить')}</button>${state.me.is_admin ? `<a class="btn-sm" href="#/admin">${T('Admin Console','Панель Admin')}</a>` : ''}</div>
   </div>`;
+  $('#pf-avatar-file').onchange=()=>openImageCrop($('#pf-avatar-file').files[0],'account_avatar',media=>{avatarMediaId=media.id;$('#pf-avatar-preview').innerHTML=`<img src="${esc(media.url)}" alt="">`;toast(T('Account avatar ready. Save the profile to apply it.','Аватар аккаунта готов. Сохраните профиль, чтобы применить его.'));});
+  if ($('#pf-avatar-remove')) $('#pf-avatar-remove').onclick=()=>{avatarMediaId=null;$('#pf-avatar-preview').innerHTML=`<span>${esc((state.me.display_name||state.me.username||'?').slice(0,1).toUpperCase())}</span>`;$('#pf-avatar-remove').disabled=true;};
   if ($('#pf-audio-volume') && typeof NC_AUDIO !== 'undefined') $('#pf-audio-volume').oninput = event => NC_AUDIO.setVolume(event.target.value);
   if ($('#pf-vk-connect')) $('#pf-vk-connect').onclick = async () => {
     try { const result = await api('/api/vk/oauth/start', { method: 'POST' }); location.href = result.url; }
@@ -3458,6 +3462,7 @@ async function viewProfile(view) {
       state.me = await api('/api/profile', { method: 'POST', body: {
         display_name: $('#pf-d').value,
         show_display_name: $('#pf-show-name').checked,
+        avatar_media_id: avatarMediaId,
       } });
       renderUserbox();
       toast(T('Profile updated','Профиль обновлён'));

@@ -9,6 +9,7 @@
 | Раздел | Описание |
 | --- | --- |
 | 🧬 **Dossiers** | Шестишаговый мастер и интерактивный официальный-inspired Character Sheet: Portrait upload/crop, Corebook role art, EN/RU, persistent draft, Hybrid Lifepath, 62/86, parent-pools, Shopping compatibility, Cyberware hosts/paired slots, HP/LUCK/Armor/ammo trackers, dice rolls, IP progression, multiclass, JSON/Print и read-only архив с сохранением NC//NET history. |
+| 👤 **Profile** | Account avatar с квадратной crop-обработкой, privacy display name/avatar, Appearance, audio volume, VK linking и управляемые Admin роли. |
 | 📖 **Гайды** | Мини-гайды из «Spes Desperata»: пошаговое создание персонажа (роли, 62 очка статов, 86 очков навыков, стартовая закупка), боёвка FNFF (действия, DV-таблицы, крит. травмы, укрытия, транспорт) и нетраннинг (СЕТевые действия, Interface-способности). |
 | 📋 **Crew Registry** | Все публичные персонажи всех игроков. При старте импортируется ростер вашей партии из Folio (13 эджраннеров). |
 | 🕶️ **Чёрный рынок** | Ночная витрина (обновляется ежедневно в 00:00 МСК, уличные цены ±50%), полный каталог на 1092 предмета, скупка хлама за 50%, выплаты от ГМ. |
@@ -17,7 +18,7 @@
 | ◈ **Personas / Storylines** | Private/Shared/System персоны, общий audit log, GM-соавторы сюжетных линий и публичная/закрытая хронология. |
 | 📡 **City Feed** | Шесть внутриигровых форматов, прямые Character-публикации без предварительной модерации, комментарии, revisions и post-publication hide moderation. |
 | 📞 **Contracts** | Произвольные Persona-роли, public/classified briefing, reward modes, мгновенная запись Character, автоматический waitlist, Service Information, неизменяемый исторический Crew после завершения и одноразовый Aftermath. |
-| ⚙️ **GM OPS** | Active Sessions из Contracts, private/shared NPC templates, стабильный initiative order, Previous/Next Turn с переходом раундов, HP/SP/conditions, activity log и настраиваемый Player View без утечки скрытых полей. |
+| ⚙️ **GM OPS** | Active Sessions из Contracts, редактируемые/клонируемые private/shared NPC templates, стабильный initiative order, Previous/Next Turn с переходом раундов, HP/SP/Shield/Ammo/LUCK/MOVE/Injuries controls, activity log и независимо настраиваемый Player View без утечки скрытых полей. |
 
 ## Запуск
 

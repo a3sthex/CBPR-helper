@@ -204,7 +204,7 @@ Legacy route должен продолжать открываться по со�
 
 ### 4.2 Приватность аккаунта
 
-Пользователь выбирает, показывать ли display name другим участникам Contract. Публичные страницы по умолчанию показывают только Characters и Personas.
+Пользователь выбирает, показывать ли display name другим участникам Contract. Account avatar следует той же настройке приватности: владельцу он доступен всегда, остальным — только при открытом display name. Публичные страницы по умолчанию показывают только Characters и Personas.
 
 ## 5. Модель данных
 
@@ -220,6 +220,7 @@ show_display_name     boolean, default false
 vk_user_id            nullable
 vk_linked_at          nullable
 notification_prefs    JSON
+avatar_media_id       nullable; visibility follows show_display_name
 ```
 
 Существующее `is_gm` временно сохраняется для совместимости, затем удаляется отдельной миграцией после проверки ролей.
@@ -599,7 +600,7 @@ sessions
 - Critical Injuries;
 - Death Save Penalty.
 
-Player View управляется конфигурацией GM и никогда не возвращает скрытые NPC fields через API. Initiative order вычисляется сервером; активный участник сохраняется при добавлении, удалении и изменении Initiative. Dashboard даёт Previous/Next Turn, автоматический переход раундов и независимые переключатели видимости Initiative, ally HP, Armor и Conditions.
+Player View управляется конфигурацией GM и никогда не возвращает скрытые NPC fields через API. Initiative order вычисляется сервером; активный участник сохраняется при добавлении, удалении и изменении Initiative. Dashboard даёт Previous/Next Turn, автоматический переход раундов, быстрые resource controls и независимые переключатели видимости Initiative, ally HP, Armor, Shield, Ammo, MOVE, LUCK, Conditions и Injuries.
 
 ## 9. Визуальная оболочка
 
@@ -761,7 +762,7 @@ Player View управляется конфигурацией GM и никогд
 ### Phase 6 — Session Dashboard ✅
 
 - Session from Contract;
-- NPC templates;
+- private/shared NPC templates with edit, clone and history-safe archive;
 - stable turn order/resources and round transitions;
 - Previous/Next Turn controls;
 - configurable Player View with server-side field filtering;

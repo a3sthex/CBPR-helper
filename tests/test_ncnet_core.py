@@ -108,6 +108,43 @@ class NCNetCoreFlowTests(unittest.TestCase):
             'public_summary': 'Watson goes dark.',
         })['payload']
 
+        self.current = self.user('admin')
+        private_template = self.call(server.Handler.api_npc_template_create, {}, None, {
+            'name': 'Admin Secret', 'access': 'private', 'data': {'hp_max': 10},
+        })['payload']
+        self.assertEqual(private_template['data']['hp_current'], 10)
+        self.current = self.user('gm')
+        with self.assertRaises(server.ApiError) as private_template_denied:
+            self.call(server.Handler.api_npc_template_update, {},
+                      self.match(private_template['id']), {'name': 'Stolen'})
+        self.assertEqual(private_template_denied.exception.status, 403)
+        self.assertNotIn(private_template['id'], [item['id'] for item in self.call(
+            server.Handler.api_npc_templates, {}, None, {})['payload']['templates']])
+
+        template = self.call(server.Handler.api_npc_template_create, {}, None, {
+            'name': 'Maelstrom Guard', 'role': 'Boosterganger', 'access': 'shared',
+            'data': {
+                'hp_max': 30, 'hp_current': 30, 'sp_body': 7, 'sp_head': 7,
+                'shield_max': 10, 'shield_current': 10,
+                'ammo_max': 20, 'ammo_current': 20,
+                'luck_max': 3, 'luck_current': 3, 'move': 5, 'initiative': 12,
+                'conditions': ['Alert'], 'injuries': ['Damaged Ear'],
+                'death_penalty': 1,
+            },
+        })['payload']
+        updated_template = self.call(server.Handler.api_npc_template_update, {},
+                                     self.match(template['id']), {
+            'name': 'Maelstrom Guard', 'data': {'hp_max': 32, 'hp_current': 32},
+        })['payload']
+        self.assertEqual(updated_template['data']['hp_max'], 32)
+        self.assertEqual(updated_template['data']['shield_max'], 10)
+        cloned_template = self.call(server.Handler.api_npc_template_clone, {},
+                                    self.match(template['id']), {})['payload']
+        self.assertTrue(cloned_template['can_edit'])
+        self.call(server.Handler.api_npc_template_delete, {}, self.match(template['id']), {})
+        listed_templates = self.call(server.Handler.api_npc_templates, {}, None, {})['payload']['templates']
+        self.assertEqual([item['id'] for item in listed_templates], [cloned_template['id']])
+
         contract = self.call(server.Handler.api_contract_create, {}, None, {
             'title': 'Restore the Relay', 'teaser': 'Watson needs a crew.',
             'public_brief': 'Reach the relay and bring it online.',
@@ -164,11 +201,15 @@ class NCNetCoreFlowTests(unittest.TestCase):
         })['payload']
         self.assertEqual(len(session['combatants']), 1)
         npc = self.call(server.Handler.api_session_combatant_create, {}, self.match(session['id']), {
-            'name': 'Maelstrom Guard', 'hp_max': 30, 'sp_body': 7,
-            'initiative': 12, 'visible': True,
+            'template_id': cloned_template['id'], 'name': 'Maelstrom Guard',
         })['payload']
         self.call(server.Handler.api_session_combatant_update, {},
-                  self.match(session['id'], npc['id']), {'hp_max': 30, 'hp_current': 20})
+                  self.match(session['id'], npc['id']), {
+                      'hp_max': 32, 'hp_current': 20,
+                      'shield_max': 10, 'shield_current': 8,
+                      'ammo_max': 20, 'ammo_current': 17,
+                      'luck_max': 3, 'luck_current': 2,
+                  })
         changed = self.conn.execute('SELECT * FROM session_combatants WHERE id=?',
                                     (npc['id'],)).fetchone()
         self.assertEqual(changed['hp_current'], 20)
@@ -177,11 +218,17 @@ class NCNetCoreFlowTests(unittest.TestCase):
         self.assertEqual([item['id'] for item in session_detail['combatants']], [npc['id'], 1])
         self.assertFalse(session_detail['combatants'][0]['active'])
         self.assertTrue(session_detail['combatants'][1]['active'])
+        self.assertEqual(session_detail['combatants'][0]['shield_current'], 8)
+        self.assertEqual(session_detail['combatants'][0]['ammo_current'], 17)
+        self.assertEqual(session_detail['combatants'][0]['luck_current'], 2)
+        self.assertEqual(session_detail['combatants'][0]['injuries'], ['Damaged Ear'])
         self.call(server.Handler.api_session_update, {}, self.match(session['id']), {
             'round': 1, 'active_turn': 0,
             'player_view_config': {
                 'show_initiative': False, 'show_ally_hp': True,
-                'show_armor': False, 'show_conditions': True,
+                'show_armor': False, 'show_shield': False, 'show_ammo': False,
+                'show_move': True, 'show_luck': True,
+                'show_conditions': True, 'show_injuries': True,
             },
         })
         self.current = self.user('runner2')
@@ -190,6 +237,11 @@ class NCNetCoreFlowTests(unittest.TestCase):
         self.assertTrue(player_view['combatants'][0]['active'])
         self.assertNotIn('initiative', player_view['combatants'][0])
         self.assertNotIn('sp_body', player_view['combatants'][0])
+        self.assertNotIn('shield_current', player_view['combatants'][0])
+        self.assertNotIn('ammo_current', player_view['combatants'][0])
+        self.assertEqual(player_view['combatants'][0]['move'], 5)
+        self.assertEqual(player_view['combatants'][0]['luck_current'], 2)
+        self.assertEqual(player_view['combatants'][0]['injuries'], ['Damaged Ear'])
         self.assertNotIn('secret', player_view['combatants'][0])
         self.assertNotIn('notes', player_view)
 
