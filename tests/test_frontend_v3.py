@@ -32,6 +32,15 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('CUSTOM · MANUAL', source)
         self.assertIn("it.cat!=='cyberware'", source)
 
+    def test_character_sheet_has_consumable_and_active_gear_actions(self):
+        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        self.assertIn('Active Gear / Loadout', source)
+        self.assertIn('function chooseEquipMode', source)
+        self.assertIn('performSheetItemAction', source)
+        self.assertIn('data-item-use', source)
+        self.assertIn('data-item-equip', source)
+        self.assertIn("'deactivate':'activate'", source)
+
     def test_wizard_v3_runtime_contract(self):
         meta = {
             'stats': server.STATS,

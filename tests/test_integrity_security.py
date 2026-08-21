@@ -218,6 +218,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
                 # Custom narrative items cannot inject executable/derived mechanics.
                 'damage': '99d6', 'sp': 99, 'hl': -100,
                 'mechanics': {'attack_bonus': 999}, 'fields': {'evil': True},
+                'consumable': True, 'equippable': True, 'active': True,
             },
             {
                 'is_custom': True, 'key': 'duplicate-prop', 'cat': 'custom',
@@ -237,7 +238,8 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertTrue(all(item['qty'] == 1 for item in cards))
         self.assertEqual(len({item['instance_id'] for item in inventory}), 3)
         self.assertTrue(all(item['key'] == f"custom-{item['instance_id']}" for item in inventory))
-        for forbidden in ('damage', 'sp', 'hl', 'mechanics', 'fields'):
+        for forbidden in ('damage', 'sp', 'hl', 'mechanics', 'fields',
+                          'consumable', 'equippable', 'active'):
             self.assertNotIn(forbidden, prototype)
         self.assertTrue(prototype['manual_resolution_required'])
         row = self.conn.execute(
@@ -278,6 +280,114 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         history = self.call(server.Handler.api_character_ledger, self.match(1))
         self.assertTrue(any('Scrambler Mk II' in change['label']
                             for change in history['entries'][0]['changes']))
+
+    def test_consumable_and_active_gear_actions_are_authoritative_and_audited(self):
+        edited = copy.deepcopy(self.character_data)
+        catalog_ids = ('gear-27', 'gear-67', 'gear-91', 'gear-82', 'gear-154')
+        edited['inventory'] = [
+            {
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': server.item_by_id(item_id)['cat'],
+                'name': server.item_by_id(item_id)['name'],
+                'qty': 2 if item_id == 'gear-154' else 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            }
+            for item_id in catalog_ids
+        ]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Prepare field loadout', 'data': edited,
+        })
+        inventory = updated['data']['inventory']
+        by_name = {item['name']: item for item in inventory}
+        self.assertTrue(by_name['Flashlight']['equippable'])
+        self.assertTrue(by_name['Stim']['consumable'])
+
+        def item_match(instance_id):
+            return re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{instance_id}')
+
+        result = self.call(
+            server.Handler.api_character_item_action,
+            item_match(by_name['Flashlight']['instance_id']),
+            {'revision': 1, 'action': 'equip', 'mode': 'held'},
+        )
+        flashlight = next(item for item in result['character']['data']['inventory']
+                          if item['name'] == 'Flashlight')
+        self.assertEqual(result['character']['revision'], 2)
+        self.assertEqual(flashlight['state'], 'equipped')
+        self.assertEqual(flashlight['equipped_mode'], 'held')
+        self.assertFalse(flashlight['active'])
+
+        result = self.call(
+            server.Handler.api_character_item_action,
+            item_match(flashlight['instance_id']),
+            {'revision': 2, 'action': 'activate'},
+        )
+        flashlight = next(item for item in result['character']['data']['inventory']
+                          if item['name'] == 'Flashlight')
+        self.assertTrue(flashlight['active'])
+
+        radio = next(item for item in result['character']['data']['inventory']
+                     if item['name'] == 'Radio Communicator')
+        result = self.call(
+            server.Handler.api_character_item_action,
+            item_match(radio['instance_id']),
+            {'revision': 3, 'action': 'equip', 'mode': 'worn'},
+        )
+        radio = next(item for item in result['character']['data']['inventory']
+                     if item['name'] == 'Radio Communicator')
+        self.assertEqual(radio['equipped_slot'], 'ear')
+
+        agent = next(item for item in result['character']['data']['inventory']
+                     if item['name'] == 'Agent (Standard)')
+        result = self.call(
+            server.Handler.api_character_item_action,
+            item_match(agent['instance_id']),
+            {'revision': 4, 'action': 'equip', 'mode': 'held'},
+        )
+        techtool = next(item for item in result['character']['data']['inventory']
+                        if item['name'] == 'Techtool')
+        with self.assertRaises(server.ApiError) as no_free_hand:
+            self.call(
+                server.Handler.api_character_item_action,
+                item_match(techtool['instance_id']),
+                {'revision': 5, 'action': 'equip', 'mode': 'held'},
+            )
+        self.assertEqual(no_free_hand.exception.status, 409)
+
+        stim = next(item for item in result['character']['data']['inventory']
+                    if item['name'] == 'Stim')
+        used = self.call(
+            server.Handler.api_character_item_action,
+            item_match(stim['instance_id']),
+            {'revision': 5, 'action': 'use', 'amount': 1},
+        )
+        self.assertEqual(used['character']['revision'], 6)
+        self.assertTrue(used['effect']['manual_resolution_required'])
+        remaining_stim = next(item for item in used['character']['data']['inventory']
+                              if item['name'] == 'Stim')
+        self.assertEqual(remaining_stim['qty'], 1)
+        used_again = self.call(
+            server.Handler.api_character_item_action,
+            item_match(remaining_stim['instance_id']),
+            {'revision': 6, 'action': 'use', 'amount': 1},
+        )
+        self.assertFalse(any(item['name'] == 'Stim'
+                             for item in used_again['character']['data']['inventory']))
+        self.assertFalse(self.conn.execute(
+            'SELECT 1 FROM item_instances WHERE instance_id=?',
+            (remaining_stim['instance_id'],)).fetchone())
+
+        history = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertEqual(history['entries'][0]['category'], 'item_action')
+        self.assertTrue(history['entries'][0]['can_revert'])
+        reverted = self.call(
+            server.Handler.api_character_ledger_revert,
+            self.match(1, history['entries'][0]['id']),
+            {'revision': 7, 'reason': 'Undo accidental use'},
+        )
+        restored_stim = next(item for item in reverted['data']['inventory']
+                             if item['name'] == 'Stim')
+        self.assertEqual(restored_stim['qty'], 1)
 
     def test_unknown_item_requires_database_or_explicit_custom_marker(self):
         edited = copy.deepcopy(self.character_data)

@@ -416,6 +416,28 @@ class CatalogArmorTests(unittest.TestCase):
         self.assertEqual(by_name['Popup Grenade Launcher']['capacity']['host'], 'Cyberarm')
         self.assertEqual(by_name['Popup Grenade Launcher']['capacity']['slots_used'], 2)
 
+    def test_catalog_has_curated_consumables_and_active_gear(self):
+        items = {item['name']: item for item in server.catalog()['items']}
+        flashlight = items['Flashlight']
+        radio = items['Radio Communicator']
+        self.assertTrue(flashlight['equippable'])
+        self.assertEqual(flashlight['equip_modes'], ['held', 'ready'])
+        self.assertEqual(flashlight['equip_slots'], ['hand', 'belt'])
+        self.assertTrue(flashlight['activation_required'])
+        self.assertTrue(radio['equippable'])
+        self.assertIn('worn', radio['equip_modes'])
+        self.assertEqual(radio['hands_required'], 0)
+        for name in ('Antibiotic', 'Rapidetox', 'Speedheal', 'Stim'):
+            item = items[name]
+            self.assertTrue(item['consumable'])
+            self.assertTrue(item['stackable'])
+            self.assertEqual(item['consume_amount'], 1)
+            self.assertEqual(item['use_effect']['kind'], 'manual')
+            self.assertTrue(item['use_effect']['manual_resolution_required'])
+            self.assertNotIn('javascript', json.dumps(item['use_effect']).lower())
+        self.assertFalse(items['Carryall'].get('consumable', False))
+        self.assertFalse(items['Carryall'].get('equippable', False))
+
     def test_night_market_is_grouped_by_deterministic_vendors(self):
         market = server.night_market()
         self.assertEqual(len(market['vendors']), 6)

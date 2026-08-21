@@ -67,6 +67,37 @@ def item_by_id(iid):
     return catalog()['_by_id'].get(iid)
 
 
+ITEM_INTERACTION_FIELDS = (
+    'stackable', 'consumable', 'consume_amount', 'use_context', 'use_effect',
+    'equippable', 'equip_modes', 'equip_slots', 'hands_required',
+    'activation_required', 'active_actions', 'equip_limit', 'exclusive_group',
+    'requires_host_type',
+)
+
+
+def catalog_interaction_data(item):
+    if not isinstance(item, dict):
+        return {}
+    return {key: copy.deepcopy(item[key]) for key in ITEM_INTERACTION_FIELDS if key in item}
+
+
+def enrich_owned_item_interactions(data):
+    """Refresh safe declarative interaction flags for legacy owned catalog items."""
+    for bucket in ('inventory', 'cyberware'):
+        for entry in data.get(bucket) or []:
+            if not isinstance(entry, dict) or entry.get('is_custom'):
+                continue
+            item = item_by_id(catalog_item_id_for_entry(entry))
+            if not item:
+                continue
+            for key in ITEM_INTERACTION_FIELDS:
+                if key in item:
+                    entry[key] = copy.deepcopy(item[key])
+                else:
+                    entry.pop(key, None)
+    return data
+
+
 # ---------------------------------------------------------------- правила
 
 STATS = ['INT', 'REF', 'DEX', 'TECH', 'COOL', 'WILL', 'LUCK', 'MOVE', 'BODY', 'EMP']
@@ -1838,6 +1869,7 @@ def character_change_summary(before, after, limit=250):
                 old_view = {
                     'name': old.get('custom_name') or old.get('name'),
                     'qty': old.get('qty') or 1, 'state': old.get('state') or 'carried',
+                    'mode': old.get('equipped_mode'), 'active': old.get('active'),
                     'category': old.get('cat'), 'value': old.get('price'),
                     'source': old.get('acquisition_source'),
                     'description': old.get('desc') if old.get('is_custom') else None,
@@ -1845,6 +1877,7 @@ def character_change_summary(before, after, limit=250):
                 new_view = {
                     'name': new.get('custom_name') or new.get('name'),
                     'qty': new.get('qty') or 1, 'state': new.get('state') or 'carried',
+                    'mode': new.get('equipped_mode'), 'active': new.get('active'),
                     'category': new.get('cat'), 'value': new.get('price'),
                     'source': new.get('acquisition_source'),
                     'description': new.get('desc') if new.get('is_custom') else None,
@@ -2471,8 +2504,12 @@ def canonical_owned_entry(entry, bucket, old_entries):
             'source': 'Custom / Trust + Audit', 'manual_resolution_required': True,
         })
         for unsafe in ('catalog_item_id', 'source_key', 'damage', 'sp', 'hl', 'fields',
-                       'mechanics', 'requirements', 'capacity', 'type'):
+                       'mechanics', 'requirements', 'capacity', 'type',
+                       *ITEM_INTERACTION_FIELDS, 'active', 'equipped_mode',
+                       'equipped_slot', 'host_instance_id'):
             owned.pop(unsafe, None)
+        # Custom items may control storage shape, but never Use/Equip mechanics.
+        owned['stackable'] = stackable
     elif not catalog_id:
         if not existing:
             raise ApiError(400, 'Неизвестный предмет: выберите Database item или создайте Custom item')
@@ -2500,6 +2537,11 @@ def canonical_owned_entry(entry, bucket, old_entries):
             'source': item.get('source'),
             'price': (existing or {}).get('price', item.get('price') or 0),
         })
+        for key in ITEM_INTERACTION_FIELDS:
+            if key in item:
+                owned[key] = copy.deepcopy(item[key])
+            else:
+                owned.pop(key, None)
         owned.pop('is_custom', None)
     try:
         owned['qty'] = max(1, min(999, int(entry.get('qty') or owned.get('qty') or 1)))
@@ -2518,6 +2560,19 @@ def canonical_owned_entry(entry, bucket, old_entries):
                 ('installed' if bucket == 'cyberware' else 'carried'))
     if state not in ITEM_INSTANCE_STATES:
         raise ApiError(400, 'Некорректное состояние предмета')
+    if bucket == 'inventory' and state == 'equipped' and owned.get('cat') != 'armor':
+        if custom or not owned.get('equippable'):
+            raise ApiError(400, 'Этот предмет нельзя экипировать')
+        if not existing or existing.get('state') != 'equipped':
+            raise ApiError(400, 'Используйте действие Equip в Character Sheet')
+        for key in ('active', 'equipped_mode', 'equipped_slot', 'host_instance_id'):
+            if key in existing:
+                owned[key] = copy.deepcopy(existing[key])
+            else:
+                owned.pop(key, None)
+    elif state != 'equipped':
+        for key in ('active', 'equipped_mode', 'equipped_slot', 'host_instance_id'):
+            owned.pop(key, None)
     owned['state'] = 'installed' if bucket == 'cyberware' else state
     clean_item_acquisition(entry, owned, require_source=existing is None)
     return owned
@@ -3312,6 +3367,22 @@ SERVER_ERROR_EN = {
     'Некорректная категория custom item': 'Invalid custom item category',
     'stackable должен быть логическим значением': 'stackable must be boolean',
     'Неизвестный предмет: выберите Database item или создайте Custom item': 'Unknown item: choose a Database item or create a Custom item',
+    'Этот предмет нельзя экипировать': 'This item cannot be equipped',
+    'Используйте действие Equip в Character Sheet': 'Use the Equip action in the Character Sheet',
+    'Экземпляр предмета не найден': 'Item instance not found',
+    'Этот предмет не является расходником': 'This item is not consumable',
+    'Расходник должен быть исправен и находиться при персонаже': 'The consumable must be functional and carried by the character',
+    'Недостаточно единиц расходника': 'Not enough consumable units',
+    'Экипировать можно только carried предмет': 'Only a carried item can be equipped',
+    'Недопустимый режим экипировки': 'Invalid equip mode',
+    'Недостаточно свободных рук для экипировки': 'Not enough free hands to equip this item',
+    'Недопустимый слот экипировки': 'Invalid equipment slot',
+    'Достигнут лимит экипированных копий': 'Equipped copy limit reached',
+    'Предмет не экипирован': 'The item is not equipped',
+    'Неизвестное действие с предметом': 'Unknown item action',
+    'Предмет не поддерживает включение и выключение': 'The item cannot be activated or deactivated',
+    'Сначала экипируйте предмет': 'Equip the item first',
+    'Предмет уже находится в выбранном состоянии': 'The item is already in the requested state',
     'Все слоты заняты': 'All slots are filled',
     'Вы уже записаны': 'You are already signed up',
     'Для специализированного навыка повышайте parent-pool': 'Increase the parent pool for a specialized Skill',
@@ -5270,7 +5341,7 @@ class Handler(BaseHTTPRequestHandler):
     CHAR_LIST_FIELDS = ('id', 'owner_id', 'public', 'created', 'updated')
 
     def char_payload(self, row, owner_name=None, public_view=False):
-        full_data = ensure_progression(json.loads(row['data']))
+        full_data = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
         visibility = ensure_character_visibility(full_data)
         data = public_character_data(full_data) if public_view else full_data
         derived = derive(full_data)
@@ -5554,7 +5625,7 @@ class Handler(BaseHTTPRequestHandler):
             item['can_revert'] = bool(
                 delta.get('revertible') and
                 _num(delta.get('revision_after')) == current_revision and
-                item['category'] in ('sheet_update', 'sheet_revert'))
+                item['category'] in ('sheet_update', 'sheet_revert', 'item_action'))
             item['has_snapshot'] = bool(item.get('before_json'))
             item.pop('before_json', None)
             item.pop('after_json', None)
@@ -5572,7 +5643,7 @@ class Handler(BaseHTTPRequestHandler):
         entry = conn.execute(
             'SELECT * FROM character_ledger WHERE id=? AND character_id=?',
             (int(m.group(2)), row['id'])).fetchone()
-        if not entry or entry['category'] not in ('sheet_update', 'sheet_revert'):
+        if not entry or entry['category'] not in ('sheet_update', 'sheet_revert', 'item_action'):
             raise ApiError(404, 'Изменение Character Sheet не найдено')
         delta = parse_json_object(entry['delta_json'])
         if (not delta.get('revertible') or
@@ -5616,6 +5687,127 @@ class Handler(BaseHTTPRequestHandler):
             item['item'] = parse_json_object(item.pop('data_json'))
             payload.append(item)
         self.send_json({'character_id': row['id'], 'instances': payload})
+
+    @atomic_endpoint
+    def api_character_item_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        expected_revision = _num((body or {}).get('revision'))
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if expected_revision is None or expected_revision != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        instance_id = str(m.group(2)).lower()
+        index = next((position for position, entry in enumerate(data.get('inventory') or [])
+                      if isinstance(entry, dict) and entry.get('instance_id') == instance_id), None)
+        if index is None:
+            raise ApiError(404, 'Экземпляр предмета не найден')
+        entry = data['inventory'][index]
+        catalog_item = item_by_id(catalog_item_id_for_entry(entry))
+        interaction = catalog_interaction_data(catalog_item)
+        action = str((body or {}).get('action') or '').strip().lower()
+        display_name = str(entry.get('custom_name') or entry.get('name') or 'Item')
+        effect = None
+
+        if action == 'use':
+            if not interaction.get('consumable'):
+                raise ApiError(400, 'Этот предмет не является расходником')
+            if entry.get('state') in ('stored', 'broken', 'consumed'):
+                raise ApiError(409, 'Расходник должен быть исправен и находиться при персонаже')
+            try:
+                uses = max(1, min(99, int((body or {}).get('amount') or 1)))
+            except (TypeError, ValueError):
+                raise ApiError(400, 'Некорректное количество')
+            consume_amount = max(1, int(interaction.get('consume_amount') or 1))
+            spent = uses * consume_amount
+            quantity = max(1, int(entry.get('qty') or 1))
+            if spent > quantity:
+                raise ApiError(400, 'Недостаточно единиц расходника')
+            remaining = quantity - spent
+            if remaining:
+                entry['qty'] = remaining
+            else:
+                data['inventory'].pop(index)
+            effect = copy.deepcopy(interaction.get('use_effect'))
+            reason = f'Use {display_name} ×{spent}'
+        elif action == 'equip':
+            if not interaction.get('equippable'):
+                raise ApiError(400, 'Этот предмет нельзя экипировать')
+            if entry.get('state') != 'carried':
+                raise ApiError(409, 'Экипировать можно только carried предмет')
+            modes = interaction.get('equip_modes') or ['ready']
+            mode = str((body or {}).get('mode') or modes[0])
+            if mode not in modes:
+                raise ApiError(400, 'Недопустимый режим экипировки')
+            hands_required = max(0, int(interaction.get('hands_required') or 0)) if mode == 'held' else 0
+            occupied_hands = 0
+            for equipped in data.get('inventory') or []:
+                if (not isinstance(equipped, dict) or equipped.get('state') != 'equipped' or
+                        equipped.get('equipped_mode') != 'held'):
+                    continue
+                equipped_item = item_by_id(catalog_item_id_for_entry(equipped))
+                occupied_hands += max(0, int((equipped_item or {}).get('hands_required') or 0))
+            shoulder_mounts = sum(
+                1 for chrome in data.get('cyberware') or []
+                if isinstance(chrome, dict) and chrome.get('state') == 'installed' and
+                str(chrome.get('name') or '').lower() == 'artificial shoulder mount')
+            available_hands = 2 + shoulder_mounts * 2
+            if occupied_hands + hands_required > available_hands:
+                raise ApiError(409, 'Недостаточно свободных рук для экипировки')
+            limit = _num(interaction.get('equip_limit'))
+            if limit is not None:
+                equipped_count = sum(
+                    1 for owned in data.get('inventory') or []
+                    if isinstance(owned, dict) and owned.get('state') == 'equipped' and
+                    catalog_item_id_for_entry(owned) == catalog_item_id_for_entry(entry))
+                if equipped_count >= limit:
+                    raise ApiError(409, 'Достигнут лимит экипированных копий')
+            slots = interaction.get('equip_slots') or []
+            slot_defaults = {'held': 'hand', 'worn': 'ear', 'ready': 'belt',
+                             'workspace': 'workspace', 'mounted': 'weapon'}
+            slot = str((body or {}).get('slot') or slot_defaults.get(mode) or (slots[0] if slots else 'other'))
+            if slots and slot not in slots:
+                raise ApiError(400, 'Недопустимый слот экипировки')
+            entry.update({
+                'state': 'equipped', 'equipped_mode': mode, 'equipped_slot': slot,
+                'active': not bool(interaction.get('activation_required')),
+            })
+            reason = f'Equip {display_name} ({mode})'
+        elif action == 'unequip':
+            if entry.get('state') != 'equipped':
+                raise ApiError(409, 'Предмет не экипирован')
+            entry['state'] = 'carried'
+            for key in ('active', 'equipped_mode', 'equipped_slot', 'host_instance_id'):
+                entry.pop(key, None)
+            reason = f'Unequip {display_name}'
+        elif action in ('activate', 'deactivate'):
+            if not interaction.get('equippable') or not interaction.get('activation_required'):
+                raise ApiError(400, 'Предмет не поддерживает включение и выключение')
+            if entry.get('state') != 'equipped':
+                raise ApiError(409, 'Сначала экипируйте предмет')
+            active = action == 'activate'
+            if bool(entry.get('active')) == active:
+                raise ApiError(409, 'Предмет уже находится в выбранном состоянии')
+            entry['active'] = active
+            reason = f'{"Activate" if active else "Deactivate"} {display_name}'
+        else:
+            raise ApiError(400, 'Неизвестное действие с предметом')
+
+        revision_after = current_revision + 1
+        persist_character_item_instances(
+            conn, row['id'], data, 'item_action', source_ref=reason, prune=True)
+        record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='item_action')
+        conn.execute(
+            'UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+            (json.dumps(data, ensure_ascii=False), time.time(), revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ok': True, 'action': action, 'message': reason, 'effect': effect,
+            'character': self.char_payload(fresh, fresh['owner']),
+        })
 
     @atomic_endpoint
     def api_character_improve(self, conn, qs, m, body):
@@ -5811,6 +6003,7 @@ class Handler(BaseHTTPRequestHandler):
                 'mechanics': copy.deepcopy(it.get('mechanics') or {}),
                 'source': it.get('source'),
             }
+            owned.update(catalog_interaction_data(it))
             if item_entry_stackable(owned):
                 found = next((entry for entry in inv if isinstance(entry, dict) and
                               catalog_item_id_for_entry(entry) == it['id'] and
@@ -6960,6 +7153,7 @@ ROUTES = [
     ('GET', rx(r'/api/characters/(\d+)/ledger'), Handler.api_character_ledger),
     ('POST', rx(r'/api/characters/(\d+)/ledger/(\d+)/revert'), Handler.api_character_ledger_revert),
     ('GET', rx(r'/api/characters/(\d+)/items'), Handler.api_character_items),
+    ('POST', rx(r'/api/characters/(\d+)/items/([a-f0-9]{32})/action'), Handler.api_character_item_action),
     ('GET', rx(r'/api/characters/(\d+)/network'), Handler.api_character_network),
     ('POST', rx(r'/api/characters/(\d+)/improve'), Handler.api_character_improve),
     ('POST', rx(r'/api/characters/(\d+)/specialization'), Handler.api_character_specialization),

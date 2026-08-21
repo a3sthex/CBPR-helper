@@ -2013,6 +2013,8 @@ function itemMechanicChips(item) {
   const locations=item.armor_locations||m.armor_locations||[];
   if(locations.length){const locationLabel=locations.includes('shield')?T('SHIELD','ЩИТ'):(item.armor_bundled||m.armor_bundled?T('HEAD + BODY SET','КОМПЛЕКТ ГОЛОВА + ТЕЛО'):locations.map(location=>T(location.toUpperCase(),location==='head'?'ГОЛОВА':'ТЕЛО')).join(' / '));chips.push(`<span class="chip armor-location"><b>${esc(locationLabel)}</b></span>`);if(locations.length>1&&!item.armor_bundled&&!m.armor_bundled)chips.push(`<span class="chip">${T('purchased separately','покупается раздельно')}</span>`);}
   if(item.hl)chips.push(`<span class="hl-badge">HL ${item.hl}</span>`);
+  if(item.consumable)chips.push(`<span class="chip"><b>${T('Consumable','Расходник')}</b></span>`);
+  if(item.equippable)chips.push(`<span class="chip"><b>${T('Equippable','Экипируемый')}</b></span>`);
   if(m.quantity_per_purchase)chips.push(`<span class="chip">${m.quantity_per_purchase} ${T('per purchase','за покупку')}</span>`);
   return chips.join('');
 }
@@ -2540,6 +2542,15 @@ function combatSheetHtml(ch, derived, mine) {
 }
 function stateMetaSkill(name){return (state.meta.skills||[]).find(row=>row[1]===name);}
 function rollDamage(name,dice,sides,multiplier){const rolls=Array.from({length:dice},()=>1+Math.floor(Math.random()*sides)),total=rolls.reduce((a,b)=>a+b,0)*multiplier;openModal(`<h2>💥 ${esc(name)}</h2><div class="roll-result"><b>${total}</b><span>${rolls.join(' + ')}${multiplier>1?' × '+multiplier:''}</span></div>`);}
+function equipModeLabel(mode){return ({held:T('Held','В руках'),worn:T('Worn','Надето'),ready:T('Ready','Наготове'),workspace:T('Workspace','Рабочее место'),mounted:T('Mounted','Закреплено')})[mode]||mode;}
+async function performSheetItemAction(character,item,action,extra={}){
+  try{
+    const result=await api(`/api/characters/${character.id}/items/${item.instance_id}/action`,{method:'POST',body:{revision:character.revision,action,...extra}});
+    await viewSheet(character.id);toast(T('Item state updated.','Состояние предмета обновлено.'));
+    if(result.effect){openModal(`<h2>${T('Manual Use Effect','Ручной эффект использования')}</h2><div class="panel accent"><b>${esc(item.custom_name||item.name)}</b><p class="preserve-lines">${esc(result.effect.text||T('Resolve using the item description.','Примените эффект по описанию предмета.'))}</p>${result.effect.manual_resolution_required?`<span class="tag">${T('MANUAL RESOLUTION','РУЧНОЕ ПРИМЕНЕНИЕ')}</span>`:''}</div>`);}
+  }catch(error){toast(error.message,true);}
+}
+function chooseEquipMode(character,item){const modes=item.equip_modes||['ready'];if(modes.length===1){performSheetItemAction(character,item,'equip',{mode:modes[0]});return;}const modal=openModal(`<h2>${T('Equip','Экипировать')} · ${esc(item.custom_name||item.name)}</h2><p class="small muted">${T('Choose how this item is prepared. Held gear may occupy a hand.','Выберите способ подготовки. Режим Held может занимать руку.')}</p><div class="choice-card-grid">${modes.map(mode=>`<button class="choice-card" data-equip-mode="${esc(mode)}"><b>${esc(equipModeLabel(mode))}</b><span>${mode==='held'?T('Uses a hand','Занимает руку'):T('No hand required','Не занимает руку')}</span></button>`).join('')}</div><button id="equip-cancel" class="mt">${T('Cancel','Отмена')}</button>`);$$('[data-equip-mode]',modal).forEach(button=>button.onclick=()=>{const mode=button.dataset.equipMode;closeModal();performSheetItemAction(character,item,'equip',{mode});});$('#equip-cancel',modal).onclick=closeModal;}
 
 async function viewSheet(id) {
   const view = $('#view');
@@ -2558,6 +2569,7 @@ async function viewSheet(id) {
   const hpCur = ch.hp_cur == null ? d.hp_max : ch.hp_cur;
   const cw = ch.cyberware || [];
   const inv = ch.inventory || [];
+  const activeGear=inv.filter(item=>item.state==='equipped'&&item.equippable);
   const lpRows = ch.lifepath ? lifepathNarrative(ch.lifepath, ch.role, ch.role_lifepath, ch.lifepath_mode) : [];
   const armor = ch.armor || {};
   const armorSlots = [
@@ -2616,12 +2628,14 @@ async function viewSheet(id) {
         ${cyberwareTreeHtml(cw)}
       </div>
       <div class="panel mb" id="sheet-gear">
+        <h2>⚡ ${T('Active Gear / Loadout','Активное снаряжение')}</h2>
+        ${activeGear.length?`<div class="active-gear-grid mb">${activeGear.map(item=>`<article class="active-gear-card ${item.active?'online':''}"><div><b>${esc(item.custom_name||item.name)}</b><span>${esc(equipModeLabel(item.equipped_mode||'ready'))} · ${esc(item.equipped_slot||'—')}</span></div><span class="tag">${item.activation_required?(item.active?T('ACTIVE','ВКЛЮЧЕНО'):T('OFF','ВЫКЛЮЧЕНО')):T('READY','ГОТОВО')}</span>${(item.active_actions||[]).length?`<div class="small muted">${item.active_actions.map(esc).join(' · ')}</div>`:''}${mine?`<div class="row">${item.activation_required?`<button class="btn-sm" data-item-action="${item.instance_id}|${item.active?'deactivate':'activate'}">${item.active?T('Deactivate','Выключить'):T('Activate','Включить')}</button>`:''}<button class="btn-sm" data-item-action="${item.instance_id}|unequip">${T('Unequip','Убрать')}</button></div>`:''}</article>`).join('')}</div>`:`<div class="muted small mb">${T('No gear is equipped. Carried items do not provide equipment-only actions.','Нет экипированного снаряжения. Предметы в состоянии carried не дают equipment-only actions.')}</div>`}
         <h2>🎒 Inventory (${inv.length})</h2>
         ${inv.length ? groupedItemsHtml(inv.map((item, index) => ({ ...item, _sheetIndex: index })), i => `
           <div class="inv-row"><span class="iname">${esc(i.custom_name || i.display_name || i.name)} ×${i.qty || 1}</span>${i.is_custom?'<span class="tag">CUSTOM · MANUAL</span>':''}
-            ${itemMechanicChips(i)}<span class="chip">${esc(i.state||'carried')}</span>${i.acquisition_source?`<span class="chip">${esc(acquisitionSourceLabel(i.acquisition_source))}</span>`:''}
+            ${itemMechanicChips(i)}<span class="chip">${esc(i.state||'carried')}</span>${i.consumable?`<span class="tag">${T('CONSUMABLE','РАСХОДНИК')}</span>`:''}${i.equippable?`<span class="tag">${T('EQUIPPABLE','ЭКИПИРУЕТСЯ')}</span>`:''}${i.acquisition_source?`<span class="chip">${esc(acquisitionSourceLabel(i.acquisition_source))}</span>`:''}
             ${i.sp != null && !(i.mechanics || {}).sp ? `<span class="chip">SP ${i.sp}</span>` : ''}
-            ${i.is_custom&&i.desc?`<span class="small muted user-content">${esc(i.desc)}</span>`:''}<span class="muted small">${money((i.price || 0) * (i.qty || 1))}</span><button class="info-btn" data-owned-item="${i._sheetIndex}">i</button>
+            ${i.is_custom&&i.desc?`<span class="small muted user-content">${esc(i.desc)}</span>`:''}<span class="muted small">${money((i.price || 0) * (i.qty || 1))}</span><button class="info-btn" data-owned-item="${i._sheetIndex}">i</button>${mine&&i.consumable&&i.state!=='stored'?`<button class="btn-sm" data-item-use="${i.instance_id}">${T('Use','Использовать')}</button>`:''}${mine&&i.equippable&&i.state==='carried'?`<button class="btn-sm" data-item-equip="${i.instance_id}">${T('Equip','Экипировать')}</button>`:''}
           </div>`, T('Gear','Снаряжение')) : `<div class="muted small">${T('Empty.','Пусто. Совсем.')}</div>`}
         ${armorSlots.length ? `<h3 class="mt">🛡️ ${T('Equipped Armor','Надетая броня')}</h3>${armorSlots.map(([piece, ru]) => `
           <div class="inv-row"><span class="iname">${ru}: ${esc(piece.name)}</span>
@@ -2647,6 +2661,9 @@ async function viewSheet(id) {
   $$('[data-skill-info]', view).forEach(btn => btn.onclick = () => showSkillInfo(btn.dataset.skillInfo));
   $$('[data-owned-chrome]', view).forEach(btn => btn.onclick = () => showCreationItemInfo(cw[Number(btn.dataset.ownedChrome)]));
   $$('[data-owned-item]', view).forEach(btn => btn.onclick = () => showCreationItemInfo(inv[Number(btn.dataset.ownedItem)]));
+  $$('[data-item-action]',view).forEach(button=>button.onclick=()=>{const [instanceId,action]=button.dataset.itemAction.split('|'),item=inv.find(entry=>entry.instance_id===instanceId);if(item)performSheetItemAction(c,item,action);});
+  $$('[data-item-equip]',view).forEach(button=>button.onclick=()=>{const item=inv.find(entry=>entry.instance_id===button.dataset.itemEquip);if(item)chooseEquipMode(c,item);});
+  $$('[data-item-use]',view).forEach(button=>button.onclick=()=>{const item=inv.find(entry=>entry.instance_id===button.dataset.itemUse);if(!item)return;const maximum=Math.max(1,Number(item.qty)||1),amount=maximum>1?Number(prompt(T(`How many uses? 1–${maximum}`,`Сколько использовать? 1–${maximum}`),'1')):1;if(!Number.isInteger(amount)||amount<1||amount>maximum)return;if(confirm(`${T('Use','Использовать')} ${item.custom_name||item.name} ×${amount}?`))performSheetItemAction(c,item,'use',{amount});});
   $$('[data-sheet-jump]',view).forEach(button=>button.onclick=()=>document.getElementById(button.dataset.sheetJump)?.scrollIntoView({behavior:'smooth',block:'start'}));
   $$('[data-attack-roll]',view).forEach(button=>button.onclick=()=>{const split=button.dataset.attackRoll.lastIndexOf('|');showCheckRoll(button.dataset.attackRoll.slice(0,split),Number(button.dataset.attackRoll.slice(split+1)));});$$('[data-damage-roll]',view).forEach(button=>button.onclick=()=>{const [name,dice,sides,multiplier]=button.dataset.damageRoll.split('|');rollDamage(name,Number(dice),Number(sides),Number(multiplier));});$$('[data-weapon-action]',view).forEach(button=>button.onclick=async()=>{const [subject,action]=button.dataset.weaponAction.split('|');try{await api(`/api/characters/${c.id}/resource`,{method:'POST',body:{resource:'weapon',subject,action,value:1}});viewSheet(c.id);}catch(e){toast(e.message,true);}});$$('[data-armor-action]',view).forEach(button=>button.onclick=async()=>{const [subject,value]=button.dataset.armorAction.split('|');try{await api(`/api/characters/${c.id}/resource`,{method:'POST',body:{resource:'armor',subject,action:value==='reset'?'reset':'delta',value:value==='reset'?0:Number(value)}});viewSheet(c.id);}catch(e){toast(e.message,true);}});
   $$('[data-roll-check]', view).forEach(button => button.onclick = () => { const split=button.dataset.rollCheck.lastIndexOf('|');showCheckRoll(button.dataset.rollCheck.slice(0,split),Number(button.dataset.rollCheck.slice(split+1))); });

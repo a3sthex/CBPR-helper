@@ -2756,11 +2756,23 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - acquisition source сохраняется в `item_instances`, а private item/acquisition notes вырезаются из public Dossier на сервере;
 - добавление, изменение и удаление входят в обычный Trust + Audit change set и безопасный revert.
 
+**Статус B.4 — реализована первая версия Consumables и Active Gear:**
+
+- Data Pool получает курируемые декларативные флаги `consumable`, `stackable`, `use_effect`, `equippable`, equip modes/slots, hands и activation requirement;
+- Pharma и Street Drugs размечены как расходники с `Use`, уменьшением количества и ручным эффектом по официальному описанию;
+- `Flashlight`, `Radio Communicator`, `Agent (Standard)`, `Airhypo`, `Techtool` и `Medtech Bag` размечены как Active Gear;
+- Character Sheet показывает `Active Gear / Loadout`, состояния `READY / ACTIVE / OFF` и equipment-only actions;
+- доступны server-authoritative `Use / Equip / Unequip / Activate / Deactivate`, проверка carried/broken/stored, mode/slot и занятых рук;
+- израсходованный последний экземпляр исчезает из Inventory, а последний item action можно безопасно откатить через Ledger;
+- custom item не может сам назначить себе consumable/equippable или внедрить use/equip mechanics;
+- mounted host links, мягкий ready limit и автоматическое применение Structured Effects остаются следующими подэтапами.
+
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
 4. ✅ Добавить custom/found items и acquisition provenance.
-5. Consumable/use и Equippable Active Gear: equip modes, hands/slots, Activate/Deactivate, mounted host links.
+5. ✅ Consumable/use и базовый Equippable Active Gear: equip modes, hands/slots, Activate/Deactivate, Active Loadout.
+   - остаётся: mounted host links и расширение курируемой разметки предметов.
 6. Structured Effects & Modifiers schema/evaluator.
 7. Base/effective/current breakdown в Character Sheet и Rolls.
 8. Duration, stacking и active effect instances.

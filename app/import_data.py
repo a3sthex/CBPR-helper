@@ -52,6 +52,60 @@ NUMERIC_MECHANICS = {
     'per', 'spd', 'atk', 'def', 'rez',
 }
 
+ACTIVE_GEAR = {
+    'Flashlight': {
+        'equip_modes': ['held', 'ready'], 'equip_slots': ['hand', 'belt'],
+        'hands_required': 1, 'activation_required': True,
+        'active_actions': ['Activate light', 'Deactivate light'],
+    },
+    'Radio Communicator': {
+        'equip_modes': ['worn', 'ready'], 'equip_slots': ['ear', 'belt'],
+        'hands_required': 0, 'activation_required': True,
+        'active_actions': ['Activate radio', 'Deactivate radio', 'Communicate'],
+    },
+    'Agent (Standard)': {
+        'equip_modes': ['held', 'ready'], 'equip_slots': ['hand', 'belt'],
+        'hands_required': 1, 'activation_required': True,
+        'active_actions': ['Activate Agent', 'Use Agent', 'Deactivate Agent'],
+    },
+    'Airhypo': {
+        'equip_modes': ['held', 'ready'], 'equip_slots': ['hand', 'belt'],
+        'hands_required': 1, 'activation_required': False,
+        'active_actions': ['Administer dose'],
+    },
+    'Techtool': {
+        'equip_modes': ['held', 'ready', 'workspace'],
+        'equip_slots': ['hand', 'belt', 'workspace'], 'hands_required': 1,
+        'activation_required': False, 'active_actions': ['Use Techtool'],
+    },
+    'Medtech Bag': {
+        'equip_modes': ['held', 'ready', 'workspace'],
+        'equip_slots': ['hand', 'workspace'], 'hands_required': 1,
+        'activation_required': False, 'active_actions': ['Use medical toolkit'],
+    },
+}
+
+
+def item_interaction_metadata(cat, name, row, desc):
+    """Curated declarative Use/Equip metadata; no executable item effects."""
+    metadata = {}
+    if cat == 'gear' and name in ACTIVE_GEAR:
+        metadata.update({'equippable': True, **ACTIVE_GEAR[name]})
+    item_type = str(row.get('Type') or '').strip()
+    if cat == 'gear' and item_type in ('Pharma', 'Street Drugs'):
+        metadata.update({
+            'stackable': True,
+            'consumable': True,
+            'consume_amount': 1,
+            'use_context': 'medical' if item_type == 'Pharma' else 'general',
+            'use_effect': {
+                'kind': 'manual',
+                'text': str(desc or '').strip(),
+                'manual_resolution_required': True,
+            },
+        })
+    return metadata
+
 
 def normalize_display_value(value):
     text = str(value).strip()
@@ -352,6 +406,7 @@ def main():
                 if val is not None and str(val).strip() not in ('', '—', 'N/A'):
                     it['fields'][key] = normalize_display_value(val)
             it['mechanics'] = item_mechanics(cat, r, desc)
+            it.update(item_interaction_metadata(cat, name, r, desc))
             requirements, capacity = structured_requirements(cat, r, desc)
             it['requirements'] = requirements
             if any(capacity.values()):
