@@ -250,6 +250,7 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertIn("api('/api/account/password'", source)
         self.assertIn('data-admin-status', source)
         self.assertIn('data-dossier-visibility', source)
+        self.assertIn('revision:c.revision', source)
         self.assertIn('12_000_000', source)
         network = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')
         network_css = (ROOT / 'app/static/ncnet.css').read_text(encoding='utf-8')

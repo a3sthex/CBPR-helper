@@ -7,6 +7,7 @@
 import argparse
 import base64
 import copy
+import functools
 import hashlib
 import hmac
 import ipaddress
@@ -416,6 +417,7 @@ CREATE TABLE IF NOT EXISTS characters(
   owner_id INTEGER NOT NULL,
   public INTEGER NOT NULL DEFAULT 1,
   data TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 0,
   created REAL NOT NULL,
   updated REAL NOT NULL
 );
@@ -986,6 +988,9 @@ def apply_schema_migrations(conn, make_backup=True):
     ensure_column(conn, 'sessions', 'last_seen', 'REAL')
     ensure_column(conn, 'sessions', 'ip_address', 'TEXT')
     ensure_column(conn, 'sessions', 'user_agent', 'TEXT')
+    if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='characters'").fetchone():
+        ensure_column(conn, 'characters', 'revision', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'npc_templates', 'archived', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'session_combatants', 'sp_head_max', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'session_combatants', 'sp_body_max', 'INTEGER NOT NULL DEFAULT 0')
@@ -1524,6 +1529,7 @@ def db():
     conn = sqlite3.connect(DB_PATH, timeout=20)
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA busy_timeout=15000')
+    conn.execute('PRAGMA foreign_keys=ON')
     return conn
 
 
@@ -1531,6 +1537,8 @@ def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
     conn = db()
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA synchronous=NORMAL')
     had_users_table = bool(conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone())
     conn.executescript(SCHEMA)
@@ -2629,6 +2637,8 @@ SERVER_ERROR_EN = {
     'Новый пароль должен отличаться от текущего': 'New password must differ from the current password',
     'Нельзя отключить собственный аккаунт': 'You cannot disable your own account',
     'Нельзя отключить последнего активного администратора': 'The last active administrator cannot be disabled',
+    'Укажите revision Dossier': 'Dossier revision is required',
+    'Dossier изменён в другой вкладке; обновите страницу': 'Dossier changed in another tab; reload the page',
     'Слишком много запросов; попробуйте позже': 'Too many requests; try again later',
     'Недопустимый источник запроса': 'Invalid request origin',
 }
@@ -2696,6 +2706,25 @@ class ApiError(Exception):
     def __init__(self, status, message):
         self.status = status
         self.message = message
+
+
+def atomic_endpoint(fn):
+    """Serialize a state-changing endpoint and always roll back on failure."""
+    @functools.wraps(fn)
+    def wrapped(self, conn, qs, match, body):
+        if conn.in_transaction:
+            conn.commit()
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            result = fn(self, conn, qs, match, body)
+            if conn.in_transaction:
+                conn.commit()
+            return result
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+    return wrapped
 
 
 def q1(v, default=None):
@@ -2774,9 +2803,11 @@ class Handler(BaseHTTPRequestHandler):
             (tok, now)).fetchone()
         if row and (_row_value(row, '_session_last_seen') is None or
                     _row_value(row, '_session_last_seen', 0) < now - 300):
+            was_in_transaction = conn.in_transaction
             conn.execute('UPDATE sessions SET last_seen=? WHERE rowid=?',
                          (now, row['_session_id']))
-            conn.commit()
+            if not was_in_transaction:
+                conn.commit()
         return dict(row) if row else None
 
     def require_user(self, conn):
@@ -2840,8 +2871,12 @@ class Handler(BaseHTTPRequestHandler):
                         return
                 raise ApiError(404, 'Не найдено')
             except ApiError as e:
+                if conn.in_transaction:
+                    conn.rollback()
                 self.send_error_json(e.status, e.message)
             except Exception as e:  # noqa: BLE001
+                if conn.in_transaction:
+                    conn.rollback()
                 import traceback
                 traceback.print_exc()
                 self.send_error_json(500, 'Внутренняя ошибка сервера')
@@ -3122,6 +3157,7 @@ class Handler(BaseHTTPRequestHandler):
             } for row in security_rows],
         })
 
+    @atomic_endpoint
     def api_admin_user_role(self, conn, qs, m, body):
         actor = self.require_admin(conn)
         reason = str((body or {}).get('reason') or '').strip()[:500]
@@ -3131,6 +3167,7 @@ class Handler(BaseHTTPRequestHandler):
             conn, actor, int(m.group(1)), (body or {}).get('account_role'), reason)
         self.send_json(self.me_payload(updated))
 
+    @atomic_endpoint
     def api_admin_user_status(self, conn, qs, m, body):
         actor = self.require_admin(conn)
         target = conn.execute('SELECT * FROM users WHERE id=?',
@@ -3662,6 +3699,7 @@ class Handler(BaseHTTPRequestHandler):
             visible.append(self.contract_payload(conn, row, user))
         self.send_json({'contracts': visible})
 
+    @atomic_endpoint
     def api_contract_create(self, conn, qs, m, body):
         user = self.require_gm(conn)
         data = self.clean_contract_input(body or {})
@@ -3697,6 +3735,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(404, 'Контракт не найден')
         self.send_json(self.contract_payload(conn, row, user))
 
+    @atomic_endpoint
     def api_contract_update(self, conn, qs, m, body):
         user = self.require_gm(conn)
         row = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
@@ -3735,6 +3774,7 @@ class Handler(BaseHTTPRequestHandler):
         updated = conn.execute('SELECT * FROM contracts WHERE id=?', (row['id'],)).fetchone()
         self.send_json(self.contract_payload(conn, updated, user))
 
+    @atomic_endpoint
     def api_contract_join(self, conn, qs, m, body):
         user = self.require_user(conn)
         contract = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
@@ -3784,6 +3824,7 @@ class Handler(BaseHTTPRequestHandler):
         updated = conn.execute('SELECT * FROM contracts WHERE id=?', (contract['id'],)).fetchone()
         self.send_json(self.contract_payload(conn, updated, user))
 
+    @atomic_endpoint
     def api_contract_leave(self, conn, qs, m, body):
         user = self.require_user(conn)
         contract_id = int(m.group(1))
@@ -3830,6 +3871,7 @@ class Handler(BaseHTTPRequestHandler):
         updated = conn.execute('SELECT * FROM contracts WHERE id=?', (contract['id'],)).fetchone()
         self.send_json(self.contract_payload(conn, updated, user))
 
+    @atomic_endpoint
     def api_contract_delete(self, conn, qs, m, body):
         user = self.require_gm(conn)
         contract = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
@@ -4315,7 +4357,7 @@ class Handler(BaseHTTPRequestHandler):
         if public_view and not visibility['combat']:
             derived = {}
         return {
-            'id': row['id'],
+            'id': row['id'], 'revision': _row_value(row, 'revision', 0),
             'owner_id': row['owner_id'] if (not public_view or owner_name) else None,
             'public': bool(row['public']),
             'owner_name': owner_name, 'created': row['created'], 'updated': row['updated'],
@@ -4329,6 +4371,7 @@ class Handler(BaseHTTPRequestHandler):
             (u['id'],)).fetchall()
         self.send_json({'characters': [self.char_payload(r, u['display_name']) for r in rows]})
 
+    @atomic_endpoint
     def api_create_character(self, conn, qs, m, body):
         u = self.require_user(conn)
         data = clean_character(body.get('data') if isinstance(body, dict) else body)
@@ -4374,6 +4417,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(self.char_payload(
             row, owner_name, public_view=not (owner_view or admin_view)))
 
+    @atomic_endpoint
     def api_save_character(self, conn, qs, m, body):
         u = self.require_user(conn)
         row = self.get_char(conn, m.group(1))
@@ -4382,6 +4426,11 @@ class Handler(BaseHTTPRequestHandler):
         old_data = json.loads(row['data'])
         if old_data.get('archived'):
             raise ApiError(409, 'Архивное досье доступно только для чтения')
+        expected_revision = _num((body or {}).get('revision'))
+        if expected_revision is None:
+            raise ApiError(428, 'Укажите revision Dossier')
+        if expected_revision != (_row_value(row, 'revision', 0) or 0):
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
         patch = clean_character_profile_patch(old_data, body or {})
         data = dict(old_data)
         data.update(patch)
@@ -4395,12 +4444,13 @@ class Handler(BaseHTTPRequestHandler):
         attach_character_media(conn, u['id'], row['id'], data)
         record_character_changes(conn, row['id'], u['id'], old_data, data,
                                  str((body or {}).get('reason') or 'Dossier profile update'))
-        conn.execute('UPDATE characters SET data=?, public=?, updated=? WHERE id=?',
+        conn.execute('UPDATE characters SET data=?,public=?,updated=?,revision=revision+1 WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), pub, time.time(), row['id']))
         conn.commit()
         row = self.get_char(conn, row['id'])
         self.send_json(self.char_payload(row, row['owner']))
 
+    @atomic_endpoint
     def api_delete_character(self, conn, qs, m, body):
         u = self.require_user(conn)
         row = self.get_char(conn, m.group(1))
@@ -4439,7 +4489,7 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         conn.execute("UPDATE contracts SET status='open',updated=? WHERE id=? AND status='crew_full'",
                                      (now, signup['contract_id']))
-            conn.execute('UPDATE characters SET public=0,data=?,updated=? WHERE id=?',
+            conn.execute('UPDATE characters SET public=0,data=?,updated=?,revision=revision+1 WHERE id=?',
                          (json.dumps(data, ensure_ascii=False), now, row['id']))
             record_character_changes(conn, row['id'], u['id'], json.loads(row['data']), data,
                                      'Dossier archived with NC//NET history')
@@ -4460,7 +4510,7 @@ class Handler(BaseHTTPRequestHandler):
     def save_character_data(self, conn, row, data, actor_id=None, reason='Character progression'):
         if actor_id is not None:
             record_character_changes(conn, row['id'], actor_id, json.loads(row['data']), data, reason)
-        conn.execute('UPDATE characters SET data=?, public=?, updated=? WHERE id=?',
+        conn.execute('UPDATE characters SET data=?,public=?,updated=?,revision=revision+1 WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), 1 if data.get('public') else 0,
                       time.time(), row['id']))
         conn.commit()
@@ -4482,6 +4532,7 @@ class Handler(BaseHTTPRequestHandler):
                      (character_id, actor_id, amount, before, after, kind,
                       str(subject or '')[:120] or None, str(reason or '')[:500], time.time()))
 
+    @atomic_endpoint
     def api_character_ip(self, conn, qs, m, body):
         user = self.require_gm(conn)
         row = self.get_char(conn, m.group(1))
@@ -4536,6 +4587,7 @@ class Handler(BaseHTTPRequestHandler):
             'ORDER BY l.id DESC LIMIT 500', (row['id'],)).fetchall()
         self.send_json({'entries': [dict(item) for item in entries]})
 
+    @atomic_endpoint
     def api_character_improve(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
         data = ensure_progression(json.loads(row['data']))
@@ -4594,6 +4646,7 @@ class Handler(BaseHTTPRequestHandler):
                            data['ip_available'], 'improvement', subject, reason)
         self.send_json(self.save_character_data(conn, row, data, user['id'], reason))
 
+    @atomic_endpoint
     def api_character_specialization(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
         data = ensure_progression(json.loads(row['data']))
@@ -4624,6 +4677,7 @@ class Handler(BaseHTTPRequestHandler):
                            data['ip_available'], 'allocation', key, reason)
         self.send_json(self.save_character_data(conn, row, data, user['id'], reason))
 
+    @atomic_endpoint
     def api_character_resource(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
         data = ensure_progression(json.loads(row['data']))
@@ -4684,6 +4738,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------ рынок
 
+    @atomic_endpoint
     def api_buy(self, conn, qs, m, body):
         u = self.require_user(conn)
         row = self.get_char(conn, body.get('char_id'))
@@ -4729,7 +4784,7 @@ class Handler(BaseHTTPRequestHandler):
         data['cash'] = round(cash - total, 2)
         record_character_changes(conn, row['id'], u['id'], before_data, data,
                                  'Night Market purchase')
-        conn.execute('UPDATE characters SET data=?, updated=? WHERE id=?',
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), time.time(), row['id']))
         conn.commit()
         receipt = [{'name': it['name'], 'qty': qty, 'price': price}
@@ -4737,6 +4792,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({'ok': True, 'total': round(total, 2), 'cash': data['cash'],
                         'receipt': receipt})
 
+    @atomic_endpoint
     def api_sell(self, conn, qs, m, body):
         u = self.require_user(conn)
         row = self.get_char(conn, body.get('char_id'))
@@ -4760,12 +4816,13 @@ class Handler(BaseHTTPRequestHandler):
         data['cash'] = round(float(data.get('cash') or 0) + back, 2)
         record_character_changes(conn, row['id'], u['id'], before_data, data,
                                  'Night Market resale')
-        conn.execute('UPDATE characters SET data=?, updated=? WHERE id=?',
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), time.time(), row['id']))
         conn.commit()
         self.send_json({'ok': True, 'cash': data['cash'], 'got': back,
                         'name': ent.get('name'), 'qty': qty})
 
+    @atomic_endpoint
     def api_payroll(self, conn, qs, m, body):
         u = self.require_gm(conn)
         row = self.get_char(conn, body.get('char_id'))
@@ -4782,7 +4839,7 @@ class Handler(BaseHTTPRequestHandler):
         data['cash'] = max(0.0, round(float(data.get('cash') or 0) + amount, 2))
         record_character_changes(conn, row['id'], u['id'], before_data, data,
                                  str((body or {}).get('reason') or 'GM payout'))
-        conn.execute('UPDATE characters SET data=?, updated=? WHERE id=?',
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), time.time(), row['id']))
         conn.commit()
         self.send_json({'ok': True, 'cash': data['cash'], 'by': u['display_name']})
@@ -5321,6 +5378,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(403, 'Нет доступа к экрану сессии')
         self.send_json(self.session_payload(conn, session, user, player_view=True))
 
+    @atomic_endpoint
     def api_contract_aftermath(self, conn, qs, m, body):
         user = self.require_gm(conn)
         contract = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
@@ -5411,7 +5469,7 @@ class Handler(BaseHTTPRequestHandler):
                                    data['ip_available'], 'contract', contract['title'], 'Contract Aftermath')
             record_character_changes(conn, character_id, user['id'], before, data,
                                      'Contract Aftermath', contract_id=contract['id'])
-            conn.execute('UPDATE characters SET data=?,updated=? WHERE id=?',
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
                          (json.dumps(data, ensure_ascii=False), now, character_id))
         queue_vk_event(conn, f'contract:{contract["id"]}:{result}', f'contract_{result}',
                        contract['id'], {'contract_id': contract['id'], 'title': contract['title'], 'result': result})

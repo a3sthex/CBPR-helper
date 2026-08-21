@@ -4,6 +4,7 @@ import json
 import re
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -17,7 +18,8 @@ SPEC.loader.exec_module(server)
 class IntegritySecurityRegressionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.conn = sqlite3.connect(str(Path(self.tmp.name) / 'integrity.db'))
+        self.db_path = str(Path(self.tmp.name) / 'integrity.db')
+        self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(server.SCHEMA)
         server.apply_schema_migrations(self.conn, make_backup=False)
@@ -99,7 +101,9 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         forged['stats']['REF'] = 13
         forged['inventory'] = [{'key': 'forged', 'name': 'Forged item', 'qty': 99}]
         with self.assertRaises(server.ApiError) as denied:
-            self.call(server.Handler.api_save_character, self.match(1), {'data': forged})
+            self.call(server.Handler.api_save_character, self.match(1), {
+                'revision': 0, 'data': forged,
+            })
         self.assertEqual(denied.exception.status, 400)
 
         stored = json.loads(self.conn.execute('SELECT data FROM characters WHERE id=1').fetchone()['data'])
@@ -109,10 +113,20 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertEqual(stored['inventory'], [])
 
         updated = self.call(server.Handler.api_save_character, self.match(1), {
+            'revision': 0,
             'patch': {'notes': 'Private campaign note', 'public': False},
         })
         self.assertEqual(updated['data']['notes'], 'Private campaign note')
         self.assertFalse(updated['public'])
+        self.assertEqual(updated['revision'], 1)
+        with self.assertRaises(server.ApiError) as stale_update:
+            self.call(server.Handler.api_save_character, self.match(1), {
+                'revision': 0, 'patch': {'notes': 'stale overwrite'},
+            })
+        self.assertEqual(stale_update.exception.status, 409)
+        stored_after_stale = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])
+        self.assertEqual(stored_after_stale['notes'], 'Private campaign note')
 
         with self.assertRaises(server.ApiError) as cash_denied:
             self.call(server.Handler.api_character_resource, self.match(1), {
@@ -289,6 +303,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
 
         self.current = self.user('runner')
         updated = self.call(server.Handler.api_save_character, self.match(1), {
+            'revision': 0,
             'patch': {'visibility': {'stats': True, 'equipment': True, 'combat': True}},
         })
         self.assertTrue(updated['data']['visibility']['stats'])
@@ -316,6 +331,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.conn.commit()
         self.current = self.user('runner')
         self.call(server.Handler.api_save_character, self.match(1), {
+            'revision': updated['revision'],
             'patch': {'portrait_media_id': media_id, 'visibility': {'portrait': False}},
         })
         self.current = self.user('other')
@@ -405,6 +421,94 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         events = [row['event_type'] for row in self.conn.execute(
             'SELECT event_type FROM account_security_audit WHERE user_id=2 ORDER BY id')]
         self.assertEqual(events, ['account_disabled', 'account_enabled'])
+
+    def test_concurrent_contract_join_preserves_capacity_and_waitlist(self):
+        other_char = copy.deepcopy(self.character_data)
+        other_char['handle'] = 'Other V'
+        self.conn.execute(
+            'INSERT INTO characters(owner_id,public,data,created,updated) VALUES(3,1,?,1,1)',
+            (json.dumps(other_char),))
+        self.conn.commit()
+        persona, _ = self.create_persona_and_storyline()
+        contract = self.create_contract(persona, capacity=1)
+
+        barrier = threading.Barrier(2)
+        outcomes = []
+        lock = threading.Lock()
+
+        def join(username, character_id):
+            conn = sqlite3.connect(self.db_path, timeout=10)
+            conn.row_factory = sqlite3.Row
+            conn.execute('PRAGMA busy_timeout=10000')
+            handler = object.__new__(server.Handler)
+            handler.current_user = lambda current: current.execute(
+                'SELECT * FROM users WHERE username=?', (username,)).fetchone()
+            response = {}
+            handler.send_json = lambda payload, status=200, cookies=None: response.update(
+                payload=payload, status=status)
+            try:
+                barrier.wait()
+                server.Handler.api_contract_join(
+                    handler, conn, {}, self.match(contract['id']),
+                    {'character_id': character_id})
+                result = response['payload']['my_signups'][0]['status']
+            except Exception as error:  # captured for assertion in the main thread
+                result = f'error:{error}'
+            finally:
+                conn.close()
+            with lock:
+                outcomes.append(result)
+
+        threads = [
+            threading.Thread(target=join, args=('runner', 1)),
+            threading.Thread(target=join, args=('other', 2)),
+        ]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join(15)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertCountEqual(outcomes, ['crew', 'waitlist'])
+        rows = self.conn.execute(
+            'SELECT status,COUNT(*) n FROM contract_signups WHERE contract_id=? GROUP BY status',
+            (contract['id'],)).fetchall()
+        self.assertEqual({row['status']: row['n'] for row in rows}, {'crew': 1, 'waitlist': 1})
+
+    def test_concurrent_market_purchase_cannot_spend_same_cash_twice(self):
+        barrier = threading.Barrier(2)
+        outcomes = []
+        lock = threading.Lock()
+
+        def buy():
+            conn = sqlite3.connect(self.db_path, timeout=10)
+            conn.row_factory = sqlite3.Row
+            conn.execute('PRAGMA busy_timeout=10000')
+            handler = object.__new__(server.Handler)
+            handler.current_user = lambda current: current.execute(
+                "SELECT * FROM users WHERE username='runner'").fetchone()
+            handler.send_json = lambda payload, status=200, cookies=None: None
+            try:
+                barrier.wait()
+                server.Handler.api_buy(handler, conn, {}, None, {
+                    'char_id': 1, 'items': [{'id': 'guns-0', 'qty': 2, 'mode': 'list'}],
+                })
+                result = 'bought'
+            except server.ApiError as error:
+                result = f'denied:{error.status}'
+            finally:
+                conn.close()
+            with lock:
+                outcomes.append(result)
+
+        threads = [threading.Thread(target=buy), threading.Thread(target=buy)]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join(15)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertCountEqual(outcomes, ['bought', 'denied:400'])
+        data = json.loads(self.conn.execute('SELECT data FROM characters WHERE id=1').fetchone()['data'])
+        self.assertEqual(data['cash'], 0)
+        bought = next(item for item in data['inventory'] if item['key'] == 'guns-0')
+        self.assertEqual(bought['qty'], 2)
+        revision = self.conn.execute('SELECT revision FROM characters WHERE id=1').fetchone()['revision']
+        self.assertEqual(revision, 1)
 
     def test_production_install_is_loopback_https_only_and_login_route_is_unique(self):
         installer = (ROOT / 'deploy/install.sh').read_text(encoding='utf-8')
