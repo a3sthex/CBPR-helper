@@ -264,7 +264,7 @@ def load_effect_rules():
     for rule in weapon_rules:
         if not isinstance(rule, dict) or set(rule) - {
                 'id', 'catalog_id', 'label_en', 'label_ru', 'requirements',
-                'effects', 'manual_rules'}:
+                'configuration', 'effects', 'manual_rules'}:
             raise RuntimeError('Weapon modification rule contains non-allowlisted fields')
         rule_id = str(rule.get('id') or '')
         if not re.fullmatch(r'[a-z0-9_.-]{3,100}', rule_id) or rule_id in seen:
@@ -282,6 +282,25 @@ def load_effect_rules():
                 any(not item_by_id(item_id) or item_by_id(item_id).get('cat') != 'cyberware'
                     for item_id in installed_any)):
             raise RuntimeError(f'Invalid installed requirement in weapon rule {rule_id}')
+        configuration = rule.get('configuration')
+        if configuration is not None:
+            if (not isinstance(configuration, dict) or
+                    set(configuration) - {'key', 'label_en', 'label_ru', 'required', 'choices'} or
+                    not re.fullmatch(r'[a-z0-9_.-]{2,80}', str(configuration.get('key') or '')) or
+                    not isinstance(configuration.get('required', False), bool) or
+                    not isinstance(configuration.get('choices'), list) or
+                    not configuration['choices']):
+                raise RuntimeError(f'Invalid configuration in weapon rule {rule_id}')
+            choice_values = set()
+            for choice in configuration['choices']:
+                if (not isinstance(choice, dict) or
+                        set(choice) - {'value', 'label_en', 'label_ru'} or
+                        not re.fullmatch(r'[a-z0-9_.-]{1,80}', str(choice.get('value') or '')) or
+                        not str(choice.get('label_en') or '').strip() or
+                        not str(choice.get('label_ru') or '').strip() or
+                        choice['value'] in choice_values):
+                    raise RuntimeError(f'Invalid configuration choice in weapon rule {rule_id}')
+                choice_values.add(choice['value'])
         effects = rule.get('effects') or []
         manual_rules = rule.get('manual_rules') or []
         if (not isinstance(effects, list) or not isinstance(manual_rules, list) or
@@ -290,11 +309,13 @@ def load_effect_rules():
         for effect in effects:
             if (not isinstance(effect, dict) or
                     set(effect) - {'id', 'target', 'operation', 'value', 'values',
-                                   'profile', 'source'} or
+                                   'profile', 'profiles', 'configuration_key',
+                                   'enhanced_when', 'enhanced_multiplier', 'source'} or
                     not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(effect.get('id') or '')) or
                     effect.get('target') not in {'weapon.magazine', 'weapon.concealable',
                                                  'weapon.attack_check',
-                                                 'weapon.alternate_profile'}):
+                                                 'weapon.alternate_profile',
+                                                 'weapon.autofire_profile'}):
                 raise RuntimeError(f'Invalid weapon effect in rule {rule_id}')
             if effect['target'] == 'weapon.magazine':
                 values = effect.get('values')
@@ -319,6 +340,37 @@ def load_effect_rules():
                         profile.get('ammo_kind') not in ('grenade', 'shotgun') or
                         profile.get('hands_required') != 2):
                     raise RuntimeError(f'Invalid alternate profile in rule {rule_id}')
+            elif effect['target'] == 'weapon.autofire_profile':
+                operation = effect.get('operation')
+                profiles = ([effect.get('profile')] if operation == 'grant' else
+                            list((effect.get('profiles') or {}).values()))
+                if operation not in ('grant', 'configure') or not profiles:
+                    raise RuntimeError(f'Invalid Autofire operation in rule {rule_id}')
+                for profile in profiles:
+                    if (not isinstance(profile, dict) or
+                            set(profile) - {'id', 'label_en', 'label_ru', 'skill', 'table',
+                                            'multiplier', 'ammo_cost', 'suppressive_fire'} or
+                            not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(profile.get('id') or '')) or
+                            profile.get('skill') != 'Autofire' or
+                            profile.get('table') not in ('SMG', 'Machine Pistol') or
+                            not isinstance(profile.get('multiplier'), int) or
+                            not 1 <= profile['multiplier'] <= 4 or
+                            profile.get('ammo_cost') != 10 or
+                            not isinstance(profile.get('suppressive_fire'), bool)):
+                        raise RuntimeError(f'Invalid Autofire profile in rule {rule_id}')
+                if operation == 'configure':
+                    configured = effect.get('profiles') or {}
+                    config_key = effect.get('configuration_key')
+                    choices = {choice['value'] for choice in (configuration or {}).get('choices', [])}
+                    if (not configuration or config_key != configuration.get('key') or
+                            set(configured) != choices):
+                        raise RuntimeError(f'Invalid Autofire configuration in rule {rule_id}')
+                enhanced_when = effect.get('enhanced_when') or []
+                if (not isinstance(enhanced_when, list) or
+                        set(enhanced_when) - {'excellent_quality', 'base_autofire'} or
+                        ('enhanced_multiplier' in effect and
+                         effect.get('enhanced_multiplier') not in (1, 2, 3, 4))):
+                    raise RuntimeError(f'Invalid Autofire enhancement in rule {rule_id}')
             elif (effect.get('operation') != 'add' or
                   not isinstance(effect.get('value'), (int, float)) or
                   abs(effect['value']) > 10):
@@ -384,6 +436,33 @@ def weapon_modification_rules_for_catalog(catalog_id):
             if rule.get('catalog_id') == catalog_id]
 
 
+def weapon_modification_configuration_schema(catalog_id):
+    return [copy.deepcopy(rule['configuration'])
+            for rule in weapon_modification_rules_for_catalog(catalog_id)
+            if isinstance(rule.get('configuration'), dict)]
+
+
+def clean_weapon_modification_choices(catalog_id, raw):
+    schemas = weapon_modification_configuration_schema(catalog_id)
+    raw = raw or {}
+    if not isinstance(raw, dict):
+        raise ApiError(400, 'Modification configuration должна быть объектом')
+    allowed_keys = {schema['key'] for schema in schemas}
+    if set(raw) - allowed_keys:
+        raise ApiError(400, 'Modification configuration содержит неизвестные поля')
+    clean = {}
+    for schema in schemas:
+        value = str(raw.get(schema['key']) or '')
+        choices = {choice['value'] for choice in schema.get('choices') or []}
+        if schema.get('required') and not value:
+            raise ApiError(400, 'Выберите обязательную конфигурацию modification')
+        if value and value not in choices:
+            raise ApiError(400, 'Некорректный вариант configuration')
+        if value:
+            clean[schema['key']] = value
+    return clean
+
+
 def weapon_profiles_from_rules(rules):
     return [copy.deepcopy(effect['profile']) for rule in rules or []
             for effect in rule.get('effects') or []
@@ -414,12 +493,17 @@ def ammo_reserve_for_profile(character, ammo_kind):
 def evaluate_effective_weapon(host, modifications, owned_by_id, character):
     base = copy.deepcopy(host.get('mechanics') or {})
     effective = copy.deepcopy(base)
+    host_catalog = item_by_id(catalog_item_id_for_entry(host)) or {}
+    base_feature_text = ' '.join(str(value) for value in (host_catalog.get('fields') or {}).values()).lower()
+    base_has_autofire = 'autofire' in base_feature_text
+    excellent_quality = 'excellent' in str(base.get('quality') or '').lower()
     base_magazine = _num(base.get('magazine')) or 0
     effective_magazine = base_magazine
     base_concealable = base.get('concealable')
     effective_concealable = base_concealable
     attack_modifier = 0
     alternate_attacks = []
+    autofire_profiles = []
     applied = []
     sources = []
     installed_cyberware = {
@@ -482,6 +566,26 @@ def evaluate_effective_weapon(host, modifications, owned_by_id, character):
                                 modification.get('modification_id'), {})),
                     })
                     alternate_attacks.append(profile)
+                elif effect['target'] == 'weapon.autofire_profile' and requirements_met:
+                    if effect.get('operation') == 'grant':
+                        profile = copy.deepcopy(effect.get('profile') or {})
+                        enhanced_when = set(effect.get('enhanced_when') or [])
+                        if (('excellent_quality' in enhanced_when and excellent_quality) or
+                                ('base_autofire' in enhanced_when and base_has_autofire)):
+                            profile['multiplier'] = effect.get('enhanced_multiplier', profile.get('multiplier'))
+                    else:
+                        choice = (config.get('choices') or {}).get(effect.get('configuration_key'))
+                        profile = copy.deepcopy((effect.get('profiles') or {}).get(choice) or {})
+                        if not profile:
+                            effect['active'] = False
+                            effect['suppressed_reason'] = 'Required installation configuration is missing'
+                    if profile:
+                        profile.update({
+                            'modification_id': modification.get('modification_id'),
+                            'upgrade_instance_id': modification.get('upgrade_instance_id'),
+                            'source': effect.get('source'),
+                        })
+                        autofire_profiles.append(profile)
                 elif effect['target'] == 'weapon.attack_check' and requirements_met:
                     effect['before'] = attack_modifier
                     attack_modifier += effect['value']
@@ -516,6 +620,7 @@ def evaluate_effective_weapon(host, modifications, owned_by_id, character):
         'base': base, 'effective': effective,
         'attack_modifier': attack_modifier,
         'alternate_attacks': alternate_attacks,
+        'autofire_profiles': autofire_profiles,
         'slot_pools': slot_pools,
         'slots_total': sum(pool['total'] for pool in slot_pools.values()),
         'slots_used': sum(pool['used'] for pool in slot_pools.values()),
@@ -2157,6 +2262,9 @@ def weapon_upgrade_compatibility(host, upgrade, active_modifications=None,
         reasons.append('Requires a Sniper Rifle')
     if text.startswith('all pistols') and 'pistol' not in weapon_type:
         reasons.append('Requires a Pistol')
+    host_feature_text = ' '.join(str(value) for value in (host_catalog.get('fields') or {}).values()).lower()
+    if 'autofire (smg 3)' in text and 'autofire (3)' not in host_feature_text:
+        reasons.append('Requires a weapon with Autofire (SMG 3)')
     if 'except grenade launchers and rocket launchers' in text and any(
             token in weapon_type for token in ('grenade launcher', 'rocket launcher')):
         reasons.append('Cannot be installed on Grenade/Rocket Launchers')
@@ -4587,6 +4695,10 @@ SERVER_ERROR_EN = {
     'Modification не имеет alternate attack profile': 'Modification has no alternate attack profile',
     'Alternate weapon разряжен': 'Alternate weapon is unloaded',
     'Нет боеприпасов для перезарядки alternate weapon': 'No ammunition is available to reload the alternate weapon',
+    'Modification configuration должна быть объектом': 'Modification configuration must be an object',
+    'Modification configuration содержит неизвестные поля': 'Modification configuration contains unknown fields',
+    'Выберите обязательную конфигурацию modification': 'Choose the required modification configuration',
+    'Некорректный вариант configuration': 'Invalid configuration choice',
     'Все слоты заняты': 'All slots are filled',
     'Вы уже записаны': 'You are already signed up',
     'Для специализированного навыка повышайте parent-pool': 'Increase the parent pool for a specialized Skill',
@@ -6990,6 +7102,8 @@ class Handler(BaseHTTPRequestHandler):
                 'permanent_installation': bool(upgrade.get('permanent_installation')),
                 'compatibility_manual': bool(upgrade.get('compatibility_manual')),
                 'compatibility_text': upgrade.get('compatibility_text') or '',
+                'configuration_schemas': weapon_modification_configuration_schema(
+                    catalog_item_id_for_entry(upgrade)),
                 'compatibility': matrix,
             })
         for modification in modifications:
@@ -7009,7 +7123,7 @@ class Handler(BaseHTTPRequestHandler):
     def api_character_modification_install(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
         if set(body or {}) - {'revision', 'host_instance_id', 'upgrade_instance_id',
-                              'manual_confirm', 'reason', 'notes'}:
+                              'manual_confirm', 'configuration', 'reason', 'notes'}:
             raise ApiError(400, 'Modification содержит неподдерживаемые поля')
         current_revision = _row_value(row, 'revision', 0) or 0
         if _num((body or {}).get('revision')) != current_revision:
@@ -7032,6 +7146,8 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(409, 'Host должен быть исправен и находиться при персонаже')
         if upgrade.get('state') != 'carried':
             raise ApiError(409, 'Upgrade должен находиться в состоянии carried')
+        choices = clean_weapon_modification_choices(
+            catalog_item_id_for_entry(upgrade), (body or {}).get('configuration'))
         active = [mod for mod in character_modifications(conn, row['id'])
                   if mod['host_instance_id'] == host_id]
         compatibility = weapon_upgrade_compatibility(host, upgrade, active, owned)
@@ -7050,6 +7166,7 @@ class Handler(BaseHTTPRequestHandler):
             'manual_confirmed': bool((body or {}).get('manual_confirm')),
             'slot_pool': compatibility.get('slot_pool'),
             'grants_slots': copy.deepcopy(upgrade.get('grants_slots') or {}),
+            'choices': choices,
             'effect_rules': weapon_modification_rules_for_catalog(
                 catalog_item_id_for_entry(upgrade)),
             'effects_rules_version': load_effect_rules().get('rules_version'),

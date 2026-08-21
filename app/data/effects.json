@@ -383,6 +383,116 @@
           "source": "CP:R 343"
         }
       ]
+    },
+    {
+      "id": "pistol-autosear-profile",
+      "catalog_id": "gun_upgrades-20",
+      "label_en": "Pistol Autosear",
+      "label_ru": "Pistol Autosear",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "pistol-autosear-autofire",
+          "target": "weapon.autofire_profile",
+          "operation": "grant",
+          "profile": {
+            "id": "pistol_autosear",
+            "label_en": "Machine Pistol Autofire",
+            "label_ru": "Автоматический огонь Machine Pistol",
+            "skill": "Autofire",
+            "table": "Machine Pistol",
+            "multiplier": 3,
+            "ammo_cost": 10,
+            "suppressive_fire": true
+          },
+          "enhanced_when": ["excellent_quality", "base_autofire"],
+          "enhanced_multiplier": 4,
+          "source": "IR5 115"
+        }
+      ],
+      "manual_rules": []
+    },
+    {
+      "id": "smg-cyclic-internals-profile",
+      "catalog_id": "gun_upgrades-22",
+      "label_en": "SMG Cyclic Internals",
+      "label_ru": "SMG Cyclic Internals",
+      "requirements": {},
+      "configuration": {
+        "key": "autofire_mode",
+        "label_en": "Replacement Autofire profile",
+        "label_ru": "Новый профиль Autofire",
+        "required": true,
+        "choices": [
+          {
+            "value": "smg4",
+            "label_en": "Autofire (SMG 4)",
+            "label_ru": "Autofire (SMG 4)"
+          },
+          {
+            "value": "machine_pistol4",
+            "label_en": "Autofire (Machine Pistol 4)",
+            "label_ru": "Autofire (Machine Pistol 4)"
+          }
+        ]
+      },
+      "effects": [
+        {
+          "id": "smg-cyclic-configured-autofire",
+          "target": "weapon.autofire_profile",
+          "operation": "configure",
+          "configuration_key": "autofire_mode",
+          "profiles": {
+            "smg4": {
+              "id": "smg_cyclic_smg4",
+              "label_en": "Autofire (SMG 4)",
+              "label_ru": "Autofire (SMG 4)",
+              "skill": "Autofire",
+              "table": "SMG",
+              "multiplier": 4,
+              "ammo_cost": 10,
+              "suppressive_fire": true
+            },
+            "machine_pistol4": {
+              "id": "smg_cyclic_machine_pistol4",
+              "label_en": "Autofire (Machine Pistol 4)",
+              "label_ru": "Autofire (Machine Pistol 4)",
+              "skill": "Autofire",
+              "table": "Machine Pistol",
+              "multiplier": 4,
+              "ammo_cost": 10,
+              "suppressive_fire": true
+            }
+          },
+          "source": "IR5 115"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "smg-cyclic-installation-check",
+          "text_en": "Installing this upgrade requires the source-specific DV17 Weaponstech check.",
+          "text_ru": "Установка этого upgrade требует указанную в источнике проверку Weaponstech DV17.",
+          "condition": "installation_check_confirmed",
+          "source": "IR5 115"
+        }
+      ]
+    },
+    {
+      "id": "shotgun-auto-control-manual",
+      "catalog_id": "gun_upgrades-21",
+      "label_en": "Shotgun Auto Control Group",
+      "label_ru": "Shotgun Auto Control Group",
+      "requirements": {},
+      "effects": [],
+      "manual_rules": [
+        {
+          "id": "shotgun-auto-ammo-dependent-modes",
+          "text_en": "Autofire differs for slugs and shells, consumes 4 rounds, and the shell mode changes the attack Skill and dodge penalty. Resolve by loaded ammunition and source text.",
+          "text_ru": "Autofire различается для slugs и shells, расходует 4 выстрела, а shell mode меняет Skill атаки и штраф уклонения. Применяйте по загруженным боеприпасам и тексту источника.",
+          "condition": "loaded_ammunition_mode",
+          "source": "IR5 115"
+        }
+      ]
     }
   ]
 }

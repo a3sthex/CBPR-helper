@@ -411,6 +411,49 @@ class WeaponModificationEffectTests(unittest.TestCase):
         self.assertEqual(grenade['hands_required'], 2)
         self.assertEqual(shotgun['ammo_kind'], 'shotgun')
 
+    def test_pistol_autosear_and_configured_smg_autofire_profiles(self):
+        standard = self.owned('guns-0', 'b' * 32)
+        excellent = self.owned('guns-14', 'c' * 32)
+        autosear = self.owned('gun_upgrades-20', 'd' * 32)
+        autosear['state'] = 'installed'
+        autosear_rules = server.weapon_modification_rules_for_catalog('gun_upgrades-20')
+        modification = {
+            'modification_id': 'f' * 32, 'host_instance_id': standard['instance_id'],
+            'upgrade_instance_id': autosear['instance_id'], 'slots_used': 0, 'active': True,
+            'configuration': {'effect_rules': autosear_rules, 'choices': {}},
+        }
+        standard_result = server.evaluate_effective_weapon(
+            standard, [modification], {autosear['instance_id']: autosear},
+            {'inventory': [standard, autosear], 'cyberware': []})
+        self.assertEqual(standard_result['autofire_profiles'][0]['table'], 'Machine Pistol')
+        self.assertEqual(standard_result['autofire_profiles'][0]['multiplier'], 3)
+        self.assertTrue(standard_result['autofire_profiles'][0]['suppressive_fire'])
+        modification['host_instance_id'] = excellent['instance_id']
+        excellent_result = server.evaluate_effective_weapon(
+            excellent, [modification], {autosear['instance_id']: autosear},
+            {'inventory': [excellent, autosear], 'cyberware': []})
+        self.assertEqual(excellent_result['autofire_profiles'][0]['multiplier'], 4)
+
+        smg = self.owned('guns-3', 'e' * 32)
+        cyclic = self.owned('gun_upgrades-22', '1' * 31 + '0')
+        cyclic['state'] = 'installed'
+        cyclic_rules = server.weapon_modification_rules_for_catalog('gun_upgrades-22')
+        cyclic_mod = {
+            'modification_id': '2' * 32, 'host_instance_id': smg['instance_id'],
+            'upgrade_instance_id': cyclic['instance_id'], 'slots_used': 0, 'active': True,
+            'configuration': {'effect_rules': cyclic_rules,
+                              'choices': {'autofire_mode': 'machine_pistol4'}},
+        }
+        configured = server.evaluate_effective_weapon(
+            smg, [cyclic_mod], {cyclic['instance_id']: cyclic},
+            {'inventory': [smg, cyclic], 'cyberware': []})
+        self.assertEqual(configured['autofire_profiles'][0]['table'], 'Machine Pistol')
+        self.assertEqual(configured['autofire_profiles'][0]['multiplier'], 4)
+        schema = server.weapon_modification_configuration_schema('gun_upgrades-22')[0]
+        self.assertEqual(schema['key'], 'autofire_mode')
+        self.assertEqual({choice['value'] for choice in schema['choices']},
+                         {'smg4', 'machine_pistol4'})
+
     def test_bayonet_concealability_has_manual_alternate_attack_rule(self):
         host = self.owned('guns-5', '5' * 32)  # Shotgun / Shoulder Arms
         bayonet = self.owned('gun_upgrades-3', '6' * 32)

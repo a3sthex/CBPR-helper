@@ -2866,6 +2866,17 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Character Sheet показывает alternate profile, Attack/Damage, отдельный Mag/Reserve и controls под основной карточкой host;
 - общий ammo ownership/transfer между несколькими weapons и automatic two-hand enforcement остаются следующими combat/loadout интеграциями.
 
+**Статус B.6.5 — реализованы Configurable Autofire Upgrades:**
+
+- `weapon_modification_rules` поддерживает allowlisted Autofire profiles, enhancement conditions и required installation configuration;
+- Pistol Autosear добавляет Autofire (Machine Pistol 3) и Suppressive Fire; Excellent Quality или уже имевший Autofire pistol получает multiplier 4;
+- SMG Cyclic Internals требует явный выбор при Install: `SMG 4` или `Machine Pistol 4`; выбор валидируется сервером и сохраняется в immutable modification snapshot;
+- Character Sheet показывает Autofire Skill Base, выбранную table, maximum multiplier, ammo cost 10 и Suppressive Fire, а Dice button бросает effective Autofire Check;
+- неправильная, отсутствующая или подменённая configuration блокируется; complex Weaponstech/source rule по-прежнему требует `manual_confirm`;
+- SMG Cyclic нельзя поставить на оружие без базового Autofire (SMG 3);
+- Shotgun Auto Control Group пока показывает `MANUAL RULE`, поскольку результат зависит от реально загруженных slugs/shells, расхода 4 rounds, другого Skill и dodge penalty;
+- Autofire damage по margin/DV и фактическое списание 10 rounds остаются будущей combat action integration, а не симулируются простой кнопкой.
+
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
@@ -2881,8 +2892,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
    - дальше: только подтверждённые source-specific overrides и presets с доступными engine targets.
 10. ✅ Общая relational host/modification model и atomic lifecycle.
 11. ◐ Weapon Upgrades прямо в Character Sheet.
-    - готово: instance binding, compatibility/slot pools, Compatibility Rail, Install/Remove UI, Ledger, Magazines/Smartgun/Bayonet/scopes и Underbarrel profiles;
-    - дальше: rebuilds, Autofire/config choices, shared ammo ownership и Tech overrides.
+    - готово: instance binding, compatibility/slot pools, Rail, lifecycle, Magazines/Smartgun/Bayonet/scopes, Underbarrels и configurable Autofire profiles;
+    - дальше: rebuilds, Range Table choices, full Autofire action/ammo и Tech overrides.
 12. Vehicle Upgrades и Garage integration.
 13. Cyberdeck/Cyberware/Armor/Tech modification hosts.
 14. JSON import.

@@ -620,6 +620,52 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             })
         self.assertEqual(cannot_remove.exception.status, 409)
 
+    def test_configurable_smg_upgrade_requires_valid_autofire_choice(self):
+        edited = copy.deepcopy(self.character_data)
+        edited['inventory'] = [
+            {
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': server.item_by_id(item_id)['cat'],
+                'name': server.item_by_id(item_id)['name'], 'qty': 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            }
+            for item_id in ('guns-3', 'gun_upgrades-22')
+        ]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add SMG and cyclic internals', 'data': edited,
+        })
+        by_name = {item['name']: item for item in updated['data']['inventory']}
+        host, upgrade = by_name['SMG'], by_name['SMG Cyclic Internals']
+        management = self.call(server.Handler.api_character_modifications, self.match(1))
+        upgrade_payload = next(item for item in management['upgrades']
+                               if item['instance_id'] == upgrade['instance_id'])
+        self.assertEqual(upgrade_payload['configuration_schemas'][0]['key'], 'autofire_mode')
+        with self.assertRaises(server.ApiError) as missing:
+            self.call(server.Handler.api_character_modification_install, self.match(1), {
+                'revision': 1, 'host_instance_id': host['instance_id'],
+                'upgrade_instance_id': upgrade['instance_id'], 'manual_confirm': True,
+                'reason': 'Install without required choice',
+            })
+        self.assertEqual(missing.exception.status, 400)
+        with self.assertRaises(server.ApiError) as invalid:
+            self.call(server.Handler.api_character_modification_install, self.match(1), {
+                'revision': 1, 'host_instance_id': host['instance_id'],
+                'upgrade_instance_id': upgrade['instance_id'], 'manual_confirm': True,
+                'configuration': {'autofire_mode': 'railgun99'},
+                'reason': 'Install invalid choice',
+            })
+        self.assertEqual(invalid.exception.status, 400)
+        installed = self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 1, 'host_instance_id': host['instance_id'],
+            'upgrade_instance_id': upgrade['instance_id'], 'manual_confirm': True,
+            'configuration': {'autofire_mode': 'smg4'},
+            'reason': 'Weaponstech DV17 passed; choose SMG 4',
+        })
+        profile = installed['character']['derived']['effective_weapons'][host['instance_id']]['autofire_profiles'][0]
+        self.assertEqual((profile['table'], profile['multiplier']), ('SMG', 4))
+        modification = installed['management']['modifications'][0]
+        self.assertEqual(modification['configuration']['choices']['autofire_mode'], 'smg4')
+
     def test_underbarrel_profile_has_independent_unloaded_magazine_and_revert(self):
         edited = copy.deepcopy(self.character_data)
         catalog_ids = ('guns-6', 'gun_upgrades-6', 'ammo-3')

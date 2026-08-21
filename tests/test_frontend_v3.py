@@ -74,6 +74,10 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('alternate_attacks', source)
         self.assertIn('data-mod-weapon-action', source)
         self.assertIn('alternate-weapon-profile', source)
+        self.assertIn('configuration_schemas', source)
+        self.assertIn('data-upgrade-config', source)
+        self.assertIn('autofire_profiles', source)
+        self.assertIn('Autofire Check', source)
 
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
