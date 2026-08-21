@@ -3174,7 +3174,20 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Scavenged Armor server-side помечена unrepairable и не может восстановить потерянный SP;
 - Bulletproof Shields используют concrete 10/15 HP, явно маркированы `DESTROYED AT 0 HP · NOT REPAIRABLE` и не допускаются в Armor Repair Workflow;
 - active workflow и bounded history хранятся в server-owned `armor_repair_state`; resolve/cancel/self-repair revision-protected, Ledger-audited и поддерживают snapshot revert;
-- paid external repair services, Campaign Clock auto-completion, Popup Shield replacement и source-specific Shield Tech modes остаются следующими расширениями.
+- Campaign Clock auto-completion и source-specific Shield Tech modes остаются следующими расширениями.
+
+**Статус B.10.3 — реализованы Paid Armor Service и Popup Shield Replacement:**
+
+- Armor Repair Start поддерживает `paid_service`: bounded manual quote, service provider, explicit payment confirmation и atomic non-refundable Cash deduction;
+- paid quote намеренно не вычисляется из универсальной формулы без source rule; duration остаётся `MANUAL PAID SERVICE TIME`;
+- Cancel paid repair не возвращает оплату, Resolve использует обычную manual completion guard и восстанавливает Armor до effective maximum;
+- Popup Shield option связывается только с concrete free `Bulletproof Shield` (`armor-0`); PackShield и High-Density Shield source-incompatible и блокируются;
+- linked shield переходит в `installed`, получает reverse reference и independent tracked `HP current/max`, deploy/stow state и damage action;
+- при 0 HP concrete shield становится `broken`, автоматически stow-ится и больше не может быть deployed или отремонтирован;
+- Remove/Replace возвращает surviving shield в `carried`, destroyed — в `broken`; новый concrete Bulletproof Shield можно установить отдельным action;
+- Quick Change/Uninstall Popup option сохраняет concrete shield binding; generic delete/resale блокируются до явного Remove;
+- Popup Shield link, HP, deployed state, payment и repair snapshots revision-protected, Ledger-audited и поддерживают safe revert;
+- Campaign Clock service completion, purchased service offers и source-specific Shield Tech payloads остаются следующими этапами.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -3197,8 +3210,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, concrete Cyberware/Popup weapon binding, Therapy, concrete Armor/Shield hosts, permanent Armor SP +1 Tech Upgrade и Armor Repair Workflow;
-    - дальше: Shield-specific modes/replacement, paid services, special cyberweapon ammo и generic Tech Maker modifications.
+    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, concrete Cyberware/Popup weapons/Popup Shield, Therapy, concrete Armor/Shield hosts, Tech Upgrade, manual/Jeeves/paid Armor Repair;
+    - дальше: Shield-specific Tech modes, Campaign Clock services, special cyberweapon ammo и generic Tech Maker modifications.
 14. JSON import.
 
 ### Пакет C — Publishing Preview

@@ -6220,6 +6220,51 @@ def popup_weapon_binding_kind(entry):
     return None
 
 
+def popup_shield_profile(data, option):
+    if catalog_item_id_for_entry(option) != 'cyberware-120':
+        return None
+    state = (data.get('cyberware_state') or {}).get(option.get('instance_id')) or {}
+    popup = state.get('popup_shield') if isinstance(state.get('popup_shield'), dict) else {}
+    shield_id = str(popup.get('shield_instance_id') or '')
+    shield = next((item for item in data.get('inventory') or []
+                   if isinstance(item, dict) and item.get('instance_id') == shield_id), None)
+    if not shield:
+        return {'option_instance_id': option.get('instance_id'), 'installed': False}
+    maximum = armor_shield_hp(shield)
+    current = max(0, min(maximum, int(_num(popup.get('hp_current'))
+                                      if _num(popup.get('hp_current')) is not None else maximum)))
+    return {
+        'option_instance_id': option.get('instance_id'), 'installed': True,
+        'shield_instance_id': shield_id,
+        'shield_name': shield.get('custom_name') or shield.get('name'),
+        'hp_current': current, 'hp_max': maximum,
+        'deployed': popup.get('deployed') is True and current > 0,
+        'destroyed': current <= 0, 'source': 'CP:R 365',
+        'manual_resolution_required': False,
+    }
+
+
+def validate_popup_shield_references(data):
+    chrome = {item.get('instance_id'): item for item in data.get('cyberware') or []
+              if isinstance(item, dict) and item.get('instance_id')}
+    inventory = {item.get('instance_id'): item for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('instance_id')}
+    states = data.get('cyberware_state') if isinstance(data.get('cyberware_state'), dict) else {}
+    claimed = set()
+    for option_id, runtime in states.items():
+        popup = runtime.get('popup_shield') if isinstance(runtime, dict) else None
+        if not isinstance(popup, dict) or not popup.get('shield_instance_id'):
+            continue
+        option = chrome.get(option_id)
+        shield_id = str(popup['shield_instance_id'])
+        shield = inventory.get(shield_id)
+        if (not option or catalog_item_id_for_entry(option) != 'cyberware-120' or
+                not shield or shield_id in claimed or
+                shield.get('installed_popup_shield_instance_id') != option_id):
+            raise ApiError(409, 'Повреждена связь Popup Shield')
+        claimed.add(shield_id)
+
+
 def popup_weapon_binding_compatibility(option, weapon):
     kind = popup_weapon_binding_kind(option)
     reasons = []
@@ -6656,6 +6701,13 @@ def effective_cyberware_loadout(data):
             profile['shared_ammo_available'] = sum(
                 shared_ammo_available(data, ammo_kind=kind) for kind in ammo_kinds)
         weapon_profiles.append(profile)
+    popup_shields = [
+        popup_shield_profile(data, next(entry for entry in chrome
+                                        if entry.get('instance_id') == option['instance_id']))
+        for option in option_rows
+        if option['state'] == 'installed' and option['status'] == 'installed' and
+        option['catalog_item_id'] == 'cyberware-120']
+    popup_shields = [item for item in popup_shields if item]
     return {
         'hosts': sorted(hosts.values(), key=lambda item: (item['host_kind'], item['name'],
                                                           item['instance_id'])),
@@ -6668,6 +6720,7 @@ def effective_cyberware_loadout(data):
                                  if payload.get('kind') in (
                                      'contextual_modifier', 'contextual_skill_modifier')],
         'weapon_profiles': weapon_profiles,
+        'popup_shields': popup_shields,
         'unbound_count': sum(item['status'] in ('unbound', 'invalid')
                              for item in option_rows),
     }
@@ -7523,6 +7576,19 @@ SERVER_ERROR_EN = {
     'Подтвердите завершение Armor Repair': 'Confirm completion of Armor Repair',
     'Armor не имеет daily self-repair': 'Armor has no daily self-repair',
     'Подтвердите день без потери SP': 'Confirm a day without losing SP',
+    'Повреждена связь Popup Shield': 'Popup Shield binding is corrupted',
+    'Popup Shield action содержит неподдерживаемые поля': 'Popup Shield action contains unsupported fields',
+    'Укажите причину Popup Shield action': 'Provide a reason for the Popup Shield action',
+    'Installed Popup Shield option не найден': 'Installed Popup Shield option not found',
+    'Сначала извлеките concrete Popup Shield': 'Remove the concrete Popup Shield first',
+    'Popup Shield уже содержит concrete shield': 'Popup Shield already contains a concrete shield',
+    'Popup Shield принимает только free Bulletproof Shield': 'Popup Shield accepts only a free Bulletproof Shield',
+    'Popup Shield не содержит concrete shield': 'Popup Shield contains no concrete shield',
+    'Destroyed Shield нельзя deploy': 'A destroyed Shield cannot be deployed',
+    'Укажите Popup Shield damage 1–100': 'Provide Popup Shield damage from 1 to 100',
+    'Укажите bounded Armor Repair service cost': 'Provide a bounded Armor Repair service cost',
+    'Подтвердите оплату Armor Repair service': 'Confirm payment for the Armor Repair service',
+    'Недостаточно средств для Armor Repair service': 'Not enough funds for the Armor Repair service',
     'Run доступен только Attacker Program': 'Run is available only for an Attacker Program',
     'Saved Program instance недоступен для восстановления': 'Saved Program instance is unavailable for restore',
     'Недостаточно Cyberdeck slots для Backup restore': 'Not enough Cyberdeck slots for Backup restore',
@@ -9765,6 +9831,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(400, 'В Character Sheet нет изменений')
         validate_cyberware_trust_lifecycle(before, after)
         validate_bound_popup_weapon_references(after)
+        validate_popup_shield_references(after)
         validate_armor_tech_references(after)
         validate_armor_repair_references(after)
         validate_active_modification_references(conn, row['id'], after)
@@ -10022,6 +10089,7 @@ class Handler(BaseHTTPRequestHandler):
         validate_armor_tech_references(target)
         validate_armor_repair_references(target)
         validate_bound_popup_weapon_references(target)
+        validate_popup_shield_references(target)
         validate_active_modification_references(conn, row['id'], target)
         sync_weapon_states_with_modifications(conn, row['id'], target)
         sync_vehicle_states_with_modifications(conn, row['id'], target)
@@ -11726,6 +11794,7 @@ class Handler(BaseHTTPRequestHandler):
                     current_hosts[0] if current_hosts else None)
         humanity_after = derive(data)
         validate_bound_popup_weapon_references(data)
+        validate_popup_shield_references(data)
         validate_active_modification_references(conn, row['id'], data)
         persist_character_item_instances(
             conn, row['id'], data, 'cyberware_lifecycle', source_ref=reason, prune=True)
@@ -11895,11 +11964,104 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     @atomic_endpoint
+    def api_character_popup_shield_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'action', 'shield_instance_id', 'amount', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Popup Shield action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Popup Shield action')
+        option_id = str(m.group(2)).lower()
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        option = next((item for item in data.get('cyberware') or []
+                       if isinstance(item, dict) and item.get('instance_id') == option_id), None)
+        if not option or not cyberware_is_installed(option) or \
+                catalog_item_id_for_entry(option) != 'cyberware-120':
+            raise ApiError(404, 'Installed Popup Shield option не найден')
+        runtime = data.setdefault('cyberware_state', {}).setdefault(option_id, {})
+        popup = runtime.get('popup_shield') if isinstance(runtime.get('popup_shield'), dict) else {}
+        action = str((body or {}).get('action') or '').lower()
+        shield_id = str(popup.get('shield_instance_id') or '')
+        shield = next((item for item in data.get('inventory') or []
+                       if isinstance(item, dict) and item.get('instance_id') == shield_id), None)
+        result = {'action': action}
+        if action == 'install':
+            if shield:
+                raise ApiError(409, 'Popup Shield уже содержит concrete shield')
+            shield_id = str((body or {}).get('shield_instance_id') or '').lower()
+            shield = next((item for item in data.get('inventory') or []
+                           if isinstance(item, dict) and item.get('instance_id') == shield_id), None)
+            if (not shield or catalog_item_id_for_entry(shield) != 'armor-0' or
+                    shield.get('state') != 'carried' or
+                    shield.get('installed_popup_shield_instance_id')):
+                raise ApiError(400, 'Popup Shield принимает только free Bulletproof Shield')
+            maximum = armor_shield_hp(shield)
+            popup = {'shield_instance_id': shield_id, 'hp_current': maximum,
+                     'hp_max': maximum, 'deployed': False, 'installed_at': time.time()}
+            runtime['popup_shield'] = popup
+            shield['state'] = 'installed'
+            shield['installed_popup_shield_instance_id'] = option_id
+            reason = f'Install concrete Bulletproof Shield into Popup Shield: {reason_detail}'
+        elif action == 'remove':
+            if not shield:
+                raise ApiError(409, 'Popup Shield не содержит concrete shield')
+            current = max(0, int(_num(popup.get('hp_current')) or 0))
+            shield['state'] = 'broken' if current <= 0 else 'carried'
+            shield.pop('installed_popup_shield_instance_id', None)
+            runtime['popup_shield'] = {}
+            reason = f'Remove concrete Shield from Popup Shield: {reason_detail}'
+        elif action in ('deploy', 'stow'):
+            if not shield:
+                raise ApiError(409, 'Popup Shield не содержит concrete shield')
+            if action == 'deploy' and (_num(popup.get('hp_current')) or 0) <= 0:
+                raise ApiError(409, 'Destroyed Shield нельзя deploy')
+            popup['deployed'] = action == 'deploy'
+            runtime['popup_shield'] = popup
+            reason = f'{action.title()} Popup Shield: {reason_detail}'
+        elif action == 'damage':
+            if not shield:
+                raise ApiError(409, 'Popup Shield не содержит concrete shield')
+            amount = _num((body or {}).get('amount'))
+            if amount is None or not 1 <= amount <= 100:
+                raise ApiError(400, 'Укажите Popup Shield damage 1–100')
+            previous = max(0, int(_num(popup.get('hp_current')) or 0))
+            popup['hp_current'] = max(0, previous - int(amount))
+            if popup['hp_current'] == 0:
+                popup['deployed'] = False
+                shield['state'] = 'broken'
+            runtime['popup_shield'] = popup
+            result.update({'hp_before': previous, 'hp_after': popup['hp_current']})
+            reason = f'Popup Shield damage {previous} → {popup["hp_current"]}: {reason_detail}'
+        else:
+            raise ApiError(400, 'Popup Shield action: install/remove/deploy/stow/damage')
+        validate_popup_shield_references(data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'popup_shield_action', source_ref=reason, prune=True)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='item_action')
+        now = time.time()
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({'ledger_id': ledger_id, 'result': result,
+                        'character': self.char_payload(fresh, fresh['owner'], conn=conn)})
+
+    @atomic_endpoint
     def api_character_armor_repair_action(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
         allowed = {
             'revision', 'action', 'method', 'technician', 'jeeves_instance_id',
-            'manual_resolution_confirmed', 'no_sp_loss_confirmed', 'reason',
+            'manual_resolution_confirmed', 'no_sp_loss_confirmed',
+            'service_cost', 'payment_confirmed', 'reason',
         }
         if set(body or {}) - allowed:
             raise ApiError(400, 'Armor Repair action содержит неподдерживаемые поля')
@@ -11934,8 +12096,8 @@ class Handler(BaseHTTPRequestHandler):
             if not host['damaged'] or not host['equipped_locations']:
                 raise ApiError(409, 'Armor должна быть экипирована и повреждена')
             method = str((body or {}).get('method') or '').lower()
-            if method not in ('manual_tech', 'jeeves'):
-                raise ApiError(400, 'Armor Repair method: manual_tech/jeeves')
+            if method not in ('manual_tech', 'jeeves', 'paid_service'):
+                raise ApiError(400, 'Armor Repair method: manual_tech/jeeves/paid_service')
             technician = str((body or {}).get('technician') or '').strip()[:120]
             if len(technician) < 2:
                 raise ApiError(400, 'Укажите Armor repair technician')
@@ -11955,9 +12117,23 @@ class Handler(BaseHTTPRequestHandler):
                 duration_label = ('1 Hour' if price <= 20 else '6 Hours' if price <= 50 else
                                   '1 Day' if price <= 100 else '1 Week' if price <= 500 else
                                   '2 Weeks')
+            service_cost = 0
+            if method == 'paid_service':
+                service_cost = _num((body or {}).get('service_cost'))
+                if service_cost is None or not 0 <= service_cost <= 1_000_000:
+                    raise ApiError(400, 'Укажите bounded Armor Repair service cost')
+                if (body or {}).get('payment_confirmed') is not True:
+                    raise ApiError(400, 'Подтвердите оплату Armor Repair service')
+                cash = float(data.get('cash') or 0)
+                if cash < service_cost:
+                    raise ApiError(409, 'Недостаточно средств для Armor Repair service')
+                data['cash'] = round(cash - service_cost, 2)
+                duration_label = 'MANUAL PAID SERVICE TIME'
             active = {
                 'repair_id': secrets.token_hex(16), 'method': method,
                 'technician': technician, 'jeeves_instance_id': jeeves_id,
+                'service_cost': service_cost,
+                'payment_refundable': False if service_cost else None,
                 'duration_label': duration_label,
                 'target_locations': host['equipped_locations'],
                 'before': copy.deepcopy(host['current_by_location']),
@@ -12914,10 +13090,16 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(409, 'Сначала снимите установленные модификации')
         cyber_states = data.get('cyberware_state') if isinstance(
             data.get('cyberware_state'), dict) else {}
+        ent_cyber_state = cyber_states.get(ent.get('instance_id'))
         if (ent.get('installed_cyberware_instance_id') or
-                (isinstance(cyber_states.get(ent.get('instance_id')), dict) and
-                 cyber_states[ent.get('instance_id')].get('bound_weapon_instance_id'))):
+                (isinstance(ent_cyber_state, dict) and
+                 ent_cyber_state.get('bound_weapon_instance_id'))):
             raise ApiError(409, 'Permanent Popup Weapon binding нельзя продать отдельно')
+        if (ent.get('installed_popup_shield_instance_id') or
+                (isinstance(ent_cyber_state, dict) and
+                 isinstance(ent_cyber_state.get('popup_shield'), dict) and
+                 ent_cyber_state['popup_shield'].get('shield_instance_id'))):
+            raise ApiError(409, 'Сначала извлеките concrete Popup Shield')
         armor_tech = data.get('armor_tech_state') if isinstance(
             data.get('armor_tech_state'), dict) else {}
         if isinstance(armor_tech.get(ent.get('instance_id')), dict):
@@ -15400,6 +15582,7 @@ ROUTES = [
     ('POST', rx(r'/api/characters/(\d+)/items/([a-f0-9]{32})/action'), Handler.api_character_item_action),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/action'), Handler.api_character_cyberware_action),
     ('POST', rx(r'/api/characters/(\d+)/therapy/action'), Handler.api_character_therapy_action),
+    ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/popup-shield/action'), Handler.api_character_popup_shield_action),
     ('POST', rx(r'/api/characters/(\d+)/armor/([a-f0-9]{32})/repair'), Handler.api_character_armor_repair_action),
     ('POST', rx(r'/api/characters/(\d+)/armor/([a-f0-9]{32})/tech-upgrade'), Handler.api_character_armor_tech_upgrade),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/popup-weapon/bind'), Handler.api_character_popup_weapon_bind),

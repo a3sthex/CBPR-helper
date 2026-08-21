@@ -169,6 +169,9 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('Start Armor Repair', source)
         self.assertIn('Daily Self-Repair +1', source)
         self.assertIn('DESTROYED AT 0 HP', source)
+        self.assertIn('paid_service', source)
+        self.assertIn('data-popup-shield-action', source)
+        self.assertIn('/popup-shield/action', source)
 
     def test_live_session_has_validated_net_context_and_queue_controls(self):
         ncnet = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')

@@ -1148,12 +1148,16 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
                                f'1/{armor["instance_id"]}')
         started = self.call(server.Handler.api_character_armor_repair_action,
                             armor_match, {
-            'revision': 0, 'action': 'start', 'method': 'manual_tech',
-            'technician': 'Armor Tech', 'reason': 'Begin Basic Tech armor repair',
+            'revision': 0, 'action': 'start', 'method': 'paid_service',
+            'technician': 'Armor Service', 'service_cost': 50,
+            'payment_confirmed': True,
+            'reason': 'Begin paid external armor repair',
         })
         active = started['character']['data']['armor_repair_state'][
             armor['instance_id']]['active']
         self.assertEqual(active['before'], {'body': 6})
+        self.assertEqual(active['service_cost'], 50)
+        self.assertEqual(started['character']['data']['cash'], 50)
         with self.assertRaisesRegex(server.ApiError, 'Подтвердите завершение'):
             self.call(server.Handler.api_character_armor_repair_action,
                       armor_match, {
@@ -1184,6 +1188,67 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertEqual(reverted['data']['armor']['body']['current'], 6)
         self.assertTrue(reverted['data']['armor_repair_state'][
             armor['instance_id']]['active'])
+
+    def test_popup_shield_binds_replaces_and_tracks_concrete_hp(self):
+        data = copy.deepcopy(self.character_data)
+        arm = copy.deepcopy(server.item_by_id('cyberware-109'))
+        arm.update({'key': 'cyberware-109', 'catalog_item_id': 'cyberware-109',
+                    'instance_id': '1' * 32, 'state': 'installed',
+                    'installation_side': 'left', 'type': arm['fields']['Type']})
+        option = copy.deepcopy(server.item_by_id('cyberware-120'))
+        option.update({'key': 'cyberware-120', 'catalog_item_id': 'cyberware-120',
+                       'instance_id': '2' * 32, 'state': 'installed',
+                       'host_instance': arm['instance_id'],
+                       'host_instances': [arm['instance_id']],
+                       'type': option['fields']['Type']})
+        shield = copy.deepcopy(server.item_by_id('armor-0'))
+        shield.update({'key': 'armor-0', 'catalog_item_id': 'armor-0',
+                       'instance_id': '3' * 32, 'state': 'carried', 'qty': 1})
+        data['cyberware'] = [arm, option]
+        data['inventory'] = [shield]
+        self.conn.execute('UPDATE characters SET data=? WHERE id=1',
+                          (json.dumps(data),))
+        self.conn.commit()
+        match = re.match(r'^(\d+)/([a-f0-9]{32})$',
+                         f'1/{option["instance_id"]}')
+        installed = self.call(server.Handler.api_character_popup_shield_action,
+                              match, {
+            'revision': 0, 'action': 'install',
+            'shield_instance_id': shield['instance_id'],
+            'reason': 'Install concrete Bulletproof Shield',
+        })
+        profile = installed['character']['derived']['effective_cyberware'][
+            'popup_shields'][0]
+        self.assertEqual((profile['hp_current'], profile['hp_max']), (10, 10))
+        self.call(server.Handler.api_character_popup_shield_action, match, {
+            'revision': 1, 'action': 'deploy', 'reason': 'Deploy Popup Shield',
+        })
+        damaged = self.call(server.Handler.api_character_popup_shield_action,
+                            match, {
+            'revision': 2, 'action': 'damage', 'amount': 10,
+            'reason': 'Shield absorbs incoming damage',
+        })
+        profile = damaged['character']['derived']['effective_cyberware'][
+            'popup_shields'][0]
+        self.assertTrue(profile['destroyed'])
+        self.assertFalse(profile['deployed'])
+        removed = self.call(server.Handler.api_character_popup_shield_action,
+                            match, {
+            'revision': 3, 'action': 'remove',
+            'reason': 'Remove destroyed concrete Shield',
+        })
+        stored = next(item for item in removed['character']['data']['inventory']
+                      if item['instance_id'] == shield['instance_id'])
+        self.assertEqual(stored['state'], 'broken')
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        reverted = self.call(
+            server.Handler.api_character_ledger_revert,
+            re.match(r'^(\d+)/(\d+)$', f'1/{ledger["entries"][0]["id"]}'), {
+                'revision': 4, 'reason': 'Revert Popup Shield removal',
+            })
+        profile = reverted['derived']['effective_cyberware']['popup_shields'][0]
+        self.assertTrue(profile['installed'])
+        self.assertTrue(profile['destroyed'])
 
     def test_permanent_armor_tech_upgrade_applies_sp_and_reverts(self):
         data = copy.deepcopy(self.character_data)
