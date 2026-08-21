@@ -1407,6 +1407,24 @@ class CreationValidationTests(unittest.TestCase):
             legs['instance_id'], server.cyberware_secondary_host_id(legs['instance_id'])])
         server.validate_cyberware_slots(paired)
 
+    def test_curated_integrated_cyberweapon_profiles_are_allowlisted(self):
+        expected = {
+            'cyberware-15': ('ranged', '5d6', 2),
+            'cyberware-42': ('melee', '3d6', 0),
+            'cyberware-48': ('ranged_dual', '6d6 / 8d6', 1),
+            'cyberware-117': ('ranged', '6d6', 1),
+            'cyberware-133': ('melee', '3d6', 0),
+        }
+        for catalog_id, values in expected.items():
+            item = copy.deepcopy(server.item_by_id(catalog_id))
+            item.update({'key': catalog_id, 'catalog_item_id': catalog_id})
+            profile = server.cyberware_weapon_profile(item)
+            self.assertEqual((profile['kind'], profile['damage'],
+                              profile.get('magazine') or 0), values)
+        mantis = copy.deepcopy(server.item_by_id('cyberware-42'))
+        mantis.update({'key': 'cyberware-42', 'catalog_item_id': 'cyberware-42'})
+        self.assertEqual(server.cyberware_capacity(mantis)['slots_used'], 2)
+
     def test_curated_cyberware_payloads_and_sensor_array_slots(self):
         neural = copy.deepcopy(server.item_by_id('cyberware-58'))
         neural.update({'key': 'cyberware-58', 'catalog_item_id': 'cyberware-58',

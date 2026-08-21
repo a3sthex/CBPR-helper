@@ -6085,6 +6085,25 @@ CYBERWARE_CURATED_PAYLOADS = {
         'source': 'DL:12Cy 5 / DGD 146 / IR3 87',
     },
 }
+CYBERWARE_WEAPON_PROFILES = {
+    'cyberware-15': {'id': 'popup-shotgun', 'kind': 'ranged', 'weapon_type': 'Shotgun', 'skill': 'Shoulder Arms', 'damage': '5d6', 'rof': 1, 'magazine': 2, 'ammo_kind': 'shotgun', 'range_table': 'Shotgun', 'deployable': True, 'concealable': True, 'source': 'BC 21'},
+    'cyberware-42': {'id': 'mantis-blade', 'kind': 'melee', 'weapon_type': 'Heavy Melee Weapon', 'skill': 'Melee Weapon', 'damage': '3d6', 'rof': 2, 'quality': 'Excellent', 'hands_required': 1, 'deployable': True, 'concealable': True, 'source': 'CEMK 35'},
+    'cyberware-43': {'id': 'gorilla-arm', 'kind': 'melee', 'weapon_type': 'Heavy Melee Weapon', 'skill': 'Melee Weapon', 'damage': '3d6', 'rof': 2, 'quality': 'Excellent', 'hands_required': 1, 'deployable': False, 'concealable': True, 'manual_effect': 'BODY 11 weapon handling; paired BODY 11 feats are contextual.', 'source': 'CEMK 35'},
+    'cyberware-44': {'id': 'monowire', 'kind': 'melee', 'weapon_type': 'Exotic Heavy Melee Weapon', 'skill': 'Melee Weapon', 'damage': '3d6', 'rof': 2, 'hands_required': 1, 'deployable': True, 'concealable': True, 'reach_m': 6, 'manual_effect': 'On Critical Injury roll twice and choose one result.', 'source': 'CEMK 35'},
+    'cyberware-48': {'id': 'projectile-launch-system', 'kind': 'ranged_dual', 'weapon_type': 'Rocket/Grenade Launcher', 'skill': 'Heavy Weapons', 'damage': '6d6 / 8d6', 'damage_by_ammo': {'grenade': '6d6', 'rocket': '8d6'}, 'rof': 1, 'magazine': 1, 'ammo_kinds': ['grenade', 'rocket'], 'deployable': True, 'concealable': True, 'source': 'CEMK 36'},
+    'cyberware-107': {'id': 'big-knucks', 'kind': 'melee', 'weapon_type': 'Medium Melee Weapon', 'skill': 'Melee Weapon', 'damage': '2d6', 'rof': 2, 'hands_required': 1, 'deployable': False, 'concealable': True, 'source': 'CP:R 364'},
+    'cyberware-117': {'id': 'popup-grenade-launcher', 'kind': 'ranged', 'weapon_type': 'Grenade Launcher', 'skill': 'Heavy Weapons', 'damage': '6d6', 'rof': 1, 'magazine': 1, 'ammo_kind': 'grenade', 'range_table': 'Grenade Launcher', 'deployable': True, 'concealable': True, 'source': 'CP:R 365'},
+    'cyberware-121': {'id': 'rippers', 'kind': 'melee', 'weapon_type': 'Medium Melee Weapon', 'skill': 'Melee Weapon', 'damage': '2d6', 'rof': 2, 'hands_required': 1, 'deployable': True, 'concealable': True, 'source': 'CP:R 365'},
+    'cyberware-124': {'id': 'scratchers', 'kind': 'melee', 'weapon_type': 'Light Melee Weapon', 'skill': 'Melee Weapon', 'damage': '1d6', 'rof': 2, 'hands_required': 1, 'deployable': False, 'concealable': True, 'source': 'CP:R 366'},
+    'cyberware-131': {'id': 'slice-n-dice', 'kind': 'melee', 'weapon_type': 'Medium Melee Weapon', 'skill': 'Melee Weapon', 'damage': '2d6', 'rof': 2, 'hands_required': 1, 'deployable': True, 'concealable': True, 'source': 'CP:R 366'},
+    'cyberware-133': {'id': 'wolvers', 'kind': 'melee', 'weapon_type': 'Heavy Melee Weapon', 'skill': 'Melee Weapon', 'damage': '3d6', 'rof': 2, 'hands_required': 1, 'deployable': True, 'concealable': True, 'source': 'CP:R 366'},
+    'cyberware-146': {'id': 'mono-paw', 'kind': 'melee', 'weapon_type': 'Medium Melee Weapon', 'skill': 'Melee Weapon', 'damage': '1d6', 'rof': 2, 'quality': 'Excellent', 'hands_required': 1, 'deployable': True, 'concealable': True, 'manual_effect': 'Ignores armor below SP11; higher SP applies normally.', 'source': 'DL:12Cute 6'},
+    'cyberware-148': {'id': 'chainripp', 'kind': 'melee', 'weapon_type': 'Very Heavy Melee Weapon', 'skill': 'Melee Weapon', 'damage': '4d6', 'rof': 1, 'hands_required': 1, 'deployable': True, 'rev_action': True, 'concealable': False, 'manual_effect': 'Excellent Exotic quality only while revved.', 'source': 'DL:12Cy 3 / IR3 85'},
+}
+
+
+def cyberware_weapon_profile(entry):
+    return copy.deepcopy(CYBERWARE_WEAPON_PROFILES.get(catalog_item_id_for_entry(entry)))
 
 
 def cyberware_curated_payload(entry):
@@ -6116,7 +6135,7 @@ def cyberware_capacity(entry):
     description = str(catalog_item.get('desc') or (entry or {}).get('desc') or '')
     if capacity.get('host'):
         slot_match = re.search(
-            r'(?:takes?|uses?|requires?)\s+(?:up\s+)?(\d+)\s+(?:cyberware\s+)?option slots?',
+            r'(?:takes?|uses?|requires?)\s+(?:up\s+)?(\d+)\s+(?:(?:cyberware|cyberarm|cybereye|cyberleg|cyberaudio)\s+)?option slots?',
             description, re.I)
         if slot_match:
             capacity['slots_used'] = int(slot_match.group(1))
@@ -6316,6 +6335,7 @@ def effective_cyberware_loadout(data):
             'compatible_host_ids': [],
             'installation_profile': cyberware_installation_profile(entry),
             'curated_payload': payload,
+            'weapon_profile': cyberware_weapon_profile(entry),
             'status': 'staged' if not installed else ('installed' if not reasons else 'unbound'),
             'reasons': reasons,
             'unique': bool(capacity.get('unique')),
@@ -6360,6 +6380,7 @@ def effective_cyberware_loadout(data):
                 'slots_used': option['slots_used_per_host'],
                 'paired': option['hosts_required'] > 1,
                 'curated_payload': copy.deepcopy(option.get('curated_payload')),
+                'weapon_profile': copy.deepcopy(option.get('weapon_profile')),
             })
             if option['name'] == 'Quick Change Mount':
                 host['quick_change_mount'] = True
@@ -6412,6 +6433,34 @@ def effective_cyberware_loadout(data):
         int(_num(payload.get('value')) or 0) for payload in active_payloads
         if payload.get('kind') == 'numeric_modifier' and
         payload.get('target') == 'initiative.check')
+    weapon_profiles = []
+    for option in option_rows:
+        profile = copy.deepcopy(option.get('weapon_profile'))
+        if option['state'] != 'installed' or option['status'] != 'installed' or not profile:
+            continue
+        stored = runtime_states.get(option['instance_id']) or {}
+        weapon_state = stored.get('weapon') if isinstance(stored.get('weapon'), dict) else {}
+        maximum = max(0, int(_num(profile.get('magazine')) or 0))
+        profile['instance_id'] = option['instance_id']
+        profile['name'] = option['name']
+        profile['state'] = {
+            'deployed': weapon_state.get('deployed') is True or
+                not profile.get('deployable'),
+            'revved': weapon_state.get('revved') is True,
+            'magazine': max(0, min(maximum, int(_num(weapon_state.get('magazine')) or 0))),
+            'magazine_max': maximum,
+            'loaded_ammo_catalog_id': weapon_state.get('loaded_ammo_catalog_id'),
+            'loaded_ammo_name': weapon_state.get('loaded_ammo_name'),
+            'loaded_ammo_kind': weapon_state.get('loaded_ammo_kind'),
+        }
+        if profile.get('damage_by_ammo') and profile['state']['loaded_ammo_kind']:
+            profile['effective_damage'] = profile['damage_by_ammo'].get(
+                profile['state']['loaded_ammo_kind'], profile.get('damage'))
+        ammo_kinds = profile.get('ammo_kinds') or ([profile.get('ammo_kind')]
+                                                   if profile.get('ammo_kind') else [])
+        profile['shared_ammo_available'] = sum(
+            shared_ammo_available(data, ammo_kind=kind) for kind in ammo_kinds)
+        weapon_profiles.append(profile)
     return {
         'hosts': sorted(hosts.values(), key=lambda item: (item['host_kind'], item['name'],
                                                           item['instance_id'])),
@@ -6423,6 +6472,7 @@ def effective_cyberware_loadout(data):
         'contextual_modifiers': [payload for payload in active_payloads
                                  if payload.get('kind') in (
                                      'contextual_modifier', 'contextual_skill_modifier')],
+        'weapon_profiles': weapon_profiles,
         'unbound_count': sum(item['status'] in ('unbound', 'invalid')
                              for item in option_rows),
     }
@@ -7213,6 +7263,16 @@ SERVER_ERROR_EN = {
     'Therapy profile повреждён': 'Therapy profile is corrupted',
     'Подтвердите завершение недели Therapy': 'Confirm completion of the Therapy week',
     'Сначала освободите зависимые Cyberware Option Slots': 'Free dependent Cyberware Option Slots first',
+    'Cyberweapon action содержит неподдерживаемые поля': 'Cyberweapon action contains unsupported fields',
+    'Укажите причину Cyberweapon action': 'Provide a reason for the Cyberweapon action',
+    'Installed curated Cyberweapon не найден': 'Installed curated Cyberweapon not found',
+    'Cyberweapon не имеет deploy/stow state': 'Cyberweapon has no deploy/stow state',
+    'Cyberweapon не имеет rev action': 'Cyberweapon has no rev action',
+    'Сначала deploy Cyberweapon': 'Deploy the Cyberweapon first',
+    'Fire доступен только ranged Cyberweapon': 'Fire is available only for a ranged Cyberweapon',
+    'Cyberweapon magazine пуст': 'Cyberweapon magazine is empty',
+    'Cyberweapon не использует tracked ammo': 'Cyberweapon does not use tracked ammunition',
+    'Ammo stack несовместим с Cyberweapon': 'Ammo stack is incompatible with the Cyberweapon',
     'Run доступен только Attacker Program': 'Run is available only for an Attacker Program',
     'Saved Program instance недоступен для восстановления': 'Saved Program instance is unavailable for restore',
     'Недостаточно Cyberdeck slots для Backup restore': 'Not enough Cyberdeck slots for Backup restore',
@@ -11560,6 +11620,104 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     @atomic_endpoint
+    def api_character_cyberware_weapon_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'action', 'ammo_instance_id', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Cyberweapon action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Cyberweapon action')
+        instance_id = str(m.group(2)).lower()
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        chrome = next((item for item in data.get('cyberware') or []
+                       if isinstance(item, dict) and item.get('instance_id') == instance_id), None)
+        profile = cyberware_weapon_profile(chrome)
+        if not chrome or not cyberware_is_installed(chrome) or not profile:
+            raise ApiError(404, 'Installed curated Cyberweapon не найден')
+        runtime_states = data.setdefault('cyberware_state', {})
+        runtime = runtime_states.setdefault(instance_id, {})
+        weapon_state = runtime.setdefault('weapon', {
+            'deployed': not profile.get('deployable'), 'revved': False,
+            'magazine': 0, 'magazine_max': int(profile.get('magazine') or 0),
+        })
+        maximum = max(0, int(_num(profile.get('magazine')) or 0))
+        weapon_state['magazine_max'] = maximum
+        weapon_state['magazine'] = max(
+            0, min(maximum, int(_num(weapon_state.get('magazine')) or 0)))
+        action = str((body or {}).get('action') or '').lower()
+        result = {'action': action, 'profile_id': profile['id']}
+        if action in ('deploy', 'stow'):
+            if not profile.get('deployable'):
+                raise ApiError(409, 'Cyberweapon не имеет deploy/stow state')
+            weapon_state['deployed'] = action == 'deploy'
+            if action == 'stow':
+                weapon_state['revved'] = False
+            reason = f'{action.title()} Cyberweapon {chrome.get("name")}: {reason_detail}'
+        elif action in ('rev', 'rev_down'):
+            if not profile.get('rev_action'):
+                raise ApiError(409, 'Cyberweapon не имеет rev action')
+            if profile.get('deployable') and not weapon_state.get('deployed'):
+                raise ApiError(409, 'Сначала deploy Cyberweapon')
+            weapon_state['revved'] = action == 'rev'
+            reason = f'{action} Cyberweapon {chrome.get("name")}: {reason_detail}'
+        elif action == 'fire':
+            if profile.get('kind') not in ('ranged', 'ranged_dual'):
+                raise ApiError(409, 'Fire доступен только ranged Cyberweapon')
+            if profile.get('deployable') and not weapon_state.get('deployed'):
+                raise ApiError(409, 'Сначала deploy Cyberweapon')
+            current = weapon_state['magazine']
+            if current < 1:
+                raise ApiError(409, 'Cyberweapon magazine пуст')
+            weapon_state['magazine'] = current - 1
+            clear_loaded_ammo_if_empty(weapon_state)
+            result.update({'magazine_before': current,
+                           'magazine_after': weapon_state['magazine']})
+            reason = f'Fire Cyberweapon {chrome.get("name")}: {reason_detail}'
+        elif action == 'reload':
+            if maximum <= 0:
+                raise ApiError(409, 'Cyberweapon не использует tracked ammo')
+            ammo_id = str((body or {}).get('ammo_instance_id') or '').lower()
+            ammo = next((item for item in data.get('inventory') or []
+                         if isinstance(item, dict) and item.get('instance_id') == ammo_id), None)
+            ammo_kinds = profile.get('ammo_kinds') or ([profile.get('ammo_kind')]
+                                                       if profile.get('ammo_kind') else [])
+            ammo_kind = next((kind for kind in ammo_kinds
+                              if ammo_matches_requirement(ammo, kind)), None)
+            if not ammo_kind:
+                raise ApiError(400, 'Ammo stack несовместим с Cyberweapon')
+            transfer = consume_shared_ammo(
+                data, weapon_state, ammo_id, ammo_kind=ammo_kind)
+            weapon_state['loaded_ammo_kind'] = ammo_kind
+            result['transfer'] = transfer
+            reason = (f'Reload Cyberweapon {chrome.get("name")} with '
+                      f'{transfer["ammo_name"]} ×{transfer["moved"]}: {reason_detail}')
+        else:
+            raise ApiError(400, 'Cyberweapon action: deploy/stow/rev/rev_down/fire/reload')
+        runtime['weapon'] = weapon_state
+        validate_active_modification_references(conn, row['id'], data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'cyberweapon_action', source_ref=reason, prune=True)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='item_action')
+        now = time.time()
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'result': result,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
     def api_character_item_action(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
         expected_revision = _num((body or {}).get('revision'))
@@ -14641,6 +14799,7 @@ ROUTES = [
     ('POST', rx(r'/api/characters/(\d+)/items/([a-f0-9]{32})/action'), Handler.api_character_item_action),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/action'), Handler.api_character_cyberware_action),
     ('POST', rx(r'/api/characters/(\d+)/therapy/action'), Handler.api_character_therapy_action),
+    ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/weapon/action'), Handler.api_character_cyberware_weapon_action),
     ('GET', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modifications),
     ('POST', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modification_install),
     ('POST', rx(r'/api/characters/(\d+)/modifications/([a-f0-9]{32})/action'), Handler.api_character_modification_action),

@@ -155,6 +155,9 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('/therapy/action', source)
         self.assertIn('Curated Cyberware Payloads', source)
         self.assertIn('MANUAL CONTEXT', source)
+        self.assertIn('Integrated Cyberweapons', source)
+        self.assertIn('data-cyberweapon-action', source)
+        self.assertIn('/weapon/action', source)
 
     def test_live_session_has_validated_net_context_and_queue_controls(self):
         ncnet = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')

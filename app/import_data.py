@@ -396,9 +396,9 @@ def structured_requirements(cat, row, desc):
     body = re.search(r'requires body\s+(\d+)', low)
     if body:
         requirements.append({'kind': 'stat', 'stat': 'BODY', 'minimum': int(body.group(1))})
-    slots = re.search(r'requires?\s+(\d+)\s+(?:cyberware\s+)?option slots?', low)
+    slots = re.search(r'requires?\s+(\d+)\s+(?:(?:cyberware|cyberarm|cybereye|cyberleg|cyberaudio)\s+)?option slots?', low)
     if not slots:
-        slots = re.search(r'(?:takes?|uses?)\s+(?:up\s+)?(\d+)\s+(?:cyberware\s+)?option slots?', low)
+        slots = re.search(r'(?:takes?|uses?)\s+(?:up\s+)?(\d+)\s+(?:(?:cyberware|cyberarm|cybereye|cyberleg|cyberaudio)\s+)?option slots?', low)
     slot_count = int(slots.group(1)) if slots else 0
     ctype = str(row.get('Type') or '')
     name = str(row.get('Name') or '').lower()

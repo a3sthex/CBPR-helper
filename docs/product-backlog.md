@@ -3124,7 +3124,18 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Cancel не возвращает оплату; Addiction completion не выдумывает универсальную addiction schema и остаётся честным `MANUAL RESOLUTION`;
 - active course, therapist, rolls, Humanity before/after/restored, payment и bounded history хранятся в server-owned `therapy_state`, попадают в Ledger и поддерживают snapshot revert;
 - runtime/audit state нельзя внедрить через Character Creation payload;
-- Therapy campaign-calendar scheduling, clinic service reservations, addictions, Immunoblockers и расширенные Popup/Integrated weapon payloads остаются следующими подэтапами.
+- Therapy campaign-calendar scheduling, clinic service reservations, addictions и Immunoblockers остаются следующими подэтапами.
+
+**Статус B.9.4 — реализованы Curated Integrated Cyberweapons:**
+
+- server allowlist содержит fixed profiles для Popup Shotgun, Mantis Blade, Gorilla Arm, Monowire, Projectile Launch System, Big Knucks, Popup Grenade Launcher, Rippers, Scratchers, Slice ‘N Dice, Wolvers, Mono-Paw и ChainRipp;
+- profiles показывают authoritative weapon type, Skill, damage, ROF, quality, reach, magazine, ammo family, deploy/stow и rev state; сложные Critical Injury/armor/BODY payloads остаются `MANUAL EFFECT`;
+- Popup Shotgun и Popup Grenade Launcher используют concrete tracked magazines и общий Dossier ammo pool; Reload переносит реальные rounds из выбранного ammo stack, Fire тратит один loaded round;
+- Projectile Launch System поддерживает validated grenade/rocket ammo families в одном magazine без смешивания типов;
+- deploy/stow, ChainRipp rev/rev-down, Reload и Fire revision-protected, атомарны и записываются в Character Ledger вместе с runtime snapshot;
+- Ledger revert восстанавливает magazine/deployed/revved и shared ammo state;
+- Data Pool parser исправлен для `Cyberarm/Cybereye/Cyberleg/Cyberaudio Option Slots`, поэтому Mantis Blade, Gorilla Arm, Projectile Launch System и другие options занимают source-правильное число слотов;
+- generic Popup Melee/Popup Ranged concrete weapon binding, Dartgun/Net Launcher/Gas Jet special ammo и Smartgun/Smart Rebuild attachments остаются следующими расширениями.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -3147,8 +3158,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, action budget, cross-character REZ, safe curated effects, concrete Cyberware hosts, sides, clinic audit, Quick Change, curated option payloads и Therapy lifecycle;
-    - дальше: Popup/Integrated weapon payloads, Armor/Shield hosts и Tech Maker modifications.
+    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, action budget, cross-character REZ, safe curated effects, concrete Cyberware hosts, sides, clinic audit, Quick Change, curated option payloads, Therapy и fixed Integrated Cyberweapons;
+    - дальше: generic Popup weapon binding, Armor/Shield hosts и Tech Maker modifications.
 14. JSON import.
 
 ### Пакет C — Publishing Preview

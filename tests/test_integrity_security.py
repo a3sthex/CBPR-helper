@@ -1126,6 +1126,64 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertTrue(ledger['entries'][0]['delta']['cyberware_lifecycle'][
             'quick_change_no_humanity_loss'])
 
+    def test_curated_popup_cyberweapon_uses_shared_ammo_and_reverts(self):
+        data = copy.deepcopy(self.character_data)
+        arm = copy.deepcopy(server.item_by_id('cyberware-109'))
+        arm.update({'key': 'cyberware-109', 'catalog_item_id': 'cyberware-109',
+                    'instance_id': 'a' * 32, 'state': 'installed',
+                    'installation_side': 'left', 'type': arm['fields']['Type']})
+        shotgun = copy.deepcopy(server.item_by_id('cyberware-15'))
+        shotgun.update({'key': 'cyberware-15', 'catalog_item_id': 'cyberware-15',
+                        'instance_id': 'b' * 32, 'state': 'installed',
+                        'host_instance': arm['instance_id'],
+                        'host_instances': [arm['instance_id']],
+                        'type': shotgun['fields']['Type']})
+        ammo = copy.deepcopy(server.item_by_id('ammo-4'))
+        ammo.update({'key': 'ammo-4', 'catalog_item_id': 'ammo-4',
+                     'instance_id': 'c' * 32, 'state': 'carried', 'qty': 1,
+                     'ammo_rounds': 10})
+        data['cyberware'] = [arm, shotgun]
+        data['inventory'] = [ammo]
+        self.conn.execute('UPDATE characters SET data=? WHERE id=1',
+                          (json.dumps(data),))
+        self.conn.commit()
+        match = re.match(r'^(\d+)/([a-f0-9]{32})$',
+                         f'1/{shotgun["instance_id"]}')
+        deployed = self.call(
+            server.Handler.api_character_cyberware_weapon_action, match, {
+                'revision': 0, 'action': 'deploy',
+                'reason': 'Deploy concealed Popup Shotgun',
+            })
+        profile = deployed['character']['derived']['effective_cyberware'][
+            'weapon_profiles'][0]
+        self.assertTrue(profile['state']['deployed'])
+        self.assertEqual((profile['damage'], profile['magazine']), ('5d6', 2))
+        reloaded = self.call(
+            server.Handler.api_character_cyberware_weapon_action, match, {
+                'revision': 1, 'action': 'reload',
+                'ammo_instance_id': ammo['instance_id'],
+                'reason': 'Reload Popup Shotgun from shared ammo',
+            })
+        profile = reloaded['character']['derived']['effective_cyberware'][
+            'weapon_profiles'][0]
+        self.assertEqual(profile['state']['magazine'], 2)
+        stored_ammo = reloaded['character']['data']['inventory'][0]
+        self.assertEqual(stored_ammo['ammo_rounds'], 8)
+        fired = self.call(
+            server.Handler.api_character_cyberware_weapon_action, match, {
+                'revision': 2, 'action': 'fire',
+                'reason': 'Record one Popup Shotgun attack',
+            })
+        self.assertEqual(fired['result']['magazine_after'], 1)
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        reverted = self.call(
+            server.Handler.api_character_ledger_revert,
+            re.match(r'^(\d+)/(\d+)$', f'1/{ledger["entries"][0]["id"]}'), {
+                'revision': 3, 'reason': 'Revert Cyberweapon fire',
+            })
+        profile = reverted['derived']['effective_cyberware']['weapon_profiles'][0]
+        self.assertEqual(profile['state']['magazine'], 2)
+
     def test_therapy_workflow_charges_rolls_caps_and_reverts(self):
         edited = copy.deepcopy(self.character_data)
         edited['cash'] = 2000
