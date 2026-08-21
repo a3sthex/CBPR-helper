@@ -113,7 +113,7 @@
 ### Подтверждённое поведение покупки оружия
 
 - ✅ Купленное в Market огнестрельное оружие создаётся **разряженным**: `magazine = 0`, даже если у Character уже есть совместимые патроны.
-- Боеприпасы остаются отдельным Inventory stack/reserve и не вставляются в оружие автоматически.
+- Боеприпасы остаются отдельными Inventory stacks с точным rounds balance и не вставляются в оружие автоматически.
 - Зарядка выполняется только явным действием `Reload`; оружие, полученное не через Market, может иметь состояние, заданное источником/сессией.
 
 #### Рекомендуемый порядок A.2
@@ -1946,7 +1946,7 @@ skill + stat
 attack_base override
 mode: ranged | melee | autofire | suppressive | explosive | net
 Damage / ROF / Hands
-Mag current / max / reserve
+Mag current / max / loaded ammo + shared ammo source
 Range DV profile
 armor interaction
 special effect
@@ -2857,9 +2857,9 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 **Статус B.6.4 — реализованы Underbarrel Weapon Profiles:**
 
 - Grenade Launcher Underbarrel и Shotgun Underbarrel создают отдельный alternate attack profile на конкретном host instance;
-- profiles имеют собственные Skill, Damage, ROF, magazine/current/reserve и source snapshot, не заменяя основную атаку оружия;
+- profiles имеют собственные Skill, Damage, ROF, Magazine state и source snapshot, не заменяя основную атаку оружия;
 - Grenade profile: Heavy Weapons, 6d6, Mag 1; Shotgun profile: Shoulder Arms, 5d6, Mag 2;
-- новый underbarrel всегда устанавливается разряженным; Reload переносит боеприпасы из отдельного reserve и не создаёт их автоматически;
+- новый underbarrel всегда устанавливается разряженным; временный отдельный reserve этого этапа заменён реальным Inventory ammo transfer в B.7.5;
 - Fire/Reload являются server-authoritative modification actions с revision guard, readable Ledger и безопасным revert resource state;
 - снятие underbarrel удаляет его active profile/state, а revert восстановления modification возвращает snapshot;
 - требование держать host двумя руками показывается как `MANUAL RULE`: система пока не притворяется, что умеет отслеживать текущий хват оружия;
@@ -2931,7 +2931,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Onboard Machinegun получает front-facing Autofire-only Assault Rifle profile: Autofire Skill, Assault Rifle Range Table, multiplier 4, Suppressive Fire, Mag 30 и расход 10 rounds на server-authoritative Fire;
 - Onboard Flamethrower получает обязательную allowlisted ориентацию front/side/rear, Heavy Weapons, Shotgun Range Table, 3d6, ROF 1 и Mag 4; incendiary ignition остаётся manual resolution;
 - Onboard Rocket Pod получает front-facing Heavy Weapons profile, Rocket Launcher Range Table, 8d6, ROF 1 и drum 3; существующие Heavy Chassis/availability/permanent checks продолжают применяться;
-- каждое mounted weapon устанавливается разряженным и имеет собственные Mag/Reserve, Fire/Reload, Attack/Damage controls; исходный Reserve создаётся из совместимого ammo snapshot, но единый shared ammo transfer/ownership пока не реализован;
+- каждое mounted weapon устанавливается разряженным и имеет собственный Magazine и Fire/Reload/Attack/Damage controls; временный reserve snapshot этого этапа позже заменён реальным shared ammo transfer в B.7.5;
 - условие `Cannot reload while driving` показывается явно, но не блокирует Reload автоматически до появления authoritative driving/session state;
 - все resource actions сохраняют base item неизменным, попадают в readable Ledger и безопасно revert-ятся как resource state;
 - Vehicle Heavy Weapon Mount, cargo/rooms/Housing и полноценные repair workflows были вынесены в следующие Garage этапы.
@@ -2948,7 +2948,22 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Luxury Vehicle Room заменяет одну доступную комнату без mechanics-бонуса; Complex Vehicle Room требует allowlisted purpose и даёт seat contribution 6 для Cabin Cruiser/Aerozep или 12 для Yacht;
 - Cargo Bay purpose, Smuggling Upgrade и Bicycle Smuggling Compartment отображаются как структурированные cargo modules; DV17, hidden holsters и ограничения размеров сохранены, но фактическое содержимое остаётся `MANUAL CARGO`;
 - Housing нельзя снять, пока от него зависят room upgrades или несколько Groundcar mounts; количество upgraded rooms не может превысить rooms total;
-- выдача Family gift weapon, точные room layouts/cargo contents и полноценные repair workflows остаются ручными/следующими этапами.
+- выдача Family gift weapon, точные room layouts/cargo contents и полноценные repair workflows были оставлены следующим этапам.
+
+**Статус B.7.5 — реализованы Shared Ammo и Vehicle Repair Workflow:**
+
+- ammo stack теперь хранит точное `ammo_rounds` отдельно от количества купленных packs; legacy stacks безопасно получают rounds по `quantity_per_purchase`, а частично использованный pack не превращается обратно в полный;
+- Reload для обычного оружия, Underbarrel profiles, Onboard weapons и bound Heavy Weapon Mount требует выбрать конкретный совместимый ammo instance и атомарно переносит реальные rounds из Inventory в Magazine;
+- старые приватные `Reserve` snapshots обнуляются; Character Sheet показывает общий совместимый `Shared` ammo pool, а удалённый после полного расхода stack также удаляется из stable item instances;
+- Magazine запоминает загруженный catalog ammo type; другой тип нельзя смешать до опустошения магазина, а при Magazine 0 loaded-ammo identity очищается;
+- Reload/Fire защищены revision, попадают в readable Ledger и revert-ят Magazine и ammo stack одним change set; прямой обход Garage для bound weapon остаётся закрыт;
+- Market добавляет новые packs в точный rounds balance; при resale продаются только целые оставшиеся packs, а неполный последний pack продать нельзя;
+- положительные SDP adjustments и `Repair Full` удалены из обычного resource action: восстановление проходит только через отдельный Vehicle Repair Workflow;
+- Start Repair автоматически определяет Skill: Basic Tech для Bicycle, Land/Sea/Air Vehicle Tech для соответствующего транспорта;
+- severity фиксируется по текущему SDP: Minor при половине Max SDP или выше — DV9/3 hours, Major ниже половины — DV13/1 day, Destroyed при 0 SDP — DV17/1 week (`CP:R 140`); workflow хранит technician, исходный/целевой SDP и source;
+- Resolve Repair Check сравнивает введённый итог с authoritative DV: success восстанавливает транспорт до perfect condition, failure не меняет SDP и требует начать работу заново; Cancel завершает work order без ремонта;
+- все start/resolve/cancel events revision-guarded, Ledger-audited, revertible и сохраняются в ограниченной repair history;
+- paid NPC repair pricing, Campaign Clock completion, выгрузка заряженных патронов и общий Crew ammo/cargo stash остаются будущими интеграциями.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -2968,8 +2983,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: instance binding, slot pools, lifecycle, Magazines/Smartgun/Bayonet/scopes, Underbarrels, Autofire/Rebuild profiles и host-specific Range Table choices;
     - дальше: contextual ricochet/charge, full Autofire action/ammo и Tech overrides.
 12. ◐ Vehicle Upgrades и Garage integration.
-    - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective SDP/Body SP/Glass/Seats, Garage damage controls, NOS, Onboard weapon profiles, concrete Heavy Weapon Mount binding, Housing/rooms и structured cargo modules;
-    - дальше: shared ammo transfer/ownership, cargo contents/crew stash и полноценные repair workflows.
+    - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
+    - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. Cyberdeck/Cyberware/Armor/Tech modification hosts.
 14. JSON import.
 

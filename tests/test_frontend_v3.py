@@ -105,6 +105,11 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('mount_weapon', source)
         self.assertIn('Interior, Rooms & Cargo', source)
         self.assertIn('complex_purposes', source)
+        self.assertIn('Vehicle Repair Workflow', source)
+        self.assertIn('data-vehicle-repair', source)
+        self.assertIn('chooseAmmoStack', source)
+        self.assertIn('ammo_rounds', source)
+        self.assertIn('shared_ammo_available', source)
 
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')

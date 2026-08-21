@@ -109,7 +109,7 @@ class MediaAndProgressionTests(unittest.TestCase):
         self.assertEqual(data['luck_cur'], 6)
         self.assertEqual(data['active_role'], 'Solo')
         self.assertEqual(data['roles'][0]['rank'], 4)
-        self.assertEqual(data['schema_version'], 5)
+        self.assertEqual(data['schema_version'], 6)
 
 
 class LocalizationTests(unittest.TestCase):
@@ -572,6 +572,40 @@ class VehicleModificationTests(unittest.TestCase):
                      'instance_id': instance_id, 'qty': 1, 'state': 'carried',
                      'acquisition_source': source})
         return item
+
+    def test_shared_ammo_compatibility_is_profile_specific(self):
+        basic = self.owned('ammo-0', 'a' * 32)
+        incendiary = self.owned('ammo-6', 'b' * 32)
+        smart = self.owned('ammo-10', 'c' * 32)
+        for ammo in (basic, incendiary, smart):
+            ammo['ammo_rounds'] = 10
+        self.assertFalse(server.ammo_matches_requirement(
+            basic, 'incendiary_shotgun'))
+        self.assertTrue(server.ammo_matches_requirement(
+            incendiary, 'incendiary_shotgun'))
+        self.assertFalse(server.ammo_matches_requirement(basic, 'grenade'))
+        self.assertFalse(server.ammo_matches_requirement(basic, 'rocket'))
+        self.assertTrue(server.ammo_matches_requirement(smart, 'rocket'))
+        rifle = self.owned('guns-6', 'd' * 32)
+        self.assertTrue(server.ammo_matches_requirement(basic, weapon=rifle))
+        self.assertTrue(server.ammo_matches_requirement(incendiary, weapon=rifle))
+
+    def test_vehicle_repair_guidance_uses_damage_severity_and_vehicle_skill(self):
+        self.assertEqual(server.vehicle_repair_severity(50, 50), 'minor')
+        self.assertEqual(server.vehicle_repair_severity(25, 50), 'minor')
+        self.assertEqual(server.vehicle_repair_severity(24, 50), 'major')
+        self.assertEqual(server.vehicle_repair_severity(0, 50), 'destroyed')
+        self.assertEqual(server.VEHICLE_REPAIR_RULES['minor']['dv'], 9)
+        self.assertEqual(server.VEHICLE_REPAIR_RULES['major']['duration_key'], '1_day')
+        self.assertEqual(server.VEHICLE_REPAIR_RULES['destroyed']['duration_key'], '1_week')
+        self.assertEqual(server.vehicle_repair_skill(
+            self.owned('vehicles-61', '0' * 32)), 'Basic Tech')
+        self.assertEqual(server.vehicle_repair_skill(
+            self.owned('vehicles-7', '1' * 32)), 'Sea Vehicle Tech')
+        self.assertEqual(server.vehicle_repair_skill(
+            self.owned('vehicles-13', '2' * 32)), 'Air Vehicle Tech')
+        self.assertEqual(server.vehicle_repair_skill(
+            self.owned('vehicles-2', '3' * 32)), 'Land Vehicle Tech')
 
     def test_effective_vehicle_separates_sdp_body_sp_glass_and_seats(self):
         vehicle = self.owned('vehicles-2', 'c' * 32)

@@ -768,6 +768,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         by_name = {item['name']: item for item in updated['data']['inventory']}
         host = by_name['Assault Rifle']
         upgrade = by_name['Grenade Launcher Underbarrel']
+        grenade_ammo = by_name['EMP']
         installed = self.call(server.Handler.api_character_modification_install, self.match(1), {
             'revision': 1, 'host_instance_id': host['instance_id'],
             'upgrade_instance_id': upgrade['instance_id'], 'manual_confirm': False,
@@ -779,7 +780,8 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertEqual(profile['damage'], '6d6')
         self.assertEqual(profile['state']['magazine'], 0)
         self.assertEqual(profile['state']['magazine_max'], 1)
-        self.assertEqual(profile['state']['reserve'], 10)
+        self.assertEqual(profile['state']['reserve'], 0)
+        self.assertEqual(profile['shared_ammo_available'], 10)
         self.assertEqual(
             installed['character']['derived']['effective_weapons'][host['instance_id']]['effective']['concealable'],
             'NO')
@@ -796,9 +798,15 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertEqual(empty.exception.status, 409)
         reloaded = self.call(server.Handler.api_character_modification_action, mod_match, {
             'revision': 2, 'action': 'reload',
+            'ammo_instance_id': grenade_ammo['instance_id'],
         })
         profile = reloaded['character']['derived']['effective_weapons'][host['instance_id']]['alternate_attacks'][0]
-        self.assertEqual((profile['state']['magazine'], profile['state']['reserve']), (1, 9))
+        self.assertEqual((profile['state']['magazine'], profile['state']['reserve']), (1, 0))
+        self.assertEqual(profile['state']['loaded_ammo_name'], 'EMP')
+        self.assertEqual(profile['shared_ammo_available'], 9)
+        ammo_after = next(item for item in reloaded['character']['data']['inventory']
+                          if item['instance_id'] == grenade_ammo['instance_id'])
+        self.assertEqual(ammo_after['ammo_rounds'], 9)
         fired = self.call(server.Handler.api_character_modification_action, mod_match, {
             'revision': 3, 'action': 'fire',
         })
@@ -817,6 +825,88 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         })
         self.assertFalse(removed['character']['derived']['effective_weapons'][host['instance_id']]['alternate_attacks'])
         self.assertNotIn(modification_id, removed['character']['data'].get('modification_state', {}))
+
+    def test_shared_ammo_reload_consumes_real_stack_and_reverts_atomically(self):
+        edited = copy.deepcopy(self.character_data)
+        item_ids = ('guns-1', 'ammo-0', 'ammo-1')
+        edited['inventory'] = [
+            {
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': server.item_by_id(item_id)['cat'],
+                'name': server.item_by_id(item_id)['name'],
+                'qty': 2 if item_id == 'ammo-0' else 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            }
+            for item_id in item_ids
+        ]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add shared ammo test loadout', 'data': edited,
+        })
+        by_name = {item['name']: item for item in updated['data']['inventory']}
+        weapon, basic, armor_piercing = (
+            by_name['Heavy Pistol'], by_name['Basic'], by_name['Armor-Piercing'])
+        self.assertEqual(basic['ammo_rounds'], 20)
+        fired = self.call(server.Handler.api_character_resource, self.match(1), {
+            'revision': 1, 'resource': 'weapon', 'subject': weapon['instance_id'],
+            'action': 'fire', 'value': 1,
+        })
+        self.assertEqual(fired['character']['data']['weapon_state'][
+            weapon['instance_id']]['magazine'], 7)
+        reloaded = self.call(server.Handler.api_character_resource, self.match(1), {
+            'revision': 2, 'resource': 'weapon', 'subject': weapon['instance_id'],
+            'action': 'reload', 'ammo_instance_id': basic['instance_id'],
+        })
+        weapon_state = reloaded['character']['data']['weapon_state'][weapon['instance_id']]
+        self.assertEqual(weapon_state['magazine'], 8)
+        self.assertEqual(weapon_state['reserve'], 0)
+        self.assertEqual(weapon_state['loaded_ammo_name'], 'Basic')
+        basic_after = next(item for item in reloaded['character']['data']['inventory']
+                           if item['instance_id'] == basic['instance_id'])
+        self.assertEqual((basic_after['ammo_rounds'], basic_after['qty']), (19, 2))
+        reload_history = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertTrue(reload_history['entries'][0]['can_revert'])
+        reverted_reload = self.call(
+            server.Handler.api_character_ledger_revert,
+            self.match(1, reload_history['entries'][0]['id']), {
+                'revision': 3, 'reason': 'Undo reload from the wrong ammo stack',
+            })
+        self.assertEqual(reverted_reload['data']['weapon_state'][
+            weapon['instance_id']]['magazine'], 7)
+        self.assertEqual(next(item for item in reverted_reload['data']['inventory']
+                              if item['instance_id'] == basic['instance_id'])['ammo_rounds'], 20)
+
+        reloaded_again = self.call(server.Handler.api_character_resource, self.match(1), {
+            'revision': 4, 'resource': 'weapon', 'subject': weapon['instance_id'],
+            'action': 'reload', 'ammo_instance_id': basic['instance_id'],
+        })
+        self.assertEqual(reloaded_again['character']['data']['weapon_state'][
+            weapon['instance_id']]['magazine'], 8)
+        fired_again = self.call(server.Handler.api_character_resource, self.match(1), {
+            'revision': 5, 'resource': 'weapon', 'subject': weapon['instance_id'],
+            'action': 'fire', 'value': 1,
+        })
+        self.assertEqual(fired_again['character']['data']['weapon_state'][
+            weapon['instance_id']]['magazine'], 7)
+        with self.assertRaises(server.ApiError) as mixed_ammo:
+            self.call(server.Handler.api_character_resource, self.match(1), {
+                'revision': 6, 'resource': 'weapon', 'subject': weapon['instance_id'],
+                'action': 'reload', 'ammo_instance_id': armor_piercing['instance_id'],
+            })
+        self.assertEqual(mixed_ammo.exception.status, 409)
+        sold_pack = self.call(server.Handler.api_sell, body={
+            'char_id': 1, 'instance_id': basic['instance_id'], 'qty': 1,
+        })
+        self.assertEqual(sold_pack['qty'], 1)
+        stored = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])
+        partial_stack = next(item for item in stored['inventory']
+                             if item['instance_id'] == basic['instance_id'])
+        self.assertEqual((partial_stack['qty'], partial_stack['ammo_rounds']), (1, 9))
+        with self.assertRaises(server.ApiError) as partial_sale:
+            self.call(server.Handler.api_sell, body={
+                'char_id': 1, 'instance_id': basic['instance_id'], 'qty': 1,
+            })
+        self.assertEqual(partial_sale.exception.status, 409)
 
     def test_exotic_scope_requires_rail_and_blocks_dependency_removal(self):
         edited = copy.deepcopy(self.character_data)
@@ -983,6 +1073,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         nos = by_name['NOS']
         machinegun = by_name['Onboard Machinegun']
         flamethrower = by_name['Onboard Flamethrower']
+        rifle_ammo = by_name['Basic']
 
         installed_nos = self.call(server.Handler.api_character_modification_install,
                                   self.match(1), {
@@ -1030,17 +1121,24 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertEqual(machinegun_state['orientation'], 'front')
         self.assertEqual(machinegun_state['magazine'], 0)
         self.assertEqual(machinegun_state['magazine_max'], 30)
-        self.assertEqual(machinegun_state['reserve'], 30)
+        self.assertEqual(machinegun_state['reserve'], 0)
         self.assertEqual(machinegun_state['ammo_cost'], 10)
+        self.assertEqual(installed_machinegun['character']['derived']['effective_vehicles'][
+            vehicle['instance_id']]['mounted_weapons'][0]['shared_ammo_available'], 30)
         machinegun_match = re.match(
             r'^(\d+)/([a-f0-9]{32})$', f'1/{machinegun_mod_id}')
         reloaded = self.call(server.Handler.api_character_modification_action,
                              machinegun_match, {
             'revision': 5, 'action': 'reload',
+            'ammo_instance_id': rifle_ammo['instance_id'],
         })
         reloaded_state = reloaded['character']['data'][
             'modification_state'][machinegun_mod_id]
         self.assertEqual((reloaded_state['magazine'], reloaded_state['reserve']), (30, 0))
+        self.assertFalse(any(item.get('instance_id') == rifle_ammo['instance_id']
+                             for item in reloaded['character']['data']['inventory']))
+        self.assertEqual(reloaded['character']['derived']['effective_vehicles'][
+            vehicle['instance_id']]['mounted_weapons'][0]['shared_ammo_available'], 0)
         fired = self.call(server.Handler.api_character_modification_action,
                           machinegun_match, {
             'revision': 6, 'action': 'fire',
@@ -1096,6 +1194,91 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertTrue(any('Use NOS' in entry['reason'] for entry in action_entries))
         self.assertTrue(any('Fire Onboard Machinegun' in entry['reason']
                             for entry in action_entries))
+
+    def test_vehicle_repair_workflow_uses_damage_severity_check_and_history(self):
+        edited = copy.deepcopy(self.character_data)
+        vehicle_item = server.item_by_id('vehicles-2')
+        edited['inventory'] = [{
+            'key': vehicle_item['id'], 'catalog_item_id': vehicle_item['id'],
+            'cat': vehicle_item['cat'], 'name': vehicle_item['name'], 'qty': 1,
+            'state': 'carried', 'acquisition_source': 'loot',
+        }]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add repair workflow test vehicle', 'data': edited,
+        })
+        vehicle = updated['data']['inventory'][0]
+        damaged = self.call(server.Handler.api_character_resource, self.match(1), {
+            'revision': 1, 'resource': 'vehicle_sdp',
+            'subject': vehicle['instance_id'], 'action': 'delta', 'value': -10,
+        })
+        self.assertEqual(damaged['data']['vehicle_state'][
+            vehicle['instance_id']]['sdp_current'], 40)
+        repair_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$', f'1/{vehicle["instance_id"]}')
+        started = self.call(server.Handler.api_character_vehicle_repair,
+                            repair_match, {
+            'revision': 2, 'action': 'start', 'technician': 'Yokai',
+            'reason': 'Repair collision damage in the garage',
+        })
+        repair = started['character']['data']['vehicle_state'][
+            vehicle['instance_id']]['repair']
+        self.assertEqual(repair['severity'], 'minor')
+        self.assertEqual((repair['dv'], repair['duration_key']), (9, '3_hours'))
+        self.assertEqual(repair['skill'], 'Land Vehicle Tech')
+        public_data = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])
+        public_data['visibility'] = {
+            **server.ensure_character_visibility(public_data),
+            'equipment': True, 'combat': True,
+        }
+        self.conn.execute('UPDATE characters SET data=? WHERE id=1',
+                          (json.dumps(public_data),))
+        self.conn.commit()
+        self.current = self.user('other')
+        public_repair = self.call(server.Handler.api_get_character, self.match(1))[
+            'derived']['effective_vehicles'][vehicle['instance_id']]['state']['repair']
+        self.assertNotIn('technician', public_repair)
+        self.current = self.user('runner')
+        with self.assertRaises(server.ApiError) as instant_repair:
+            self.call(server.Handler.api_character_resource, self.match(1), {
+                'revision': 3, 'resource': 'vehicle_sdp',
+                'subject': vehicle['instance_id'], 'action': 'reset', 'value': 0,
+            })
+        self.assertEqual(instant_repair.exception.status, 409)
+
+        failed = self.call(server.Handler.api_character_vehicle_repair,
+                           repair_match, {
+            'revision': 3, 'action': 'resolve', 'check_total': 8,
+            'reason': 'Repair Check failed halfway through the work',
+        })
+        failed_state = failed['character']['data']['vehicle_state'][vehicle['instance_id']]
+        self.assertEqual(failed_state['sdp_current'], 40)
+        self.assertNotIn('repair', failed_state)
+        self.assertEqual(failed_state['repair_history'][-1]['status'], 'failed')
+
+        restarted = self.call(server.Handler.api_character_vehicle_repair,
+                              repair_match, {
+            'revision': 4, 'action': 'start', 'technician': 'Yokai',
+            'reason': 'Restart repair from scratch after failed check',
+        })
+        self.assertEqual(restarted['character']['revision'], 5)
+        repaired = self.call(server.Handler.api_character_vehicle_repair,
+                             repair_match, {
+            'revision': 5, 'action': 'resolve', 'check_total': 9,
+            'reason': 'Repair Check succeeded after required work time',
+        })
+        repaired_state = repaired['character']['data']['vehicle_state'][vehicle['instance_id']]
+        self.assertEqual(repaired_state['sdp_current'], 50)
+        self.assertEqual(repaired_state['repair_history'][-1]['status'], 'success')
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertTrue(ledger['entries'][0]['can_revert'])
+        reverted = self.call(server.Handler.api_character_ledger_revert,
+                             self.match(1, ledger['entries'][0]['id']), {
+            'revision': 6, 'reason': 'Undo incorrectly resolved Repair Check',
+        })
+        reverted_state = reverted['data']['vehicle_state'][vehicle['instance_id']]
+        self.assertEqual(reverted_state['sdp_current'], 40)
+        self.assertEqual(reverted_state['repair']['status'], 'in_progress')
 
     def test_vehicle_heavy_weapon_mount_binds_a_concrete_two_handed_weapon(self):
         edited = copy.deepcopy(self.character_data)
@@ -1201,7 +1384,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertEqual(sell_mounted.exception.status, 409)
         with self.assertRaises(server.ApiError) as bypass:
             self.call(server.Handler.api_character_resource, self.match(1), {
-                'resource': 'weapon', 'subject': rifle['instance_id'],
+                'revision': 7, 'resource': 'weapon', 'subject': rifle['instance_id'],
                 'action': 'fire', 'value': 1,
             })
         self.assertEqual(bypass.exception.status, 409)

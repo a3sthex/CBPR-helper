@@ -693,34 +693,137 @@ def weapon_profiles_from_rules(rules):
             isinstance(effect.get('profile'), dict)]
 
 
-def ammo_reserve_for_profile(character, ammo_kind):
-    total = 0
-    for item in character.get('inventory') or []:
+def ammo_kind_for_modification_profile(rules, profile_id):
+    for rule in rules or []:
+        for effect in rule.get('effects') or []:
+            profile = effect.get('profile') or {}
+            if profile.get('id') == profile_id:
+                return profile.get('ammo_kind')
+    return None
+
+
+def ammo_pack_size(entry):
+    mechanics = (entry or {}).get('mechanics') or {}
+    return max(1, int(_num(mechanics.get('quantity_per_purchase')) or 1))
+
+
+def ammo_rounds(entry):
+    if not isinstance(entry, dict) or entry.get('cat') != 'ammo':
+        return 0
+    maximum = max(1, int(_num(entry.get('qty')) or 1)) * ammo_pack_size(entry)
+    current = _num(entry.get('ammo_rounds'))
+    return max(0, min(maximum, int(current if current is not None else maximum)))
+
+
+def ensure_shared_ammo_state(data):
+    for item in data.get('inventory') or []:
         if not isinstance(item, dict) or item.get('cat') != 'ammo':
             continue
-        mechanics = item.get('mechanics') or {}
-        compatible = str(mechanics.get('compatible_weapons') or '').lower()
-        ammo_name = str(item.get('name') or '').lower()
-        if ammo_kind == 'grenade':
-            matched = 'grenade' in compatible
-        elif ammo_kind == 'shotgun':
-            matched = ('shotgun' in compatible or 'slug' in compatible or
-                       'all except grenades & rockets' in compatible)
-        elif ammo_kind == 'incendiary_shotgun':
-            matched = ('incendiary' in ammo_name and
-                       ('shotgun' in compatible or 'slug' in compatible))
-        elif ammo_kind == 'rifle':
-            matched = ('bullet' in compatible or
-                       'all except grenades & rockets' in compatible or
-                       'all except shotgun shells' in compatible)
-        elif ammo_kind == 'rocket':
-            matched = 'rocket' in compatible
-        else:
-            matched = False
-        if matched:
-            total += max(1, _num(item.get('qty')) or 1) * max(
-                1, _num(mechanics.get('quantity_per_purchase')) or 1)
-    return total
+        item['ammo_rounds'] = ammo_rounds(item)
+    for state in (data.get('weapon_state') or {}).values():
+        if isinstance(state, dict):
+            state['reserve'] = 0
+            if (_num(state.get('magazine')) or 0) <= 0:
+                state.pop('loaded_ammo_catalog_id', None)
+                state.pop('loaded_ammo_name', None)
+    for state in (data.get('modification_state') or {}).values():
+        if isinstance(state, dict) and state.get('resource_type') == 'mounted_weapon':
+            state['reserve'] = 0
+            if (_num(state.get('magazine')) or 0) <= 0:
+                state.pop('loaded_ammo_catalog_id', None)
+                state.pop('loaded_ammo_name', None)
+    return data
+
+
+def ammo_matches_requirement(entry, ammo_kind=None, weapon=None):
+    if not isinstance(entry, dict) or entry.get('cat') != 'ammo' or ammo_rounds(entry) <= 0:
+        return False
+    mechanics = entry.get('mechanics') or {}
+    compatible = str(mechanics.get('compatible_weapons') or '').lower()
+    ammo_name = str(entry.get('name') or '').lower()
+    if ammo_kind == 'grenade':
+        return 'grenade' in compatible and 'except grenades' not in compatible
+    if ammo_kind == 'shotgun':
+        return ('shotgun' in compatible or 'slug' in compatible or
+                'shell' in compatible or 'all except grenades & rockets' in compatible)
+    if ammo_kind == 'incendiary_shotgun':
+        return ('incendiary' in ammo_name and
+                ('shotgun' in compatible or 'slug' in compatible or
+                 'shell' in compatible))
+    if ammo_kind == 'rifle':
+        return ('bullet' in compatible or
+                'all except grenades & rockets' in compatible or
+                'all except shotgun shells' in compatible)
+    if ammo_kind == 'rocket':
+        return 'rocket' in compatible and 'except grenades & rockets' not in compatible
+    catalog_weapon = item_by_id(catalog_item_id_for_entry(weapon)) or {}
+    weapon_name = str((weapon or {}).get('name') or catalog_weapon.get('name') or '').lower()
+    weapon_type = str(((weapon or {}).get('mechanics') or
+                       catalog_weapon.get('mechanics') or {}).get('type') or '').lower()
+    if weapon_name and weapon_name in compatible:
+        return True
+    if 'grenade launcher' in weapon_type:
+        return 'grenade' in compatible and 'except grenades' not in compatible
+    if 'rocket launcher' in weapon_type or 'missile launcher' in weapon_type:
+        return 'rocket' in compatible and 'except grenades & rockets' not in compatible
+    if 'shotgun' in weapon_type:
+        return ('shotgun' in compatible or 'slug' in compatible or
+                'shell' in compatible or 'all except grenades & rockets' in compatible)
+    if 'bow' in weapon_type or 'crossbow' in weapon_type:
+        return ('arrow' in compatible or 'bolt' in compatible or
+                'all except grenades & rockets' in compatible)
+    return ('bullet' in compatible or
+            'all except grenades & rockets' in compatible or
+            'all except shotgun shells' in compatible)
+
+
+def shared_ammo_available(character, ammo_kind=None, weapon=None):
+    return sum(ammo_rounds(item) for item in character.get('inventory') or []
+               if ammo_matches_requirement(item, ammo_kind, weapon))
+
+
+def consume_shared_ammo(data, state, ammo_instance_id, *, ammo_kind=None, weapon=None):
+    ammo_instance_id = str(ammo_instance_id or '').lower()
+    if not INSTANCE_ID_RE.fullmatch(ammo_instance_id):
+        raise ApiError(400, 'Выберите конкретный ammo stack')
+    inventory = data.get('inventory') or []
+    ammo = next((item for item in inventory if isinstance(item, dict) and
+                 item.get('instance_id') == ammo_instance_id), None)
+    if not ammo or ammo.get('state') not in ('carried', 'stored'):
+        raise ApiError(409, 'Ammo stack недоступен для Reload')
+    if not ammo_matches_requirement(ammo, ammo_kind, weapon):
+        raise ApiError(400, 'Ammo stack несовместим с этим оружием')
+    current = max(0, int(_num(state.get('magazine')) or 0))
+    maximum = max(0, int(_num(state.get('magazine_max')) or 0))
+    if maximum <= current:
+        raise ApiError(409, 'Магазин уже заполнен')
+    catalog_id = catalog_item_id_for_entry(ammo)
+    loaded_catalog_id = str(state.get('loaded_ammo_catalog_id') or '')
+    if current > 0 and loaded_catalog_id and loaded_catalog_id != catalog_id:
+        raise ApiError(409, 'Нельзя смешивать разные типы ammo в одном магазине')
+    available = ammo_rounds(ammo)
+    moved = min(maximum - current, available)
+    if moved <= 0:
+        raise ApiError(409, 'В выбранном ammo stack нет боеприпасов')
+    state['magazine'] = current + moved
+    state['loaded_ammo_catalog_id'] = catalog_id
+    state['loaded_ammo_name'] = ammo.get('name') or 'Ammo'
+    remaining = available - moved
+    if remaining <= 0:
+        inventory.remove(ammo)
+    else:
+        ammo['ammo_rounds'] = remaining
+        ammo['qty'] = max(1, math.ceil(remaining / ammo_pack_size(ammo)))
+    return {
+        'moved': moved, 'ammo_name': state['loaded_ammo_name'],
+        'ammo_catalog_id': catalog_id, 'remaining': remaining,
+    }
+
+
+def clear_loaded_ammo_if_empty(state):
+    if (_num((state or {}).get('magazine')) or 0) <= 0:
+        state.pop('loaded_ammo_catalog_id', None)
+        state.pop('loaded_ammo_name', None)
 
 
 VEHICLE_COMPLEX_PURPOSE_LABELS = {
@@ -824,7 +927,7 @@ def initial_vehicle_modification_state(rules, character, choices=None):
                 'profile_id': profile.get('id'),
                 'magazine': 0,
                 'magazine_max': int(profile.get('magazine') or 0),
-                'reserve': ammo_reserve_for_profile(character, profile.get('ammo_kind')),
+                'reserve': 0,
                 'ammo_cost': int(profile.get('ammo_cost') or 1),
                 'orientation': choices.get('orientation') or
                     ((profile.get('orientations') or [None])[0]),
@@ -849,11 +952,16 @@ def normalize_vehicle_modification_state(existing, authoritative):
     else:
         maximum = authoritative['magazine_max']
         magazine = _num(existing.get('magazine'))
-        reserve = _num(existing.get('reserve'))
         normalized['magazine'] = max(
             0, min(maximum, int(magazine if magazine is not None else 0)))
-        normalized['reserve'] = max(
-            0, int(reserve if reserve is not None else authoritative['reserve']))
+        normalized['reserve'] = 0
+        if normalized['magazine'] > 0:
+            loaded_catalog_id = str(existing.get('loaded_ammo_catalog_id') or '')
+            if item_by_id(loaded_catalog_id):
+                normalized['loaded_ammo_catalog_id'] = loaded_catalog_id
+                normalized['loaded_ammo_name'] = str(
+                    existing.get('loaded_ammo_name') or
+                    item_by_id(loaded_catalog_id).get('name') or 'Ammo')[:120]
     return normalized
 
 
@@ -932,6 +1040,8 @@ def evaluate_effective_weapon(host, modifications, owned_by_id, character):
                         'modification_id': modification.get('modification_id'),
                         'upgrade_instance_id': modification.get('upgrade_instance_id'),
                         'source': effect.get('source'),
+                        'shared_ammo_available': shared_ammo_available(
+                            character, profile.get('ammo_kind')),
                         'state': copy.deepcopy(
                             (character.get('modification_state') or {}).get(
                                 modification.get('modification_id'), {})),
@@ -1004,6 +1114,7 @@ def evaluate_effective_weapon(host, modifications, owned_by_id, character):
         'instance_id': host.get('instance_id'),
         'base': {**base, 'range_table': base_range_table}, 'effective': effective,
         'attack_modifier': attack_modifier,
+        'shared_ammo_available': shared_ammo_available(character, weapon=host),
         'alternate_attacks': alternate_attacks,
         'autofire_profiles': autofire_profiles,
         'tags': weapon_tags,
@@ -1099,6 +1210,7 @@ def bound_vehicle_weapon_profile(weapon, effective_weapon, character):
             r'(?:requires?|takes?)\s+2\s+(?:rounds|actions?)\s+to reload|'
             r'2\s+actions?\s+to reload', rule_text, re.I) else 1,
         'attack_modifier': effective_weapon.get('attack_modifier') or 0,
+        'shared_ammo_available': shared_ammo_available(character, weapon=weapon),
         'state': weapon_state, 'operator': 'passenger',
         'source': catalog_item.get('source') or weapon.get('source'),
         'manual_resolution_required': True,
@@ -1270,6 +1382,8 @@ def evaluate_effective_vehicle(host, modifications, owned_by_id,
                         'upgrade_instance_id': modification.get('upgrade_instance_id'),
                         'orientation': choices.get('orientation') or
                             (orientations[0] if orientations else None),
+                        'shared_ammo_available': shared_ammo_available(
+                            character, profile.get('ammo_kind')),
                         'state': copy.deepcopy(modification_states.get(
                             modification.get('modification_id')) or {
                                 'resource_type': 'mounted_weapon',
@@ -3031,6 +3145,37 @@ def vehicle_classification(host):
     return {'land', 'groundcar'}
 
 
+VEHICLE_REPAIR_RULES = {
+    'minor': {'dv': 9, 'duration_key': '3_hours', 'duration_en': '3 hours',
+              'duration_ru': '3 часа'},
+    'major': {'dv': 13, 'duration_key': '1_day', 'duration_en': '1 day',
+              'duration_ru': '1 день'},
+    'destroyed': {'dv': 17, 'duration_key': '1_week', 'duration_en': '1 week',
+                  'duration_ru': '1 неделя'},
+}
+
+
+def vehicle_repair_severity(current, maximum):
+    current = max(0, _num(current) or 0)
+    maximum = max(0, _num(maximum) or 0)
+    if current <= 0:
+        return 'destroyed'
+    if current < maximum / 2:
+        return 'major'
+    return 'minor'
+
+
+def vehicle_repair_skill(host):
+    classes = vehicle_classification(host)
+    if 'bicycle' in classes:
+        return 'Basic Tech'
+    if 'air' in classes:
+        return 'Air Vehicle Tech'
+    if 'sea' in classes:
+        return 'Sea Vehicle Tech'
+    return 'Land Vehicle Tech'
+
+
 def character_nomad_rank(character):
     return max([_num(role.get('rank')) or 0 for role in character.get('roles') or []
                 if isinstance(role, dict) and role.get('name') == 'Nomad'] or [0])
@@ -3223,6 +3368,9 @@ def sync_weapon_states_with_modifications(conn, character_id, data):
         })
         state['magazine_max'] = effective_max
         state['magazine'] = max(0, min(effective_max, _num(state.get('magazine')) or 0))
+        state['reserve'] = 0
+        clear_loaded_ammo_if_empty(state)
+    ensure_shared_ammo_state(data)
     return effective_weapons
 
 
@@ -3279,8 +3427,10 @@ def backfill_character_item_instances(conn):
             continue
         if not isinstance(data, dict):
             continue
+        original = copy.deepcopy(data)
         changed = ensure_character_item_instances(data)
         ensure_progression(data)
+        changed = changed or data != original
         persist_character_item_instances(
             conn, row['id'], data, 'legacy_migration', acquired_at=row['created'], prune=True)
         if changed:
@@ -4763,6 +4913,17 @@ def canonical_owned_entry(entry, bucket, old_entries):
         owned['qty'] = max(1, min(999, int(entry.get('qty') or owned.get('qty') or 1)))
     except (TypeError, ValueError):
         raise ApiError(400, 'Некорректное количество')
+    if owned.get('cat') == 'ammo':
+        pack_size = ammo_pack_size(owned)
+        if existing:
+            old_qty = max(1, int(_num(existing.get('qty')) or 1))
+            old_rounds = ammo_rounds(existing)
+            quantity_delta = owned['qty'] - old_qty
+            owned['ammo_rounds'] = max(
+                0, min(owned['qty'] * pack_size,
+                       old_rounds + max(0, quantity_delta) * pack_size))
+        else:
+            owned['ammo_rounds'] = owned['qty'] * pack_size
     if INSTANCE_ID_RE.fullmatch(instance_id):
         owned['instance_id'] = instance_id
     else:
@@ -5505,21 +5666,14 @@ def ensure_progression(data):
             piece['maximum'] = maximum
     states = data.setdefault('weapon_state', {})
     inventory = data.get('inventory') or []
-    ammo = [item for item in inventory if item.get('cat') in ('ammo','grenades')]
     for weapon in [item for item in inventory if item.get('cat') in ('guns','melee')]:
         key = str(weapon.get('instance_id') or weapon.get('key') or
                   weapon.get('source_key') or weapon.get('name'))
         magazine = _num((weapon.get('mechanics') or {}).get('magazine')) or 0
         if key not in states:
-            weapon_type = str((weapon.get('mechanics') or {}).get('type') or '').lower()
-            reserve = 0
-            for pack in ammo:
-                suitable = str((pack.get('mechanics') or {}).get('compatible_weapons') or '').lower()
-                compatible = weapon_type and (weapon_type in suitable or ('all except' in suitable and not any(token in weapon_type for token in ('grenade','rocket'))))
-                if compatible:
-                    reserve += (_num(pack.get('qty')) or 1) * (_num((pack.get('mechanics') or {}).get('quantity_per_purchase')) or 1)
-            states[key] = {'magazine': magazine, 'magazine_max': magazine, 'reserve': reserve}
-    data['schema_version'] = max(5, _num(data.get('schema_version')) or 0)
+            states[key] = {'magazine': magazine, 'magazine_max': magazine, 'reserve': 0}
+    ensure_shared_ammo_state(data)
+    data['schema_version'] = max(6, _num(data.get('schema_version')) or 0)
     return data
 
 
@@ -5629,6 +5783,23 @@ SERVER_ERROR_EN = {
     'Требуется ручное подтверждение сложного правила совместимости': 'Complex compatibility rule requires manual confirmation',
     'Modification action содержит неподдерживаемые поля': 'Modification action contains unsupported fields',
     'weapon_instance_id допустим только для mount_weapon': 'weapon_instance_id is only allowed for mount_weapon',
+    'ammo_instance_id допустим только для Reload': 'ammo_instance_id is only allowed for Reload',
+    'Выберите конкретный ammo stack': 'Choose a specific ammo stack',
+    'Ammo stack недоступен для Reload': 'Ammo stack is unavailable for Reload',
+    'Ammo stack несовместим с этим оружием': 'Ammo stack is incompatible with this weapon',
+    'Магазин уже заполнен': 'The magazine is already full',
+    'Нельзя смешивать разные типы ammo в одном магазине': 'Different ammo types cannot be mixed in one magazine',
+    'В выбранном ammo stack нет боеприпасов': 'The selected ammo stack is empty',
+    'Частично использованный ammo stack нельзя продать': 'A partially used ammo stack cannot be sold',
+    'Vehicle repair содержит неподдерживаемые поля': 'Vehicle repair contains unsupported fields',
+    'Укажите причину Vehicle repair': 'Provide a reason for the Vehicle repair',
+    'Vehicle repair уже выполняется': 'A Vehicle repair is already in progress',
+    'Vehicle не нуждается в ремонте': 'The Vehicle does not need repair',
+    'Укажите техника для Vehicle repair': 'Specify the Vehicle repair technician',
+    'Нет активного Vehicle repair': 'There is no active Vehicle repair',
+    'Укажите итог Repair Check': 'Provide the Repair Check total',
+    'Используйте Vehicle Repair Workflow': 'Use the Vehicle Repair Workflow',
+    'Vehicle SDP action поддерживает только damage': 'Vehicle SDP actions only support damage',
     'Modification не найдена': 'Modification not found',
     'Modification уже снята': 'Modification is already removed',
     'Эта modification не может быть снята': 'This modification cannot be removed',
@@ -7659,6 +7830,13 @@ class Handler(BaseHTTPRequestHandler):
             for modification in derived.get('modifications') or []:
                 for private_key in ('notes', 'installer', 'configuration'):
                     modification.pop(private_key, None)
+            for vehicle in (derived.get('effective_vehicles') or {}).values():
+                repair_state = vehicle.get('state') or {}
+                if isinstance(repair_state.get('repair'), dict):
+                    repair_state['repair'].pop('technician', None)
+                for repair in repair_state.get('repair_history') or []:
+                    if isinstance(repair, dict):
+                        repair.pop('technician', None)
         return {
             'id': row['id'], 'revision': _row_value(row, 'revision', 0),
             'owner_id': row['owner_id'] if (not public_view or owner_name) else None,
@@ -8232,7 +8410,7 @@ class Handler(BaseHTTPRequestHandler):
                 'profile_id': profile['id'],
                 'magazine': 0,
                 'magazine_max': int(profile['magazine']),
-                'reserve': ammo_reserve_for_profile(data, profile['ammo_kind']),
+                'reserve': 0,
             }
         elif host_type == 'vehicle':
             initial_state = initial_vehicle_modification_state(
@@ -8283,7 +8461,8 @@ class Handler(BaseHTTPRequestHandler):
     @atomic_endpoint
     def api_character_modification_action(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
-        if set(body or {}) - {'revision', 'action', 'reason', 'weapon_instance_id'}:
+        if set(body or {}) - {
+                'revision', 'action', 'reason', 'weapon_instance_id', 'ammo_instance_id'}:
             raise ApiError(400, 'Modification action содержит неподдерживаемые поля')
         current_revision = _row_value(row, 'revision', 0) or 0
         if _num((body or {}).get('revision')) != current_revision:
@@ -8300,6 +8479,8 @@ class Handler(BaseHTTPRequestHandler):
         action = str((body or {}).get('action') or '').lower()
         if 'weapon_instance_id' in (body or {}) and action != 'mount_weapon':
             raise ApiError(400, 'weapon_instance_id допустим только для mount_weapon')
+        if 'ammo_instance_id' in (body or {}) and action != 'reload':
+            raise ApiError(400, 'ammo_instance_id допустим только для Reload')
         if action in ('fire', 'reload', 'use_nos', 'reset_nos',
                       'mount_weapon', 'unmount_weapon'):
             before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
@@ -8309,14 +8490,17 @@ class Handler(BaseHTTPRequestHandler):
             owned = {entry.get('instance_id'): entry for entry in data.get('inventory') or []
                      if isinstance(entry, dict) and entry.get('instance_id')}
             upgrade = owned.get(modification['upgrade_instance_id']) or {}
+            resource_rules = config.get('effect_rules')
+            if not isinstance(resource_rules, list) or not resource_rules:
+                rule_loader = (vehicle_modification_rules_for_catalog
+                               if modification.get('host_type') == 'vehicle'
+                               else weapon_modification_rules_for_catalog)
+                resource_rules = rule_loader(
+                    catalog_item_id_for_entry(upgrade) or
+                    config.get('upgrade_catalog_item_id'))
             if modification.get('host_type') == 'vehicle':
-                rules = config.get('effect_rules')
-                if not isinstance(rules, list) or not rules:
-                    rules = vehicle_modification_rules_for_catalog(
-                        catalog_item_id_for_entry(upgrade) or
-                        config.get('upgrade_catalog_item_id'))
                 authoritative = initial_vehicle_modification_state(
-                    rules, data, config.get('choices') or {})
+                    resource_rules, data, config.get('choices') or {})
                 state = normalize_vehicle_modification_state(state, authoritative)
                 if state:
                     data.setdefault('modification_state', {})[modification_id] = state
@@ -8324,6 +8508,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(400, 'Modification не имеет action resource profile')
             profile_label = config.get('upgrade_name') or state.get('profile_id')
             action_state = state
+            reload_weapon = None
             action_reason = str((body or {}).get('reason') or '').strip()[:500]
 
             if action in ('mount_weapon', 'unmount_weapon'):
@@ -8401,6 +8586,7 @@ class Handler(BaseHTTPRequestHandler):
                         weapon, effective_weapon, data)
                     action_state = (data.get('weapon_state') or {}).get(weapon_instance_id) or {}
                     profile_label = weapon.get('custom_name') or weapon.get('name') or 'Weapon'
+                    reload_weapon = weapon
                     ammo_cost = max(1, int(bound_profile.get('ammo_cost') or 1))
                 else:
                     ammo_cost = max(1, int(_num(state.get('ammo_cost')) or 1))
@@ -8412,21 +8598,23 @@ class Handler(BaseHTTPRequestHandler):
                     if current < ammo_cost:
                         raise ApiError(409, f'Для атаки требуется {ammo_cost} патронов')
                     action_state['magazine'] = current - ammo_cost
+                    clear_loaded_ammo_if_empty(action_state)
                     reason = f'Fire {profile_label}: magazine {current} → {action_state["magazine"]}'
                 else:
-                    current = max(0, int(_num(action_state.get('magazine')) or 0))
-                    maximum = max(0, int(_num(action_state.get('magazine_max')) or 0))
-                    reserve = max(0, int(_num(action_state.get('reserve')) or 0))
-                    moved = min(max(0, maximum - current), reserve)
-                    if moved <= 0:
-                        raise ApiError(409, 'Нет боеприпасов для перезарядки alternate weapon')
-                    action_state['magazine'] = current + moved
-                    action_state['reserve'] = reserve - moved
-                    reason = f'Reload {profile_label}: magazine {current} → {action_state["magazine"]}'
+                    reload_ammo_kind = None if reload_weapon else \
+                        ammo_kind_for_modification_profile(
+                            resource_rules, state.get('profile_id'))
+                    transfer = consume_shared_ammo(
+                        data, action_state, (body or {}).get('ammo_instance_id'),
+                        ammo_kind=reload_ammo_kind, weapon=reload_weapon)
+                    reason = (
+                        f'Reload {profile_label} with {transfer["ammo_name"]} '
+                        f'×{transfer["moved"]}: magazine {action_state["magazine"]}')
 
             validate_active_modification_references(conn, row['id'], data)
             persist_character_item_instances(
-                conn, row['id'], data, 'vehicle_action', source_ref=reason)
+                conn, row['id'], data, 'vehicle_action', source_ref=reason,
+                prune=True)
             now = time.time()
             revision_after = current_revision + 1
             ledger_id = record_character_change_set(
@@ -8900,6 +9088,102 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(self.save_character_data(conn, row, data, user['id'], reason))
 
     @atomic_endpoint
+    def api_character_vehicle_repair(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'action', 'technician', 'check_total', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Vehicle repair содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        instance_id = str(m.group(2)).lower()
+        vehicle = next((item for item in data.get('inventory') or []
+                        if isinstance(item, dict) and item.get('instance_id') == instance_id and
+                        item.get('cat') == 'vehicles'), None)
+        if not vehicle:
+            raise ApiError(404, 'Vehicle instance не найден')
+        sync_vehicle_states_with_modifications(conn, row['id'], data)
+        state = (data.get('vehicle_state') or {}).get(instance_id) or {}
+        current = max(0, int(_num(state.get('sdp_current')) or 0))
+        maximum = max(0, int(_num(state.get('sdp_max')) or 0))
+        action = str((body or {}).get('action') or '').lower()
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Vehicle repair')
+        active = state.get('repair') if isinstance(state.get('repair'), dict) else None
+        now = time.time()
+        if action == 'start':
+            if active:
+                raise ApiError(409, 'Vehicle repair уже выполняется')
+            if maximum <= 0 or current >= maximum:
+                raise ApiError(409, 'Vehicle не нуждается в ремонте')
+            technician = str((body or {}).get('technician') or '').strip()[:120]
+            if len(technician) < 2:
+                raise ApiError(400, 'Укажите техника для Vehicle repair')
+            severity = vehicle_repair_severity(current, maximum)
+            rule = VEHICLE_REPAIR_RULES[severity]
+            active = {
+                'repair_id': secrets.token_hex(16), 'status': 'in_progress',
+                'severity': severity, 'skill': vehicle_repair_skill(vehicle),
+                'dv': rule['dv'], 'duration_key': rule['duration_key'],
+                'duration_en': rule['duration_en'],
+                'duration_ru': rule['duration_ru'],
+                'technician': technician, 'sdp_before': current,
+                'sdp_target': maximum, 'started_at': now,
+                'source': 'CP:R 140', 'manual_resolution_required': True,
+            }
+            state['repair'] = active
+            reason = (
+                f'Start Vehicle repair for {vehicle.get("custom_name") or vehicle.get("name")}: '
+                f'{severity} DV{rule["dv"]}, {rule["duration_en"]}; {reason_detail}')
+        elif action in ('resolve', 'cancel'):
+            if not active or active.get('status') != 'in_progress':
+                raise ApiError(409, 'Нет активного Vehicle repair')
+            history_entry = copy.deepcopy(active)
+            history_entry['resolved_at'] = now
+            if action == 'resolve':
+                total = _num((body or {}).get('check_total'))
+                if total is None or int(total) != total or not -50 <= total <= 100:
+                    raise ApiError(400, 'Укажите итог Repair Check')
+                total = int(total)
+                success = total >= int(active.get('dv') or 0)
+                history_entry.update({
+                    'check_total': total,
+                    'status': 'success' if success else 'failed',
+                    'sdp_after': maximum if success else current,
+                })
+                if success:
+                    state['sdp_current'] = maximum
+                reason = (
+                    f'Resolve Vehicle repair {active.get("repair_id")}: '
+                    f'{total} vs DV{active.get("dv")} → '
+                    f'{"success" if success else "failed"}; {reason_detail}')
+            else:
+                history_entry.update({'status': 'canceled', 'sdp_after': current})
+                reason = f'Cancel Vehicle repair {active.get("repair_id")}: {reason_detail}'
+            history = state.setdefault('repair_history', [])
+            history.append(history_entry)
+            state['repair_history'] = history[-50:]
+            state.pop('repair', None)
+        else:
+            raise ApiError(400, 'Vehicle repair action: start/resolve/cancel')
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='vehicle')
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
     def api_character_resource(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
         data = ensure_progression(json.loads(row['data']))
@@ -8934,26 +9218,73 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(400, 'Vehicle instance не найден')
             maximum = _num(state.get('sdp_max')) or 0
             current = _num(state.get('sdp_current')) or 0
-            state['sdp_current'] = maximum if action == 'reset' else max(
-                0, min(maximum, current + value))
+            if action == 'reset' or value > 0:
+                raise ApiError(409, 'Используйте Vehicle Repair Workflow')
+            if action != 'delta' or value >= 0:
+                raise ApiError(400, 'Vehicle SDP action поддерживает только damage')
+            state['sdp_current'] = max(0, min(maximum, current + value))
             self.send_json(self.save_character_data(
                 conn, row, data, user['id'],
                 f'Vehicle SDP {instance_id}: {current} → {state["sdp_current"]}'))
             return
         elif resource == 'weapon':
+            current_revision = _row_value(row, 'revision', 0) or 0
+            if _num((body or {}).get('revision')) != current_revision:
+                raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
             sync_weapon_states_with_modifications(conn, row['id'], data)
+            before = copy.deepcopy(data)
             key = str((body or {}).get('subject') or '')
             weapon = next((item for item in data.get('inventory') or []
                            if isinstance(item, dict) and item.get('instance_id') == key), None)
             if weapon and weapon.get('mounted_modification_id'):
                 raise ApiError(409, 'Mounted weapon управляется только через Vehicle Garage')
             state = (data.get('weapon_state') or {}).get(key)
-            if not state: raise ApiError(400, 'Оружие не найдено')
-            if action == 'fire': state['magazine'] = max(0, (_num(state.get('magazine')) or 0) - max(1, abs(value) or 1))
+            if not weapon or not state:
+                raise ApiError(400, 'Оружие не найдено')
+            if action == 'fire':
+                modifications = character_modifications(conn, row['id'])
+                weapon_modifications = [item for item in modifications
+                                        if item.get('host_instance_id') == key]
+                owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+                         if isinstance(item, dict) and item.get('instance_id')}
+                effective_weapon = evaluate_effective_weapon(
+                    weapon, weapon_modifications, owned, data)
+                action_profile = bound_vehicle_weapon_profile(
+                    weapon, effective_weapon, data)
+                ammo_cost = max(1, int(action_profile.get('ammo_cost') or 1))
+                current = max(0, int(_num(state.get('magazine')) or 0))
+                if current < ammo_cost:
+                    raise ApiError(409, f'Для атаки требуется {ammo_cost} патронов')
+                state['magazine'] = current - ammo_cost
+                clear_loaded_ammo_if_empty(state)
+                reason = (f'Fire {weapon.get("custom_name") or weapon.get("name")}: '
+                          f'magazine {current} → {state["magazine"]}')
             elif action == 'reload':
-                need = max(0, (_num(state.get('magazine_max')) or 0) - (_num(state.get('magazine')) or 0)); moved = min(need, _num(state.get('reserve')) or 0)
-                state['magazine'] = (_num(state.get('magazine')) or 0) + moved; state['reserve'] = (_num(state.get('reserve')) or 0) - moved
-            else: raise ApiError(400, 'Weapon action: fire/reload')
+                transfer = consume_shared_ammo(
+                    data, state, (body or {}).get('ammo_instance_id'), weapon=weapon)
+                reason = (
+                    f'Reload {weapon.get("custom_name") or weapon.get("name")} '
+                    f'with {transfer["ammo_name"]} ×{transfer["moved"]}')
+            else:
+                raise ApiError(400, 'Weapon action: fire/reload')
+            validate_active_modification_references(conn, row['id'], data)
+            persist_character_item_instances(
+                conn, row['id'], data, 'weapon_action', source_ref=reason, prune=True)
+            now = time.time()
+            revision_after = current_revision + 1
+            ledger_id = record_character_change_set(
+                conn, row['id'], user['id'], before, data, reason,
+                current_revision, revision_after, category='item_action')
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                         (json.dumps(data, ensure_ascii=False), now,
+                          revision_after, row['id']))
+            conn.commit()
+            fresh = self.get_char(conn, row['id'])
+            self.send_json({
+                'ledger_id': ledger_id,
+                'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+            })
+            return
         else:
             raise ApiError(400, 'Неизвестный ресурс')
         self.send_json(self.save_character_data(conn, row, data))
@@ -8992,6 +9323,7 @@ class Handler(BaseHTTPRequestHandler):
         before_data = json.loads(row['data'])
         data = copy.deepcopy(before_data)
         ensure_character_item_instances(data)
+        ensure_progression(data)
         cart = body.get('items') or []
         if not cart or not isinstance(cart, list):
             raise ApiError(400, 'Пустая корзина')
@@ -9036,10 +9368,15 @@ class Handler(BaseHTTPRequestHandler):
                               str(entry.get('state') or 'carried') == 'carried' and
                               not entry.get('custom_name')), None)
                 if found:
+                    current_rounds = ammo_rounds(found) if it['cat'] == 'ammo' else 0
                     found['qty'] = int(found.get('qty') or 1) + qty
+                    if it['cat'] == 'ammo':
+                        found['ammo_rounds'] = current_rounds + qty * ammo_pack_size(found)
                 else:
                     owned['instance_id'] = new_item_instance_id()
                     owned['qty'] = qty
+                    if it['cat'] == 'ammo':
+                        owned['ammo_rounds'] = qty * ammo_pack_size(owned)
                     inv.append(owned)
             else:
                 if len(inv) + qty > 500:
@@ -9079,6 +9416,7 @@ class Handler(BaseHTTPRequestHandler):
         before_data = json.loads(row['data'])
         data = copy.deepcopy(before_data)
         ensure_character_item_instances(data)
+        ensure_progression(data)
         key = str(body.get('key') or '')
         instance_id = str(body.get('instance_id') or '').lower()
         try:
@@ -9103,9 +9441,20 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(409, 'Сначала снимите установленные модификации')
         if str(ent.get('state') or 'carried') in ('equipped', 'installed'):
             raise ApiError(409, 'Сначала снимите или извлеките предмет')
-        qty = min(qty, int(ent.get('qty') or 1))
+        ammo_units_before = ammo_rounds(ent) if ent.get('cat') == 'ammo' else None
+        if ammo_units_before is not None:
+            full_packs = ammo_units_before // ammo_pack_size(ent)
+            if full_packs <= 0:
+                raise ApiError(409, 'Частично использованный ammo stack нельзя продать')
+            qty = min(qty, int(ent.get('qty') or 1), full_packs)
+        else:
+            qty = min(qty, int(ent.get('qty') or 1))
         back = round(float(ent.get('price') or 0) * 0.5 * qty, 2)
         ent['qty'] = int(ent.get('qty') or 1) - qty
+        if ammo_units_before is not None:
+            ent['ammo_rounds'] = ammo_units_before - qty * ammo_pack_size(ent)
+            ent['qty'] = math.ceil(ent['ammo_rounds'] / ammo_pack_size(ent)) \
+                if ent['ammo_rounds'] > 0 else 0
         if ent['qty'] <= 0:
             inv.pop(index)
             (data.get('weapon_state') or {}).pop(str(ent.get('instance_id') or ''), None)
@@ -10194,6 +10543,7 @@ ROUTES = [
     ('GET', rx(r'/api/characters/(\d+)/network'), Handler.api_character_network),
     ('POST', rx(r'/api/characters/(\d+)/improve'), Handler.api_character_improve),
     ('POST', rx(r'/api/characters/(\d+)/specialization'), Handler.api_character_specialization),
+    ('POST', rx(r'/api/characters/(\d+)/vehicles/([a-f0-9]{32})/repair'), Handler.api_character_vehicle_repair),
     ('POST', rx(r'/api/characters/(\d+)/resource'), Handler.api_character_resource),
     ('GET', rx(r'/api/roster'), Handler.api_roster),
     ('POST', rx(r'/api/buy'), Handler.api_buy),
