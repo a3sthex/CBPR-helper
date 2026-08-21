@@ -2975,7 +2975,20 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Swamp Mist не допускает non-Wisp Black ICE, а Perfume Shoppe динамически уменьшает Skunk до 1 slot; Perfume Shoppe нельзя снять, если после этого loadout станет перегружен;
 - Character Sheet получил Netrunning/Cyberdeck Loadout panel, раздельные Hardware/Programs, slot breakdown и Manage Loadout;
 - все Hardware effects пока отображаются как source-backed `MANUAL RESOLUTION`: произвольный исполняемый код в Hardware/Program data не добавлен;
-- Program runtime, REZ current/max, Rez/Derez, destroyed copies и Black ICE NET entities вынесены в B.8.2.
+- Program runtime, REZ current/max, Rez/Derez, destroyed copies и Black ICE NET entities были вынесены в следующие Netrunning подэтапы.
+
+**Статус B.8.2 — реализован Non-Black-ICE Program Runtime:**
+
+- каждый установленный Program instance получает собственный server-authoritative `program_state`: deck/modification links, category, status, REZ current/max, run count и last run time;
+- Booster/Defender поддерживают `Rez`, REZ damage, automatic `derezzed` at 0, explicit `Derez` и обязательный `Deactivate` перед повторной активацией или Uninstall;
+- Deactivate восстанавливает runtime к готовому inactive state, а повторный Rez начинает с полного REZ; source restrictions `Only 1 copy ... running` проверяются сервером;
+- Attacker Programs используют отдельный `Run · Manual Effect`: запуск и audit фиксируются, но неоднозначный target/effect/damage не симулируется автоматически;
+- `Destroy Copy` деактивирует relational installation, освобождает Cyberdeck slots, переводит конкретный stable item в `broken` и поддерживает linked Ledger revert;
+- установленный Backup Drive сохраняет уничтоженные non-Black-ICE Programs вместе с их runtime snapshot; Meat Action Restore атомарно проверяет текущие model restrictions/slots и возвращает все доступные copies;
+- удаление Backup Drive с сохранёнными Programs стирает contents по source rule и специально создаёт non-revertible Ledger entry;
+- Character Sheet показывает status, REZ, Program actions, saved-program count и Backup restore controls;
+- попытка обычного `Rez` для Black ICE блокируется: система не изображает его обычной включённой Program и требует отдельный NET entity deployment в B.8.3;
+- Program effects, targets, NET checks и особые Hardware triggers пока остаются `MANUAL RESOLUTION`, без JavaScript/Python в item data.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -2998,8 +3011,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: Cyberdeck host instances, Program/Hardware slot pools, model restrictions и atomic loadout lifecycle;
-    - дальше: Program runtime/REZ, затем Cyberware/Armor/Tech hosts.
+    - готово: Cyberdeck host/loadout, model restrictions, non-Black-ICE Program runtime/REZ и Backup Drive lifecycle;
+    - дальше: Black ICE NET entities, затем Cyberware/Armor/Tech hosts.
 14. JSON import.
 
 ### Пакет C — Publishing Preview

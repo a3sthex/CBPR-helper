@@ -1041,6 +1041,166 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertTrue(any('Backup Drive' in entry['reason']
                             for entry in ledger['entries']))
 
+    def test_program_runtime_rez_damage_destroy_and_backup_restore(self):
+        edited = copy.deepcopy(self.character_data)
+        item_ids = (
+            'net_stuff-1', 'net_stuff-19', 'programs-12',
+            'programs-0', 'programs-25',
+        )
+        edited['inventory'] = [
+            {
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': server.item_by_id(item_id)['cat'],
+                'name': server.item_by_id(item_id)['name'], 'qty': 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            }
+            for item_id in item_ids
+        ]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add Program runtime test loadout', 'data': edited,
+        })
+        by_name = {item['name']: item for item in updated['data']['inventory']}
+        deck, backup, armor, banhammer, killer = (
+            by_name['Cyberdeck (Standard Quality)'], by_name['Backup Drive'],
+            by_name['Armor'], by_name['Banhammer'], by_name['Killer'])
+        revision = 1
+        installed = {}
+        for item, reason in (
+                (backup, 'Install Backup Drive for Program recovery'),
+                (armor, 'Install Armor Defender Program'),
+                (banhammer, 'Install Banhammer Attacker Program'),
+                (killer, 'Install Killer Black ICE copy')):
+            result = self.call(
+                server.Handler.api_character_modification_install, self.match(1), {
+                    'revision': revision, 'host_instance_id': deck['instance_id'],
+                    'upgrade_instance_id': item['instance_id'],
+                    'manual_confirm': False, 'reason': reason,
+                })
+            installed[item['name']] = result['modification_id']
+            revision += 1
+        self.assertEqual(revision, 5)
+
+        def program_match(program):
+            return re.match(
+                r'^(\d+)/([a-f0-9]{32})/([a-f0-9]{32})$',
+                f'1/{deck["instance_id"]}/{program["instance_id"]}')
+
+        rezzed = self.call(server.Handler.api_character_program_action,
+                           program_match(armor), {
+            'revision': 5, 'action': 'rez', 'reason': 'Activate Armor in Netrun',
+        })
+        armor_state = rezzed['character']['data']['program_state'][armor['instance_id']]
+        self.assertEqual((armor_state['status'], armor_state['rez_current']), ('rezzed', 7))
+        damaged = self.call(server.Handler.api_character_program_action,
+                            program_match(armor), {
+            'revision': 6, 'action': 'damage', 'amount': 3,
+            'reason': 'Armor takes Program REZ damage',
+        })
+        self.assertEqual(damaged['character']['data']['program_state'][
+            armor['instance_id']]['rez_current'], 4)
+        derezzed = self.call(server.Handler.api_character_program_action,
+                             program_match(armor), {
+            'revision': 7, 'action': 'damage', 'amount': 4,
+            'reason': 'Armor reaches zero REZ',
+        })
+        self.assertEqual(derezzed['character']['data']['program_state'][
+            armor['instance_id']]['status'], 'derezzed')
+        armor_mod_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$', f'1/{installed["Armor"]}')
+        with self.assertRaises(server.ApiError) as active_uninstall:
+            self.call(server.Handler.api_character_modification_action,
+                      armor_mod_match, {
+                'revision': 8, 'action': 'remove',
+                'reason': 'Try uninstalling Derezzed Program',
+            })
+        self.assertEqual(active_uninstall.exception.status, 409)
+        deactivated = self.call(server.Handler.api_character_program_action,
+                                program_match(armor), {
+            'revision': 8, 'action': 'deactivate',
+            'reason': 'Deactivate Armor before future activation',
+        })
+        self.assertEqual(deactivated['character']['data']['program_state'][
+            armor['instance_id']]['rez_current'], 7)
+        ran = self.call(server.Handler.api_character_program_action,
+                        program_match(banhammer), {
+            'revision': 9, 'action': 'run',
+            'reason': 'Resolve Banhammer attack manually',
+        })
+        self.assertEqual(ran['character']['data']['program_state'][
+            banhammer['instance_id']]['run_count'], 1)
+        with self.assertRaises(server.ApiError) as black_ice_entity:
+            self.call(server.Handler.api_character_program_action,
+                      program_match(killer), {
+                'revision': 10, 'action': 'rez',
+                'reason': 'Try deploying Killer without NET entity',
+            })
+        self.assertEqual(black_ice_entity.exception.status, 409)
+
+        destroyed = self.call(server.Handler.api_character_program_action,
+                              program_match(banhammer), {
+            'revision': 10, 'action': 'destroy',
+            'reason': 'Enemy effect destroys Banhammer copy',
+        })
+        destroyed_item = next(item for item in destroyed['character']['data']['inventory']
+                              if item['instance_id'] == banhammer['instance_id'])
+        self.assertEqual(destroyed_item['state'], 'broken')
+        deck_effective = destroyed['character']['derived']['effective_cyberdecks'][
+            deck['instance_id']]
+        backup_payload = next(item for item in deck_effective['hardware']
+                              if item['name'] == 'Backup Drive')
+        self.assertEqual(len(backup_payload['backup_state']['saved_programs']), 1)
+        destroy_ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertTrue(destroy_ledger['entries'][0]['can_revert'])
+        reverted_destroy = self.call(
+            server.Handler.api_character_ledger_revert,
+            self.match(1, destroy_ledger['entries'][0]['id']), {
+                'revision': 11, 'reason': 'Undo incorrectly targeted Program destruction',
+            })
+        reverted_program = next(item for item in reverted_destroy['data']['inventory']
+                                if item['instance_id'] == banhammer['instance_id'])
+        self.assertEqual(reverted_program['state'], 'installed')
+        reverted_deck = reverted_destroy['derived']['effective_cyberdecks'][deck['instance_id']]
+        reverted_backup = next(item for item in reverted_deck['hardware']
+                               if item['name'] == 'Backup Drive')
+        self.assertFalse(reverted_backup['backup_state']['saved_programs'])
+
+        self.call(server.Handler.api_character_program_action,
+                  program_match(banhammer), {
+            'revision': 12, 'action': 'destroy',
+            'reason': 'Confirm enemy effect destroys Banhammer copy',
+        })
+        backup_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})/([a-f0-9]{32})$',
+            f'1/{deck["instance_id"]}/{backup["instance_id"]}')
+        restored = self.call(server.Handler.api_character_backup_restore,
+                             backup_match, {
+            'revision': 13, 'reason': 'Use Meat Action to restore saved Program',
+        })
+        self.assertEqual(restored['restored'], 1)
+        restored_item = next(item for item in restored['character']['data']['inventory']
+                             if item['instance_id'] == banhammer['instance_id'])
+        self.assertEqual(restored_item['state'], 'installed')
+        restored_state = restored['character']['data']['program_state'][banhammer['instance_id']]
+        self.assertEqual((restored_state['status'], restored_state['run_count']),
+                         ('inactive', 1))
+
+        self.call(server.Handler.api_character_program_action,
+                  program_match(banhammer), {
+            'revision': 14, 'action': 'destroy',
+            'reason': 'Destroy Banhammer again before removing Backup Drive',
+        })
+        backup_mod_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$', f'1/{installed["Backup Drive"]}')
+        removed_backup = self.call(
+            server.Handler.api_character_modification_action, backup_mod_match, {
+                'revision': 15, 'action': 'remove',
+                'reason': 'Remove Backup Drive and erase saved contents',
+            })
+        self.assertEqual(removed_backup['character']['revision'], 16)
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertFalse(ledger['entries'][0]['can_revert'])
+        self.assertEqual(ledger['entries'][0]['delta']['backup_drive_erased_programs'], 1)
+
     def test_vehicle_garage_installs_prerequisites_and_preserves_nomad_access_semantics(self):
         edited = copy.deepcopy(self.character_data)
         edited['inventory'] = [

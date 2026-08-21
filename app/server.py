@@ -3314,7 +3314,36 @@ def cyberdeck_item_compatibility(host, upgrade, active_modifications=None,
     }
 
 
-def evaluate_effective_cyberdeck(host, modifications, owned_by_id):
+PROGRAM_RUNTIME_STATUSES = {'inactive', 'rezzed', 'derezzed', 'destroyed'}
+
+
+def initial_program_runtime_state(item, deck_instance_id, modification_id, existing=None):
+    existing = existing if isinstance(existing, dict) else {}
+    category = cyberdeck_program_category(item)
+    maximum = max(0, int(_num((item.get('mechanics') or {}).get('rez')) or 0))
+    status = str(existing.get('status') or 'inactive')
+    if status not in PROGRAM_RUNTIME_STATUSES or status == 'destroyed':
+        status = 'inactive'
+    current = _num(existing.get('rez_current'))
+    if category in ('booster', 'defender', 'black_ice'):
+        current = max(0, min(maximum,
+                             int(current if current is not None else maximum)))
+    else:
+        current = 0
+    return {
+        'program_instance_id': item.get('instance_id'),
+        'catalog_item_id': catalog_item_id_for_entry(item),
+        'deck_instance_id': deck_instance_id,
+        'modification_id': modification_id,
+        'category': category, 'status': status,
+        'rez_current': current, 'rez_max': maximum,
+        'run_count': max(0, int(_num(existing.get('run_count')) or 0)),
+        'last_run_at': existing.get('last_run_at'),
+    }
+
+
+def evaluate_effective_cyberdeck(host, modifications, owned_by_id, character=None):
+    character = character or {}
     usage = cyberdeck_slot_usage(host, modifications, owned_by_id)
     hardware = []
     programs = []
@@ -3332,10 +3361,18 @@ def evaluate_effective_cyberdeck(host, modifications, owned_by_id):
             'manual_resolution_required': True,
         }
         if item.get('modification_kind') == 'cyberdeck_hardware':
+            hardware_state = copy.deepcopy((character.get('modification_state') or {}).get(
+                modification.get('modification_id')) or {})
+            if item.get('name') == 'Backup Drive':
+                payload['backup_state'] = hardware_state or {
+                    'resource_type': 'backup_drive', 'saved_programs': []}
             hardware.append(payload)
         elif item.get('modification_kind') == 'cyberdeck_program':
             payload['program_class'] = (item.get('mechanics') or {}).get('program_class')
             payload['mechanics'] = copy.deepcopy(item.get('mechanics') or {})
+            payload['runtime'] = initial_program_runtime_state(
+                item, host.get('instance_id'), modification.get('modification_id'),
+                (character.get('program_state') or {}).get(item.get('instance_id')))
             programs.append(payload)
     return {
         'instance_id': host.get('instance_id'),
@@ -3354,7 +3391,7 @@ def character_effective_cyberdecks(character, modifications):
         host_modifications = [mod for mod in modifications
                               if mod.get('host_instance_id') == host.get('instance_id')]
         result[host['instance_id']] = evaluate_effective_cyberdeck(
-            host, host_modifications, owned)
+            host, host_modifications, owned, character)
     return result
 
 
@@ -4353,6 +4390,11 @@ def character_change_summary(before, after, limit=250):
     for modification_id in sorted(set(old_mod_state) | set(new_mod_state)):
         add(f'modification_state.{modification_id}', 'Modification resource state',
             old_mod_state.get(modification_id), new_mod_state.get(modification_id))
+    old_program_state = before.get('program_state') if isinstance(before.get('program_state'), dict) else {}
+    new_program_state = after.get('program_state') if isinstance(after.get('program_state'), dict) else {}
+    for program_id in sorted(set(old_program_state) | set(new_program_state)):
+        add(f'program_state.{program_id}', 'Program runtime state',
+            old_program_state.get(program_id), new_program_state.get(program_id))
     old_vehicle_state = before.get('vehicle_state') if isinstance(before.get('vehicle_state'), dict) else {}
     new_vehicle_state = after.get('vehicle_state') if isinstance(after.get('vehicle_state'), dict) else {}
     for vehicle_id in sorted(set(old_vehicle_state) | set(new_vehicle_state)):
@@ -5914,7 +5956,9 @@ def ensure_progression(data):
         if key not in states:
             states[key] = {'magazine': magazine, 'magazine_max': magazine, 'reserve': 0}
     ensure_shared_ammo_state(data)
-    data['schema_version'] = max(6, _num(data.get('schema_version')) or 0)
+    if not isinstance(data.get('program_state'), dict):
+        data['program_state'] = {}
+    data['schema_version'] = max(7, _num(data.get('schema_version')) or 0)
     return data
 
 
@@ -6085,6 +6129,25 @@ SERVER_ERROR_EN = {
     'Vehicle configuration пока не поддерживается': 'Vehicle configuration is not supported yet',
     'Cyberdeck configuration пока не поддерживается': 'Cyberdeck configuration is not supported yet',
     'Сначала освободите зависимые Cyberdeck slots': 'Free dependent Cyberdeck slots first',
+    'Program action содержит неподдерживаемые поля': 'Program action contains unsupported fields',
+    'Installed Program instance не найден': 'Installed Program instance not found',
+    'Повреждена связь установленной Program': 'Installed Program link is corrupted',
+    'Укажите причину Program action': 'Provide a reason for the Program action',
+    'Backup restore содержит неподдерживаемые поля': 'Backup restore contains unsupported fields',
+    'Installed Backup Drive не найден': 'Installed Backup Drive not found',
+    'Backup Drive не содержит Programs': 'Backup Drive contains no Programs',
+    'Укажите причину Backup restore': 'Provide a reason for Backup restore',
+    'Run доступен только Attacker Program': 'Run is available only for an Attacker Program',
+    'Saved Program instance недоступен для восстановления': 'Saved Program instance is unavailable for restore',
+    'Недостаточно Cyberdeck slots для Backup restore': 'Not enough Cyberdeck slots for Backup restore',
+    'Black ICE требует NET entity deployment': 'Black ICE requires NET entity deployment',
+    'Activate доступен только Booster или Defender Program': 'Activate is available only for Booster or Defender Programs',
+    'Program необходимо сначала Deactivate': 'Deactivate the Program first',
+    'REZ damage требует Rezzed Program': 'REZ damage requires a Rezzed Program',
+    'Укажите REZ damage от 1 до 100': 'Provide REZ damage from 1 to 100',
+    'Только одна копия этой Program может быть Rezzed': 'Only one copy of this Program may be Rezzed',
+    'Derez требует Rezzed Program': 'Derez requires a Rezzed Program',
+    'Deactivate требует Rezzed или Derezzed Program': 'Deactivate requires a Rezzed or Derezzed Program',
     'Неподдерживаемый тип modification host': 'Unsupported modification host type',
     'Сначала снимите зависимые vehicle upgrades': 'Remove dependent vehicle upgrades first',
     'Vehicle instance не найден': 'Vehicle instance not found',
@@ -8712,6 +8775,15 @@ class Handler(BaseHTTPRequestHandler):
                 configuration['effect_rules'], data, choices)
             if initial_state:
                 data.setdefault('modification_state', {})[modification_id] = initial_state
+        elif host_type == 'cyberdeck':
+            if upgrade.get('modification_kind') == 'cyberdeck_program':
+                data.setdefault('program_state', {})[upgrade_id] = \
+                    initial_program_runtime_state(
+                        upgrade, host_id, modification_id)
+            elif upgrade.get('name') == 'Backup Drive':
+                data.setdefault('modification_state', {})[modification_id] = {
+                    'resource_type': 'backup_drive', 'saved_programs': [],
+                }
         conn.execute(
             'INSERT INTO item_modifications(modification_id,character_id,host_instance_id,'
             'upgrade_instance_id,host_type,slot_type,slots_used,active,permanent,'
@@ -8948,6 +9020,7 @@ class Handler(BaseHTTPRequestHandler):
                                    if item['modification_id'] != modification_id]
         owned = {entry.get('instance_id'): entry for entry in data.get('inventory') or []
                  if isinstance(entry, dict) and entry.get('instance_id')}
+        erased_backup_count = 0
         if host and modification.get('host_type') == 'weapon':
             remaining_pools = weapon_slot_capacity(host, remaining_modifications, owned)
             overloaded = [name for name, pool in remaining_pools.items()
@@ -8962,6 +9035,15 @@ class Handler(BaseHTTPRequestHandler):
                 host, remaining_deck_modifications, owned)
             if remaining_usage['overloaded']:
                 raise ApiError(409, 'Сначала освободите зависимые Cyberdeck slots')
+            if upgrade.get('modification_kind') == 'cyberdeck_program':
+                runtime = (data.get('program_state') or {}).get(
+                    upgrade.get('instance_id')) or {}
+                if runtime.get('status') in ('rezzed', 'derezzed'):
+                    raise ApiError(409, 'Deactivate Program before Uninstall')
+            if upgrade.get('name') == 'Backup Drive':
+                backup_state = (data.get('modification_state') or {}).get(
+                    modification_id) or {}
+                erased_backup_count = len(backup_state.get('saved_programs') or [])
         elif host and modification.get('host_type') == 'vehicle':
             removed_name = str(upgrade.get('name') or '')
             removed_state = (data.get('modification_state') or {}).get(modification_id) or {}
@@ -9005,6 +9087,8 @@ class Handler(BaseHTTPRequestHandler):
         upgrade['state'] = 'carried'
         upgrade.pop('host_instance_id', None)
         data.setdefault('modification_state', {}).pop(modification_id, None)
+        if upgrade.get('modification_kind') == 'cyberdeck_program':
+            data.setdefault('program_state', {}).pop(upgrade.get('instance_id'), None)
         now = time.time()
         conn.execute(
             'UPDATE item_modifications SET active=0,removed_by=?,removed_at=?,updated=? '
@@ -9024,6 +9108,9 @@ class Handler(BaseHTTPRequestHandler):
                                   (ledger_id,)).fetchone()
         delta = parse_json_object(ledger_row['delta_json'])
         delta['removed_modification_ids'] = [modification_id]
+        if erased_backup_count:
+            delta['revertible'] = False
+            delta['backup_drive_erased_programs'] = erased_backup_count
         conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
                      (json.dumps(delta, ensure_ascii=False), ledger_id))
         conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
@@ -9033,6 +9120,233 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({
             'character': self.char_payload(fresh, fresh['owner'], conn=conn),
             'management': self.modification_management_payload(conn, fresh),
+        })
+
+    @atomic_endpoint
+    def api_character_program_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        if set(body or {}) - {'revision', 'action', 'amount', 'reason'}:
+            raise ApiError(400, 'Program action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        deck_id, program_id = str(m.group(2)).lower(), str(m.group(3)).lower()
+        modifications = character_modifications(conn, row['id'])
+        modification = next((item for item in modifications
+                             if item.get('host_instance_id') == deck_id and
+                             item.get('upgrade_instance_id') == program_id and
+                             item.get('host_type') == 'cyberdeck'), None)
+        if not modification:
+            raise ApiError(404, 'Installed Program instance не найден')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('instance_id')}
+        deck, program = owned.get(deck_id), owned.get(program_id)
+        if (not deck or not program or
+                program.get('modification_kind') != 'cyberdeck_program'):
+            raise ApiError(409, 'Повреждена связь установленной Program')
+        runtime = initial_program_runtime_state(
+            program, deck_id, modification['modification_id'],
+            (data.get('program_state') or {}).get(program_id))
+        data.setdefault('program_state', {})[program_id] = runtime
+        action = str((body or {}).get('action') or '').lower()
+        detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(detail) < 3:
+            raise ApiError(400, 'Укажите причину Program action')
+        category = runtime['category']
+        status = runtime['status']
+        now = time.time()
+        removed_modification_ids = []
+        if action == 'run':
+            if category != 'attacker':
+                raise ApiError(409, 'Run доступен только Attacker Program')
+            runtime['run_count'] += 1
+            runtime['last_run_at'] = now
+            reason = f'Run Attacker Program {program.get("name")}: {detail}'
+        elif action == 'rez':
+            if category == 'black_ice':
+                raise ApiError(409, 'Black ICE требует NET entity deployment')
+            if category not in ('booster', 'defender'):
+                raise ApiError(409, 'Activate доступен только Booster или Defender Program')
+            if status != 'inactive':
+                raise ApiError(409, 'Program необходимо сначала Deactivate')
+            catalog_program = item_by_id(catalog_item_id_for_entry(program)) or {}
+            if re.search(r'Only 1 copy of this Program can be running',
+                         str(catalog_program.get('desc') or ''), re.I):
+                for other in (data.get('program_state') or {}).values():
+                    if (other is not runtime and
+                            other.get('catalog_item_id') == runtime['catalog_item_id'] and
+                            other.get('status') == 'rezzed'):
+                        raise ApiError(409, 'Только одна копия этой Program может быть Rezzed')
+            runtime['status'] = 'rezzed'
+            runtime['rez_current'] = runtime['rez_max']
+            reason = f'Rez {program.get("name")} at REZ {runtime["rez_current"]}: {detail}'
+        elif action == 'damage':
+            if status != 'rezzed' or runtime['rez_max'] <= 0:
+                raise ApiError(409, 'REZ damage требует Rezzed Program')
+            amount = _num((body or {}).get('amount'))
+            if amount is None or int(amount) != amount or not 1 <= amount <= 100:
+                raise ApiError(400, 'Укажите REZ damage от 1 до 100')
+            previous = runtime['rez_current']
+            runtime['rez_current'] = max(0, previous - int(amount))
+            if runtime['rez_current'] == 0:
+                runtime['status'] = 'derezzed'
+            reason = (f'Program REZ damage {program.get("name")}: '
+                      f'{previous} → {runtime["rez_current"]}; {detail}')
+        elif action == 'derez':
+            if status != 'rezzed':
+                raise ApiError(409, 'Derez требует Rezzed Program')
+            runtime['status'] = 'derezzed'
+            runtime['rez_current'] = 0
+            reason = f'Derez Program {program.get("name")}: {detail}'
+        elif action == 'deactivate':
+            if status not in ('rezzed', 'derezzed'):
+                raise ApiError(409, 'Deactivate требует Rezzed или Derezzed Program')
+            runtime['status'] = 'inactive'
+            runtime['rez_current'] = runtime['rez_max']
+            reason = f'Deactivate Program {program.get("name")}: {detail}'
+        elif action == 'destroy':
+            backup_modification = next((item for item in modifications
+                                        if item.get('host_instance_id') == deck_id and
+                                        (owned.get(item.get('upgrade_instance_id')) or {}).get('name') == 'Backup Drive'), None)
+            if category != 'black_ice' and backup_modification:
+                backup_state = data.setdefault('modification_state', {}).setdefault(
+                    backup_modification['modification_id'],
+                    {'resource_type': 'backup_drive', 'saved_programs': []})
+                saved = backup_state.setdefault('saved_programs', [])
+                if not any(item.get('program_instance_id') == program_id for item in saved):
+                    saved.append({
+                        'program_instance_id': program_id,
+                        'modification_id': modification['modification_id'],
+                        'catalog_item_id': catalog_item_id_for_entry(program),
+                        'name': program.get('custom_name') or program.get('name'),
+                        'runtime_before': copy.deepcopy(runtime),
+                        'saved_at': now,
+                    })
+            runtime['status'] = 'destroyed'
+            runtime['rez_current'] = 0
+            program['state'] = 'broken'
+            program.pop('host_instance_id', None)
+            conn.execute(
+                'UPDATE item_modifications SET active=0,removed_by=?,removed_at=?,updated=? '
+                'WHERE modification_id=?',
+                (user['id'], now, now, modification['modification_id']))
+            removed_modification_ids.append(modification['modification_id'])
+            reason = f'Destroy Program {program.get("name")}: {detail}'
+        else:
+            raise ApiError(400, 'Program action: run/rez/damage/derez/deactivate/destroy')
+        validate_active_modification_references(conn, row['id'], data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'program_action', source_ref=reason, prune=True)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after,
+            category='modification' if removed_modification_ids else 'item_action')
+        if removed_modification_ids:
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            delta['removed_modification_ids'] = removed_modification_ids
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
+    def api_character_backup_restore(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        if set(body or {}) - {'revision', 'reason'}:
+            raise ApiError(400, 'Backup restore содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        deck_id, hardware_id = str(m.group(2)).lower(), str(m.group(3)).lower()
+        modifications = character_modifications(conn, row['id'])
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('instance_id')}
+        backup_modification = next((item for item in modifications
+                                    if item.get('host_instance_id') == deck_id and
+                                    item.get('upgrade_instance_id') == hardware_id and
+                                    (owned.get(hardware_id) or {}).get('name') == 'Backup Drive'), None)
+        if not backup_modification:
+            raise ApiError(404, 'Installed Backup Drive не найден')
+        backup_state = (data.get('modification_state') or {}).get(
+            backup_modification['modification_id']) or {}
+        saved = backup_state.get('saved_programs') or []
+        if not saved:
+            raise ApiError(409, 'Backup Drive не содержит Programs')
+        detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(detail) < 3:
+            raise ApiError(400, 'Укажите причину Backup restore')
+        active_deck = [item for item in modifications
+                       if item.get('host_instance_id') == deck_id]
+        restored_rows = []
+        for snapshot in saved:
+            program_id = str(snapshot.get('program_instance_id') or '')
+            program = owned.get(program_id)
+            inactive = conn.execute(
+                'SELECT * FROM item_modifications WHERE modification_id=? '
+                'AND character_id=? AND host_instance_id=? AND upgrade_instance_id=? AND active=0',
+                (snapshot.get('modification_id'), row['id'], deck_id, program_id)).fetchone()
+            if not program or program.get('state') != 'broken' or not inactive:
+                raise ApiError(409, 'Saved Program instance недоступен для восстановления')
+            compatibility = cyberdeck_item_compatibility(
+                owned.get(deck_id) or {}, program, active_deck, owned)
+            if not compatibility['allowed']:
+                raise ApiError(409, 'Недостаточно Cyberdeck slots для Backup restore')
+            restored_modification = item_modification_payload(inactive)
+            restored_modification['active'] = True
+            active_deck.append(restored_modification)
+            restored_rows.append((snapshot, program, restored_modification))
+        now = time.time()
+        restored_ids = []
+        for snapshot, program, restored_modification in restored_rows:
+            modification_id = restored_modification['modification_id']
+            conn.execute(
+                'UPDATE item_modifications SET active=1,removed_by=NULL,removed_at=NULL,updated=? '
+                'WHERE modification_id=?', (now, modification_id))
+            program['state'] = 'installed'
+            program['host_instance_id'] = deck_id
+            data.setdefault('program_state', {})[program['instance_id']] = \
+                initial_program_runtime_state(
+                    program, deck_id, modification_id,
+                    snapshot.get('runtime_before'))
+            restored_ids.append(modification_id)
+        backup_state['saved_programs'] = []
+        validate_active_modification_references(conn, row['id'], data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'backup_restore', source_ref=detail, prune=True)
+        revision_after = current_revision + 1
+        reason = f'Restore {len(restored_ids)} Programs from Backup Drive: {detail}'
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='modification')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['created_modification_ids'] = restored_ids
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id,
+            'restored': len(restored_ids),
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
         })
 
     def api_character_effects(self, conn, qs, m, body):
@@ -10840,6 +11154,8 @@ ROUTES = [
     ('GET', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modifications),
     ('POST', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modification_install),
     ('POST', rx(r'/api/characters/(\d+)/modifications/([a-f0-9]{32})/action'), Handler.api_character_modification_action),
+    ('POST', rx(r'/api/characters/(\d+)/cyberdecks/([a-f0-9]{32})/programs/([a-f0-9]{32})/action'), Handler.api_character_program_action),
+    ('POST', rx(r'/api/characters/(\d+)/cyberdecks/([a-f0-9]{32})/hardware/([a-f0-9]{32})/restore'), Handler.api_character_backup_restore),
     ('GET', rx(r'/api/characters/(\d+)/effects'), Handler.api_character_effects),
     ('POST', rx(r'/api/characters/(\d+)/effects'), Handler.api_character_effect_create),
     ('POST', rx(r'/api/characters/(\d+)/effects/([a-f0-9]{32})/action'), Handler.api_character_effect_action),

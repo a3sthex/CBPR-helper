@@ -109,7 +109,7 @@ class MediaAndProgressionTests(unittest.TestCase):
         self.assertEqual(data['luck_cur'], 6)
         self.assertEqual(data['active_role'], 'Solo')
         self.assertEqual(data['roles'][0]['rank'], 4)
-        self.assertEqual(data['schema_version'], 6)
+        self.assertEqual(data['schema_version'], 7)
 
 
 class LocalizationTests(unittest.TestCase):
@@ -925,6 +925,23 @@ class CyberdeckModificationTests(unittest.TestCase):
             'host_type': 'cyberdeck', 'slots_used': item.get('slots_used') or 1,
             'configuration': {},
         }
+
+    def test_program_runtime_state_uses_program_class_and_rez(self):
+        armor = self.owned('programs-12', '0' * 32)
+        banhammer = self.owned('programs-0', '1' * 32)
+        killer = self.owned('programs-25', '2' * 32)
+        armor_state = server.initial_program_runtime_state(
+            armor, 'd' * 32, 'a' * 32)
+        attacker_state = server.initial_program_runtime_state(
+            banhammer, 'd' * 32, 'b' * 32)
+        ice_state = server.initial_program_runtime_state(
+            killer, 'd' * 32, 'c' * 32)
+        self.assertEqual((armor_state['category'], armor_state['rez_max']),
+                         ('defender', 7))
+        self.assertEqual((attacker_state['category'], attacker_state['rez_max']),
+                         ('attacker', 0))
+        self.assertEqual((ice_state['category'], ice_state['rez_max']),
+                         ('black_ice', 20))
 
     def test_cyberdeck_slots_count_hardware_programs_and_black_ice(self):
         self.assertEqual(server.item_by_id('net_stuff-19')['host_type'], 'cyberdeck')
