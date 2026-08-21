@@ -6191,7 +6191,9 @@ CYBERWARE_CURATED_PAYLOADS = {
     },
 }
 CYBERWARE_WEAPON_PROFILES = {
+    'cyberware-13': {'id': 'popup-net-launcher', 'kind': 'ranged', 'weapon_type': 'Exotic Weapon', 'skill': 'Shoulder Arms', 'damage': '—', 'rof': 1, 'magazine': 1, 'ammo_kind': 'net', 'range_table': 'Shotgun', 'deployable': True, 'concealable': True, 'manual_effect': 'On hit the target is grappled: cannot use Move Action, cannot use two-handed weapons, -2 to physical Actions. Net HP 15, destroyed beyond repair at 0 HP. Escape DV13 Contortionist (target inside only) or DV13 Brawling (anyone); success destroys net. Firing into net damages both net and target equally. Range max 25m. Replacement net 50eb.', 'source': 'BC 20', 'special_ammo': True},
     'cyberware-15': {'id': 'popup-shotgun', 'kind': 'ranged', 'weapon_type': 'Shotgun', 'skill': 'Shoulder Arms', 'damage': '5d6', 'rof': 1, 'magazine': 2, 'ammo_kind': 'shotgun', 'range_table': 'Shotgun', 'deployable': True, 'concealable': True, 'source': 'BC 21'},
+    'cyberware-25': {'id': 'dartgun-cyberfinger', 'kind': 'ranged', 'weapon_type': 'Exotic Weapon', 'skill': 'Handgun', 'damage': '—', 'rof': 1, 'magazine': 1, 'deployable': False, 'concealable': True, 'manual_effect': 'Single concealed dart; toxin/drug payload is manual. No conceal check if glove worn. Requires Modular Finger Cyberhand. Single shot clip.', 'source': 'BC 24', 'special_ammo': True},
     'cyberware-42': {'id': 'mantis-blade', 'kind': 'melee', 'weapon_type': 'Heavy Melee Weapon', 'skill': 'Melee Weapon', 'damage': '3d6', 'rof': 2, 'quality': 'Excellent', 'hands_required': 1, 'deployable': True, 'concealable': True, 'source': 'CEMK 35'},
     'cyberware-43': {'id': 'gorilla-arm', 'kind': 'melee', 'weapon_type': 'Heavy Melee Weapon', 'skill': 'Melee Weapon', 'damage': '3d6', 'rof': 2, 'quality': 'Excellent', 'hands_required': 1, 'deployable': False, 'concealable': True, 'manual_effect': 'BODY 11 weapon handling; paired BODY 11 feats are contextual.', 'source': 'CEMK 35'},
     'cyberware-44': {'id': 'monowire', 'kind': 'melee', 'weapon_type': 'Exotic Heavy Melee Weapon', 'skill': 'Melee Weapon', 'damage': '3d6', 'rof': 2, 'hands_required': 1, 'deployable': True, 'concealable': True, 'reach_m': 6, 'manual_effect': 'On Critical Injury roll twice and choose one result.', 'source': 'CEMK 35'},
@@ -6202,8 +6204,10 @@ CYBERWARE_WEAPON_PROFILES = {
     'cyberware-124': {'id': 'scratchers', 'kind': 'melee', 'weapon_type': 'Light Melee Weapon', 'skill': 'Melee Weapon', 'damage': '1d6', 'rof': 2, 'hands_required': 1, 'deployable': False, 'concealable': True, 'source': 'CP:R 366'},
     'cyberware-131': {'id': 'slice-n-dice', 'kind': 'melee', 'weapon_type': 'Medium Melee Weapon', 'skill': 'Melee Weapon', 'damage': '2d6', 'rof': 2, 'hands_required': 1, 'deployable': True, 'concealable': True, 'source': 'CP:R 366'},
     'cyberware-133': {'id': 'wolvers', 'kind': 'melee', 'weapon_type': 'Heavy Melee Weapon', 'skill': 'Melee Weapon', 'damage': '3d6', 'rof': 2, 'hands_required': 1, 'deployable': True, 'concealable': True, 'source': 'CP:R 366'},
+    'cyberware-70': {'id': 'dartgun', 'kind': 'ranged', 'weapon_type': 'Exotic Weapon', 'skill': 'Handgun', 'damage': '—', 'rof': 1, 'magazine': 1, 'deployable': False, 'concealable': True, 'manual_effect': 'Cybereye Dartgun Exotic Weapon, single shot clip concealed in Cybereye. Payload effects manual (toxin/drug).', 'source': 'CP:R 360', 'special_ammo': True},
     'cyberware-146': {'id': 'mono-paw', 'kind': 'melee', 'weapon_type': 'Medium Melee Weapon', 'skill': 'Melee Weapon', 'damage': '1d6', 'rof': 2, 'quality': 'Excellent', 'hands_required': 1, 'deployable': True, 'concealable': True, 'manual_effect': 'Ignores armor below SP11; higher SP applies normally.', 'source': 'DL:12Cute 6'},
     'cyberware-148': {'id': 'chainripp', 'kind': 'melee', 'weapon_type': 'Very Heavy Melee Weapon', 'skill': 'Melee Weapon', 'damage': '4d6', 'rof': 1, 'hands_required': 1, 'deployable': True, 'rev_action': True, 'concealable': False, 'manual_effect': 'Excellent Exotic quality only while revved.', 'source': 'DL:12Cy 3 / IR3 85'},
+    'cyberware-171': {'id': 'gas-jet', 'kind': 'ranged', 'weapon_type': 'Exotic Weapon', 'skill': 'Shoulder Arms', 'damage': '—', 'rof': 1, 'magazine': 1, 'ammo_kinds': ['street_drug', 'poison', 'biotoxin'], 'range_table': 'Shotgun', 'deployable': False, 'concealable': True, 'manual_effect': 'Acts as One-Handed Exotic Shotgun in Shotgun Shell mode only; instead of damage applies loaded Street Drug / Poison / Biotoxin to all vulnerable targets in spread. Nasal Filters negate. Requires fully loaded (3 doses) and drains entirely each shot.', 'source': 'DL:HP 5 / IR4 7', 'special_ammo': True, 'payload_options': ['street_drug', 'poison', 'biotoxin']},
 }
 
 
@@ -6685,13 +6689,19 @@ def effective_cyberware_loadout(data):
             'loaded_ammo_catalog_id': weapon_state.get('loaded_ammo_catalog_id'),
             'loaded_ammo_name': weapon_state.get('loaded_ammo_name'),
             'loaded_ammo_kind': weapon_state.get('loaded_ammo_kind'),
+            'loaded_payload': weapon_state.get('loaded_payload'),
         }
         if profile.get('damage_by_ammo') and profile['state']['loaded_ammo_kind']:
             profile['effective_damage'] = profile['damage_by_ammo'].get(
                 profile['state']['loaded_ammo_kind'], profile.get('damage'))
         ammo_kinds = profile.get('ammo_kinds') or ([profile.get('ammo_kind')]
                                                    if profile.get('ammo_kind') else [])
-        if profile.get('bound_weapon_instance_id'):
+        if profile.get('special_ammo'):
+            profile['shared_ammo_available'] = 0
+            # Track special payload availability manually
+            if profile.get('payload_options'):
+                profile['payload_options'] = list(profile['payload_options'])
+        elif profile.get('bound_weapon_instance_id'):
             bound_weapon = next((item for item in data.get('inventory') or []
                                  if isinstance(item, dict) and item.get('instance_id') ==
                                  profile['bound_weapon_instance_id']), None)
@@ -6699,7 +6709,36 @@ def effective_cyberware_loadout(data):
                 data, weapon=bound_weapon)
         else:
             profile['shared_ammo_available'] = sum(
-                shared_ammo_available(data, ammo_kind=kind) for kind in ammo_kinds)
+                shared_ammo_available(data, ammo_kind=kind) for kind in ammo_kinds
+                if kind not in ('net', 'street_drug', 'poison', 'biotoxin'))
+        weapon_profiles.append(profile)
+    # Standalone cyberweapons (e.g. Dartgun Cyberfinger) also produce tracked profiles
+    for entry in chrome:
+        if entry.get('instance_id') in {opt['instance_id'] for opt in option_rows}:
+            continue
+        if entry['instance_id'] not in {item['instance_id'] for item in standalone}:
+            continue
+        profile = cyberware_weapon_profile(entry)
+        if not profile:
+            continue
+        stored = runtime_states.get(entry['instance_id']) or {}
+        weapon_state = stored.get('weapon') if isinstance(stored.get('weapon'), dict) else {}
+        maximum = max(0, int(_num(profile.get('magazine')) or 0))
+        profile = copy.deepcopy(profile)
+        profile['instance_id'] = entry['instance_id']
+        profile['name'] = entry.get('custom_name') or entry.get('name') or profile['id']
+        profile['state'] = {
+            'deployed': weapon_state.get('deployed') is True or not profile.get('deployable'),
+            'revved': weapon_state.get('revved') is True,
+            'magazine': max(0, min(maximum, int(_num(weapon_state.get('magazine')) or 0))),
+            'magazine_max': maximum,
+            'loaded_payload': weapon_state.get('loaded_payload'),
+        }
+        if profile.get('special_ammo'):
+            profile['shared_ammo_available'] = 0
+        else:
+            ammo_kinds = profile.get('ammo_kinds') or ([profile.get('ammo_kind')] if profile.get('ammo_kind') else [])
+            profile['shared_ammo_available'] = sum(shared_ammo_available(data, ammo_kind=kind) for kind in ammo_kinds)
         weapon_profiles.append(profile)
     popup_shields = [
         popup_shield_profile(data, next(entry for entry in chrome
@@ -7414,6 +7453,7 @@ SERVER_ERROR_EN = {
     'weapon_instance_id допустим только для mount_weapon': 'weapon_instance_id is only allowed for mount_weapon',
     'ammo_instance_id допустим только для Reload': 'ammo_instance_id is only allowed for Reload',
     'Выберите конкретный ammo stack': 'Choose a specific ammo stack',
+    'Выберите payload для Gas Jet: street_drug / poison / biotoxin': 'Choose a Gas Jet payload: street_drug / poison / biotoxin',
     'Ammo stack недоступен для Reload': 'Ammo stack is unavailable for Reload',
     'Ammo stack несовместим с этим оружием': 'Ammo stack is incompatible with this weapon',
     'Магазин уже заполнен': 'The magazine is already full',
@@ -12367,7 +12407,7 @@ class Handler(BaseHTTPRequestHandler):
     @atomic_endpoint
     def api_character_cyberware_weapon_action(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
-        allowed = {'revision', 'action', 'ammo_instance_id', 'reason'}
+        allowed = {'revision', 'action', 'ammo_instance_id', 'payload_type', 'reason'}
         if set(body or {}) - allowed:
             raise ApiError(400, 'Cyberweapon action содержит неподдерживаемые поля')
         current_revision = _row_value(row, 'revision', 0) or 0
@@ -12432,35 +12472,72 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(409, 'Cyberweapon magazine пуст')
             weapon_state['magazine'] = current - 1
             clear_loaded_ammo_if_empty(weapon_state)
+            # Special payload drains entirely on fire (Gas Jet)
+            if profile.get('special_ammo') and weapon_state.get('magazine', 0) == 0:
+                weapon_state.pop('loaded_payload', None)
+                weapon_state.pop('loaded_ammo_kind', None)
             result.update({'magazine_before': current,
                            'magazine_after': weapon_state['magazine']})
+            # Manual effect hint for special weapons
+            if profile.get('special_ammo') and profile.get('manual_effect'):
+                result['manual_effect'] = profile['manual_effect']
+                result['manual_resolution_required'] = True
             reason = f'Fire Cyberweapon {chrome.get("name")}: {reason_detail}'
         elif action == 'reload':
             if maximum <= 0:
                 raise ApiError(409, 'Cyberweapon не использует tracked ammo')
-            ammo_id = str((body or {}).get('ammo_instance_id') or '').lower()
-            ammo = next((item for item in data.get('inventory') or []
-                         if isinstance(item, dict) and item.get('instance_id') == ammo_id), None)
-            ammo_kinds = profile.get('ammo_kinds') or ([profile.get('ammo_kind')]
-                                                       if profile.get('ammo_kind') else [])
-            if bound_weapon:
-                if not ammo_matches_requirement(ammo, weapon=bound_weapon):
-                    raise ApiError(400, 'Ammo stack несовместим с Cyberweapon')
-                transfer = consume_shared_ammo(
-                    data, weapon_state, ammo_id, weapon=bound_weapon)
-                ammo_kind = None
+            if profile.get('special_ammo'):
+                if weapon_state.get('magazine', 0) >= maximum:
+                    raise ApiError(409, 'Магазин уже заполнен')
+                payload = None
+                if profile['id'] == 'gas-jet':
+                    payload_raw = str((body or {}).get('payload_type') or '').strip().lower()
+                    allowed = set(profile.get('payload_options') or ['street_drug', 'poison', 'biotoxin'])
+                    if payload_raw not in allowed:
+                        raise ApiError(400, 'Выберите payload для Gas Jet: street_drug / poison / biotoxin')
+                    payload = payload_raw
+                    weapon_state['loaded_payload'] = payload
+                elif profile['id'] == 'popup-net-launcher':
+                    weapon_state['loaded_payload'] = 'net'
+                elif profile['id'] in ('dartgun', 'dartgun-cyberfinger'):
+                    weapon_state['loaded_payload'] = 'dart'
+                    weapon_state.pop('loaded_ammo_kind', None)
+                weapon_state['magazine'] = maximum
+                weapon_state.pop('loaded_ammo_catalog_id', None)
+                weapon_state.pop('loaded_ammo_name', None)
+                if payload != 'street_drug' and payload is not None:
+                    weapon_state.pop('loaded_ammo_kind', None)
+                result['special_reload'] = True
+                result['loaded_payload'] = weapon_state.get('loaded_payload')
+                result['magazine_after'] = maximum
+                if payload:
+                    reason = f'Reload Cyberweapon {chrome.get("name")} [{payload}]: {reason_detail}'
+                else:
+                    reason = f'Reload Cyberweapon {chrome.get("name")} [special ammo]: {reason_detail}'
             else:
-                ammo_kind = next((kind for kind in ammo_kinds
-                                  if ammo_matches_requirement(ammo, kind)), None)
-                if not ammo_kind:
-                    raise ApiError(400, 'Ammo stack несовместим с Cyberweapon')
-                transfer = consume_shared_ammo(
-                    data, weapon_state, ammo_id, ammo_kind=ammo_kind)
-            if ammo_kind:
-                weapon_state['loaded_ammo_kind'] = ammo_kind
-            result['transfer'] = transfer
-            reason = (f'Reload Cyberweapon {chrome.get("name")} with '
-                      f'{transfer["ammo_name"]} ×{transfer["moved"]}: {reason_detail}')
+                ammo_id = str((body or {}).get('ammo_instance_id') or '').lower()
+                ammo = next((item for item in data.get('inventory') or []
+                             if isinstance(item, dict) and item.get('instance_id') == ammo_id), None)
+                ammo_kinds = profile.get('ammo_kinds') or ([profile.get('ammo_kind')]
+                                                           if profile.get('ammo_kind') else [])
+                if bound_weapon:
+                    if not ammo_matches_requirement(ammo, weapon=bound_weapon):
+                        raise ApiError(400, 'Ammo stack несовместим с Cyberweapon')
+                    transfer = consume_shared_ammo(
+                        data, weapon_state, ammo_id, weapon=bound_weapon)
+                    ammo_kind = None
+                else:
+                    ammo_kind = next((kind for kind in ammo_kinds
+                                      if ammo_matches_requirement(ammo, kind)), None)
+                    if not ammo_kind:
+                        raise ApiError(400, 'Ammo stack несовместим с Cyberweapon')
+                    transfer = consume_shared_ammo(
+                        data, weapon_state, ammo_id, ammo_kind=ammo_kind)
+                if ammo_kind:
+                    weapon_state['loaded_ammo_kind'] = ammo_kind
+                result['transfer'] = transfer
+                reason = (f'Reload Cyberweapon {chrome.get("name")} with '
+                          f'{transfer["ammo_name"]} ×{transfer["moved"]}: {reason_detail}')
         else:
             raise ApiError(400, 'Cyberweapon action: deploy/stow/rev/rev_down/fire/reload')
         if not bound_weapon:

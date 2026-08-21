@@ -3187,7 +3187,21 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Remove/Replace возвращает surviving shield в `carried`, destroyed — в `broken`; новый concrete Bulletproof Shield можно установить отдельным action;
 - Quick Change/Uninstall Popup option сохраняет concrete shield binding; generic delete/resale блокируются до явного Remove;
 - Popup Shield link, HP, deployed state, payment и repair snapshots revision-protected, Ledger-audited и поддерживают safe revert;
-- Campaign Clock service completion, purchased service offers и source-specific Shield Tech payloads остаются следующими этапами.
+- Campaign Clock service completion и purchased service offers остаются следующими этапами.
+
+**Статус B.10.4 — реализованы Special Cyberware Weapons & Shield Tech Polish:**
+
+- Popup Net Launcher (BC 20), Dartgun (CP:R 360 / BC 24) и Pursuit Security Gas Jet (DL:HP 5) добавлены в curated Cyberweapon allowlist как tracked ranged профили с `special_ammo`;
+- Net Launcher: Shoulder Arms, Shotgun Slug Range, Mag 1, deployable, 25m лимит и grapple HP15 / DV13 escape как честный `MANUAL EFFECT`;
+- Dartgun variants: single-shot clip, concealed, Handgun, payload эффекты manual (toxin/drug);
+- Gas Jet: One-Handed Exotic Shotgun Shell mode, Mag 1, payload `street_drug / poison / biotoxin`, выбор при Reload (`payload_type`), drains entirely каждый выстрел, Nasal Filters как ручное правило;
+- Special reload не требует shared ammo stack: `Reload` устанавливает `magazine=1` и `loaded_payload`, `Fire` тратит 1 и очищает payload; для Gas Jet payload обязателен и валидируется;
+- Standalone Dartgun Cyberfinger также получает tracked профиль;
+- `effective_cyberware_loadout` расширен для standalone cyberweapons и `loaded_payload` / `special_ammo` маркировки;
+- Dossier Cyberweapons показывает `Mag 1/1 · payload` и `MANUAL EFFECT` источник, shared_ammo для special = 0;
+- Server-authoritative `cyberware/weapon/action` теперь принимает `payload_type` для Gas Jet, атомарно логируется и поддерживает Ledger revert;
+- Front-end Reload для special weapons открывает payload picker (Gas Jet) вместо Ammo stack selector;
+- Shield Tech Upgrade остаётся permanent + manual для щитов: `MANUAL SHIELD TECH UPGRADE` не даёт автоматического SP+1, требует Tech подтверждение и reason; Campaign Clock auto-completion и Tech Maker custom modifications остаются следующими этапами.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -3210,8 +3224,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, concrete Cyberware/Popup weapons/Popup Shield, Therapy, concrete Armor/Shield hosts, Tech Upgrade, manual/Jeeves/paid Armor Repair;
-    - дальше: Shield-specific Tech modes, Campaign Clock services, special cyberweapon ammo и generic Tech Maker modifications.
+    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, concrete Cyberware/Popup weapons/Popup Shield, Therapy, concrete Armor/Shield hosts, Tech Upgrade, manual/Jeeves/paid Armor Repair, curated special cyberweapons (Net Launcher / Dartguns / Gas Jet) с special-ammo lifecycle и Manual Shield Tech Upgrade Polish;
+    - дальше: Campaign Clock services и generic Tech Maker custom modifications.
 14. JSON import.
 
 ### Пакет C — Publishing Preview
