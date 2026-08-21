@@ -331,6 +331,7 @@ async function route() {
       const raw = seg1 || '';
       const charId = raw.split('?')[0];
       if (!charId || charId === '' || charId === 'new') { await viewWizard(); return; }
+      if (raw.includes('?edit')) { await viewEditor(charId); return; }
       await viewSheet(charId); return;
     }
     const fn = routes[activeRoute] || viewHome;
@@ -2572,7 +2573,7 @@ async function viewSheet(id) {
     <div class="row">
       <button id="sheet-back">← ${T('Characters','Персонажи')}</button>
       <button class="btn-sm" id="sheet-print">🖨️ Print</button><button class="btn-sm" id="sheet-json">⬇ JSON</button><button class="btn-sm" id="sheet-network">◎ ${T('Network','Сеть')}</button>${owner||state.me?.is_gm?`<button class="btn-sm" id="sheet-ledger">◫ ${T('Ledger','Журнал')}</button>`:''}
-      ${mine ? `<label class="btn-sm">🖼️ Portrait<input id="sheet-portrait-file" type="file" accept="image/jpeg,image/png,image/webp" hidden></label><button class="btn-primary" id="sheet-privacy">◉ ${T('Dossier Privacy','Приватность Dossier')}</button>
+      ${mine ? `<button class="btn-primary" id="sheet-edit">✏️ ${T('Edit Sheet','Редактировать лист')}</button><label class="btn-sm">🖼️ Portrait<input id="sheet-portrait-file" type="file" accept="image/jpeg,image/png,image/webp" hidden></label><button class="btn-sm" id="sheet-privacy">◉ ${T('Dossier Privacy','Приватность Dossier')}</button>
                 <button class="btn-danger" id="sheet-del">🗑️ ${T('Delete','Удалить')}</button>` : ''}
     </div>
   </div>
@@ -2651,6 +2652,7 @@ async function viewSheet(id) {
   $$('[data-roll-check]', view).forEach(button => button.onclick = () => { const split=button.dataset.rollCheck.lastIndexOf('|');showCheckRoll(button.dataset.rollCheck.slice(0,split),Number(button.dataset.rollCheck.slice(split+1))); });
   $$('[data-resource]', view).forEach(button => button.onclick = () => { const [resource,value]=button.dataset.resource.split('|'); sheetResource(c.id,resource,value); });
   const improveBtn=$('#sheet-improve');if(improveBtn)improveBtn.onclick=()=>openImprovementModal(c);const gmIp=$('#sheet-ip-gm');if(gmIp)gmIp.onclick=()=>openIpAdjustment(c.id,()=>viewSheet(c.id));
+  const editSheet=$('#sheet-edit');if(editSheet)editSheet.onclick=()=>go(`/char/${c.id}?edit`);
   const notes=$('#sheet-notes');if(notes){let timer;notes.oninput=()=>{clearTimeout(timer);$('#sheet-notes-status').textContent='Saving…';timer=setTimeout(async()=>{try{ch.notes=notes.value;const saved=await api('/api/characters/'+c.id,{method:'PUT',body:{revision:c.revision,patch:{notes:notes.value}}});c.revision=saved.revision;$('#sheet-notes-status').textContent='Saved';}catch(e){$('#sheet-notes-status').textContent=e.message;}},700);};}
   const portraitInput=$('#sheet-portrait-file');if(portraitInput)portraitInput.onchange=()=>openImageCrop(portraitInput.files[0],'character_portrait',async media=>{try{await api('/api/characters/'+c.id,{method:'PUT',body:{revision:c.revision,patch:{portrait_media_id:media.id}}});viewSheet(c.id);}catch(e){toast(e.message,true);}});
   const networkButton=$('#sheet-network');
@@ -2664,10 +2666,12 @@ async function viewSheet(id) {
   if(ledgerButton)ledgerButton.onclick=async()=>{
     try{
       const history=await api(`/api/characters/${c.id}/ledger`);
-      const rows=history.entries.length
-        ? history.entries.map(entry=>`<div class="inv-row"><span class="tag">${esc(entry.category)}</span><span class="iname user-content">${esc(entry.reason||'')}</span><span class="small muted">${timeAgo(entry.created)} · ${esc(entry.actor)}</span></div>`).join('')
-        : `<div class="empty">${T('No permanent changes recorded.','Постоянные изменения не записаны.')}</div>`;
-      openModal(`<h2>${T('Dossier Ledger','Журнал досье')}</h2>${rows}`,true);
+      const rows=history.entries.length?history.entries.map(entry=>{
+        const changes=(entry.changes||[]).map(change=>`<div class="ledger-change"><b>${esc(change.label)}</b><span>${esc(String(change.before??'—'))} → ${esc(String(change.after??'—'))}</span></div>`).join('');
+        return `<article class="panel mb ledger-entry"><div class="row" style="justify-content:space-between"><span class="tag">${esc(entry.category)}</span><span class="small muted">${timeAgo(entry.created)} · ${esc(entry.actor)}</span></div><b class="user-content">${esc(entry.reason||'')}</b>${changes?`<div class="ledger-changes mt">${changes}</div>`:''}${entry.can_revert?`<button class="btn-sm mt" data-ledger-revert="${entry.id}">↶ ${T('Revert this change set','Откатить этот набор изменений')}</button>`:''}</article>`;
+      }).join(''):`<div class="empty">${T('No permanent changes recorded.','Постоянные изменения не записаны.')}</div>`;
+      const modal=openModal(`<h2>${T('Dossier Ledger','Журнал досье')}</h2><p class="small muted">${T('Trust + Audit records who changed what, when, and why. Only the latest reversible change can be undone safely.','Trust + Audit записывает кто, что, когда и почему изменил. Безопасно откатить можно только последнее обратимое изменение.')}</p>${rows}`,true);
+      $$('[data-ledger-revert]',modal).forEach(button=>button.onclick=async()=>{if(!confirm(T('Revert the entire change set?','Откатить весь набор изменений?')))return;const reason=prompt(T('Reason for revert','Причина отката'))||'';button.disabled=true;try{await api(`/api/characters/${c.id}/ledger/${button.dataset.ledgerRevert}/revert`,{method:'POST',body:{revision:history.current_revision,reason}});closeModal();toast(T('Change set reverted.','Набор изменений отменён.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
     }catch(e){toast(e.message,true);}
   };
   $('#sheet-print').onclick = () => window.print();
@@ -2776,7 +2780,11 @@ async function viewEditor(id) {
       return;
     }
   }
-  state.editor = { id: payload.id, char: payload.data, tab: 'base', dirty: false };
+  state.editor = {
+    id: payload.id, revision: payload.revision || 0,
+    char: JSON.parse(JSON.stringify(payload.data)),
+    baseline: JSON.parse(JSON.stringify(payload.data)), tab: 'base', dirty: false,
+  };
 
   view.innerHTML = `
   <div class="page-head">
@@ -2787,6 +2795,7 @@ async function viewEditor(id) {
       <button class="btn-primary" id="ed-save">💾 ${T('Save','Сохранить')}</button>
     </div>
   </div>
+  ${payload.id?`<div class="panel accent mb"><b>TRUST + AUDIT</b> · ${T('You may edit your sheet freely. Every save requires a reason and records a readable before/after change set in the Dossier Ledger.','Вы можете свободно редактировать лист. Каждое сохранение требует причину и записывает понятный набор изменений «до → после» в журнал Dossier.')}</div>`:''}
   <div class="panel accent mb" id="ed-derived"></div>
   <div class="editor-tabs" id="ed-tabs">
     ${EDITOR_TABS.map(([k, en, ru]) => `<button data-tab="${k}" class="${state.editor.tab === k ? 'active' : ''}">${T(en,ru)}</button>`).join('')}
@@ -2832,23 +2841,45 @@ function renderDerived() {
   ${d.emp_cur != null && d.emp_cur <= 2 ? '<div class="small" style="color:var(--magenta);margin-top:6px">⚠️ EMP ≤ 2 — на грани киберпсихоза. Осторожно с хромом.</div>' : ''}`;
 }
 
+function editorChangePreview(before,after){
+  const groups=[
+    [T('Identity & biography','Личность и биография'),['handle','first_name','last_name','player','appearance','background','languages','lifestyle','housing','notes','public']],
+    [T('Role','Роль'),['role','role_rank','roles','active_role']],[T('Characteristics','Характеристики'),['stats','hp_cur','humanity_cur','luck_cur']],
+    [T('Skills','Навыки'),['skills','skill_pools','native_language']],[T('Resources','Ресурсы'),['cash','ip_available','reputation']],
+    ['Inventory',['inventory']],['Cyberware',['cyberware']],[T('Armor','Броня'),['armor']],
+  ];
+  return groups.filter(([,keys])=>keys.some(key=>JSON.stringify(before[key])!==JSON.stringify(after[key]))).map(([label])=>label);
+}
+
 async function saveEditor() {
   const ed = state.editor;
   if (!ed) return;
   const c = ed.char;
   if (!c.handle || !c.handle.trim()) { toast('Заполни псевдоним (Handle) на вкладке «Основное»', true); state.editor.tab = 'base'; renderEditorTab(); return; }
-  try {
-    if (ed.id) {
-      toast(T('Mechanical fields use progression, Market, and GM operations.','Механические поля изменяются через развитие, Market и операции GM.'), true);
-      return;
-    }
-    const r = await api('/api/characters', { method: 'POST', body: {data:c} });
-    state.editor.id = r.id;
-    state.editor.dirty = false;
-    history.replaceState(null, '', '#/char/' + r.id + '?edit');
-    toast('Сохранено ✓');
-    renderDerived();
-  } catch (e) { toast(e.message, true); }
+  if (!ed.id) {
+    try {
+      const r = await api('/api/characters', { method: 'POST', body: {data:c} });
+      state.editor.id = r.id; state.editor.revision=r.revision||0;
+      state.editor.baseline=JSON.parse(JSON.stringify(r.data));state.editor.char=JSON.parse(JSON.stringify(r.data));
+      state.editor.dirty = false;history.replaceState(null, '', '#/char/' + r.id + '?edit');
+      toast(T('Saved.','Сохранено ✓'));renderDerived();
+    } catch (e) { toast(e.message, true); }
+    return;
+  }
+  const changed=editorChangePreview(ed.baseline,c);
+  if(!changed.length){toast(T('There are no changes to save.','Нет изменений для сохранения.'),true);return;}
+  const modal=openModal(`<h2>${T('Save Character Sheet','Сохранить Character Sheet')}</h2><div class="panel accent mb"><b>TRUST + AUDIT</b><p class="small">${T('The following sections changed:','Изменены разделы:')} ${changed.map(esc).join(' · ')}</p></div><label class="f"><span>${T('Reason for changes *','Причина изменений *')}</span><textarea id="sheet-edit-reason" maxlength="500" rows="3" placeholder="${T('Loot from session, correction, downtime…','Добыча с сессии, исправление, downtime…')}" autofocus></textarea></label><p class="small muted">${T('The server will validate the sheet and record readable before/after changes.','Сервер проверит лист и запишет понятные изменения «до → после».')}</p><div class="row"><button id="sheet-edit-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="sheet-edit-confirm">${T('Save and record','Сохранить и записать')}</button></div>`);
+  $('#sheet-edit-cancel',modal).onclick=closeModal;
+  $('#sheet-edit-confirm',modal).onclick=async()=>{
+    const reason=$('#sheet-edit-reason',modal).value.trim();
+    if(reason.length<3){toast(T('Describe why the sheet changed.','Опишите причину изменения листа.'),true);return;}
+    const button=$('#sheet-edit-confirm',modal);button.disabled=true;
+    try{
+      const saved=await api(`/api/characters/${ed.id}/sheet`,{method:'PUT',body:{revision:ed.revision,reason,data:c}});
+      ed.revision=saved.revision;ed.char=JSON.parse(JSON.stringify(saved.data));ed.baseline=JSON.parse(JSON.stringify(saved.data));ed.dirty=false;
+      closeModal();toast(T('Sheet saved and recorded in the Ledger.','Лист сохранён и записан в журнал.'));renderEditorTab();renderDerived();
+    }catch(error){button.disabled=false;toast(error.message,true);}
+  };
 }
 
 function renderEditorTab() {
@@ -2873,8 +2904,8 @@ function renderEditorTab() {
       <div class="small muted mb" id="f-role-note">${roleDesc ? esc(roleDesc) + ` ${T('Ability:','Способность:')} <b>` + esc(roleAb) + '</b>.' : ''}</div>
       <label class="f"><span>Внешность</span><textarea id="f-appearance" maxlength="4000">${esc(c.appearance || '')}</textarea></label>
       <label class="f"><span>Биография / предыстория</span><textarea id="f-background" maxlength="4000">${esc(c.background || '')}</textarea></label>
-      <label class="f"><span>Счёт (€$)</span><input id="f-cash" type="number" min="0" step="50" value="${c.cash || 0}"></label>
-      <p class="small muted">${T('Starting budgets:','Старт по гайду:')} <b>${state.meta.start_cash_gear ?? 2550}€$</b> ${T('for Weapons, Armor, Gear, and Cyberware, plus','на оружие/броню/снаряжение/хром +')} <b>${state.meta.start_cash_fashion ?? 800}€$</b> ${T('separately for Fashion and Fashionware. See the','отдельно на Fashion и Fashionware. Подробнее — в')} <a href="#/guides">${T('guides','гайдах')}</a>.</p>
+      <div class="grid cols-3"><label class="f"><span>Cash (€$)</span><input id="f-cash" type="number" min="0" step="1" value="${c.cash || 0}"></label><label class="f"><span>${T('Available IP','Доступные IP')}</span><input id="f-ip" type="number" min="0" step="1" value="${c.ip_available||0}"></label><label class="f"><span>Reputation</span><input id="f-reputation" type="number" min="0" max="10" step="1" value="${c.reputation||0}"></label></div>
+      <p class="small muted">${T('Trust mode allows resource corrections, but the reason and exact before/after values are always written to the Ledger.','Trust mode разрешает исправлять ресурсы, но причина и точные значения «до → после» всегда записываются в журнал.')}</p>
     </div>`;
     $('#f-handle').oninput = (e) => { c.handle = e.target.value; edChanged(); };
     $('#f-first-name').oninput = (e) => { c.first_name = e.target.value; edChanged(); };
@@ -2887,38 +2918,40 @@ function renderEditorTab() {
     };
     $('#f-rank').oninput = (e) => { c.role_rank = num(e.target.value) || 4; edChanged(); };
     $('#f-player').oninput = (e) => { c.player = e.target.value; edChanged(); };
-    $('#f-appearance').oninput = (e) => { c.appearance = e.target.value; };
-    $('#f-background').oninput = (e) => { c.background = e.target.value; };
+    $('#f-appearance').oninput = (e) => { c.appearance = e.target.value; edChanged(); };
+    $('#f-background').oninput = (e) => { c.background = e.target.value; edChanged(); };
     $('#f-cash').oninput = (e) => { c.cash = num(e.target.value) || 0; edChanged(); };
+    $('#f-ip').oninput = (e) => { c.ip_available = num(e.target.value) || 0; edChanged(); };
+    $('#f-reputation').oninput = (e) => { c.reputation = num(e.target.value) || 0; edChanged(); };
   }
   if (ed.tab === 'stats') {
     const st = c.stats;
     const spent = Object.values(st).reduce((a, b) => a + (num(b) || 0), 0);
-    const budget = state.meta.stat_points || 62;
+    const budget = state.meta.stat_points || 62, statMax=ed.id?13:8;
     box.innerHTML = `
     <div class="panel">
       <div class="row mb">
-        <span class="muted small">${T('Creation standard:','Стандарт создания:')} <b>${budget} ${T('points','очков')}</b>, ${T('each Characteristic','каждая стата')} <b>2–8</b>. ${T('Spent:','Потрачено:')} <b id="st-spent" class="${spent !== budget ? 'warn-text' : ''}">${spent}</b>${spent > budget ? T(' — over budget!',' — перебор!') : ''}</span>
+        <span class="muted small">${ed.id?T('Post-creation Trust edit: values 1–13; every change is audited.','Trust-редактирование после создания: значения 1–13; каждое изменение записывается.'):T('Creation standard: 62 points, each Characteristic 2–8.','Стандарт создания: 62 очка, каждая характеристика 2–8.')} ${T('Current total:','Текущая сумма:')} <b id="st-spent">${spent}</b></span>
         <button class="btn-sm" id="st-roll">🎲 ${T('Random (array 8,7,7,6,6,6,6,6,5,5)','Случайно (массив 8,7,7,6,6,6,6,6,5,5)')}</button>
         <button class="btn-sm" id="st-reset">${T('Reset all to 5','Сбросить все на 5')}</button>
       </div>
       <div class="statgrid mb">
         ${state.meta.stats.map(s => {
           const v = num(st[s]);
-          const bad = v != null && (v < 2 || v > 8);
-          return `<div class="stat input${bad ? ' bad' : ''}"><span class="k">${s}</span><input type="number" min="2" max="8" data-stat="${s}" value="${st[s] != null ? st[s] : ''}"></div>`;
+          const bad = v != null && (v < (ed.id?1:2) || v > statMax);
+          return `<div class="stat input${bad ? ' bad' : ''}"><span class="k">${s}</span><input type="number" min="${ed.id?1:2}" max="${statMax}" data-stat="${s}" value="${st[s] != null ? st[s] : ''}"></div>`;
         }).join('')}
       </div>
       <div class="grid cols-2">
-        <label class="f"><span>Текущее HP (пусто = максимум)</span><input id="f-hpcur" type="number" min="0" value="${c.hp_cur != null ? c.hp_cur : ''}" placeholder="авто"></label>
-        <label class="f"><span>Текущая человечность (пусто = максимум)</span><input id="f-humcur" type="number" min="0" value="${c.humanity_cur != null ? c.humanity_cur : ''}" placeholder="авто"></label>
+        <label class="f"><span>Текущее HP (пусто = максимум)</span><input id="f-hpcur" type="number" min="-1000" max="1000" value="${c.hp_cur != null ? c.hp_cur : ''}" placeholder="авто"></label>
+        <label class="f"><span>Текущая человечность (пусто = максимум)</span><input id="f-humcur" type="number" min="0" max="100" value="${c.humanity_cur != null ? c.humanity_cur : ''}" placeholder="авто"></label>
       </div>
       <p class="small muted">${T('HP = 10 + 5×⌈(BODY+WILL)/2⌉. Current Humanity decreases by HL when Cyberware is installed. Maximum Humanity separately decreases by','HP = 10 + 5×⌈(BODY+WILL)/2⌉. Текущая Humanity при установке уменьшается на HL. Максимальная Humanity отдельно уменьшается на')} <b>2</b> ${T('for ordinary Cyberware and','за обычный хром и на')} <b>4</b> ${T('for Borgware; Fashionware and the free starting CEMK Neuroport are excluded. Current EMP = Humanity ÷ 10, rounded down.','за Borgware; Fashionware и бесплатный стартовый Neuroport CEMK исключены. Текущий EMP = Humanity ÷ 10 (вниз).')}</p>
     </div>`;
     $$('[data-stat]', box).forEach(inp => inp.oninput = () => {
       c.stats[inp.dataset.stat] = num(inp.value);
       const v = num(inp.value);
-      inp.parentElement.classList.toggle('bad', v != null && (v < 2 || v > 8));
+      inp.parentElement.classList.toggle('bad', v != null && (v < (ed.id?1:2) || v > statMax));
       const sp = Object.values(c.stats).reduce((a, b) => a + (num(b) || 0), 0);
       $('#st-spent').textContent = sp;
       $('#st-spent').classList.toggle('warn-text', sp > budget);
@@ -3026,7 +3059,7 @@ function renderEditorTab() {
     $('#add-chrome').onclick = () => pickItem(['cyberware'], 'Кибернетика', (it) => {
       const c2 = state.editor.char;
       c2.cyberware = c2.cyberware || [];
-      c2.cyberware.push({ key: it.id, name: it.name, hl: it.hl || 0, price: it.price, type: (it.fields && it.fields.Type) || '' });
+      c2.cyberware.push({key:it.id,catalog_item_id:it.id,cat:'cyberware',name:it.name,hl:it.hl||0,price:it.price,type:(it.fields&&it.fields.Type)||'',qty:1,state:'installed',fields:{...(it.fields||{})},mechanics:{...(it.mechanics||{})},requirements:[...(it.requirements||[])],capacity:it.capacity?{...it.capacity}:null,source:it.source||''});
       renderEditorTab(); edChanged();
     });
     renderChromeList();
@@ -3046,8 +3079,8 @@ function renderEditorTab() {
       <label class="f"><span>Заметки</span><textarea id="f-notes" maxlength="4000" style="min-height:160px">${esc(c.notes || '')}</textarea></label>
       <label class="checkbox"><input type="checkbox" id="f-public" ${c.public !== false ? 'checked' : ''}> Показывать персонажа в общем ростере партии</label>
     </div>`;
-    $('#f-lang').oninput = (e) => { c.languages = e.target.value; };
-    $('#f-notes').oninput = (e) => { c.notes = e.target.value; };
+    $('#f-lang').oninput = (e) => { c.languages = e.target.value; edChanged(); };
+    $('#f-notes').oninput = (e) => { c.notes = e.target.value; edChanged(); };
     $('#f-public').onchange = (e) => { c.public = e.target.checked; edChanged(); };
   }
 }
@@ -3055,11 +3088,12 @@ function renderEditorTab() {
 function addInvItem(it) {
   const c = state.editor.char;
   c.inventory = c.inventory || [];
-  const ex = c.inventory.find(x => x.key === it.id);
+  const ex = it.cat==='ammo' ? c.inventory.find(x => x.key === it.id && !x.custom_name && (x.state||'carried')==='carried') : null;
   if (ex) ex.qty = (ex.qty || 1) + 1;
   else c.inventory.push({
-    key: it.id, cat: it.cat, name: it.name, price: it.price, qty: 1,
-    damage: it.damage || null, sp: it.sp != null ? it.sp : null,
+    key: it.id, catalog_item_id:it.id, cat: it.cat, name: it.name, price: it.price, qty: 1,
+    state:'carried', damage: it.damage || null, sp: it.sp != null ? it.sp : null,hl:it.hl||0,
+    fields:{...(it.fields||{})},mechanics:{...(it.mechanics||{})},source:it.source||'',
   });
   edChanged();
 }
@@ -3070,25 +3104,25 @@ function renderInventoryList() {
   const c = state.editor.char;
   const inv = c.inventory || [];
   if (!inv.length) { box.innerHTML = '<div class="empty">Пусто. Совсем. Даже пушки нет.</div>'; return; }
-  box.innerHTML = inv.map(i => `
-    <div class="inv-row" data-key="${esc(i.key)}">
-      <span class="iname">${esc(i.name)}</span>
+  box.innerHTML = inv.map((i,index) => `
+    <div class="inv-row" data-index="${index}">
+      <span class="iname">${esc(i.custom_name||i.name)}</span><span class="chip">${esc(i.state||'carried')}</span>
       ${i.damage ? `<span class="weap-dmg">${esc(i.damage)}</span>` : ''}
       ${i.sp != null ? `<span class="chip">SP ${i.sp}</span>` : ''}
       <span class="muted small">${money(i.price || 0)}</span>
-      <button class="btn-sm" data-act="minus">−</button>
-      <b>${i.qty || 1}</b>
-      <button class="btn-sm" data-act="plus">＋</button>
+      ${i.cat==='ammo'?`<button class="btn-sm" data-act="minus">−</button><b>${i.qty || 1}</b><button class="btn-sm" data-act="plus">＋</button>`:'<b>×1</b>'}
       <button class="btn-sm btn-danger" data-act="del">✕</button>
     </div>`).join('');
   $$('.inv-row', box).forEach(row => {
-    const key = row.dataset.key;
     $$('button', row).forEach(b => b.onclick = () => {
-      const item = c.inventory.find(x => x.key === key);
+      const index=Number(row.dataset.index),item=c.inventory[index];
       if (!item) return;
       if (b.dataset.act === 'plus') item.qty = (item.qty || 1) + 1;
-      if (b.dataset.act === 'minus') { item.qty = (item.qty || 1) - 1; if (item.qty < 1) item.qty = 1; }
-      if (b.dataset.act === 'del') c.inventory = c.inventory.filter(x => x.key !== key);
+      if (b.dataset.act === 'minus') item.qty = Math.max(1,(item.qty || 1) - 1);
+      if (b.dataset.act === 'del') {
+        c.inventory.splice(index,1);
+        for(const location of ['head','body','shield'])if(c.armor?.[location]?.instance_id&&c.armor[location].instance_id===item.instance_id)delete c.armor[location];
+      }
       renderInventoryList(); edChanged();
     });
   });
@@ -3138,7 +3172,11 @@ function renderArmorSlots() {
   $$('[data-pick]', box).forEach(b => {
     const slot = b.dataset.pick;
     b.onclick = () => pickItem(['armor'], `Броня: ${slot === 'body' ? 'тело' : 'голова'}`, (it) => {
-      const piece = { key: it.id + (it.armor_bundled ? '@set' : '@' + slot), source_key: it.id,
+      c.inventory=c.inventory||[];
+      let owned=c.inventory.find(entry=>entry.cat==='armor'&&(entry.catalog_item_id||String(entry.key||'').split('@')[0])===it.id&&!['equipped','installed'].includes(entry.state));
+      if(!owned){addInvItem(it);owned=c.inventory[c.inventory.length-1];}
+      owned.state='equipped';
+      const piece = { key: it.id + (it.armor_bundled ? '@set' : '@' + slot), source_key: it.id,catalog_item_id:it.id,instance_id:owned.instance_id,
         name: it.name, sp: it.sp || 0, penalties: { ...(it.penalties || {}) }, bundled: !!it.armor_bundled };
       if (it.armor_bundled) { c.armor.body = { ...piece }; c.armor.head = { ...piece }; }
       else c.armor[slot] = piece;
@@ -3148,6 +3186,7 @@ function renderArmorSlots() {
   $$('[data-clear]', box).forEach(b => b.onclick = () => {
     const removed = c.armor[b.dataset.clear];
     delete c.armor[b.dataset.clear];
+    if(removed?.instance_id){const owned=(c.inventory||[]).find(item=>item.instance_id===removed.instance_id);if(owned)owned.state='carried';}
     if (removed && removed.bundled) {
       for (const slot of ['body','head']) if (c.armor[slot] && c.armor[slot].key === removed.key) delete c.armor[slot];
     }

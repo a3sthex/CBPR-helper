@@ -1080,8 +1080,9 @@ def ensure_character_item_instances(data, regenerate=False):
                 changed = True
             continue
         piece_key = str(piece.get('key') or piece.get('source_key') or '').split('@', 1)[0]
+        bundled = bool(piece.get('bundled'))
         match = next((entry for entry in inventory
-                      if entry.get('instance_id') not in claimed and
+                      if (entry.get('instance_id') not in claimed or bundled) and
                       str(entry.get('catalog_item_id') or entry.get('key') or
                           entry.get('source_key') or '').split('@', 1)[0] == piece_key), None)
         if match:
@@ -1754,6 +1755,115 @@ def record_character_changes(conn, character_id, actor_user_id, before, after,
         recorded.add(category)
 
 
+CHARACTER_DIFF_SCALARS = (
+    ('handle', 'Handle'), ('first_name', 'First name'), ('last_name', 'Last name'),
+    ('player', 'Player'), ('role', 'Primary Role'), ('role_rank', 'Role Rank'),
+    ('cash', 'Cash'), ('ip_available', 'Available IP'), ('reputation', 'Reputation'),
+    ('hp_cur', 'Current HP'), ('humanity_cur', 'Current Humanity'),
+    ('luck_cur', 'Current LUCK'), ('lifestyle', 'Lifestyle'), ('housing', 'Housing'),
+    ('appearance', 'Appearance'), ('background', 'Background'),
+    ('languages', 'Languages'), ('notes', 'Notes'), ('public', 'Public Dossier'),
+)
+
+
+def readable_change_value(value):
+    if value is None or value == '':
+        return '—'
+    if isinstance(value, bool):
+        return 'Yes' if value else 'No'
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= 160 else value[:157] + '…'
+    return json.dumps(value, ensure_ascii=False)[:240]
+
+
+def character_change_summary(before, after, limit=250):
+    """Build compact, human-readable changes while full snapshots stay server-side."""
+    changes = []
+
+    def add(path, label, old, new, kind='changed'):
+        if old == new or len(changes) >= limit:
+            return
+        changes.append({
+            'path': path, 'label': label, 'kind': kind,
+            'before': readable_change_value(old), 'after': readable_change_value(new),
+        })
+
+    for key, label in CHARACTER_DIFF_SCALARS:
+        add(key, label, before.get(key), after.get(key))
+    for group, label in (('stats', 'STAT'), ('skills', 'Skill'),
+                         ('skill_pools', 'Skill Pool')):
+        old_values = before.get(group) if isinstance(before.get(group), dict) else {}
+        new_values = after.get(group) if isinstance(after.get(group), dict) else {}
+        for key in sorted(set(old_values) | set(new_values)):
+            add(f'{group}.{key}', f'{label}: {key}', old_values.get(key), new_values.get(key))
+
+    def item_map(data, bucket):
+        result = {}
+        for index, item in enumerate(data.get(bucket) or []):
+            if not isinstance(item, dict):
+                continue
+            identity = str(item.get('instance_id') or f'{item.get("key") or item.get("name")}:{index}')
+            result[identity] = item
+        return result
+
+    for bucket, label in (('inventory', 'Inventory'), ('cyberware', 'Cyberware')):
+        old_items, new_items = item_map(before, bucket), item_map(after, bucket)
+        for identity in sorted(set(old_items) | set(new_items)):
+            old, new = old_items.get(identity), new_items.get(identity)
+            if old is None:
+                name = new.get('custom_name') or new.get('name') or 'Item'
+                add(f'{bucket}.{identity}', f'{label}: {name}', '—',
+                    f'added ×{new.get("qty") or 1}', 'added')
+            elif new is None:
+                name = old.get('custom_name') or old.get('name') or 'Item'
+                add(f'{bucket}.{identity}', f'{label}: {name}',
+                    f'owned ×{old.get("qty") or 1}', 'removed', 'removed')
+            else:
+                old_view = {
+                    'name': old.get('custom_name') or old.get('name'),
+                    'qty': old.get('qty') or 1, 'state': old.get('state') or 'carried',
+                }
+                new_view = {
+                    'name': new.get('custom_name') or new.get('name'),
+                    'qty': new.get('qty') or 1, 'state': new.get('state') or 'carried',
+                }
+                add(f'{bucket}.{identity}', f'{label}: {new_view["name"]}',
+                    old_view, new_view)
+
+    old_armor = before.get('armor') if isinstance(before.get('armor'), dict) else {}
+    new_armor = after.get('armor') if isinstance(after.get('armor'), dict) else {}
+    for location in ('head', 'body', 'shield'):
+        old_piece, new_piece = old_armor.get(location), new_armor.get(location)
+        old_view = (old_piece or {}).get('name') if isinstance(old_piece, dict) else None
+        new_view = (new_piece or {}).get('name') if isinstance(new_piece, dict) else None
+        add(f'armor.{location}', f'Armor: {location}', old_view, new_view)
+    return changes
+
+
+def record_character_change_set(conn, character_id, actor_user_id, before, after,
+                                reason, revision_before, revision_after,
+                                category='sheet_update', reverts_ledger_id=None):
+    changes = character_change_summary(before, after)
+    delta = {
+        'changes': changes,
+        'change_count': len(changes),
+        'revision_before': int(revision_before),
+        'revision_after': int(revision_after),
+        'revertible': True,
+    }
+    if reverts_ledger_id is not None:
+        delta['reverts_ledger_id'] = int(reverts_ledger_id)
+    cursor = conn.execute(
+        'INSERT INTO character_ledger(character_id,actor_user_id,category,delta_json,'
+        'before_json,after_json,reason,created) VALUES(?,?,?,?,?,?,?,?)',
+        (character_id, actor_user_id, category, json.dumps(delta, ensure_ascii=False),
+         json.dumps(before, ensure_ascii=False), json.dumps(after, ensure_ascii=False),
+         str(reason or '')[:500], time.time()))
+    return cursor.lastrowid
+
+
 def record_account_security(conn, user_id, actor_user_id, event_type, detail=''):
     conn.execute(
         'INSERT INTO account_security_audit(user_id,actor_user_id,event_type,detail,created) '
@@ -2265,6 +2375,239 @@ def clean_character(data):
     if any(role.get('role_lifepath') for role in progressed.get('roles', []) if not role.get('primary')):
         raise ApiError(400, 'Role-Based Lifepath разрешён только primary Role')
     return progressed
+
+
+TRUST_EDIT_TEXT_LIMITS = {
+    'handle': 60, 'first_name': 60, 'last_name': 60, 'player': 120,
+    'appearance': 4000, 'background': 4000, 'languages': 500,
+    'lifestyle': 200, 'housing': 200, 'notes': 20000,
+}
+
+
+def trust_number(value, label, minimum, maximum, integer=False):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ApiError(400, f'{label}: требуется число')
+    if not math.isfinite(number) or number < minimum or number > maximum:
+        raise ApiError(400, f'{label}: допустимо от {minimum} до {maximum}')
+    return int(number) if integer else round(number, 2)
+
+
+def canonical_owned_entry(entry, bucket, old_entries):
+    if not isinstance(entry, dict):
+        raise ApiError(400, 'Inventory должен содержать объекты')
+    instance_id = str(entry.get('instance_id') or '').lower()
+    existing = old_entries.get(instance_id) if INSTANCE_ID_RE.fullmatch(instance_id) else None
+    catalog_id = catalog_item_id_for_entry(entry) or catalog_item_id_for_entry(existing)
+    if not catalog_id:
+        if not existing:
+            raise ApiError(400, 'Custom items будут добавлены отдельным этапом; выберите предмет из Database')
+        owned = copy.deepcopy(existing)
+        for key in ('custom_name', 'notes', 'state', 'qty'):
+            if key in entry:
+                owned[key] = entry[key]
+    else:
+        item = item_by_id(catalog_id)
+        if not item or (bucket == 'cyberware') != (item.get('cat') == 'cyberware'):
+            raise ApiError(400, 'Предмет находится в неправильном разделе Inventory')
+        owned = copy.deepcopy(entry)
+        raw_key = str(entry.get('key') or catalog_id)
+        if raw_key.split('@', 1)[0] != catalog_id:
+            raw_key = catalog_id
+        owned.update({
+            'key': raw_key, 'catalog_item_id': catalog_id, 'cat': item['cat'],
+            'name': item['name'], 'damage': item.get('damage'),
+            'sp': item.get('sp'), 'hl': item.get('hl'),
+            'fields': copy.deepcopy(item.get('fields') or {}),
+            'mechanics': copy.deepcopy(item.get('mechanics') or {}),
+            'requirements': copy.deepcopy(item.get('requirements') or []),
+            'capacity': copy.deepcopy(item.get('capacity')),
+            'source': item.get('source'),
+            'price': (existing or {}).get('price', item.get('price') or 0),
+        })
+    try:
+        owned['qty'] = max(1, min(999, int(entry.get('qty') or owned.get('qty') or 1)))
+    except (TypeError, ValueError):
+        raise ApiError(400, 'Некорректное количество')
+    if INSTANCE_ID_RE.fullmatch(instance_id):
+        owned['instance_id'] = instance_id
+    else:
+        owned.pop('instance_id', None)
+    owned['custom_name'] = str(entry.get('custom_name') or owned.get('custom_name') or '')[:120]
+    owned['notes'] = str(entry.get('notes') or owned.get('notes') or '')[:2000]
+    state = str(entry.get('state') or owned.get('state') or
+                ('installed' if bucket == 'cyberware' else 'carried'))
+    if state not in ITEM_INSTANCE_STATES:
+        raise ApiError(400, 'Некорректное состояние предмета')
+    owned['state'] = 'installed' if bucket == 'cyberware' else state
+    return owned
+
+
+def clean_character_trust_update(old_data, incoming):
+    """Validate an owner-authored Trust + Audit sheet without creation-budget rules."""
+    if not isinstance(incoming, dict):
+        raise ApiError(400, 'Лист персонажа должен быть объектом')
+    if len(json.dumps(incoming, ensure_ascii=False).encode()) > MAX_CHAR_BYTES:
+        raise ApiError(413, 'Лист персонажа слишком большой')
+    data = copy.deepcopy(old_data)
+    for key, maximum in TRUST_EDIT_TEXT_LIMITS.items():
+        if key in incoming:
+            value = str(incoming.get(key) or '')[:maximum]
+            data[key] = value.strip() if key in ('handle', 'first_name', 'last_name') else value
+    if not data.get('handle'):
+        raise ApiError(400, 'Нужен псевдоним (Handle) персонажа')
+
+    role = str(incoming.get('role', data.get('role') or '')).strip()
+    if role not in ROLES:
+        raise ApiError(400, 'Неизвестная Role')
+    rank = trust_number(incoming.get('role_rank', data.get('role_rank') or 4),
+                        'Role Rank', 1, 10, integer=True)
+    previous_role = str(data.get('role') or '')
+    data['role'], data['role_rank'] = role, rank
+    roles = copy.deepcopy(data.get('roles') or [])
+    primary = next((item for item in roles if isinstance(item, dict) and item.get('primary')), None)
+    if primary:
+        old_primary_name = str(primary.get('name') or previous_role)
+        primary['name'], primary['rank'], primary['primary'] = role, rank, True
+        if data.get('active_role') == old_primary_name:
+            data['active_role'] = role
+    else:
+        roles.insert(0, {'name': role, 'rank': rank, 'primary': True,
+                         'setup': copy.deepcopy(data.get('role_setup') or {})})
+    if len({item.get('name') for item in roles if isinstance(item, dict)}) != len(roles):
+        raise ApiError(400, 'У персонажа не может быть двух одинаковых Roles')
+    data['roles'], data['primary_role'] = roles, role
+
+    if 'stats' in incoming:
+        raw_stats = incoming.get('stats')
+        if not isinstance(raw_stats, dict):
+            raise ApiError(400, 'stats должен быть объектом')
+        stats = {}
+        for stat in STATS:
+            if stat in raw_stats:
+                stats[stat] = trust_number(raw_stats[stat], stat, 1, 13, integer=True)
+            elif stat in (data.get('stats') or {}):
+                stats[stat] = data['stats'][stat]
+        data['stats'] = stats
+
+    if 'skills' in incoming:
+        raw_skills = incoming.get('skills')
+        if not isinstance(raw_skills, dict) or len(raw_skills) > 500:
+            raise ApiError(400, 'skills должен быть объектом до 500 записей')
+        skills = {}
+        old_skills = data.get('skills') or {}
+        for name, value in raw_skills.items():
+            name = str(name).strip()[:120]
+            if not skill_base(name) and name not in old_skills:
+                raise ApiError(400, f'Неизвестный Skill: {name}')
+            skills[name] = trust_number(value, f'Skill {name}', 0, 10, integer=True)
+        data['skills'] = skills
+    if 'skill_pools' in incoming:
+        pools = incoming.get('skill_pools')
+        if not isinstance(pools, dict) or set(pools) - SPECIALIZED_SKILLS:
+            raise ApiError(400, 'skill_pools содержит неизвестный специализированный навык')
+        data['skill_pools'] = {
+            key: trust_number(value, f'{key} Pool', 0, 10, integer=True)
+            for key, value in pools.items()
+        }
+    if 'native_language' in incoming:
+        data['native_language'] = str(incoming.get('native_language') or '')[:120]
+
+    for key, label, minimum, maximum, integer in (
+            ('cash', 'Cash', 0, 9_999_999, False),
+            ('reputation', 'Reputation', 0, 10, True),
+            ('hp_cur', 'Current HP', -1000, 1000, True),
+            ('humanity_cur', 'Current Humanity', 0, 100, True),
+            ('luck_cur', 'Current LUCK', 0, 20, True)):
+        if key in incoming and incoming[key] is not None:
+            data[key] = trust_number(incoming[key], label, minimum, maximum, integer)
+        elif key in incoming:
+            data[key] = None
+    if 'ip_available' in incoming:
+        old_ip = _num(data.get('ip_available')) or 0
+        new_ip = trust_number(incoming['ip_available'], 'Available IP', 0, 1_000_000, integer=True)
+        delta = new_ip - old_ip
+        data['ip_available'] = new_ip
+        if delta > 0:
+            data['ip_total_earned'] = (_num(data.get('ip_total_earned')) or old_ip) + delta
+        elif delta < 0:
+            data['ip_total_spent'] = (_num(data.get('ip_total_spent')) or 0) - delta
+    if 'public' in incoming:
+        if not isinstance(incoming['public'], bool):
+            raise ApiError(400, 'public должен быть логическим значением')
+        data['public'] = incoming['public']
+
+    old_entries = {}
+    for bucket in ('inventory', 'cyberware'):
+        for entry in old_data.get(bucket) or []:
+            if isinstance(entry, dict) and INSTANCE_ID_RE.fullmatch(str(entry.get('instance_id') or '')):
+                old_entries[entry['instance_id']] = entry
+        if bucket in incoming:
+            entries = incoming.get(bucket)
+            if not isinstance(entries, list) or len(entries) > 500:
+                raise ApiError(400, f'{bucket}: ожидается список до 500 записей')
+            data[bucket] = [canonical_owned_entry(entry, bucket, old_entries) for entry in entries]
+    ensure_character_item_instances(data)
+    if len(data.get('inventory') or []) + len(data.get('cyberware') or []) > 500:
+        raise ApiError(400, 'Инвентарь не может содержать больше 500 экземпляров')
+
+    raw_armor = incoming.get('armor', data.get('armor') or {})
+    if not isinstance(raw_armor, dict):
+        raise ApiError(400, 'armor должен быть объектом')
+    armor = {}
+    inventory = [entry for entry in data.get('inventory') or []
+                 if isinstance(entry, dict) and entry.get('cat') == 'armor']
+    for entry in inventory:
+        if entry.get('state') == 'equipped':
+            entry['state'] = 'carried'
+    used = set()
+    for location in ('head', 'body', 'shield'):
+        piece = raw_armor.get(location)
+        if not piece:
+            continue
+        if not isinstance(piece, dict):
+            raise ApiError(400, f'Armor {location}: ожидается объект')
+        catalog_id = catalog_item_id_for_entry(piece)
+        item = item_by_id(catalog_id)
+        if not item or item.get('cat') != 'armor' or location not in (item.get('armor_locations') or []):
+            raise ApiError(400, f'Недопустимая броня для локации {location}')
+        instance_id = str(piece.get('instance_id') or '')
+        bundled = bool(piece.get('bundled') or item.get('armor_bundled'))
+        owned = next((entry for entry in inventory
+                      if entry.get('instance_id') == instance_id), None)
+        if not owned:
+            owned = next((entry for entry in inventory
+                          if catalog_item_id_for_entry(entry) == catalog_id and
+                          (entry.get('instance_id') not in used or bundled)), None)
+        if not owned:
+            raise ApiError(400, f'Броня {item["name"]} отсутствует в Inventory')
+        used.add(owned['instance_id'])
+        owned['state'] = 'equipped'
+        maximum = _num(item.get('sp')) or _num(item.get('sdp')) or 0
+        current = _num(piece.get('current'))
+        armor[location] = {
+            'key': str(piece.get('key') or owned.get('key') or catalog_id),
+            'source_key': catalog_id, 'catalog_item_id': catalog_id,
+            'instance_id': owned['instance_id'], 'name': item['name'],
+            'sp': item.get('sp'), 'sdp': item.get('sdp'),
+            'penalties': copy.deepcopy(item.get('penalties') or {}),
+            'bundled': bundled, 'maximum': maximum,
+            'current': max(0, min(maximum, current if current is not None else maximum)),
+        }
+    data['armor'] = armor
+
+    valid_weapon_ids = {
+        entry.get('instance_id') for entry in data.get('inventory') or []
+        if isinstance(entry, dict) and entry.get('cat') in ('guns', 'melee')
+    }
+    data['weapon_state'] = {
+        key: value for key, value in (old_data.get('weapon_state') or {}).items()
+        if key in valid_weapon_ids
+    }
+    ensure_progression(data)
+    ensure_character_visibility(data)
+    return data
 
 
 def skill_base(name):
@@ -2793,7 +3136,9 @@ def ensure_progression(data):
     if data['roles']:
         primary = next((row for row in data['roles'] if row.get('primary')), data['roles'][0])
         primary['primary'] = True
-        data['primary_role'] = str(data.get('primary_role') or primary.get('name') or '')
+        data['primary_role'] = str(primary.get('name') or data.get('primary_role') or '')
+        data['role'] = data['primary_role']
+        data['role_rank'] = _num(primary.get('rank')) or _num(data.get('role_rank')) or 4
         data['active_role'] = str(data.get('active_role') or data['roles'][-1].get('name') or data['primary_role'])
     data['luck_cur'] = max(0, min(_num((data.get('stats') or {}).get('LUCK')) or 0,
                                   _num(data.get('luck_cur')) if _num(data.get('luck_cur')) is not None else (_num((data.get('stats') or {}).get('LUCK')) or 0)))
@@ -2870,6 +3215,18 @@ SERVER_ERROR_EN = {
     'Инвентарь не может содержать больше 500 экземпляров': 'Inventory cannot contain more than 500 item instances',
     'Некорректное количество': 'Invalid quantity',
     'Сначала снимите или извлеките предмет': 'Unequip or uninstall the item first',
+    'Inventory должен содержать объекты': 'Inventory entries must be objects',
+    'Некорректное состояние предмета': 'Invalid item state',
+    'У персонажа не может быть двух одинаковых Roles': 'A character cannot have duplicate Roles',
+    'Custom items будут добавлены отдельным этапом; выберите предмет из Database': 'Custom items will be added in a later stage; choose an item from the Database',
+    'Предмет находится в неправильном разделе Inventory': 'The item is in the wrong Inventory section',
+    'skills должен быть объектом до 500 записей': 'skills must be an object with no more than 500 entries',
+    'armor должен быть объектом': 'armor must be an object',
+    'Укажите причину изменения Character Sheet': 'Provide a reason for the Character Sheet change',
+    'В Character Sheet нет изменений': 'There are no Character Sheet changes',
+    'Изменение Character Sheet не найдено': 'Character Sheet change not found',
+    'Откат доступен только до следующего изменения Dossier': 'Revert is only available before the next Dossier change',
+    'Snapshot для отката повреждён': 'The revert snapshot is corrupted',
     'Все слоты заняты': 'All slots are filled',
     'Вы уже записаны': 'You are already signed up',
     'Для специализированного навыка повышайте parent-pool': 'Increase the parent pool for a specialized Skill',
@@ -3080,6 +3437,14 @@ def server_error_message(message, language):
         ('Недопустимая броня для локации', 'Invalid Armor for location'),
         ('SP брони', 'Armor SP for'),
         ('Штрафы брони', 'Armor penalties for'),
+        ('допустимо от', 'allowed range is'),
+        (' до ', ' to '),
+        ('требуется число', 'must be numeric'),
+        ('Неизвестный Skill:', 'Unknown Skill:'),
+        ('ожидается список до 500 записей', 'must be a list with no more than 500 entries'),
+        ('ожидается объект', 'must be an object'),
+        ('Броня', 'Armor'),
+        ('отсутствует в Inventory', 'is not present in Inventory'),
         ('Надетая броня', 'Equipped Armor'),
         ('отсутствует в стартовой закупке', 'is missing from starting purchases'),
         ('распределите', 'allocate'),
@@ -3092,6 +3457,7 @@ def server_error_message(message, language):
         ('есть', 'available'),
         ('ожидается список', 'expected a list'),
         ('до 300 записей', 'up to 300 entries'),
+        ('записей', 'entries'),
         ('некорректный parent-pool', 'invalid parent pool'),
         ('распределено', 'allocated'),
         ('при parent-pool', 'with parent pool'),
@@ -4928,6 +5294,36 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(self.char_payload(row, row['owner']))
 
     @atomic_endpoint
+    def api_character_sheet_update(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        expected_revision = _num((body or {}).get('revision'))
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if expected_revision is None:
+            raise ApiError(428, 'Укажите revision Dossier')
+        if expected_revision != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        reason = str((body or {}).get('reason') or '').strip()
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину изменения Character Sheet')
+        before = json.loads(row['data'])
+        after = clean_character_trust_update(before, (body or {}).get('data'))
+        if before == after:
+            raise ApiError(400, 'В Character Sheet нет изменений')
+        persist_character_item_instances(
+            conn, row['id'], after, 'trust_audit_edit', source_ref=reason, prune=True)
+        revision_after = current_revision + 1
+        record_character_change_set(
+            conn, row['id'], user['id'], before, after, reason,
+            current_revision, revision_after)
+        conn.execute(
+            'UPDATE characters SET data=?,public=?,updated=?,revision=? WHERE id=?',
+            (json.dumps(after, ensure_ascii=False), 1 if after.get('public') else 0,
+             time.time(), revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json(self.char_payload(fresh, fresh['owner']))
+
+    @atomic_endpoint
     def api_delete_character(self, conn, qs, m, body):
         u = self.require_user(conn)
         row = self.get_char(conn, m.group(1))
@@ -5059,11 +5455,70 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_character_ledger(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        current_revision = _row_value(row, 'revision', 0) or 0
         entries = conn.execute(
             'SELECT l.*,u.display_name actor FROM character_ledger l '
             'JOIN users u ON u.id=l.actor_user_id WHERE character_id=? '
             'ORDER BY l.id DESC LIMIT 500', (row['id'],)).fetchall()
-        self.send_json({'entries': [dict(item) for item in entries]})
+        payload = []
+        for raw in entries:
+            item = dict(raw)
+            delta = parse_json_object(item.get('delta_json'))
+            item['delta'] = delta
+            item['changes'] = delta.get('changes') if isinstance(delta.get('changes'), list) else []
+            item['can_revert'] = bool(
+                delta.get('revertible') and
+                _num(delta.get('revision_after')) == current_revision and
+                item['category'] in ('sheet_update', 'sheet_revert'))
+            item['has_snapshot'] = bool(item.get('before_json'))
+            item.pop('before_json', None)
+            item.pop('after_json', None)
+            item.pop('delta_json', None)
+            payload.append(item)
+        self.send_json({'entries': payload, 'current_revision': current_revision})
+
+    @atomic_endpoint
+    def api_character_ledger_revert(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        expected_revision = _num((body or {}).get('revision'))
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if expected_revision is None or expected_revision != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        entry = conn.execute(
+            'SELECT * FROM character_ledger WHERE id=? AND character_id=?',
+            (int(m.group(2)), row['id'])).fetchone()
+        if not entry or entry['category'] not in ('sheet_update', 'sheet_revert'):
+            raise ApiError(404, 'Изменение Character Sheet не найдено')
+        delta = parse_json_object(entry['delta_json'])
+        if (not delta.get('revertible') or
+                _num(delta.get('revision_after')) != current_revision):
+            raise ApiError(409, 'Откат доступен только до следующего изменения Dossier')
+        try:
+            target = json.loads(entry['before_json'])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise ApiError(409, 'Snapshot для отката повреждён')
+        if not isinstance(target, dict):
+            raise ApiError(409, 'Snapshot для отката повреждён')
+        before = json.loads(row['data'])
+        ensure_character_item_instances(target)
+        ensure_progression(target)
+        persist_character_item_instances(
+            conn, row['id'], target, 'ledger_revert',
+            source_ref=f'ledger:{entry["id"]}', prune=True)
+        revision_after = current_revision + 1
+        reason = str((body or {}).get('reason') or '').strip()
+        reason = reason[:500] or f'Revert ledger entry #{entry["id"]}'
+        record_character_change_set(
+            conn, row['id'], user['id'], before, target, reason,
+            current_revision, revision_after, category='sheet_revert',
+            reverts_ledger_id=entry['id'])
+        conn.execute(
+            'UPDATE characters SET data=?,public=?,updated=?,revision=? WHERE id=?',
+            (json.dumps(target, ensure_ascii=False), 1 if target.get('public') else 0,
+             time.time(), revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json(self.char_payload(fresh, fresh['owner']))
 
     def api_character_items(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
@@ -5261,6 +5716,7 @@ class Handler(BaseHTTPRequestHandler):
         if total > cash + 1e-9:
             raise ApiError(400, f'Не хватает €$: нужно {total:,.0f}, есть {cash:,.0f}')
         inv = data.setdefault('inventory', [])
+        purchased_weapon_ids = []
         for it, qty, price in bought:
             owned = {
                 'key': it['id'], 'catalog_item_id': it['id'], 'cat': it['cat'],
@@ -5289,8 +5745,14 @@ class Handler(BaseHTTPRequestHandler):
                     instance = copy.deepcopy(owned)
                     instance['instance_id'] = new_item_instance_id()
                     inv.append(instance)
+                    if it['cat'] == 'guns':
+                        purchased_weapon_ids.append(instance['instance_id'])
         data['cash'] = round(cash - total, 2)
         ensure_progression(data)
+        for instance_id in purchased_weapon_ids:
+            state = (data.get('weapon_state') or {}).get(instance_id)
+            if state:
+                state['magazine'] = 0
         persist_character_item_instances(
             conn, row['id'], data, 'night_market', source_ref=nm_day())
         record_character_changes(conn, row['id'], u['id'], before_data, data,
@@ -6406,10 +6868,12 @@ ROUTES = [
     ('POST', rx(r'/api/characters'), Handler.api_create_character),
     ('GET', rx(r'/api/characters/(\d+)'), Handler.api_get_character),
     ('PUT', rx(r'/api/characters/(\d+)'), Handler.api_save_character),
+    ('PUT', rx(r'/api/characters/(\d+)/sheet'), Handler.api_character_sheet_update),
     ('DELETE', rx(r'/api/characters/(\d+)'), Handler.api_delete_character),
     ('POST', rx(r'/api/characters/(\d+)/ip'), Handler.api_character_ip),
     ('GET', rx(r'/api/characters/(\d+)/ip'), Handler.api_character_ip_history),
     ('GET', rx(r'/api/characters/(\d+)/ledger'), Handler.api_character_ledger),
+    ('POST', rx(r'/api/characters/(\d+)/ledger/(\d+)/revert'), Handler.api_character_ledger_revert),
     ('GET', rx(r'/api/characters/(\d+)/items'), Handler.api_character_items),
     ('GET', rx(r'/api/characters/(\d+)/network'), Handler.api_character_network),
     ('POST', rx(r'/api/characters/(\d+)/improve'), Handler.api_character_improve),

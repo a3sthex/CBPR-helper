@@ -139,6 +139,92 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             })
         self.assertEqual(ip_denied.exception.status, 403)
 
+    def test_trust_audit_sheet_edit_records_readable_diff_and_reverts_safely(self):
+        edited = copy.deepcopy(self.character_data)
+        edited['stats']['REF'] = 9
+        edited['cash'] = 777
+        edited['ip_available'] = 30
+        edited['inventory'] = [{
+            'key': 'guns-0', 'catalog_item_id': 'guns-0', 'cat': 'guns',
+            'name': 'forged client label', 'qty': 1, 'state': 'carried',
+        }]
+
+        with self.assertRaises(server.ApiError) as no_reason:
+            self.call(server.Handler.api_character_sheet_update, self.match(1), {
+                'revision': 0, 'reason': '', 'data': edited,
+            })
+        self.assertEqual(no_reason.exception.status, 400)
+
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Loot and correction after session', 'data': edited,
+        })
+        self.assertEqual(updated['revision'], 1)
+        self.assertEqual(updated['data']['stats']['REF'], 9)
+        self.assertEqual(updated['data']['cash'], 777)
+        self.assertEqual(updated['data']['ip_available'], 30)
+        self.assertEqual(updated['data']['inventory'][0]['name'],
+                         server.item_by_id('guns-0')['name'])
+        instance_id = updated['data']['inventory'][0]['instance_id']
+        self.assertRegex(instance_id, r'^[a-f0-9]{32}$')
+        self.assertTrue(self.conn.execute(
+            'SELECT 1 FROM item_instances WHERE character_id=1 AND instance_id=?',
+            (instance_id,)).fetchone())
+
+        rows = self.conn.execute(
+            'SELECT * FROM character_ledger WHERE character_id=1').fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['category'], 'sheet_update')
+        delta = json.loads(rows[0]['delta_json'])
+        labels = {change['label'] for change in delta['changes']}
+        self.assertTrue({'STAT: REF', 'Cash', 'Available IP'} <= labels)
+        self.assertTrue(any(label.startswith('Inventory:') for label in labels))
+
+        history = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertEqual(history['current_revision'], 1)
+        self.assertTrue(history['entries'][0]['can_revert'])
+        self.assertNotIn('before_json', history['entries'][0])
+        reverted = self.call(
+            server.Handler.api_character_ledger_revert,
+            self.match(1, history['entries'][0]['id']),
+            {'revision': 1, 'reason': 'Undo accidental session edit'},
+        )
+        self.assertEqual(reverted['revision'], 2)
+        self.assertEqual(reverted['data']['stats']['REF'], 8)
+        self.assertEqual(reverted['data']['cash'], 100)
+        self.assertEqual(reverted['data']['ip_available'], 0)
+        self.assertEqual(reverted['data']['inventory'], [])
+        self.assertFalse(self.conn.execute(
+            'SELECT 1 FROM item_instances WHERE character_id=1').fetchone())
+        categories = [row['category'] for row in self.conn.execute(
+            'SELECT category FROM character_ledger WHERE character_id=1 ORDER BY id')]
+        self.assertEqual(categories, ['sheet_update', 'sheet_revert'])
+
+        with self.assertRaises(server.ApiError) as old_revert:
+            self.call(server.Handler.api_character_ledger_revert,
+                      self.match(1, history['entries'][0]['id']),
+                      {'revision': 2})
+        self.assertEqual(old_revert.exception.status, 409)
+
+    def test_trust_audit_sheet_edit_is_owner_only_and_revision_guarded(self):
+        edited = copy.deepcopy(self.character_data)
+        edited['cash'] = 200
+        self.current = self.user('other')
+        with self.assertRaises(server.ApiError) as foreign:
+            self.call(server.Handler.api_character_sheet_update, self.match(1), {
+                'revision': 0, 'reason': 'not mine', 'data': edited,
+            })
+        self.assertEqual(foreign.exception.status, 403)
+        self.current = self.user('runner')
+        self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'cash correction', 'data': edited,
+        })
+        edited['cash'] = 300
+        with self.assertRaises(server.ApiError) as stale:
+            self.call(server.Handler.api_character_sheet_update, self.match(1), {
+                'revision': 0, 'reason': 'stale tab', 'data': edited,
+            })
+        self.assertEqual(stale.exception.status, 409)
+
     def test_aftermath_rejects_negative_ip_before_writing(self):
         persona, storyline = self.create_persona_and_storyline()
         contract = self.create_contract(persona, storyline)
@@ -577,7 +663,8 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
 
     def test_durable_market_items_are_individual_and_sale_targets_one_instance(self):
         market_item = next(item for item in server.night_market()['items']
-                           if item['cat'] == 'guns')
+                           if item['cat'] == 'guns' and
+                           (item.get('mechanics') or {}).get('magazine'))
         character = json.loads(self.conn.execute(
             'SELECT data FROM characters WHERE id=1').fetchone()['data'])
         character['cash'] = market_item['street_price'] * 2
@@ -593,6 +680,13 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertEqual(len(purchased), 2)
         self.assertEqual({item['qty'] for item in purchased}, {1})
         self.assertEqual(len({item['instance_id'] for item in purchased}), 2)
+        self.assertTrue(all(
+            purchased_state['magazine'] == 0 and
+            purchased_state['magazine_max'] == market_item['mechanics']['magazine']
+            for purchased_state in (
+                json.loads(self.conn.execute(
+                    'SELECT data FROM characters WHERE id=1').fetchone()['data'])['weapon_state'][item['instance_id']]
+                for item in purchased)))
         first_id, second_id = (item['instance_id'] for item in purchased)
         db_ids = {row['instance_id'] for row in self.conn.execute(
             'SELECT instance_id FROM item_instances WHERE character_id=1').fetchall()}
