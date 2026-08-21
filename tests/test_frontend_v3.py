@@ -49,6 +49,14 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('check_modifier', source)
         self.assertIn('effect-bonus', source)
 
+    def test_catalog_and_sheet_distinguish_automated_and_manual_item_rules(self):
+        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        self.assertIn('AUTOMATED EFFECT', source)
+        self.assertIn('MANUAL RULE', source)
+        self.assertIn('Curated Item Effects', source)
+        self.assertIn('item_sources', source)
+        self.assertIn('effect_coverage', source)
+
     def test_character_sheet_manages_temporary_custom_effects(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
         self.assertIn('function openCustomEffectModal', source)

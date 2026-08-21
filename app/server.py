@@ -96,6 +96,11 @@ def enrich_owned_item_interactions(data):
                     entry[key] = copy.deepcopy(item[key])
                 else:
                     entry.pop(key, None)
+            coverage = item_effect_coverage(item.get('id'))
+            if coverage:
+                entry['effect_coverage'] = coverage
+            else:
+                entry.pop('effect_coverage', None)
     return data
 
 
@@ -142,7 +147,11 @@ def load_effect_rules():
     with open(EFFECTS_PATH, encoding='utf-8') as handle:
         payload = json.load(handle)
     rules = payload.get('synergy_rules')
-    if payload.get('version') != 1 or not isinstance(rules, list) or len(rules) > 500:
+    item_rules = payload.get('item_effect_rules') or []
+    if (payload.get('version') != 1 or
+            set(payload) - {'version', 'rules_version', 'synergy_rules', 'item_effect_rules'} or
+            not isinstance(rules, list) or len(rules) > 500 or
+            not isinstance(item_rules, list) or len(item_rules) > 500):
         raise RuntimeError('Unsupported effects data format')
     seen = set()
     for rule in rules:
@@ -177,7 +186,64 @@ def load_effect_rules():
             raise RuntimeError(f'Synergy {rule_id} has no effects')
         for effect in effects:
             validate_effect_definition(effect)
+    for rule in item_rules:
+        if not isinstance(rule, dict) or set(rule) - {
+                'id', 'catalog_id', 'label_en', 'label_ru', 'active_when',
+                'effects', 'manual_rules'}:
+            raise RuntimeError('Item effect rule contains non-allowlisted fields')
+        rule_id = str(rule.get('id') or '')
+        if not re.fullmatch(r'[a-z0-9_.-]{3,100}', rule_id) or rule_id in seen:
+            raise RuntimeError('Invalid or duplicate item effect rule id')
+        seen.add(rule_id)
+        if not item_by_id(rule.get('catalog_id')):
+            raise RuntimeError(f'Unknown catalog item in effect rule {rule_id}')
+        active_when = rule.get('active_when') or {}
+        if (not isinstance(active_when, dict) or
+                set(active_when) - {'state', 'active'} or
+                active_when.get('state') not in ITEM_INSTANCE_STATES or
+                ('active' in active_when and not isinstance(active_when['active'], bool))):
+            raise RuntimeError(f'Invalid activation condition in item effect rule {rule_id}')
+        effects = rule.get('effects') or []
+        manual_rules = rule.get('manual_rules') or []
+        if not isinstance(effects, list) or not isinstance(manual_rules, list) or not (effects or manual_rules):
+            raise RuntimeError(f'Item effect rule {rule_id} has no effect or manual rule')
+        for effect in effects:
+            validate_effect_definition(effect)
+        for manual in manual_rules:
+            if (not isinstance(manual, dict) or
+                    set(manual) - {'id', 'text_en', 'text_ru', 'condition', 'source'} or
+                    not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(manual.get('id') or '')) or
+                    not str(manual.get('text_en') or '').strip() or
+                    not str(manual.get('text_ru') or '').strip()):
+                raise RuntimeError(f'Invalid manual rule in item effect rule {rule_id}')
     _effect_rules = payload
+    return payload
+
+
+def item_effect_coverage(catalog_id):
+    rules = [rule for rule in load_effect_rules().get('item_effect_rules') or []
+             if rule.get('catalog_id') == catalog_id]
+    if not rules:
+        return None
+    return {
+        'automated': any(rule.get('effects') for rule in rules),
+        'manual': any(rule.get('manual_rules') for rule in rules),
+        'rules': [{
+            'id': rule['id'], 'label_en': rule.get('label_en') or rule['id'],
+            'label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
+            'source': next((effect.get('source') for effect in rule.get('effects') or []
+                            if effect.get('source')), None) or
+                      next((manual.get('source') for manual in rule.get('manual_rules') or []
+                            if manual.get('source')), None),
+        } for rule in rules],
+    }
+
+
+def catalog_item_payload(item):
+    payload = copy.deepcopy(item)
+    coverage = item_effect_coverage(item.get('id'))
+    if coverage:
+        payload['effect_coverage'] = coverage
     return payload
 
 
@@ -524,7 +590,9 @@ def character_effect_instances(conn, character_id, include_archived=False):
 def evaluate_character_effects(char, derived, active_effects=None):
     """Evaluate allowlisted declarative effects without mutating base Character data."""
     payload = load_effect_rules()
+    inventory = [item for item in char.get('inventory') or [] if isinstance(item, dict)]
     cyberware = [item for item in char.get('cyberware') or [] if isinstance(item, dict)]
+    owned_items = inventory + cyberware
 
     def installed_count(catalog_id, state='installed'):
         return sum(1 for item in cyberware
@@ -571,6 +639,45 @@ def evaluate_character_effects(char, derived, active_effects=None):
             'id': rule['id'], 'label_en': rule.get('label_en') or rule['id'],
             'label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
             'active': active, 'requirements': requirements, 'effects': effects,
+        })
+
+    item_sources = []
+    for rule in payload.get('item_effect_rules') or []:
+        matching = [item for item in owned_items
+                    if catalog_item_id_for_entry(item) == rule['catalog_id']]
+        if not matching:
+            continue
+        condition = rule.get('active_when') or {}
+        active_instances = []
+        for item in matching:
+            state_ok = str(item.get('state') or 'carried') == condition.get('state')
+            active_ok = ('active' not in condition or
+                         bool(item.get('active')) == condition.get('active'))
+            if state_ok and active_ok:
+                active_instances.append(item)
+        active = bool(active_instances)
+        effects = []
+        for definition in rule.get('effects') or []:
+            effect = copy.deepcopy(definition)
+            effect.update({
+                'rule_id': rule['id'], 'rule_label_en': rule.get('label_en') or rule['id'],
+                'rule_label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
+                'active': active, 'source_type': 'catalog_item',
+            })
+            effects.append(effect)
+            if active:
+                modifiers.append(effect)
+        item_sources.append({
+            'id': rule['id'], 'catalog_id': rule['catalog_id'],
+            'label_en': rule.get('label_en') or rule['id'],
+            'label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
+            'active': active,
+            'matching_instance_ids': [item.get('instance_id') for item in matching],
+            'active_instance_ids': [item.get('instance_id') for item in active_instances],
+            'active_when': copy.deepcopy(condition), 'effects': effects,
+            'manual_rules': [
+                {**copy.deepcopy(manual), 'manual_resolution_required': True}
+                for manual in rule.get('manual_rules') or []],
         })
 
     instances = []
@@ -652,7 +759,7 @@ def evaluate_character_effects(char, derived, active_effects=None):
     return {
         'rules_version': payload.get('rules_version'),
         'stats': stats, 'skills': skills,
-        'synergies': synergies, 'instances': instances,
+        'synergies': synergies, 'item_sources': item_sources, 'instances': instances,
         'modifiers': resolve_modifier_stack(modifiers),
     }
 
@@ -2265,6 +2372,24 @@ def character_change_summary(before, after, limit=250):
         add(f'effects.synergy.{rule_id}',
             f'Effect: {(new_view or old_view or {}).get("label", rule_id)}',
             old_view, new_view)
+
+    def item_effect_views(data):
+        result = {}
+        for source in derive(data).get('effects', {}).get('item_sources', []):
+            result[source['id']] = {
+                'label': source.get('label_en') or source['id'],
+                'status': 'ACTIVE' if source.get('active') else 'INACTIVE',
+                'matching_instances': len(source.get('matching_instance_ids') or []),
+                'active_instances': len(source.get('active_instance_ids') or []),
+            }
+        return result
+
+    old_sources, new_sources = item_effect_views(before), item_effect_views(after)
+    for rule_id in sorted(set(old_sources) | set(new_sources)):
+        old_view, new_view = old_sources.get(rule_id), new_sources.get(rule_id)
+        add(f'effects.item_source.{rule_id}',
+            f'Effect: {(new_view or old_view or {}).get("label", rule_id)}',
+            old_view, new_view)
     return changes
 
 
@@ -2634,6 +2759,7 @@ def night_market():
                     'source': item.get('source'), 'desc': item.get('desc'),
                     'armor_locations': item.get('armor_locations'),
                     'armor_bundled': item.get('armor_bundled'),
+                    'effect_coverage': item_effect_coverage(item.get('id')),
                     'vendor_id': vendor['id'],
                 }
                 stock.append(payload)
@@ -2974,7 +3100,7 @@ def canonical_owned_entry(entry, bucket, old_entries):
         })
         for unsafe in ('catalog_item_id', 'source_key', 'damage', 'sp', 'hl', 'fields',
                        'mechanics', 'requirements', 'capacity', 'type',
-                       *ITEM_INTERACTION_FIELDS, 'active', 'equipped_mode',
+                       *ITEM_INTERACTION_FIELDS, 'effect_coverage', 'active', 'equipped_mode',
                        'equipped_slot', 'host_instance_id'):
             owned.pop(unsafe, None)
         # Custom items may control storage shape, but never Use/Equip mechanics.
@@ -3011,6 +3137,11 @@ def canonical_owned_entry(entry, bucket, old_entries):
                 owned[key] = copy.deepcopy(item[key])
             else:
                 owned.pop(key, None)
+        coverage = item_effect_coverage(catalog_id)
+        if coverage:
+            owned['effect_coverage'] = coverage
+        else:
+            owned.pop('effect_coverage', None)
         owned.pop('is_custom', None)
     try:
         owned['qty'] = max(1, min(999, int(entry.get('qty') or owned.get('qty') or 1)))
@@ -5805,14 +5936,14 @@ class Handler(BaseHTTPRequestHandler):
             terms = q.split()
             items = [i for i in items if all(t in i['search'] for t in terms)]
         total = len(items)
-        items = items[offset:offset + limit]
+        items = [catalog_item_payload(item) for item in items[offset:offset + limit]]
         self.send_json({'total': total, 'items': items, 'offset': offset, 'limit': limit})
 
     def api_item(self, conn, qs, m, body):
         it = item_by_id(m.group(1))
         if not it:
             raise ApiError(404, 'Предмет не найден')
-        self.send_json(it)
+        self.send_json(catalog_item_payload(it))
 
     def api_nightmarket(self, conn, qs, m, body):
         payload = night_market()
@@ -6614,6 +6745,9 @@ class Handler(BaseHTTPRequestHandler):
                 'source': it.get('source'),
             }
             owned.update(catalog_interaction_data(it))
+            coverage = item_effect_coverage(it.get('id'))
+            if coverage:
+                owned['effect_coverage'] = coverage
             if item_entry_stackable(owned):
                 found = next((entry for entry in inv if isinstance(entry, dict) and
                               catalog_item_id_for_entry(entry) == it['id'] and

@@ -211,6 +211,55 @@ class StructuredEffectsTests(unittest.TestCase):
         self.assertIn('ACTIVE', effect['after'])
         self.assertIn('Light Tattoo Ensemble', effect['label'])
 
+    def test_agent_automated_bonus_requires_active_gear_and_manual_rule_stays_manual(self):
+        base = {
+            'stats': {'INT': 6, 'COOL': 6, 'EMP': 6},
+            'skills': {'Library Search': 4, 'Wardrobe & Style': 4},
+            'inventory': [{
+                'instance_id': 'a' * 32, 'key': 'gear-91',
+                'catalog_item_id': 'gear-91', 'name': 'Agent (Standard)',
+                'state': 'carried', 'active': False,
+            }],
+            'cyberware': [], 'armor': {},
+        }
+        inactive = server.derive(base)
+        source = next(item for item in inactive['effects']['item_sources']
+                      if item['id'] == 'agent-standard-active')
+        self.assertFalse(source['active'])
+        self.assertEqual(inactive['effects']['skills']['Library Search']['effective_check_base'], 10)
+
+        active = copy.deepcopy(base)
+        active['inventory'][0].update({
+            'state': 'equipped', 'active': True,
+            'equipped_mode': 'ready', 'equipped_slot': 'belt',
+        })
+        result = server.derive(active)
+        source = next(item for item in result['effects']['item_sources']
+                      if item['id'] == 'agent-standard-active')
+        self.assertTrue(source['active'])
+        self.assertEqual(result['effects']['skills']['Library Search']['effective_check_base'], 12)
+        self.assertEqual(result['effects']['skills']['Library Search']['check_modifier'], 2)
+        # Seasonal wardrobe advice remains explicit manual resolution.
+        self.assertEqual(result['effects']['skills']['Wardrobe & Style']['effective_check_base'], 10)
+        self.assertTrue(source['manual_rules'][0]['manual_resolution_required'])
+        self.assertEqual(source['manual_rules'][0]['source'], 'CP:R 352')
+        changes = server.character_change_summary(base, active)
+        activation = next(change for change in changes
+                          if change['path'] == 'effects.item_source.agent-standard-active')
+        self.assertIn('INACTIVE', activation['before'])
+        self.assertIn('ACTIVE', activation['after'])
+
+        active['inventory'].append({**active['inventory'][0], 'instance_id': 'b' * 32})
+        duplicated = server.derive(active)
+        self.assertEqual(duplicated['effects']['skills']['Library Search']['check_modifier'], 2)
+
+    def test_catalog_effect_coverage_distinguishes_automated_and_manual_rules(self):
+        coverage = server.item_effect_coverage('gear-91')
+        self.assertTrue(coverage['automated'])
+        self.assertTrue(coverage['manual'])
+        self.assertEqual(coverage['rules'][0]['source'], 'CP:R 352')
+        self.assertIsNone(server.item_effect_coverage('gear-10'))
+
     def test_modifier_pipeline_is_deterministic_and_respects_stacking(self):
         modifiers = [
             {'id': 'unique-a', 'target': 'skill.Handgun.check', 'operation': 'add',

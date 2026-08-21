@@ -641,7 +641,9 @@ body { background: radial-gradient(1200px 500px at 80% -10%, color-mix(in srgb, 
 .synergy-row>div { display:flex;flex-direction:column;gap:2px; }
 .synergy-row>div span { color:var(--muted);font-size:12px; }
 .synergy-row.active { border-left-color:var(--green); }
-.synergy-row.active strong,.effect-bonus { color:var(--green); }
+.synergy-row.active strong,.effect-bonus,.effect-auto { color:var(--green); }
+.effect-manual { color:var(--orange); }
+.effect-manual-text { display:block;color:var(--orange)!important;margin-top:5px;line-height:1.35; }
 .effect-instance { display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;padding:10px;border:1px solid var(--line);border-left:3px solid var(--muted);background:var(--bg2);margin-bottom:6px; }
 .effect-instance.active { border-left-color:var(--cyan); }
 .effect-instance>div:first-child { display:flex;flex-direction:column;gap:2px; }

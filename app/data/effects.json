@@ -55,5 +55,38 @@
         }
       ]
     }
+  ],
+  "item_effect_rules": [
+    {
+      "id": "agent-standard-active",
+      "catalog_id": "gear-91",
+      "label_en": "Agent (Standard)",
+      "label_ru": "Agent (Standard)",
+      "active_when": {
+        "state": "equipped",
+        "active": true
+      },
+      "effects": [
+        {
+          "id": "agent-library-search-bonus",
+          "target": "skill.Library Search.check",
+          "operation": "add",
+          "value": 2,
+          "stack_group": "agent_library_search_bonus",
+          "stack_policy": "unique",
+          "priority": 200,
+          "source": "CP:R 352"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "agent-wardrobe-seasonal-suggestion",
+          "text_en": "+2 Wardrobe & Style only while wearing the seasonal outfit suggested by this Agent.",
+          "text_ru": "+2 Wardrobe & Style только при ношении сезонного комплекта, предложенного этим Agent.",
+          "condition": "wearing_agent_suggested_clothes",
+          "source": "CP:R 352"
+        }
+      ]
+    }
   ]
 }

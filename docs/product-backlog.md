@@ -2791,6 +2791,18 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - public Dossier не получает private reason/actor/source instance details;
 - автоматическая связь `Use → active effect`, Session-authoritative round ticking и source item/condition presets остаются следующими интеграциями.
 
+**Статус B.5.3 — запущены Curated Item Effect Overrides:**
+
+- `effects.json` поддерживает отдельные `item_effect_rules` с catalog ID, `active_when`, automated effects, manual rules и source/page metadata;
+- сервер строго валидирует item rule fields, item IDs, activation conditions и manual-rule snapshots;
+- первый curated override: активный экипированный `Agent (Standard)` автоматически даёт `+2 Library Search Check` один раз, независимо от числа Agents;
+- условный `+2 Wardrobe & Style` от сезонного комплекта Agent не автоматизируется без подтверждения одежды и честно показывается как `MANUAL RULE`;
+- Database, Market и owned item cards различают `AUTOMATED EFFECT` и `MANUAL RULE`;
+- Character Sheet показывает Curated Item Effects, requirement state, source и manual condition; реальные rolls используют автоматический modifier;
+- Equip/Activate/Deactivate меняют состояние item effect и создают отдельную readable строку активации в Ledger;
+- custom item не может подделать себе effect coverage;
+- расширение curated overrides и безопасные `Use → effect` presets продолжаются постепенно с source-specific regression tests.
+
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
@@ -2801,7 +2813,9 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 7. ✅ Base/modifiers/effective breakdown для STAT/Skill checks в Character Sheet и Rolls.
 8. ✅ Temporary/custom active effect instances; manual/real-time duration и explicit round ticking.
    - остаётся: Session-authoritative rounds, `Use → effect` presets и campaign clock.
-9. Curated effect overrides для Data Pool с source metadata.
+9. ◐ Curated effect overrides для Data Pool с source metadata.
+   - готово: item-effect schema, coverage markers и Agent (Standard);
+   - дальше: подтверждённые source-specific overrides и `Use → effect` presets.
 10. Общая host/modification model.
 11. Weapon Upgrades прямо в Character Sheet.
 12. Vehicle Upgrades и Garage integration.

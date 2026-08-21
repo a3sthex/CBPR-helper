@@ -219,6 +219,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
                 'damage': '99d6', 'sp': 99, 'hl': -100,
                 'mechanics': {'attack_bonus': 999}, 'fields': {'evil': True},
                 'consumable': True, 'equippable': True, 'active': True,
+                'effect_coverage': {'automated': True},
             },
             {
                 'is_custom': True, 'key': 'duplicate-prop', 'cat': 'custom',
@@ -239,7 +240,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertEqual(len({item['instance_id'] for item in inventory}), 3)
         self.assertTrue(all(item['key'] == f"custom-{item['instance_id']}" for item in inventory))
         for forbidden in ('damage', 'sp', 'hl', 'mechanics', 'fields',
-                          'consumable', 'equippable', 'active'):
+                          'consumable', 'equippable', 'active', 'effect_coverage'):
             self.assertNotIn(forbidden, prototype)
         self.assertTrue(prototype['manual_resolution_required'])
         row = self.conn.execute(
@@ -354,14 +355,29 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             )
         self.assertEqual(no_free_hand.exception.status, 409)
 
+        agent = next(item for item in result['character']['data']['inventory']
+                     if item['name'] == 'Agent (Standard)')
+        result = self.call(
+            server.Handler.api_character_item_action,
+            item_match(agent['instance_id']),
+            {'revision': 5, 'action': 'activate'},
+        )
+        self.assertEqual(result['character']['revision'], 6)
+        self.assertEqual(
+            result['character']['derived']['effects']['skills']['Library Search']['check_modifier'],
+            2)
+        self.assertTrue(next(source for source in
+                             result['character']['derived']['effects']['item_sources']
+                             if source['id'] == 'agent-standard-active')['active'])
+
         stim = next(item for item in result['character']['data']['inventory']
                     if item['name'] == 'Stim')
         used = self.call(
             server.Handler.api_character_item_action,
             item_match(stim['instance_id']),
-            {'revision': 5, 'action': 'use', 'amount': 1},
+            {'revision': 6, 'action': 'use', 'amount': 1},
         )
-        self.assertEqual(used['character']['revision'], 6)
+        self.assertEqual(used['character']['revision'], 7)
         self.assertTrue(used['effect']['manual_resolution_required'])
         remaining_stim = next(item for item in used['character']['data']['inventory']
                               if item['name'] == 'Stim')
@@ -369,8 +385,9 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         used_again = self.call(
             server.Handler.api_character_item_action,
             item_match(remaining_stim['instance_id']),
-            {'revision': 6, 'action': 'use', 'amount': 1},
+            {'revision': 7, 'action': 'use', 'amount': 1},
         )
+        self.assertEqual(used_again['character']['revision'], 8)
         self.assertFalse(any(item['name'] == 'Stim'
                              for item in used_again['character']['data']['inventory']))
         self.assertFalse(self.conn.execute(
@@ -380,10 +397,13 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         history = self.call(server.Handler.api_character_ledger, self.match(1))
         self.assertEqual(history['entries'][0]['category'], 'item_action')
         self.assertTrue(history['entries'][0]['can_revert'])
+        self.assertTrue(any(
+            change['path'] == 'effects.item_source.agent-standard-active'
+            for entry in history['entries'] for change in entry['changes']))
         reverted = self.call(
             server.Handler.api_character_ledger_revert,
             self.match(1, history['entries'][0]['id']),
-            {'revision': 7, 'reason': 'Undo accidental use'},
+            {'revision': 8, 'reason': 'Undo accidental use'},
         )
         restored_stim = next(item for item in reverted['data']['inventory']
                              if item['name'] == 'Stim')
