@@ -667,3 +667,10 @@ body { background: radial-gradient(1200px 500px at 80% -10%, color-mix(in srgb, 
 .black-ice-entity{width:100%;padding:8px;border:1px solid color-mix(in srgb,var(--danger) 45%,var(--line));background:color-mix(in srgb,var(--danger) 7%,transparent);border-radius:6px}.black-ice-entity .row{margin-top:7px}
 .armor-resource { padding:10px;border:1px solid var(--line);border-radius:8px;margin-bottom:7px;display:grid;gap:6px; }.armor-resource>div{display:flex;gap:5px}
 @media(max-width:800px){.combat-sheet-grid{grid-template-columns:1fr}.weapon-sheet-card{flex-direction:column}.weapon-controls{justify-content:flex-start}.alternate-weapon-profile{grid-template-columns:1fr}}
+
+.cyber-host-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
+.cyber-host-card{border:1px solid var(--line);background:var(--panel2);padding:12px;display:grid;gap:10px}
+.cyber-host-card.invalid,.cyberware-invalid{border-color:var(--danger)}
+.cyber-host-card header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.cyber-host-card header div,.cyber-host-options{display:grid;gap:4px}
+.cyberware-issues{border:1px solid var(--warning);padding:10px;background:color-mix(in srgb,var(--warning) 8%,transparent)}

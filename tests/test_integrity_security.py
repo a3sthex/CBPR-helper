@@ -722,17 +722,28 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             for item_id in ('guns-6', 'gun_upgrades-1')
         ]
         edited['cyberware'] = [{
-            'key': 'cyberware-61', 'catalog_item_id': 'cyberware-61',
-            'cat': 'cyberware', 'name': 'Interface Plugs', 'qty': 1,
-            'state': 'installed', 'acquisition_source': 'loot',
-        }]
+            'key': item_id, 'catalog_item_id': item_id,
+            'cat': 'cyberware', 'name': server.item_by_id(item_id)['name'], 'qty': 1,
+            'state': 'carried', 'acquisition_source': 'loot',
+        } for item_id in ('cyberware-58', 'cyberware-61')]
         updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
             'revision': 0, 'reason': 'Prepare Smart Rebuild test loadout', 'data': edited,
         })
         by_name = {item['name']: item for item in updated['data']['inventory']}
+        chrome_by_name = {item['name']: item for item in updated['data']['cyberware']}
+        neural, plugs = chrome_by_name['Neural Link'], chrome_by_name['Interface Plugs']
+        for item, revision, hosts in (
+                (neural, 1, []), (plugs, 2, [neural['instance_id']])):
+            self.call(
+                server.Handler.api_character_cyberware_action,
+                re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{item["instance_id"]}'), {
+                    'revision': revision, 'action': 'install',
+                    'host_instance_ids': hosts,
+                    'reason': f'Install {item["name"]} for Smart Rebuild test',
+                })
         host, rebuild = by_name['Assault Rifle'], by_name['Smart Rebuild']
         installed = self.call(server.Handler.api_character_modification_install, self.match(1), {
-            'revision': 1, 'host_instance_id': host['instance_id'],
+            'revision': 3, 'host_instance_id': host['instance_id'],
             'upgrade_instance_id': rebuild['instance_id'], 'manual_confirm': False,
             'reason': 'Install Smart Rebuild',
         })
@@ -744,7 +755,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
                             if source['id'] == 'smart-rebuild-tag'))
         mod_match = re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{modification_id}')
         removed = self.call(server.Handler.api_character_modification_action, mod_match, {
-            'revision': 2, 'action': 'remove', 'reason': 'Return weapon to base rebuild',
+            'revision': 4, 'action': 'remove', 'reason': 'Return weapon to base rebuild',
         })
         effective_after = removed['character']['derived']['effective_weapons'][host['instance_id']]
         self.assertNotIn('Smart Weapon', effective_after['tags'])
@@ -960,6 +971,104 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             'revision': 4, 'action': 'remove', 'reason': 'Rail no longer has dependents',
         })
         self.assertEqual(removed_rail['character']['revision'], 5)
+
+    def test_cyberware_hosts_pair_options_and_preserve_humanity_on_uninstall(self):
+        edited = copy.deepcopy(self.character_data)
+        edited['cyberware'] = [{
+            'key': item_id, 'catalog_item_id': item_id,
+            'cat': 'cyberware', 'name': server.item_by_id(item_id)['name'],
+            'hl': server.item_by_id(item_id).get('hl') or 0,
+            'type': server.item_by_id(item_id)['fields']['Type'],
+            'qty': 1, 'state': 'carried', 'acquisition_source': 'loot',
+        } for item_id in ('cyberware-65', 'cyberware-65', 'cyberware-66')]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Stage paired Cybereyes and Anti-Dazzle',
+            'data': edited,
+        })
+        self.assertTrue(all(item['state'] == 'carried'
+                            for item in updated['data']['cyberware']))
+        eyes = [item for item in updated['data']['cyberware']
+                if item['catalog_item_id'] == 'cyberware-65']
+        anti = next(item for item in updated['data']['cyberware']
+                    if item['catalog_item_id'] == 'cyberware-66')
+
+        def action(item, revision, name, hosts=None):
+            match = re.match(r'^(\d+)/([a-f0-9]{32})$',
+                             f'1/{item["instance_id"]}')
+            return self.call(server.Handler.api_character_cyberware_action, match, {
+                'revision': revision, 'action': name,
+                'host_instance_ids': hosts or [],
+                'reason': f'Clinic {name} integration test',
+            })
+
+        first = action(eyes[0], 1, 'install')
+        self.assertEqual((first['humanity']['humanity_current_before'],
+                          first['humanity']['humanity_current_after']), (50, 43))
+        second = action(eyes[1], 2, 'install')
+        self.assertEqual(second['humanity']['humanity_current_after'], 36)
+        with self.assertRaisesRegex(server.ApiError, '2 different concrete hosts'):
+            action(anti, 3, 'install', [eyes[0]['instance_id']])
+        paired = action(anti, 3, 'install',
+                        [eyes[0]['instance_id'], eyes[1]['instance_id']])
+        self.assertEqual(paired['humanity']['humanity_current_after'], 34)
+        loadout = paired['character']['derived']['effective_cyberware']
+        self.assertEqual([host['slots_used'] for host in loadout['hosts']], [1, 1])
+        self.assertEqual(loadout['options'][0]['status'], 'installed')
+        rebound = action(anti, 4, 'rebind',
+                         [eyes[1]['instance_id'], eyes[0]['instance_id']])
+        self.assertEqual((rebound['humanity']['humanity_current_before'],
+                          rebound['humanity']['humanity_current_after']), (34, 34))
+        with self.assertRaisesRegex(server.ApiError, 'зависимые Cyberware Options'):
+            action(eyes[0], 5, 'uninstall')
+        removed_option = action(anti, 5, 'uninstall')
+        self.assertEqual((removed_option['humanity']['humanity_current_after'],
+                          removed_option['humanity']['humanity_maximum_after']),
+                         (34, 46))
+        removed_eye = action(eyes[0], 6, 'uninstall')
+        self.assertEqual((removed_eye['humanity']['humanity_current_after'],
+                          removed_eye['humanity']['humanity_maximum_after']),
+                         (34, 48))
+        self.assertEqual(removed_eye['character']['data']['cyberware'][0]['state'],
+                         'carried')
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertEqual(ledger['entries'][0]['delta']['cyberware_lifecycle'][
+            'humanity_restored_on_uninstall'], 0)
+        rebind_entry = next(entry for entry in ledger['entries']
+                            if entry['delta'].get('cyberware_lifecycle', {}).get(
+                                'action') == 'rebind')
+        self.assertTrue(any(change['path'].startswith('cyberware.')
+                            for change in rebind_entry['changes']))
+        reverted = self.call(
+            server.Handler.api_character_ledger_revert,
+            re.match(r'^(\d+)/(\d+)$', f'1/{ledger["entries"][0]["id"]}'), {
+                'revision': 7, 'reason': 'Revert last Cyberware uninstall',
+            })
+        restored_eye = next(item for item in reverted['data']['cyberware']
+                            if item['instance_id'] == eyes[0]['instance_id'])
+        self.assertEqual(restored_eye['state'], 'installed')
+        self.assertEqual((reverted['derived']['humanity_cur'],
+                          reverted['derived']['humanity_max']), (34, 46))
+
+    def test_generic_sheet_edit_cannot_remove_installed_cyberware(self):
+        installed = copy.deepcopy(self.character_data)
+        eye = copy.deepcopy(server.item_by_id('cyberware-65'))
+        eye.update({
+            'key': 'cyberware-65', 'catalog_item_id': 'cyberware-65',
+            'instance_id': '9' * 32, 'cat': 'cyberware', 'qty': 1,
+            'type': eye['fields']['Type'], 'state': 'installed',
+            'acquisition_source': 'loot',
+        })
+        installed['cyberware'] = [eye]
+        self.conn.execute('UPDATE characters SET data=? WHERE id=1',
+                          (json.dumps(installed),))
+        self.conn.commit()
+        edited = copy.deepcopy(installed)
+        edited['cyberware'] = []
+        with self.assertRaisesRegex(server.ApiError, 'audited Uninstall'):
+            self.call(server.Handler.api_character_sheet_update, self.match(1), {
+                'revision': 0, 'reason': 'Try bypassing Cyberware lifecycle',
+                'data': edited,
+            })
 
     def test_cyberdeck_loadout_binds_hardware_programs_and_enforces_slots(self):
         edited = copy.deepcopy(self.character_data)
@@ -3252,6 +3361,35 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         stored = json.loads(self.conn.execute('SELECT data FROM characters WHERE id=1').fetchone()['data'])
         self.assertEqual(stored['cash'], 100)
         self.assertEqual(stored['inventory'], [])
+
+    def test_market_cyberware_is_staged_without_humanity_loss(self):
+        self.current = self.user('runner')
+        item = server.item_by_id('cyberware-18')
+        with mock.patch.object(server, 'nm_price_map', return_value={item['id']: 50}), \
+                mock.patch.object(server, 'nm_day', return_value='test-day'):
+            self.call(server.Handler.api_buy, body={
+                'char_id': 1,
+                'items': [{'id': item['id'], 'qty': 1, 'mode': 'nm'}],
+            })
+        stored = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])
+        self.assertFalse(stored['inventory'])
+        self.assertEqual(len(stored['cyberware']), 1)
+        self.assertEqual(stored['cyberware'][0]['state'], 'carried')
+        self.assertEqual(stored['cash'], 50)
+        derived = server.derive(stored)
+        self.assertEqual((derived['humanity_cur'], derived['humanity_max']), (50, 50))
+        row = self.conn.execute(
+            'SELECT bucket,state FROM item_instances WHERE character_id=1').fetchone()
+        self.assertEqual((row['bucket'], row['state']), ('cyberware', 'carried'))
+        self.call(server.Handler.api_sell, body={
+            'char_id': 1, 'instance_id': stored['cyberware'][0]['instance_id'],
+            'qty': 1,
+        })
+        sold = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])
+        self.assertFalse(sold['cyberware'])
+        self.assertEqual(sold['cash'], 75)
 
     def test_legacy_stacks_migrate_to_stable_item_instances_idempotently(self):
         legacy = copy.deepcopy(self.character_data)

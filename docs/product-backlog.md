@@ -3084,6 +3084,21 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - автоматическое доказательство Defense Sequencer eligibility намеренно не симулируется без полного Netrun usage lifecycle; ручное подтверждение остаётся честно маркированным;
 - brain damage, Hellhound fire, Kraken unsafe Jack Out/progression restriction, Cloak/Scanner/Virus и сложные Control payloads остаются `MANUAL EFFECT / MANUAL RESOLUTION` до появления достаточного Session/meatspace контекста.
 
+**Статус B.9.1 — реализованы Concrete Cyberware Host Instances:**
+
+- Cyberarm, Cyberleg, Cybereye, Cyberaudio Suite, Neural Link/Neuroport и их catalog variants отображаются как concrete foundation instances с отдельными Option Slot pools;
+- Cyberware Options связываются только с validated installed host instances совместимого типа; paired options требуют два разных concrete hosts и занимают slots в каждом;
+- paired-foundation items вроде Romanova Cyberlegs и Rocklin Augmentics Skydrivers раскрываются в два стабильных физических host endpoint (`Left`/`Right`) с независимыми Option Slots при одной покупке и одном Humanity Loss;
+- Dossier показывает host cards, installed options, slot usage, staged Cyberware и legacy/unbound bindings, которые можно исправить через explicit `Rebind`;
+- post-creation Cyberware сначала попадает в состояние `carried / STAGED`, не даёт Humanity Loss и не активирует installed-only effects до audited `Install`;
+- Install списывает source HL ровно один раз и уменьшает Maximum Humanity по действующим правилам; Rebind не меняет Humanity;
+- Uninstall возвращает Maximum Humanity capacity, но никогда не восстанавливает уже потерянную Current Humanity; это явно показывается в UI и сохраняется в Ledger;
+- foundation нельзя извлечь, пока к нему привязаны installed options; generic Character Sheet PUT не может обойти audited Install/Uninstall или подменить host bindings;
+- создание персонажа теперь remap-ит временные client foundation IDs в server-owned stable IDs вместе со всеми option links, не оставляя orphan host references;
+- Night Market помещает купленную Cyberware в staged Cyberware bucket, а не в обычный Inventory; staged/uninstalled экземпляр можно перепродать, installed — только после audited Uninstall;
+- lifecycle, Humanity before/after, concrete host IDs, Character revision и item instance projection записываются атомарно и поддерживают обычный безопасный Ledger revert;
+- специальные surgery/therapy costs, Quick Change Mount swaps, cyberlimb side labels и механические payloads отдельных options остаются следующими Cyberware подэтапами.
+
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
@@ -3105,8 +3120,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, action budget, cross-character REZ и safe curated effects;
-    - дальше: remaining meatspace/status effects, затем Cyberware/Armor/Tech hosts.
+    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, action budget, cross-character REZ, safe curated effects и concrete Cyberware foundation/option lifecycle;
+    - дальше: Cyberware side/surgery payloads, Armor/Shield hosts и Tech Maker modifications.
 14. JSON import.
 
 ### Пакет C — Publishing Preview

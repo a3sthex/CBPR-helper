@@ -1333,6 +1333,93 @@ class CreationValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(server.ApiError, 'hosts: 2'):
             server.validate_cyberware_slots({'cyberware': [left, right, anti]})
 
+    def test_effective_cyberware_hosts_bind_paired_options_to_concrete_instances(self):
+        left = {'key': 'cyberware-65', 'catalog_item_id': 'cyberware-65',
+                'instance_id': '1' * 32, 'name': 'Cybereye', 'state': 'installed'}
+        right = {'key': 'cyberware-65', 'catalog_item_id': 'cyberware-65',
+                 'instance_id': '2' * 32, 'name': 'Cybereye', 'state': 'installed'}
+        anti = {'key': 'cyberware-66', 'catalog_item_id': 'cyberware-66',
+                'instance_id': '3' * 32, 'name': 'Anti-Dazzle',
+                'state': 'installed', 'host_instance': left['instance_id'],
+                'host_instances': [left['instance_id'], right['instance_id']]}
+        data = {'cyberware': [left, right, anti]}
+        loadout = server.effective_cyberware_loadout(data)
+        self.assertEqual(len(loadout['hosts']), 2)
+        self.assertEqual([host['slots_used'] for host in loadout['hosts']], [1, 1])
+        self.assertEqual(loadout['options'][0]['status'], 'installed')
+        self.assertEqual(loadout['options'][0]['hosts_required'], 2)
+        denied = server.cyberware_option_compatibility(
+            data, anti['instance_id'], [left['instance_id'], left['instance_id']])
+        self.assertFalse(denied['allowed'])
+        self.assertIn('2 different concrete hosts', denied['reasons'][0])
+
+    def test_paired_cyberleg_foundation_exposes_two_physical_slot_hosts(self):
+        legs = {'key': 'cyberware-158', 'catalog_item_id': 'cyberware-158',
+                'instance_id': 'a' * 32, 'name': 'Romanova Cyberlegs',
+                'state': 'installed'}
+        right_id = server.cyberware_secondary_host_id(legs['instance_id'])
+        grip = {'key': 'cyberware-127', 'catalog_item_id': 'cyberware-127',
+                'instance_id': 'b' * 32, 'name': 'Grip Foot', 'state': 'installed',
+                'host_instance': legs['instance_id'],
+                'host_instances': [legs['instance_id'], right_id]}
+        data = {'cyberware': [legs, grip], 'inventory': [], 'stats': {}}
+        server.validate_cyberware_requirements(data)
+        server.validate_cyberware_slots(data)
+        loadout = server.effective_cyberware_loadout(data)
+        self.assertEqual(len(loadout['hosts']), 2)
+        self.assertEqual([host['physical_side'] for host in loadout['hosts']],
+                         ['left', 'right'])
+        self.assertEqual([host['slots_total'] for host in loadout['hosts']], [3, 3])
+        self.assertEqual([host['slots_used'] for host in loadout['hosts']], [1, 1])
+        self.assertTrue(all(host['foundation_instance_id'] == legs['instance_id']
+                            for host in loadout['hosts']))
+        zero_gravity = copy.deepcopy(server.item_by_id('cyberware-201'))
+        self.assertEqual(server.cyberware_capacity(zero_gravity)['slots_used'], 2)
+
+    def test_item_instance_regeneration_remaps_cyberware_host_bindings(self):
+        data = {'inventory': [], 'cyberware': [
+            {'key': 'cyberware-65', 'instance_id': 'temporary-eye',
+             'name': 'Cybereye'},
+            {'key': 'cyberware-67', 'instance_id': 'temporary-chyron',
+             'name': 'Chyron', 'host_instance': 'temporary-eye',
+             'host_instances': ['temporary-eye']},
+        ]}
+        server.ensure_character_item_instances(data, regenerate=True)
+        eye, chyron = data['cyberware']
+        self.assertRegex(eye['instance_id'], r'^[a-f0-9]{32}$')
+        self.assertRegex(chyron['instance_id'], r'^[a-f0-9]{32}$')
+        self.assertEqual(chyron['host_instance'], eye['instance_id'])
+        self.assertEqual(chyron['host_instances'], [eye['instance_id']])
+        server.validate_cyberware_slots(data)
+
+        old_legs_id = 'temporary-paired-legs'
+        paired = {'inventory': [], 'cyberware': [
+            {'key': 'cyberware-158', 'instance_id': old_legs_id,
+             'name': 'Romanova Cyberlegs'},
+            {'key': 'cyberware-127', 'instance_id': 'd' * 32,
+             'name': 'Grip Foot', 'host_instance': old_legs_id,
+             'host_instances': [old_legs_id,
+                                server.cyberware_secondary_host_id(old_legs_id)]},
+        ]}
+        server.ensure_character_item_instances(paired, regenerate=True)
+        legs, grip = paired['cyberware']
+        self.assertEqual(grip['host_instances'], [
+            legs['instance_id'], server.cyberware_secondary_host_id(legs['instance_id'])])
+        server.validate_cyberware_slots(paired)
+
+    def test_staged_cyberware_does_not_apply_humanity_loss(self):
+        arm = copy.deepcopy(server.item_by_id('cyberware-109'))
+        arm.update({'key': 'cyberware-109', 'catalog_item_id': 'cyberware-109',
+                    'instance_id': '4' * 32, 'type': 'Cyberlimbs', 'state': 'carried'})
+        char = {'stats': {'EMP': 6}, 'cyberware': [arm]}
+        staged = server.derive(char)
+        self.assertEqual((staged['humanity_cur'], staged['humanity_max'], staged['hl_total']),
+                         (60, 60, 0))
+        arm['state'] = 'installed'
+        installed = server.derive(char)
+        self.assertEqual((installed['humanity_cur'], installed['humanity_max'],
+                          installed['hl_total']), (53, 58, 7))
+
     def test_explicit_cyberware_foundation_requirement_is_checked(self):
         char = valid_character()
         char['cyberware'].append({

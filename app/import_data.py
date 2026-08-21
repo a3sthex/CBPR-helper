@@ -398,7 +398,7 @@ def structured_requirements(cat, row, desc):
         requirements.append({'kind': 'stat', 'stat': 'BODY', 'minimum': int(body.group(1))})
     slots = re.search(r'requires?\s+(\d+)\s+(?:cyberware\s+)?option slots?', low)
     if not slots:
-        slots = re.search(r'(?:takes?|uses?)\s+(\d+)\s+(?:cyberware\s+)?option slots?', low)
+        slots = re.search(r'(?:takes?|uses?)\s+(?:up\s+)?(\d+)\s+(?:cyberware\s+)?option slots?', low)
     slot_count = int(slots.group(1)) if slots else 0
     ctype = str(row.get('Type') or '')
     name = str(row.get('Name') or '').lower()
@@ -408,7 +408,8 @@ def structured_requirements(cat, row, desc):
         'neo-soviet cyberarm', 'cyberleg', 'romanova cyberlegs',
     }
     host = None
-    if name not in foundations:
+    paired_foundation = 'paired cyberlegs' in low
+    if name not in foundations and not paired_foundation:
         for token, label in [('cyberarm option', 'Cyberarm'), ('cyberleg option', 'Cyberleg'),
                              ('cybereye option', 'Cybereye'), ('cyberaudio option', 'Cyberaudio Suite'),
                              ('neuralware option', 'Neural Link or Neuroport')]:
@@ -419,7 +420,9 @@ def structured_requirements(cat, row, desc):
         slot_count = 1
     total_match = re.search(r'has\s+(\d+)\s+option slots?', low)
     slots_total = int(total_match.group(1)) if total_match else 0
-    hosts_required = 2 if ('requires two cybereyes' in low or 'requires two cyberlegs' in low or 'must be paired' in low) else (1 if host else 0)
+    hosts_required = 0 if paired_foundation else (2 if (
+        'requires two cybereyes' in low or 'requires two cyberlegs' in low or
+        'must be paired' in low) else (1 if host else 0))
     unique = bool(re.search(r'only one|cannot be installed more than once|only be installed once|multiple installations.+no additional benefit', low))
     return requirements, {'host': host, 'hosts_required': hosts_required, 'slots_used': slot_count, 'slots_total': slots_total, 'unique': unique}
 

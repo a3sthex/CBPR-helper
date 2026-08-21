@@ -658,7 +658,7 @@ async function loadSellTab(box) {
   const renderList = (chars2) => {
     const ch = chars2.find(c => c.id === (marketState.sellChar || chars2[0].id)) || chars2[0];
     marketState.sellChar = ch.id;
-    const inv = (ch.data.inventory || []);
+    const inv = [...(ch.data.inventory || []),...(ch.data.cyberware || []).filter(item=>item.state!=='installed')];
     $('#sell-list').innerHTML = inv.length ? inv.map(i => {const locked=['equipped','installed'].includes(i.state);return `
       <div class="inv-row">
         <span class="iname">${esc(i.custom_name||i.name)} ×${i.qty || 1}</span>
@@ -2032,30 +2032,34 @@ function ammoCompatibility(item,wiz) {
   });
 }
 function cyberFoundationNames(host) {
-  const map={Cyberarm:['cyberarm','neo-soviet cyberarm'],Cyberleg:['cyberleg','romanova cyberlegs'],Cybereye:['cybereye','sponsored cybereye'],'Cyberaudio Suite':['cyberaudio suite','discount cyberaudio suite'],'Neural Link or Neuroport':['neural link','neuroport']};
+  const map={Cyberarm:['cyberarm','neo-soviet cyberarm'],Cyberleg:['cyberleg','romanova cyberlegs','rocklin augmentics skydrivers'],Cybereye:['cybereye','sponsored cybereye'],'Cyberaudio Suite':['cyberaudio suite','discount cyberaudio suite'],'Neural Link or Neuroport':['neural link','neuroport']};
   return map[host]||[];
 }
+function clientInstanceId(){if(globalThis.crypto?.randomUUID)return crypto.randomUUID().replaceAll('-','').toLowerCase();return Array.from({length:32},()=>Math.floor(Math.random()*16).toString(16)).join('');}
+function pairedCyberlegFoundation(item){return String(item?.desc||'').toLowerCase().includes('paired cyberlegs');}
+function pairedCyberHostId(instanceId){const value=String(instanceId||'').toLowerCase();if(/^[a-f0-9]{32}$/.test(value))return value.slice(0,-1)+((parseInt(value.at(-1),16)+1)%16).toString(16);return `${value}:paired-2`;}
 function cyberHostIds(item){return item.host_instances&&item.host_instances.length?item.host_instances:(item.host_instance?[item.host_instance]:[]);}
+function cyberOptionSlots(item){const parsed=String(item?.desc||'').match(/(?:takes?|uses?|requires?)\s+(?:up\s+)?(\d+)\s+(?:cyberware\s+)?option slots?/i);return Number(parsed?.[1])||Number(item?.capacity?.slots_used)||0;}
+function cyberPhysicalHosts(wiz){const all=[...wiz.cyberware];if(wiz.freeNeuroport)all.unshift({id:'creation-neuroport',instance_id:'creation-neuroport',name:'Neuroport',capacity:{slots_total:5}});return all.flatMap(candidate=>{if(!pairedCyberlegFoundation(candidate))return [candidate];const parent=candidate.instance_id||candidate.id,total=Number(String(candidate.desc||'').match(/each cyberleg has\s+(\d+)\s+option slots?/i)?.[1])||Number(candidate.capacity?.slots_total)||1;return [{...candidate,instance_id:parent,name:`${candidate.name} · Left`,capacity:{...(candidate.capacity||{}),host:null,slots_total:total}},{...candidate,instance_id:pairedCyberHostId(parent),name:`${candidate.name} · Right`,capacity:{...(candidate.capacity||{}),host:null,slots_total:total}}];});}
 function availableCyberHosts(wiz,item) {
   const host=item.capacity&&item.capacity.host;if(!host)return [];
-  const accepted=cyberFoundationNames(host), all=[...wiz.cyberware];
-  if(wiz.freeNeuroport)all.unshift({id:'creation-neuroport',instance_id:'creation-neuroport',name:'Neuroport',capacity:{slots_total:5}});
-  return all.filter(candidate=>accepted.includes(String(candidate.name||'').toLowerCase())).filter(candidate=>{
+  const accepted=cyberFoundationNames(host),all=cyberPhysicalHosts(wiz);
+  return all.filter(candidate=>accepted.some(name=>String(candidate.name||'').toLowerCase().startsWith(name))).filter(candidate=>{
     const total=num(candidate.capacity&&candidate.capacity.slots_total)||4;
-    const used=wiz.cyberware.filter(option=>cyberHostIds(option).includes(candidate.instance_id||candidate.id)).reduce((sum,option)=>sum+(num(option.capacity&&option.capacity.slots_used)||0),0);
-    return total-used>=(num(item.capacity&&item.capacity.slots_used)||0);
+    const used=wiz.cyberware.filter(option=>cyberHostIds(option).includes(candidate.instance_id||candidate.id)).reduce((sum,option)=>sum+cyberOptionSlots(option),0);
+    return total-used>=cyberOptionSlots(item);
   });
 }
 async function chooseCyberHost(hosts, item) {
   const required=item.capacity?.hosts_required||1;
   if (hosts.length < required) return null;
   if (hosts.length === required) return required===1?hosts[0]:hosts.slice(0,required);
-  return new Promise(resolve=>{const selected=new Set(),modal=openModal(`<h2>${T('Choose host','Выберите host')} · ${esc(item.name)}</h2><p>${T(`Select ${required} different foundations.`,`Выберите разные foundations: ${required}.`)}</p><div class="choice-card-grid">${hosts.map((host,index)=>{const id=host.instance_id||host.id,total=num(host.capacity?.slots_total)||4,used=state.wizard.cyberware.filter(option=>(option.host_instances||[option.host_instance]).includes(id)).reduce((sum,option)=>sum+(num(option.capacity?.slots_used)||0),0),after=used+(num(item.capacity?.slots_used)||0);return `<button class="choice-card" data-host-index="${index}"><b>${esc(host.custom_name||host.name)} #${index+1}</b><span>Slots ${used}/${total} → ${after}/${total}</span></button>`;}).join('')}</div><div class="row mt"><button id="host-cancel">${T('Cancel','Отмена')}</button><button id="host-confirm" class="btn-primary" disabled>${T('Install','Установить')}</button></div>`,true);$$('[data-host-index]',modal).forEach(button=>button.onclick=()=>{const index=Number(button.dataset.hostIndex);if(selected.has(index))selected.delete(index);else if(selected.size<required)selected.add(index);button.classList.toggle('selected',selected.has(index));$('#host-confirm',modal).disabled=selected.size!==required;});$('#host-confirm',modal).onclick=()=>{const result=[...selected].map(index=>hosts[index]);closeModal();resolve(required===1?result[0]:result);};$('#host-cancel',modal).onclick=()=>{closeModal();resolve(null);};});
+  return new Promise(resolve=>{const selected=new Set(),modal=openModal(`<h2>${T('Choose host','Выберите host')} · ${esc(item.name)}</h2><p>${T(`Select ${required} different foundations.`,`Выберите разные foundations: ${required}.`)}</p><div class="choice-card-grid">${hosts.map((host,index)=>{const id=host.instance_id||host.id,total=num(host.capacity?.slots_total)||4,used=state.wizard.cyberware.filter(option=>(option.host_instances||[option.host_instance]).includes(id)).reduce((sum,option)=>sum+cyberOptionSlots(option),0),after=used+cyberOptionSlots(item);return `<button class="choice-card" data-host-index="${index}"><b>${esc(host.custom_name||host.name)} #${index+1}</b><span>Slots ${used}/${total} → ${after}/${total}</span></button>`;}).join('')}</div><div class="row mt"><button id="host-cancel">${T('Cancel','Отмена')}</button><button id="host-confirm" class="btn-primary" disabled>${T('Install','Установить')}</button></div>`,true);$$('[data-host-index]',modal).forEach(button=>button.onclick=()=>{const index=Number(button.dataset.hostIndex);if(selected.has(index))selected.delete(index);else if(selected.size<required)selected.add(index);button.classList.toggle('selected',selected.has(index));$('#host-confirm',modal).disabled=selected.size!==required;});$('#host-confirm',modal).onclick=()=>{const result=[...selected].map(index=>hosts[index]);closeModal();resolve(required===1?result[0]:result);};$('#host-cancel',modal).onclick=()=>{closeModal();resolve(null);};});
 }
 
 function catalogRequirementStatus(wiz,item) {
   const failures=[];
-  if(item.capacity&&item.capacity.host&&availableCyberHosts(wiz,item).length<(item.capacity.hosts_required||1))failures.push(`${T('Requires available','Требуется доступный')} ${(item.capacity.hosts_required||1)}× ${item.capacity.host}`);
+  if(item.capacity&&item.capacity.host&&!pairedCyberlegFoundation(item)&&availableCyberHosts(wiz,item).length<(item.capacity.hosts_required||1))failures.push(`${T('Requires available','Требуется доступный')} ${(item.capacity.hosts_required||1)}× ${item.capacity.host}`);
   const names=[...wiz.cyberware.map(x=>x.name.toLowerCase()),...(wiz.freeNeuroport?['neuroport']:[])];
   for(const req of item.requirements||[]){if(req.kind==='stat'&&(num(wiz.stats[req.stat])||0)<req.minimum)failures.push(`${req.stat} ${req.minimum}`);if(req.kind==='item'){const wanted=req.value.toLowerCase().replace(/^2×\s*/,'');if(!names.some(name=>wanted.includes(name)||name.includes(wanted)))failures.push(req.value);}}
   return failures;
@@ -2106,7 +2110,7 @@ async function wizLoadShopList() {
     const shared={desc:item.desc||'',fields:item.fields||{},source:item.source||'',mechanics:item.mechanics||{},requirements:item.requirements||[],capacity:item.capacity||{}};
     if(tab[0]==='fashion'){const existing=wiz.fashion.find(x=>x.key===item.id);if(existing)existing.qty=(existing.qty||1)+1;else wiz.fashion.push({key:item.id,cat:item.cat,name:item.name,price,qty:1,type:itemVisibleType(item,'Fashion'),...shared});wiz.fashionCost+=price;}
     else if(tab[0]==='fashionware'){const existing=wiz.fashionware.find(x=>x.id===item.id);if(existing)existing.qty=(existing.qty||1)+1;else wiz.fashionware.push({id:item.id,name:item.name,hl:item.hl||0,price,qty:1,type:String(item.fields?.Type||'Fashionware'),...shared});wiz.fashionCost+=price;}
-    else if(item.cat==='cyberware'){const hosts=availableCyberHosts(wiz,item),host=await chooseCyberHost(hosts,item);if((item.capacity||{}).host&&!host)return;const instance=`${item.id}:${Date.now()}:${Math.random().toString(16).slice(2)}`;wiz.cyberware.push({id:item.id,instance_id:instance,name:item.name,hl:item.hl||0,price,type:String(item.fields?.Type||'Cyberware'),host_instance:host?(Array.isArray(host)?(host[0].instance_id||host[0].id):(host.instance_id||host.id)):'',host_instances:host?(Array.isArray(host)?host.map(value=>value.instance_id||value.id):[host.instance_id||host.id]):[],...shared});wiz.chromeCost+=price;}
+    else if(item.cat==='cyberware'){const needsHost=(item.capacity||{}).host&&!pairedCyberlegFoundation(item),hosts=needsHost?availableCyberHosts(wiz,item):[],host=needsHost?await chooseCyberHost(hosts,item):null;if(needsHost&&!host)return;const instance=clientInstanceId();wiz.cyberware.push({id:item.id,instance_id:instance,name:item.name,hl:item.hl||0,price,type:String(item.fields?.Type||'Cyberware'),host_instance:host?(Array.isArray(host)?(host[0].instance_id||host[0].id):(host.instance_id||host.id)):'',host_instances:host?(Array.isArray(host)?host.map(value=>value.instance_id||value.id):[host.instance_id||host.id]):[],...shared});wiz.chromeCost+=price;}
     else if(item.cat==='armor'){wiz.gear.push({key:item.variant_id,source_key:item.id,cat:'armor',name:item.name,display_name:item.variant_name,location:item.purchase_location,price,qty:1,sp:item.sp,penalties:{...(item.penalties||{})},armor_bundled:!!item.armor_bundled,type:itemVisibleType(item,'Armor'),...shared});wiz.gearCost+=price;}
     else{const existing=wiz.gear.find(x=>x.key===item.id);if(existing)existing.qty=(existing.qty||1)+1;else wiz.gear.push({key:item.id,cat:item.cat,name:item.name,price,qty:1,damage:item.damage||null,sp:item.sp,type:itemVisibleType(item,shopCategoryLabel(tab)),...shared});wiz.gearCost+=price;}
     renderWizard();toast(`${T('Added','Добавлено')}: ${item.variant_name||item.name}`);});
@@ -2117,7 +2121,7 @@ function equipmentWarnings(wiz){const warnings=[];const weapons=wiz.gear.filter(
 async function generateRandomOutfit(){const wiz=state.wizard;wiz._shopCache=wiz._shopCache||{};if(!wiz._shopCache.fashion){const response=await api('/api/items?'+new URLSearchParams({cat:'fashion',limit:500}));wiz._shopCache.fashion=response.items;}const preferred=String(wiz.outfitStyle||wiz.lifepath.clothing||'').toLowerCase();let pool=wiz._shopCache.fashion.filter(item=>item.price!=null);const matching=pool.filter(item=>item.name.toLowerCase().includes(preferred)||String(item.mechanics?.fashion_style||'').toLowerCase()===preferred);if(matching.length)pool=matching;pool=[...pool].sort(()=>Math.random()-.5);const picked=[];let spent=0;for(const item of pool){if(picked.length>=6)break;if(spent+(item.price||0)<=FASHION_BUDGET){picked.push(item);spent+=item.price||0;}}if(!picked.length){toast(T('No affordable outfit found.','Не удалось подобрать комплект.'),true);return;}if(!confirm(`${T('Replace current Fashion selection with','Заменить выбранную одежду на')} ${picked.map(x=>x.name).join(', ')}?`))return;wiz.fashion=picked.map(item=>({key:item.id,cat:'fashion',name:item.name,price:item.price,qty:1,type:itemVisibleType(item,'Fashion'),desc:item.desc||'',fields:item.fields||{},source:item.source||'',mechanics:item.mechanics||{}}));wiz.fashionCost=spent+wiz.fashionware.reduce((sum,item)=>sum+(item.price||0)*(item.qty||1),0);renderWizard();}
 function cartSectionHtml(title,items){return items.length?`<section class="catalog-group"><h4 class="catalog-type">${esc(title)} <span>${items.length}</span></h4>${items.join('')}</section>`:'';}
 function combinedCartHtml(wiz){const rows=[];for(const item of roleBenefitItems(wiz))rows.push({type:item.type,html:`<div class="inv-row role-benefit"><span class="iname">🎁 ${esc(item.name)}</span><span class="tag">Role Benefit</span><span class="price">${money(0)}</span></div>`});
-  const seen=new Set();wiz.cyberware.forEach((item,index)=>{if(seen.has(item.id))return;seen.add(item.id);const qty=wiz.cyberware.filter(x=>x.id===item.id).length;rows.push({type:itemVisibleType(item,'Cyberware'),html:`<div class="inv-row"><span class="iname">🦾 ${esc(item.name)}</span>${quantityControl('chrome',index,qty,String(item.name).toLowerCase()!=='neuroport'&&!(item.capacity||{}).unique&&(!(item.capacity||{}).host||availableCyberHosts(wiz,item).length>0))}<span class="hl-badge">HL ${(item.hl||0)*qty}</span><span class="price">${money((item.price||0)*qty)}</span><button class="info-btn" data-cart-info="chrome|${index}">i</button></div>`});});
+  const seen=new Set();wiz.cyberware.forEach((item,index)=>{if(seen.has(item.id))return;seen.add(item.id);const qty=wiz.cyberware.filter(x=>x.id===item.id).length;rows.push({type:itemVisibleType(item,'Cyberware'),html:`<div class="inv-row"><span class="iname">🦾 ${esc(item.name)}</span>${quantityControl('chrome',index,qty,String(item.name).toLowerCase()!=='neuroport'&&!(item.capacity||{}).unique&&(!(item.capacity||{}).host||pairedCyberlegFoundation(item)||availableCyberHosts(wiz,item).length>0))}<span class="hl-badge">HL ${(item.hl||0)*qty}</span><span class="price">${money((item.price||0)*qty)}</span><button class="info-btn" data-cart-info="chrome|${index}">i</button></div>`});});
   wiz.fashionware.forEach((item,index)=>rows.push({type:'Fashionware',html:`<div class="inv-row"><span class="iname">💠 ${esc(item.name)}</span>${quantityControl('fashionware',index,item.qty||1,true)}<span class="price">${money((item.price||0)*(item.qty||1))}</span><button class="info-btn" data-cart-info="fashionware|${index}">i</button></div>`}));
   wiz.fashion.forEach((item,index)=>rows.push({type:itemVisibleType(item,'Fashion'),html:`<div class="inv-row"><span class="iname">🧥 ${esc(item.name)}</span>${quantityControl('style',index,item.qty||1,true)}<span class="price">${money((item.price||0)*(item.qty||1))}</span><button class="info-btn" data-cart-info="style|${index}">i</button></div>`}));
   wiz.gear.forEach((item,index)=>{const equip=item.cat==='armor'?`<button class="btn-sm" data-equip-armor="${index}">${T('Equip','Надеть')}</button>`:'';rows.push({type:itemVisibleType(item,'Gear'),html:`<div class="inv-row"><span class="iname">${esc(item.display_name||item.name)}</span>${quantityControl('gear',index,item.qty||1,item.cat!=='armor')}${itemMechanicChips(item)}<span class="price">${money((item.price||0)*(item.qty||1))}</span>${equip}<button class="info-btn" data-cart-info="gear|${index}">i</button></div>`});});
@@ -2139,11 +2143,11 @@ function cyberwareRequirementErrors(w) {
   const foundationNames = {
     cybereye: new Set(['cybereye', 'sponsored cybereye']),
     cyberarm: new Set(['cyberarm', 'neo-soviet cyberarm']),
-    cyberleg: new Set(['cyberleg', 'romanova cyberlegs']),
+    cyberleg: new Set(['cyberleg', 'romanova cyberlegs', 'rocklin augmentics skydrivers']),
     audio: new Set(['cyberaudio suite', 'discount cyberaudio suite']),
     socket: new Set(['chipware socket', 'budget chipware socket']),
   };
-  const count = key => names.filter(name => foundationNames[key].has(name)).length;
+  const count = key => names.filter(name => foundationNames[key].has(name)).reduce((total,name)=>total+(key==='cyberleg'&&['romanova cyberlegs','rocklin augmentics skydrivers'].includes(name)?2:1),0);
   const errors = [], body = num(w.stats.BODY) || 0;
   for (const item of chrome) {
     const d = String(item.desc || '').toLowerCase().replace(/\n/g, ' ');
@@ -2182,9 +2186,9 @@ function cyberwareRequirementErrors(w) {
 
 function cyberSlotErrors(wiz) {
   const errors=[];
-  for(const item of wiz.cyberware){if(item.capacity&&item.capacity.host&&!item.host_instance)errors.push(`${item.name}: ${T('no compatible cyberware host','нет совместимого host')}`);}
-  const hosts=[...wiz.cyberware];if(wiz.freeNeuroport)hosts.push({instance_id:'creation-neuroport',name:'Neuroport',capacity:{slots_total:5}});
-  for(const host of hosts){const id=host.instance_id||host.id,total=num(host.capacity&&host.capacity.slots_total)||0;if(!total)continue;const used=wiz.cyberware.filter(item=>cyberHostIds(item).includes(id)).reduce((sum,item)=>sum+(num(item.capacity&&item.capacity.slots_used)||0),0);if(used>total)errors.push(`${host.name}: Option Slots ${used}/${total}`);}
+  for(const item of wiz.cyberware){if(item.capacity&&item.capacity.host&&!pairedCyberlegFoundation(item)&&!item.host_instance)errors.push(`${item.name}: ${T('no compatible cyberware host','нет совместимого host')}`);}
+  const hosts=cyberPhysicalHosts(wiz);
+  for(const host of hosts){const id=host.instance_id||host.id,total=num(host.capacity&&host.capacity.slots_total)||0;if(!total)continue;const used=wiz.cyberware.filter(item=>cyberHostIds(item).includes(id)).reduce((sum,item)=>sum+cyberOptionSlots(item),0);if(used>total)errors.push(`${host.name}: Option Slots ${used}/${total}`);}
   return errors;
 }
 function wizValidationErrors() {
@@ -2277,11 +2281,25 @@ function summaryInventoryHtml(items) {
 }
 function cyberwareTreeHtml(items) {
   if (!items.length) return `<div class="empty">${T('No Cyberware','Нет Cyberware')}</div>`;
+  const physicalParent=new Map();items.forEach(item=>{if(pairedCyberlegFoundation(item)){const id=item.instance_id||item.id;physicalParent.set(pairedCyberHostId(id),id);}});
   const children = new Map();
-  items.forEach((item,index) => { if (item.host_instance) { if (!children.has(item.host_instance)) children.set(item.host_instance,[]); children.get(item.host_instance).push([item,index]); } });
+  items.forEach((item,index) => { const host=cyberHostIds(item)[0],parent=physicalParent.get(host)||host;if(parent){if(!children.has(parent))children.set(parent,[]);children.get(parent).push([item,index]);} });
   const roots = items.map((item,index)=>[item,index]).filter(([item])=>!item.host_instance);
-  const row = (item,index,nested) => { const id=item.instance_id||item.key||item.id,total=num(item.capacity?.slots_total)||0,used=(children.get(id)||[]).reduce((sum,[child])=>sum+(num(child.capacity?.slots_used)||0),0);return `<div class="cyber-tree-row ${nested?'nested':''}"><span class="iname">${nested?'↳ ':''}${esc(item.name)}</span>${total?`<span class="chip">Slots ${used}/${total}</span>`:''}${item.capacity?.slots_used?`<span class="chip">Uses ${item.capacity.slots_used}</span>`:''}<span class="hl-badge">HL ${item.hl||0}</span><button class="info-btn" data-owned-chrome="${index}">i</button></div>${(children.get(id)||[]).map(([child,childIndex])=>row(child,childIndex,true)).join('')}`; };
+  const row = (item,index,nested) => { const id=item.instance_id||item.key||item.id,total=num(item.capacity?.slots_total)||0,used=(children.get(id)||[]).reduce((sum,[child])=>sum+cyberOptionSlots(child),0),uses=cyberOptionSlots(item);return `<div class="cyber-tree-row ${nested?'nested':''}"><span class="iname">${nested?'↳ ':''}${esc(item.name)}</span>${total?`<span class="chip">Slots ${used}/${total}</span>`:''}${uses?`<span class="chip">Uses ${uses}</span>`:''}<span class="hl-badge">HL ${item.hl||0}</span><button class="info-btn" data-owned-chrome="${index}">i</button></div>${(children.get(id)||[]).map(([child,childIndex])=>row(child,childIndex,true)).join('')}`; };
   return roots.map(([item,index])=>row(item,index,false)).join('');
+}
+
+function cyberwareLifecycleHtml(items,loadout,mine) {
+  if(!items.length)return `<div class="empty">${T('No Cyberware','Нет Cyberware')}</div>`;
+  if(!loadout)return cyberwareTreeHtml(items);
+  const byId=Object.fromEntries(items.map((item,index)=>[item.instance_id,{item,index}]));
+  const info=id=>{const row=byId[id];return row?`<button class="info-btn" data-owned-chrome="${row.index}">i</button>`:'';};
+  const action=(id,name,hasOptions=false)=>!mine?'':`<div class="row">${hasOptions?'':`<button class="btn-sm" data-cyberware-action="${id}|uninstall">${T('Uninstall','Извлечь')}</button>`}${info(id)}</div>`;
+  const hosts=(loadout.hosts||[]).map(host=>{const foundationId=host.foundation_instance_id||host.instance_id,foundationOccupied=(loadout.hosts||[]).some(other=>(other.foundation_instance_id||other.instance_id)===foundationId&&other.options?.length);return `<article class="cyber-host-card ${host.overloaded?'invalid':''}"><header><div><b>${esc(host.name)}</b><span class="small muted">${esc(host.host_kind)}</span></div><span class="chip">Slots ${host.slots_used}/${host.slots_total}</span></header><div class="cyber-host-options">${host.options.length?host.options.map(option=>`<div class="program-runtime-row"><span>↳ ${esc(option.name)} · ${option.slots_used} ${T('slots','слотов')}${option.paired?` · ${T('PAIRED','ПАРНЫЙ')}`:''}</span>${mine?`<div class="row"><button class="btn-sm" data-cyberware-action="${option.instance_id}|rebind">${T('Rebind','Сменить host')}</button><button class="btn-sm" data-cyberware-action="${option.instance_id}|uninstall">${T('Uninstall','Извлечь')}</button>${info(option.instance_id)}</div>`:info(option.instance_id)}</div>`).join(''):`<span class="small muted">${T('No installed options.','Нет установленных опций.')}</span>`}</div>${action(foundationId,host.name,foundationOccupied)}</article>`;}).join('');
+  const issues=(loadout.options||[]).filter(option=>['unbound','invalid'].includes(option.status)).map(option=>`<div class="inv-row cyberware-invalid"><span class="iname">⚠ ${esc(option.name)}</span><span class="tag">${esc(option.status.toUpperCase())}</span><span class="small warn-text">${esc((option.reasons||[]).join(' · '))}</span>${mine?`<button class="btn-sm btn-primary" data-cyberware-action="${option.instance_id}|rebind">${T('Bind Hosts','Привязать hosts')}</button><button class="btn-sm" data-cyberware-action="${option.instance_id}|uninstall">${T('Uninstall','Извлечь')}</button>`:''}${info(option.instance_id)}</div>`).join('');
+  const standalone=(loadout.standalone||[]).map(item=>`<div class="inv-row"><span class="iname">${esc(item.name)}</span><span class="chip">${T('INSTALLED','УСТАНОВЛЕНО')}</span><span class="hl-badge">HL ${item.hl||0}</span>${action(item.instance_id,item.name)}</div>`).join('');
+  const staged=(loadout.staged||[]).map(item=>`<div class="inv-row"><span class="iname">${esc(item.name)}</span><span class="tag">${T('STAGED · NOT INSTALLED','ПОДГОТОВЛЕНО · НЕ УСТАНОВЛЕНО')}</span><span class="hl-badge">HL ${item.hl||0}</span>${mine?`<button class="btn-sm btn-primary" data-cyberware-action="${item.instance_id}|install">${item.expected_host?T('Install into Host','Установить в host'):T('Install','Установить')}</button>`:''}${info(item.instance_id)}</div>`).join('');
+  return `${issues?`<div class="cyberware-issues mb"><b>${T('Host binding requires attention','Требуется исправить привязку host')}</b>${issues}</div>`:''}${hosts?`<div class="cyber-host-grid">${hosts}</div>`:''}${standalone?`<h3 class="mt">${T('Installed Standalone Cyberware','Установленная самостоятельная Cyberware')}</h3>${standalone}`:''}${staged?`<h3 class="mt">${T('Staged Cyberware','Подготовленная Cyberware')}</h3>${staged}`:''}`;
 }
 
 function wizStepSummaryHtml() {
@@ -2289,7 +2307,7 @@ function wizStepSummaryHtml() {
   if(d.emp_cur!=null&&d.emp_cur<=2)warnings.push(T('EMP is 2 or lower','EMP не выше 2'));
   if(wiz.fashionCost < FASHION_BUDGET) warnings.push(`${T('Unused Style Budget will be lost','Неиспользованный Style Budget сгорит')}: ${money(FASHION_BUDGET-wiz.fashionCost)}`);
   for(const [base] of SUB_SKILL_BASES){const free=wizSubFree(base);if(free)warnings.push(`${base}: ${free} ${T('parent levels remain unallocated','уровней parent-pool не распределено')}`);}
-  const slotHosts=[...wiz.cyberware];if(wiz.freeNeuroport)slotHosts.push({instance_id:'creation-neuroport',name:'Neuroport',capacity:{slots_total:5}});for(const host of slotHosts){const total=num(host.capacity?.slots_total)||0;if(!total)continue;const used=wiz.cyberware.filter(item=>cyberHostIds(item).includes(host.instance_id||host.id)).reduce((sum,item)=>sum+(num(item.capacity?.slots_used)||0),0);if(total>used)warnings.push(`${host.name}: ${total-used} Option Slots ${T('unused','свободно')}`);}
+  const slotHosts=cyberPhysicalHosts(wiz);for(const host of slotHosts){const total=num(host.capacity?.slots_total)||0;if(!total)continue;const used=wiz.cyberware.filter(item=>cyberHostIds(item).includes(host.instance_id||host.id)).reduce((sum,item)=>sum+cyberOptionSlots(item),0);if(total>used)warnings.push(`${host.name}: ${total-used} Option Slots ${T('unused','свободно')}`);}
   const lpRows=lifepathNarrative(wiz.lifepath,wiz.role,wiz.roleLifepath),roleSource=ROLE_COREBOOK_V3[wiz.role];
   const statBlock=state.meta.stats.map(stat=>`<button class="chip skill-name-btn" data-stat-info="${stat}"><b>${stat}</b> ${wiz.stats[stat]}</button>`).join('');
   const weaponRows=wiz.gear.filter(item=>['guns','melee'].includes(item.cat)).map(item=>`<div class="inv-row"><span class="iname">${esc(item.name)}</span>${itemMechanicChips(item)}${item.mechanics?.skill?`<span class="chip">${esc(item.mechanics.skill)} BASE ${characterSkillLevel(c,item.mechanics.skill)+(num(c.stats[state.meta.skills.find(row=>row[1]===item.mechanics.skill)?.[2]])||0)}</span>`:''}</div>`).join('');
@@ -2352,20 +2370,19 @@ async function adjustShopCart(kind, index, delta) {
     if (!sample) return;
     if (delta > 0) {
       if (String(sample.name).toLowerCase() === 'neuroport' || (sample.capacity || {}).unique) { toast(T('A second installation is not allowed.','Вторая установка запрещена.'), true); return; }
-      const hosts = availableCyberHosts(wiz, sample);
-      if ((sample.capacity || {}).host && !hosts.length) { toast(T('No compatible host has enough Option Slots.','У совместимых hosts нет свободных Option Slots.'), true); return; }
+      const needsHost=(sample.capacity||{}).host&&!pairedCyberlegFoundation(sample),hosts=needsHost?availableCyberHosts(wiz,sample):[];
+      if (needsHost && !hosts.length) { toast(T('No compatible host has enough Option Slots.','У совместимых hosts нет свободных Option Slots.'), true); return; }
       if (!canAffordCreationItem(wiz, { cat: 'cyberware' }, sample.price || 0)) { toast(T('Not enough Main Budget.','Недостаточно основного бюджета.'), true); return; }
-      const host = await chooseCyberHost(hosts, sample); if ((sample.capacity || {}).host && !host) return;
-      wiz.cyberware.push({ ...sample, instance_id: `${sample.id}:${Date.now()}:${Math.random().toString(16).slice(2)}`, host_instance: host ? (Array.isArray(host) ? (host[0].instance_id || host[0].id) : (host.instance_id || host.id)) : '', host_instances: host ? (Array.isArray(host) ? host.map(value => value.instance_id || value.id) : [host.instance_id || host.id]) : [] }); wiz.chromeCost += sample.price || 0;
+      const host = needsHost?await chooseCyberHost(hosts,sample):null;if(needsHost&&!host)return;
+      wiz.cyberware.push({ ...sample, instance_id: clientInstanceId(), host_instance: host ? (Array.isArray(host) ? (host[0].instance_id || host[0].id) : (host.instance_id || host.id)) : '', host_instances: host ? (Array.isArray(host) ? host.map(value => value.instance_id || value.id) : [host.instance_id || host.id]) : [] }); wiz.chromeCost += sample.price || 0;
     } else {
       const removeIndex = wiz.cyberware.findIndex(x => x.id === sample.id);
       const removed = wiz.cyberware[removeIndex];
       if (removed) {
-        const hostId = removed.instance_id || removed.id;
-        const dependents = wiz.cyberware.filter(item => cyberHostIds(item).includes(hostId));
+        const hostId = removed.instance_id || removed.id,removedIds=new Set([hostId]);if(pairedCyberlegFoundation(removed))removedIds.add(pairedCyberHostId(hostId));
+        const dependents = wiz.cyberware.filter(item => cyberHostIds(item).some(id=>removedIds.has(id)));
         if (dependents.length && !window.confirm(T(`Remove ${removed.name} and ${dependents.length} installed options?`,`Удалить ${removed.name} и установленные опции (${dependents.length})?`))) return;
-        const removedIds = new Set([hostId]);
-        wiz.cyberware = wiz.cyberware.filter(item => item !== removed && !removedIds.has(item.host_instance));
+        wiz.cyberware = wiz.cyberware.filter(item => item !== removed && !cyberHostIds(item).some(id=>removedIds.has(id)));
         wiz.chromeCost = Math.max(0, wiz.chromeCost - (removed.price || 0) - dependents.reduce((sum,item)=>sum+(item.price||0),0));
       }
     }
@@ -2677,8 +2694,9 @@ async function viewSheet(id) {
         ${fullSkillsTableHtml(ch, d, true)}
       </div>
       <div class="panel mb" id="sheet-cyberware">
-        <h2>🦾 Cyberware (HL ${cw.reduce((a, x) => a + (num(x.hl) || 0), 0)})</h2>
-        ${cyberwareTreeHtml(cw)}
+        <h2>🦾 Cyberware (${T('Installed HL','Установленный HL')} ${d.hl_total||0})</h2>
+        <div class="small muted mb">${T('Concrete foundations, paired bindings, Option Slots, and Humanity-safe audited installation.','Concrete foundations, парные привязки, Option Slots и Humanity-safe audited installation.')}</div>
+        ${cyberwareLifecycleHtml(cw,d.effective_cyberware,mine)}
       </div>
       <div class="panel mb" id="sheet-gear">
         <h2>⚡ ${T('Active Gear / Loadout','Активное снаряжение')}</h2>
@@ -2723,6 +2741,7 @@ async function viewSheet(id) {
   $$('[data-effect-action]',view).forEach(button=>button.onclick=()=>{const [effectId,action]=button.dataset.effectAction.split('|'),effect=effectInstances.find(item=>item.effect_id===effectId);if(effect)performEffectAction(c,effect,action);});
   $$('[data-skill-info]', view).forEach(btn => btn.onclick = () => showSkillInfo(btn.dataset.skillInfo));
   $$('[data-owned-chrome]', view).forEach(btn => btn.onclick = () => showCreationItemInfo(cw[Number(btn.dataset.ownedChrome)]));
+  $$('[data-cyberware-action]',view).forEach(button=>button.onclick=async()=>{const [instanceId,action]=button.dataset.cyberwareAction.split('|'),item=cw.find(entry=>entry.instance_id===instanceId),loadout=d.effective_cyberware||{},option=(loadout.options||[]).find(entry=>entry.instance_id===instanceId),body={revision:c.revision,action,host_instance_ids:[]};if(!item)return;if(action==='install'||action==='rebind'){if(option?.expected_host){const hosts=(loadout.hosts||[]).filter(host=>(option.compatible_host_ids||[]).includes(host.instance_id)),required=Number(option.hosts_required)||1;if(hosts.length<required){toast(T('Not enough compatible foundations with free Option Slots.','Недостаточно совместимых foundations со свободными Option Slots.'),true);return;}const current=(option.host_instance_ids||[]).map(id=>hosts.findIndex(host=>host.instance_id===id)+1).filter(value=>value>0),answer=prompt(`${T(`Choose ${required} different concrete hosts`,`Выберите concrete hosts: ${required}`)}\n${hosts.map((host,index)=>`${index+1}. ${host.name} · ${host.slots_used}/${host.slots_total} slots`).join('\n')}\n${T('Enter numbers separated by commas','Введите номера через запятую')}`,current.join(',')||hosts.slice(0,required).map((_,index)=>index+1).join(',')),indexes=[...new Set(String(answer||'').split(',').map(value=>Number(value.trim())-1))],selected=indexes.map(index=>hosts[index]).filter(Boolean);if(selected.length!==required)return;body.host_instance_ids=selected.map(host=>host.instance_id);}}else if(action==='uninstall'&&!confirm(T('Uninstall this Cyberware? Current Humanity will NOT be restored; only Maximum Humanity capacity returns.','Извлечь Cyberware? Текущая Humanity НЕ восстановится; вернётся только ёмкость Maximum Humanity.')))return;const reason=prompt(T('Cyberware lifecycle reason','Причина Cyberware lifecycle'),action==='uninstall'?T('Surgical removal; Humanity is not restored','Хирургическое извлечение; Humanity не восстанавливается'):T('Clinic installation into concrete host','Установка в клинике в concrete host'))||'';if(reason.trim().length<3)return;body.reason=reason.trim();button.disabled=true;try{const response=await api(`/api/characters/${c.id}/cyberware/${instanceId}/action`,{method:'POST',body}),humanity=response.humanity||{};toast(`${T('Cyberware lifecycle recorded.','Cyberware lifecycle записан.')} Humanity ${humanity.humanity_current_before??'—'}→${humanity.humanity_current_after??'—'}`);viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
   $$('[data-owned-item]', view).forEach(btn => btn.onclick = () => showCreationItemInfo(inv[Number(btn.dataset.ownedItem)]));
   $$('[data-item-action]',view).forEach(button=>button.onclick=()=>{const [instanceId,action]=button.dataset.itemAction.split('|'),item=inv.find(entry=>entry.instance_id===instanceId);if(item)performSheetItemAction(c,item,action);});
   $$('[data-item-equip]',view).forEach(button=>button.onclick=()=>{const item=inv.find(entry=>entry.instance_id===button.dataset.itemEquip);if(item)chooseEquipMode(c,item);});
@@ -3156,7 +3175,7 @@ function renderEditorTab() {
     </div>`;
     $('#add-chrome').onclick = () => pickItem(['cyberware'], T('Cyberware from Database','Кибернетика из Database'), it => openCatalogAcquisitionModal(it,meta=>{
       const c2 = state.editor.char;c2.cyberware=c2.cyberware||[];
-      c2.cyberware.push({key:it.id,catalog_item_id:it.id,cat:'cyberware',name:it.name,custom_name:meta.custom_name||'',hl:it.hl||0,price:it.price,type:(it.fields&&it.fields.Type)||'',qty:1,state:'installed',fields:{...(it.fields||{})},mechanics:{...(it.mechanics||{})},requirements:[...(it.requirements||[])],capacity:it.capacity?{...it.capacity}:null,source:it.source||'',acquisition_source:meta.acquisition_source,acquisition_note:meta.acquisition_note||''});
+      c2.cyberware.push({key:it.id,catalog_item_id:it.id,cat:'cyberware',name:it.name,custom_name:meta.custom_name||'',hl:it.hl||0,price:it.price,type:(it.fields&&it.fields.Type)||'',qty:1,state:'carried',fields:{...(it.fields||{})},mechanics:{...(it.mechanics||{})},requirements:[...(it.requirements||[])],capacity:it.capacity?{...it.capacity}:null,source:it.source||'',acquisition_source:meta.acquisition_source,acquisition_note:meta.acquisition_note||''});
       renderEditorTab();edChanged();
     },{quantity:false}));
     renderChromeList();
@@ -3252,8 +3271,8 @@ function renderChromeList() {
   if (!cw.length) { box.innerHTML = '<div class="empty">Ты ещё чист от хрома. Пока что.</div>'; return; }
   box.innerHTML = cw.map((i, idx) => `
     <div class="inv-row">
-      <span class="iname">${esc(i.custom_name||i.name)}</span><span class="hl-badge">HL ${i.hl || 0}</span><span class="chip">${esc(i.type || 'Cyberware')}</span>${i.acquisition_source?`<span class="chip">${esc(acquisitionSourceLabel(i.acquisition_source))}</span>`:''}
-      <button class="btn-sm" data-chrome-edit="${idx}">✎</button><button class="btn-sm btn-danger" data-chrome-del="${idx}">✕ ${T('remove','извлечь')}</button>
+      <span class="iname">${esc(i.custom_name||i.name)}</span><span class="hl-badge">HL ${i.hl || 0}</span><span class="chip">${esc(i.type || 'Cyberware')}</span><span class="tag">${i.state==='installed'?T('INSTALLED','УСТАНОВЛЕНО'):T('STAGED','ПОДГОТОВЛЕНО')}</span>${i.acquisition_source?`<span class="chip">${esc(acquisitionSourceLabel(i.acquisition_source))}</span>`:''}
+      <button class="btn-sm" data-chrome-edit="${idx}">✎</button>${i.state==='installed'?`<span class="small muted">${T('Use audited Uninstall on the Dossier','Используйте audited Uninstall в Dossier')}</span>`:`<button class="btn-sm btn-danger" data-chrome-del="${idx}">✕ ${T('remove','удалить')}</button>`}
     </div>`).join('');
   $$('[data-chrome-edit]',box).forEach(button=>button.onclick=()=>{const index=Number(button.dataset.chromeEdit);openOwnedItemEditor(c.cyberware[index],updated=>{c.cyberware[index]=updated;renderChromeList();edChanged();});});
   $$('[data-chrome-del]', box).forEach(b => b.onclick = () => {c.cyberware.splice(Number(b.dataset.chromeDel), 1);renderChromeList();edChanged();});

@@ -2129,6 +2129,8 @@ def derive(char, active_effects=None):
     hl_total = 0
     hum_cut = 0
     for chrome in char.get('cyberware') or []:
+        if str(chrome.get('state') or 'installed') != 'installed':
+            continue
         if chrome.get('humanity_exempt') and chrome.get('key') == 'creation-neuroport':
             continue
         hl_total += _num(chrome.get('hl')) or 0
@@ -2176,6 +2178,7 @@ def derive(char, active_effects=None):
     out['effective_stats'] = {
         stat: values['effective'] for stat, values in out['effects']['stats'].items()
     }
+    out['effective_cyberware'] = effective_cyberware_loadout(char)
     return out
 
 
@@ -2879,6 +2882,7 @@ def ensure_character_item_instances(data, regenerate=False):
     """
     changed = False
     seen = set()
+    legacy_instance_ids = {}
     legacy_weapon_state = copy.deepcopy(data.get('weapon_state') or {})
     legacy_weapon_keys = set()
     for bucket in ('inventory', 'cyberware'):
@@ -2900,10 +2904,14 @@ def ensure_character_item_instances(data, regenerate=False):
                 changed = True
             for index in range(copies):
                 owned = dict(entry)
-                candidate = str(entry.get('instance_id') or '').lower() if index == 0 else ''
+                original_instance_id = str(entry.get('instance_id') or '').lower() \
+                    if index == 0 else ''
+                candidate = original_instance_id
                 if regenerate or not INSTANCE_ID_RE.fullmatch(candidate) or candidate in seen:
                     candidate = new_item_instance_id()
                     changed = True
+                if original_instance_id and original_instance_id != candidate:
+                    legacy_instance_ids.setdefault(original_instance_id, candidate)
                 seen.add(candidate)
                 if owned.get('instance_id') != candidate or owned.get('qty') != per_copy_quantity:
                     changed = True
@@ -2936,6 +2944,35 @@ def ensure_character_item_instances(data, regenerate=False):
         if source != normalized:
             changed = True
         data[bucket] = normalized
+
+    # Cyberware creation assigns options to concrete temporary foundation IDs.
+    # When server-owned IDs are regenerated, remap those links in the same pass.
+    free_neuroport = next((
+        item for item in data.get('cyberware') or []
+        if isinstance(item, dict) and item.get('creation_free') and
+        item.get('key') == 'creation-neuroport'), None)
+    if free_neuroport:
+        legacy_instance_ids.setdefault(
+            'creation-neuroport', free_neuroport.get('instance_id'))
+    for old_id, new_id in list(legacy_instance_ids.items()):
+        if old_id and INSTANCE_ID_RE.fullmatch(str(new_id or '')):
+            legacy_instance_ids.setdefault(
+                cyberware_secondary_host_id(old_id),
+                cyberware_secondary_host_id(new_id))
+    for chrome in data.get('cyberware') or []:
+        if not isinstance(chrome, dict):
+            continue
+        old_host = str(chrome.get('host_instance') or '')
+        if old_host and legacy_instance_ids.get(old_host):
+            chrome['host_instance'] = legacy_instance_ids[old_host]
+            changed = True
+        old_hosts = chrome.get('host_instances')
+        if isinstance(old_hosts, list):
+            remapped = [legacy_instance_ids.get(str(host), str(host))
+                        for host in old_hosts]
+            if remapped != old_hosts:
+                chrome['host_instances'] = remapped
+                changed = True
 
     # Existing equipped armor pointed at a catalog key. Preserve that projection,
     # but also bind it to one concrete owned item whenever a match is available.
@@ -4853,6 +4890,8 @@ def character_change_summary(before, after, limit=250):
                     'mode': old.get('equipped_mode'), 'active': old.get('active'),
                     'category': old.get('cat'), 'value': old.get('price'),
                     'source': old.get('acquisition_source'),
+                    'hosts': cyberware_host_assignments(old)
+                        if bucket == 'cyberware' else None,
                     'description': old.get('desc') if old.get('is_custom') else None,
                 }
                 new_view = {
@@ -4861,6 +4900,8 @@ def character_change_summary(before, after, limit=250):
                     'mode': new.get('equipped_mode'), 'active': new.get('active'),
                     'category': new.get('cat'), 'value': new.get('price'),
                     'source': new.get('acquisition_source'),
+                    'hosts': cyberware_host_assignments(new)
+                        if bucket == 'cyberware' else None,
                     'description': new.get('desc') if new.get('is_custom') else None,
                 }
                 add(f'{bucket}.{identity}', f'{label}: {new_view["name"]}',
@@ -5709,8 +5750,18 @@ def canonical_owned_entry(entry, bucket, old_entries):
         owned['custom_name'] = str(custom_name_value or '')[:120]
     notes_value = entry.get('notes') if 'notes' in entry else owned.get('notes')
     owned['notes'] = str(notes_value or '')[:2000]
-    state = str(entry.get('state') or owned.get('state') or
-                ('installed' if bucket == 'cyberware' else 'carried'))
+    if bucket == 'cyberware':
+        # Concrete host links and installation state are changed only through the
+        # audited Cyberware lifecycle endpoint, never through a generic sheet PUT.
+        for key in ('host_instance', 'host_instances'):
+            if existing and key in existing:
+                owned[key] = copy.deepcopy(existing[key])
+            else:
+                owned.pop(key, None)
+        state = str((existing or {}).get('state') or
+                    ('installed' if existing else 'carried'))
+    else:
+        state = str(entry.get('state') or owned.get('state') or 'carried')
     if state not in ITEM_INSTANCE_STATES:
         raise ApiError(400, 'Некорректное состояние предмета')
     if bucket == 'inventory' and state == 'equipped' and owned.get('cat') != 'armor':
@@ -5726,7 +5777,7 @@ def canonical_owned_entry(entry, bucket, old_entries):
     elif state != 'equipped':
         for key in ('active', 'equipped_mode', 'equipped_slot', 'host_instance_id'):
             owned.pop(key, None)
-    owned['state'] = 'installed' if bucket == 'cyberware' else state
+    owned['state'] = state
     clean_item_acquisition(entry, owned, require_source=existing is None)
     return owned
 
@@ -5950,23 +6001,299 @@ def creation_skill_cost(data):
     return total
 
 
+CYBERWARE_HOST_ACCEPTED_NAMES = {
+    'Cyberarm': {'cyberarm', 'neo-soviet cyberarm'},
+    'Cyberleg': {'cyberleg', 'romanova cyberlegs'},
+    'Cybereye': {'cybereye', 'sponsored cybereye'},
+    'Cyberaudio Suite': {'cyberaudio suite', 'discount cyberaudio suite'},
+    'Neural Link or Neuroport': {'neural link', 'neuroport'},
+}
+
+
+def cyberware_is_installed(entry):
+    return str((entry or {}).get('state') or 'installed') == 'installed'
+
+
+def cyberware_is_paired_leg_foundation(entry):
+    catalog_item = item_by_id(catalog_item_id_for_entry(entry)) or entry or {}
+    return 'paired cyberlegs' in str(catalog_item.get('desc') or '').lower()
+
+
+def cyberware_secondary_host_id(instance_id):
+    """Derive a stable second physical host ID for one paired foundation item."""
+    value = str(instance_id or '').lower()
+    if INSTANCE_ID_RE.fullmatch(value):
+        return value[:-1] + format((int(value[-1], 16) + 1) % 16, 'x')
+    return f'{value}:paired-2'
+
+
+def cyberware_capacity(entry):
+    catalog_item = item_by_id(catalog_item_id_for_entry(entry)) or {}
+    capacity = copy.deepcopy(
+        catalog_item.get('capacity') or (entry or {}).get('capacity') or {})
+    description = str(catalog_item.get('desc') or (entry or {}).get('desc') or '')
+    if capacity.get('host'):
+        slot_match = re.search(
+            r'(?:takes?|uses?|requires?)\s+(?:up\s+)?(\d+)\s+(?:cyberware\s+)?option slots?',
+            description, re.I)
+        if slot_match:
+            capacity['slots_used'] = int(slot_match.group(1))
+    if cyberware_is_paired_leg_foundation(entry):
+        match = re.search(r'each cyberleg has\s+(\d+)\s+option slots?',
+                          description, re.I)
+        capacity.update({
+            'host': None, 'hosts_required': 0, 'slots_used': 0,
+            'slots_total': int(match.group(1)) if match else
+                max(1, int(_num(capacity.get('slots_total')) or 1)),
+        })
+    return capacity
+
+
+def cyberware_host_assignments(entry):
+    raw = entry.get('host_instances') if isinstance(entry, dict) else None
+    if not isinstance(raw, list) or not raw:
+        raw = [entry.get('host_instance')] if isinstance(entry, dict) and entry.get(
+            'host_instance') else []
+    result = []
+    for value in raw:
+        value = str(value or '')
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def cyberware_host_kind(entry):
+    if cyberware_is_paired_leg_foundation(entry):
+        return 'Cyberleg'
+    name = str((entry or {}).get('name') or '').lower()
+    for kind, accepted in CYBERWARE_HOST_ACCEPTED_NAMES.items():
+        if name in accepted:
+            return kind
+    return None
+
+
+def effective_cyberware_loadout(data):
+    """Return concrete Cyberware foundations, options, slots, and staged items."""
+    chrome = [item for item in data.get('cyberware') or []
+              if isinstance(item, dict) and item.get('instance_id')]
+    hosts = {}
+    for entry in chrome:
+        capacity = cyberware_capacity(entry)
+        kind = cyberware_host_kind(entry)
+        total = max(0, int(_num(capacity.get('slots_total')) or 0))
+        if kind and total and cyberware_is_installed(entry):
+            parent_id = entry['instance_id']
+            physical_ids = [parent_id]
+            if cyberware_is_paired_leg_foundation(entry):
+                physical_ids.append(cyberware_secondary_host_id(parent_id))
+            base_name = entry.get('custom_name') or entry.get('name') or kind
+            for side_index, physical_id in enumerate(physical_ids):
+                side = ('left' if side_index == 0 else 'right') \
+                    if len(physical_ids) > 1 else None
+                hosts[physical_id] = {
+                    'instance_id': physical_id,
+                    'foundation_instance_id': parent_id,
+                    'catalog_item_id': catalog_item_id_for_entry(entry),
+                    'name': f'{base_name} · {side.title()}' if side else base_name,
+                    'foundation_name': base_name,
+                    'host_kind': kind, 'physical_side': side,
+                    'paired_foundation': len(physical_ids) > 1,
+                    'state': 'installed', 'slots_total': total,
+                    'slots_used': 0, 'slots_free': total,
+                    'overloaded': False, 'options': [],
+                }
+
+    used = {host_id: 0 for host_id in hosts}
+    option_rows = []
+    unique_counts = {}
+    for entry in chrome:
+        capacity = cyberware_capacity(entry)
+        expected = capacity.get('host')
+        if not expected:
+            continue
+        installed = cyberware_is_installed(entry)
+        host_ids = cyberware_host_assignments(entry)
+        required = max(1, int(_num(capacity.get('hosts_required')) or 1))
+        slots = max(1, int(_num(capacity.get('slots_used')) or 1))
+        reasons = []
+        if installed:
+            unique_counts[catalog_item_id_for_entry(entry)] = \
+                unique_counts.get(catalog_item_id_for_entry(entry), 0) + 1
+            if len(host_ids) != required:
+                reasons.append(f'Requires {required} concrete hosts')
+            for host_id in host_ids:
+                host = hosts.get(host_id)
+                if not host:
+                    reasons.append('Assigned host is missing or not installed')
+                elif host['host_kind'] != expected:
+                    reasons.append(f'Host must be {expected}')
+                else:
+                    used[host_id] += slots
+        option_rows.append({
+            'instance_id': entry['instance_id'],
+            'catalog_item_id': catalog_item_id_for_entry(entry),
+            'name': entry.get('custom_name') or entry.get('name') or 'Cyberware Option',
+            'state': str(entry.get('state') or 'installed'),
+            'expected_host': expected, 'hosts_required': required,
+            'slots_used_per_host': slots, 'host_instance_ids': host_ids,
+            'compatible_host_ids': [],
+            'status': 'staged' if not installed else ('installed' if not reasons else 'unbound'),
+            'reasons': reasons,
+            'unique': bool(capacity.get('unique')),
+        })
+
+    option_by_id = {item['instance_id']: item for item in option_rows}
+    for host_id, amount in used.items():
+        host = hosts[host_id]
+        host['slots_used'] = amount
+        host['slots_free'] = max(0, host['slots_total'] - amount)
+        host['overloaded'] = amount > host['slots_total']
+    for option in option_rows:
+        option['compatible_host_ids'] = [
+            host_id for host_id, host in hosts.items()
+            if host['host_kind'] == option['expected_host'] and
+            host['slots_used'] - (
+                option['slots_used_per_host']
+                if host_id in option['host_instance_ids'] and
+                option['state'] == 'installed' else 0) +
+            option['slots_used_per_host'] <= host['slots_total']]
+        if option['state'] != 'installed':
+            continue
+        for host_id in option['host_instance_ids']:
+            host = hosts.get(host_id)
+            if not host or host['host_kind'] != option['expected_host']:
+                continue
+            host['options'].append({
+                'instance_id': option['instance_id'], 'name': option['name'],
+                'slots_used': option['slots_used_per_host'],
+                'paired': option['hosts_required'] > 1,
+            })
+            if host['overloaded']:
+                option['status'] = 'invalid'
+                if 'Host Option Slots exceeded' not in option['reasons']:
+                    option['reasons'].append('Host Option Slots exceeded')
+    for catalog_id, count in unique_counts.items():
+        if not catalog_id or count <= 1:
+            continue
+        for option in option_rows:
+            if option['catalog_item_id'] == catalog_id and option['unique']:
+                option['status'] = 'invalid'
+                option['reasons'].append('Only one installed copy is allowed')
+
+    hosted_ids = set(option_by_id)
+    host_ids = set(hosts)
+    staged = [{
+        'instance_id': item['instance_id'],
+        'catalog_item_id': catalog_item_id_for_entry(item),
+        'name': item.get('custom_name') or item.get('name') or 'Cyberware',
+        'state': str(item.get('state') or 'installed'),
+        'host_kind': cyberware_host_kind(item),
+        'expected_host': cyberware_capacity(item).get('host'),
+        'hl': _num(item.get('hl')) or 0,
+    } for item in chrome if not cyberware_is_installed(item)]
+    standalone = [{
+        'instance_id': item['instance_id'],
+        'catalog_item_id': catalog_item_id_for_entry(item),
+        'name': item.get('custom_name') or item.get('name') or 'Cyberware',
+        'state': 'installed', 'hl': _num(item.get('hl')) or 0,
+    } for item in chrome
+        if cyberware_is_installed(item) and item['instance_id'] not in hosted_ids and
+        item['instance_id'] not in host_ids]
+    return {
+        'hosts': sorted(hosts.values(), key=lambda item: (item['host_kind'], item['name'],
+                                                          item['instance_id'])),
+        'options': option_rows, 'standalone': standalone, 'staged': staged,
+        'unbound_count': sum(item['status'] in ('unbound', 'invalid')
+                             for item in option_rows),
+    }
+
+
+def cyberware_option_compatibility(data, option_instance_id, requested_host_ids):
+    loadout = effective_cyberware_loadout(data)
+    option = next((item for item in loadout['options']
+                   if item['instance_id'] == option_instance_id), None)
+    if not option:
+        return {'allowed': False, 'reasons': ['Item is not a Cyberware Option']}
+    host_by_id = {item['instance_id']: item for item in loadout['hosts']}
+    host_ids = []
+    for value in requested_host_ids or []:
+        value = str(value or '').lower()
+        if value and value not in host_ids:
+            host_ids.append(value)
+    reasons = []
+    if len(host_ids) != option['hosts_required']:
+        reasons.append(f'Requires {option["hosts_required"]} different concrete hosts')
+    for host_id in host_ids:
+        host = host_by_id.get(host_id)
+        if not host:
+            reasons.append('Selected host is missing or not installed')
+            continue
+        if host['host_kind'] != option['expected_host']:
+            reasons.append(f'Selected host must be {option["expected_host"]}')
+        current_uses = option['slots_used_per_host'] \
+            if host_id in option['host_instance_ids'] and option['state'] == 'installed' else 0
+        if (host['slots_used'] - current_uses + option['slots_used_per_host'] >
+                host['slots_total']):
+            reasons.append(f'{host["name"]}: not enough Option Slots')
+    entry = next((item for item in data.get('cyberware') or []
+                  if isinstance(item, dict) and
+                  item.get('instance_id') == option_instance_id), {})
+    if cyberware_capacity(entry).get('unique'):
+        catalog_id = catalog_item_id_for_entry(entry)
+        if any(isinstance(item, dict) and item.get('instance_id') != option_instance_id and
+               cyberware_is_installed(item) and
+               catalog_item_id_for_entry(item) == catalog_id
+               for item in data.get('cyberware') or []):
+            reasons.append('Only one installed copy is allowed')
+    return {
+        'allowed': not reasons, 'reasons': reasons,
+        'option': option, 'host_instance_ids': host_ids,
+    }
+
+
+def validate_cyberware_trust_lifecycle(before, after):
+    """Prevent generic sheet edits from bypassing surgical install/uninstall audit."""
+    old = {item.get('instance_id'): item for item in before.get('cyberware') or []
+           if isinstance(item, dict) and item.get('instance_id')}
+    new = {item.get('instance_id'): item for item in after.get('cyberware') or []
+           if isinstance(item, dict) and item.get('instance_id')}
+    for instance_id, previous in old.items():
+        if not cyberware_is_installed(previous):
+            continue
+        current = new.get(instance_id)
+        if not current:
+            raise ApiError(409, 'Сначала удалите Cyberware через audited Uninstall')
+        if not cyberware_is_installed(current):
+            raise ApiError(409, 'Изменяйте Cyberware installation только через lifecycle action')
+        if cyberware_host_assignments(previous) != cyberware_host_assignments(current):
+            raise ApiError(409, 'Изменяйте concrete Cyberware hosts только через lifecycle action')
+
+
 def validate_cyberware_requirements(data):
     """Проверяет явные фундаментальные требования из описаний Data Pool."""
-    chrome = [c for c in data.get('cyberware') or []
+    installed = [c for c in data.get('cyberware') or []
+                 if isinstance(c, dict) and cyberware_is_installed(c)]
+    chrome = [c for c in installed
               if not (c.get('creation_free') and c.get('key') == 'creation-neuroport')]
     items = [item_by_id(str(c.get('key') or '')) for c in chrome]
     items = [item for item in items if item]
     names = [item['name'].lower() for item in items]
     inventory_names = [str(entry.get('name') or '').lower() for entry in data.get('inventory') or []]
-    has_port = any(c.get('key') == 'creation-neuroport' for c in data.get('cyberware') or []) or 'neuroport' in names
+    has_port = any(c.get('key') == 'creation-neuroport' for c in installed) or \
+        'neuroport' in names
     foundations = {
         'cybereye': {'cybereye', 'sponsored cybereye'},
         'cyberarm': {'cyberarm', 'neo-soviet cyberarm'},
-        'cyberleg': {'cyberleg', 'romanova cyberlegs'},
+        'cyberleg': {'cyberleg', 'romanova cyberlegs',
+                     'rocklin augmentics skydrivers'},
         'cyberaudio suite': {'cyberaudio suite', 'discount cyberaudio suite'},
         'chipware socket': {'chipware socket', 'budget chipware socket'},
     }
-    count_foundation = lambda kind: sum(name in foundations[kind] for name in names)
+    def count_foundation(kind):
+        return sum(
+            (2 if kind == 'cyberleg' and name in {
+                'romanova cyberlegs', 'rocklin augmentics skydrivers'} else 1)
+            for name in names if name in foundations[kind])
     body = _num((data.get('stats') or {}).get('BODY')) or 0
 
     for item in items:
@@ -6029,60 +6356,36 @@ def validate_cyberware_requirements(data):
             raise ApiError(400, f'{item["name"]} требует: {missing}')
 
 
-def validate_cyberware_slots(data):
-    """Проверяет host assignment, Option Slots и явные запреты дубликатов."""
-    raw = data.get('cyberware') or []
-    hosts = {}
-    catalog_items = []
-    for index, entry in enumerate(raw):
-        if entry.get('creation_free') and entry.get('key') == 'creation-neuroport':
-            iid = str(entry.get('instance_id') or 'creation-neuroport')
-            hosts[iid] = {'name': 'Neuroport', 'total': 5}
-            catalog_items.append((entry, None))
-            continue
-        item = item_by_id(str(entry.get('key') or ''))
-        catalog_items.append((entry, item))
-        if not item:
-            continue
-        capacity = item.get('capacity') or {}
-        total = _num(capacity.get('slots_total')) or 0
-        iid = str(entry.get('instance_id') or f'{entry.get("key")}:{index}')
-        if total:
-            hosts[iid] = {'name': item['name'], 'total': total}
-
-    accepted = {
-        'Cyberarm': {'cyberarm', 'neo-soviet cyberarm'},
-        'Cyberleg': {'cyberleg', 'romanova cyberlegs'},
-        'Cybereye': {'cybereye', 'sponsored cybereye'},
-        'Cyberaudio Suite': {'cyberaudio suite', 'discount cyberaudio suite'},
-        'Neural Link or Neuroport': {'neural link', 'neuroport'},
-    }
-    used = {iid: 0 for iid in hosts}
+def validate_cyberware_slots(data, allow_unbound=False):
+    """Validate concrete host assignment, paired options, slots, and uniqueness."""
     unique_counts = {}
-    for entry, item in catalog_items:
-        if not item:
+    for entry in data.get('cyberware') or []:
+        if not isinstance(entry, dict) or not cyberware_is_installed(entry) or \
+                not cyberware_capacity(entry).get('unique'):
             continue
-        capacity = item.get('capacity') or {}
-        if capacity.get('unique'):
-            unique_counts[item['id']] = unique_counts.get(item['id'], 0) + 1
-            if unique_counts[item['id']] > 1:
-                raise ApiError(400, f'{item["name"]}: допустима только одна установка')
-        expected = capacity.get('host')
-        slots = _num(capacity.get('slots_used')) or 0
-        if not expected:
+        catalog_id = catalog_item_id_for_entry(entry)
+        unique_counts[catalog_id] = unique_counts.get(catalog_id, 0) + 1
+        if unique_counts[catalog_id] > 1:
+            name = (item_by_id(catalog_id) or entry).get('name') or 'Cyberware'
+            raise ApiError(400, f'{name}: допустима только одна установка')
+    loadout = effective_cyberware_loadout(data)
+    for option in loadout['options']:
+        if option['state'] != 'installed':
             continue
-        host_ids = entry.get('host_instances') or ([entry.get('host_instance')] if entry.get('host_instance') else [])
-        host_ids = [str(value) for value in host_ids if value]
-        required = _num(capacity.get('hosts_required')) or 1
-        if len(set(host_ids)) != required or any(host_id not in hosts for host_id in host_ids):
-            raise ApiError(400, f'{item["name"]}: требуется совместимых hosts: {required}')
-        for host_id in host_ids:
-            if hosts[host_id]['name'].lower() not in accepted.get(expected, set()):
-                raise ApiError(400, f'{item["name"]}: несовместимый host {hosts[host_id]["name"]}')
-            used[host_id] += slots
-    for iid, amount in used.items():
-        if amount > hosts[iid]['total']:
-            raise ApiError(400, f'{hosts[iid]["name"]}: Option Slots {amount}/{hosts[iid]["total"]}')
+        if option['status'] in ('unbound', 'invalid'):
+            if allow_unbound and not option['host_instance_ids']:
+                continue
+            if len(option['host_instance_ids']) != option['hosts_required']:
+                raise ApiError(
+                    400, f'{option["name"]}: требуется совместимых hosts: '
+                         f'{option["hosts_required"]}')
+            reason = '; '.join(option['reasons']) or 'invalid host assignment'
+            raise ApiError(400, f'{option["name"]}: {reason}')
+    for host in loadout['hosts']:
+        if host['overloaded']:
+            raise ApiError(
+                400, f'{host["name"]}: Option Slots '
+                     f'{host["slots_used"]}/{host["slots_total"]}')
 
 
 def validate_role_benefits(data):
@@ -6644,6 +6947,24 @@ SERVER_ERROR_EN = {
     'Укажите причину Defense Sequencer resolution': 'Provide a reason for the Defense Sequencer resolution',
     'Black ICE не имеет curated STAT effect': 'Black ICE has no curated STAT effect',
     'Black ICE STAT penalty roll должен быть от 1 до 6': 'Black ICE STAT penalty roll must be from 1 to 6',
+    'Сначала удалите Cyberware через audited Uninstall': 'Remove Cyberware through the audited Uninstall action first',
+    'Изменяйте Cyberware installation только через lifecycle action': 'Change Cyberware installation only through a lifecycle action',
+    'Изменяйте concrete Cyberware hosts только через lifecycle action': 'Change concrete Cyberware hosts only through a lifecycle action',
+    'Cyberware action содержит неподдерживаемые поля': 'Cyberware action contains unsupported fields',
+    'Укажите причину Cyberware lifecycle action': 'Provide a reason for the Cyberware lifecycle action',
+    'Cyberware instance не найден': 'Cyberware instance not found',
+    'Cyberware instance не связан с Data Pool': 'Cyberware instance is not linked to the Data Pool',
+    'host_instance_ids должен быть коротким списком': 'host_instance_ids must be a short list',
+    'Некорректный concrete Cyberware host': 'Invalid concrete Cyberware host',
+    'Cyberware уже установлена': 'Cyberware is already installed',
+    'Сломанную Cyberware нельзя установить': 'Broken Cyberware cannot be installed',
+    'Эта Cyberware не использует Option host': 'This Cyberware does not use an Option host',
+    'Допустима только одна установленная копия Cyberware': 'Only one installed Cyberware copy is allowed',
+    'Недостаточно Humanity для установки Cyberware': 'Not enough Humanity to install Cyberware',
+    'Rebind требует установленную Cyberware Option': 'Rebind requires an installed Cyberware Option',
+    'Cyberware уже не установлена': 'Cyberware is already uninstalled',
+    'Стартовый Neuroport нельзя извлечь этим действием': 'The starting Neuroport cannot be removed with this action',
+    'Одновременно допустим только один Cyberaudio Suite': 'Only one Cyberaudio Suite may be installed at a time',
     'Run доступен только Attacker Program': 'Run is available only for an Attacker Program',
     'Saved Program instance недоступен для восстановления': 'Saved Program instance is unavailable for restore',
     'Недостаточно Cyberdeck slots для Backup restore': 'Not enough Cyberdeck slots for Backup restore',
@@ -6987,6 +7308,7 @@ def server_error_message(message, language):
         ('распределено', 'allocated'),
         ('при parent-pool', 'with parent pool'),
         ('требуется совместимых hosts:', 'required compatible hosts:'),
+        ('Сначала извлеките зависимые Cyberware Options:', 'Uninstall dependent Cyberware Options first:'),
         ('заполните', 'complete'),
         ('выберите Team Member', 'choose a Team Member'),
         ('недоступный выбор', 'unavailable choice'),
@@ -8730,7 +9052,8 @@ class Handler(BaseHTTPRequestHandler):
         elif public_view:
             if not visibility['equipment']:
                 for private_key in ('modifications', 'effective_weapons',
-                                    'effective_vehicles', 'effective_cyberdecks'):
+                                    'effective_vehicles', 'effective_cyberdecks',
+                                    'effective_cyberware'):
                     derived.pop(private_key, None)
             for effect in (derived.get('effects') or {}).get('instances') or []:
                 for private_key in ('reason', 'actor', 'source_item_instance_id'):
@@ -8873,6 +9196,7 @@ class Handler(BaseHTTPRequestHandler):
         after = clean_character_trust_update(before, (body or {}).get('data'))
         if before == after:
             raise ApiError(400, 'В Character Sheet нет изменений')
+        validate_cyberware_trust_lifecycle(before, after)
         validate_active_modification_references(conn, row['id'], after)
         sync_weapon_states_with_modifications(conn, row['id'], after)
         sync_vehicle_states_with_modifications(conn, row['id'], after)
@@ -10544,6 +10868,165 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     @atomic_endpoint
+    def api_character_cyberware_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'action', 'host_instance_ids', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Cyberware action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Cyberware lifecycle action')
+        instance_id = str(m.group(2)).lower()
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        chrome = next((item for item in data.get('cyberware') or []
+                       if isinstance(item, dict) and
+                       item.get('instance_id') == instance_id), None)
+        if not chrome:
+            raise ApiError(404, 'Cyberware instance не найден')
+        catalog_item = item_by_id(catalog_item_id_for_entry(chrome))
+        if not catalog_item or catalog_item.get('cat') != 'cyberware':
+            raise ApiError(409, 'Cyberware instance не связан с Data Pool')
+        action = str((body or {}).get('action') or '').lower()
+        if action not in ('install', 'uninstall', 'rebind'):
+            raise ApiError(400, 'Cyberware action: install/uninstall/rebind')
+        raw_host_ids = (body or {}).get('host_instance_ids') or []
+        if not isinstance(raw_host_ids, list) or len(raw_host_ids) > 4:
+            raise ApiError(400, 'host_instance_ids должен быть коротким списком')
+        host_ids = []
+        for value in raw_host_ids:
+            value = str(value or '').lower()
+            if not INSTANCE_ID_RE.fullmatch(value):
+                raise ApiError(400, 'Некорректный concrete Cyberware host')
+            if value not in host_ids:
+                host_ids.append(value)
+        capacity = cyberware_capacity(chrome)
+        expected_host = capacity.get('host')
+        installed_before = cyberware_is_installed(chrome)
+        humanity_before = derive(data)
+        before_current = humanity_before.get('humanity_cur')
+        before_maximum = humanity_before.get('humanity_max')
+
+        def assign_hosts():
+            compatibility = cyberware_option_compatibility(
+                data, instance_id, host_ids)
+            if not compatibility['allowed']:
+                raise ApiError(400, '; '.join(compatibility['reasons']))
+            chrome['host_instance'] = host_ids[0]
+            chrome['host_instances'] = host_ids
+            return compatibility
+
+        compatibility = None
+        if action == 'install':
+            if installed_before:
+                raise ApiError(409, 'Cyberware уже установлена')
+            if chrome.get('state') == 'broken':
+                raise ApiError(409, 'Сломанную Cyberware нельзя установить')
+            if expected_host:
+                compatibility = assign_hosts()
+            elif host_ids:
+                raise ApiError(400, 'Эта Cyberware не использует Option host')
+            catalog_id = catalog_item_id_for_entry(chrome)
+            other_installed = [
+                item for item in data.get('cyberware') or []
+                if isinstance(item, dict) and item.get('instance_id') != instance_id and
+                cyberware_is_installed(item)]
+            if capacity.get('unique') and any(
+                    catalog_item_id_for_entry(item) == catalog_id
+                    for item in other_installed):
+                raise ApiError(409, 'Допустима только одна установленная копия Cyberware')
+            chrome_name = str(chrome.get('name') or '').lower()
+            if chrome_name == 'neuroport' and any(
+                    str(item.get('name') or '').lower() == 'neuroport'
+                    for item in other_installed):
+                raise ApiError(409, 'Одновременно допустим только один Neuroport')
+            if cyberware_host_kind(chrome) == 'Cyberaudio Suite' and any(
+                    cyberware_host_kind(item) == 'Cyberaudio Suite'
+                    for item in other_installed):
+                raise ApiError(409, 'Одновременно допустим только один Cyberaudio Suite')
+            chrome['state'] = 'installed'
+            validate_cyberware_requirements(data)
+            if expected_host:
+                # Re-evaluate after state transition so slot usage includes this option.
+                compatibility = cyberware_option_compatibility(data, instance_id, host_ids)
+                if not compatibility['allowed']:
+                    raise ApiError(400, '; '.join(compatibility['reasons']))
+            if before_current is not None:
+                loss = max(0, int(_num(chrome.get('hl')) or 0))
+                if before_current - loss < 0:
+                    raise ApiError(409, 'Недостаточно Humanity для установки Cyberware')
+                data['humanity_cur'] = before_current - loss
+            reason = f'Install Cyberware {chrome.get("name")}: {reason_detail}'
+        elif action == 'rebind':
+            if not installed_before or not expected_host:
+                raise ApiError(409, 'Rebind требует установленную Cyberware Option')
+            compatibility = assign_hosts()
+            reason = f'Rebind Cyberware Option {chrome.get("name")}: {reason_detail}'
+        else:
+            if not installed_before:
+                raise ApiError(409, 'Cyberware уже не установлена')
+            if chrome.get('creation_free') and chrome.get('key') == 'creation-neuroport':
+                raise ApiError(409, 'Стартовый Neuroport нельзя извлечь этим действием')
+            foundation_host_ids = {
+                host['instance_id'] for host in
+                effective_cyberware_loadout(data)['hosts']
+                if host.get('foundation_instance_id') == instance_id}
+            dependents = [
+                item for item in data.get('cyberware') or []
+                if isinstance(item, dict) and item.get('instance_id') != instance_id and
+                cyberware_is_installed(item) and
+                foundation_host_ids.intersection(cyberware_host_assignments(item))]
+            if dependents:
+                names = ', '.join(str(item.get('name') or 'Option') for item in dependents[:5])
+                raise ApiError(409, f'Сначала извлеките зависимые Cyberware Options: {names}')
+            chrome['state'] = 'carried'
+            chrome.pop('host_instance', None)
+            chrome.pop('host_instances', None)
+            validate_cyberware_requirements(data)
+            if before_current is not None:
+                # Removal restores Maximum Humanity capacity, never spent Humanity.
+                data['humanity_cur'] = before_current
+            reason = f'Uninstall Cyberware {chrome.get("name")}: {reason_detail}'
+
+        humanity_after = derive(data)
+        validate_active_modification_references(conn, row['id'], data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'cyberware_lifecycle', source_ref=reason, prune=True)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='modification')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['cyberware_lifecycle'] = {
+            'action': action, 'instance_id': instance_id,
+            'host_instance_ids': host_ids,
+            'humanity_current_before': before_current,
+            'humanity_current_after': humanity_after.get('humanity_cur'),
+            'humanity_maximum_before': before_maximum,
+            'humanity_maximum_after': humanity_after.get('humanity_max'),
+            'humanity_restored_on_uninstall': 0,
+        }
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        now = time.time()
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'action': action,
+            'humanity': delta['cyberware_lifecycle'],
+            'compatibility': compatibility,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
     def api_character_item_action(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
         expected_revision = _num((body or {}).get('revision'))
@@ -11042,8 +11525,10 @@ class Handler(BaseHTTPRequestHandler):
         if total > cash + 1e-9:
             raise ApiError(400, f'Не хватает €$: нужно {total:,.0f}, есть {cash:,.0f}')
         inv = data.setdefault('inventory', [])
+        chrome = data.setdefault('cyberware', [])
         purchased_weapon_ids = []
         for it, qty, price in bought:
+            target_bucket = chrome if it['cat'] == 'cyberware' else inv
             owned = {
                 'key': it['id'], 'catalog_item_id': it['id'], 'cat': it['cat'],
                 'name': it['name'], 'price': price, 'qty': 1, 'state': 'carried',
@@ -11058,7 +11543,7 @@ class Handler(BaseHTTPRequestHandler):
             if coverage:
                 owned['effect_coverage'] = coverage
             if item_entry_stackable(owned):
-                found = next((entry for entry in inv if isinstance(entry, dict) and
+                found = next((entry for entry in target_bucket if isinstance(entry, dict) and
                               catalog_item_id_for_entry(entry) == it['id'] and
                               item_entry_stackable(entry) and
                               str(entry.get('state') or 'carried') == 'carried' and
@@ -11073,14 +11558,14 @@ class Handler(BaseHTTPRequestHandler):
                     owned['qty'] = qty
                     if it['cat'] == 'ammo':
                         owned['ammo_rounds'] = qty * ammo_pack_size(owned)
-                    inv.append(owned)
+                    target_bucket.append(owned)
             else:
-                if len(inv) + qty > 500:
+                if len(inv) + len(chrome) + qty > 500:
                     raise ApiError(400, 'Инвентарь не может содержать больше 500 экземпляров')
                 for _ in range(qty):
                     instance = copy.deepcopy(owned)
                     instance['instance_id'] = new_item_instance_id()
-                    inv.append(instance)
+                    target_bucket.append(instance)
                     if it['cat'] == 'guns':
                         purchased_weapon_ids.append(instance['instance_id'])
         data['cash'] = round(cash - total, 2)
@@ -11120,15 +11605,25 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             raise ApiError(400, 'Некорректное количество')
         inv = data.get('inventory') or []
-        index = next((position for position, entry in enumerate(inv)
+        chrome = data.get('cyberware') or []
+        bucket = inv
+        index = next((position for position, entry in enumerate(bucket)
                       if isinstance(entry, dict) and instance_id and
                       entry.get('instance_id') == instance_id), None)
         if index is None:
-            index = next((position for position, entry in enumerate(inv)
+            index = next((position for position, entry in enumerate(bucket)
+                          if isinstance(entry, dict) and key and entry.get('key') == key), None)
+        if index is None:
+            bucket = chrome
+            index = next((position for position, entry in enumerate(bucket)
+                          if isinstance(entry, dict) and instance_id and
+                          entry.get('instance_id') == instance_id), None)
+        if index is None:
+            index = next((position for position, entry in enumerate(bucket)
                           if isinstance(entry, dict) and key and entry.get('key') == key), None)
         if index is None:
             raise ApiError(404, 'Предмет не найден в инвентаре')
-        ent = inv[index]
+        ent = bucket[index]
         linked = conn.execute(
             'SELECT 1 FROM item_modifications WHERE character_id=? AND active=1 '
             'AND (host_instance_id=? OR upgrade_instance_id=?)',
@@ -11152,7 +11647,7 @@ class Handler(BaseHTTPRequestHandler):
             ent['qty'] = math.ceil(ent['ammo_rounds'] / ammo_pack_size(ent)) \
                 if ent['ammo_rounds'] > 0 else 0
         if ent['qty'] <= 0:
-            inv.pop(index)
+            bucket.pop(index)
             (data.get('weapon_state') or {}).pop(str(ent.get('instance_id') or ''), None)
         data['cash'] = round(float(data.get('cash') or 0) + back, 2)
         persist_character_item_instances(
@@ -13611,6 +14106,7 @@ ROUTES = [
     ('POST', rx(r'/api/characters/(\d+)/ledger/(\d+)/revert'), Handler.api_character_ledger_revert),
     ('GET', rx(r'/api/characters/(\d+)/items'), Handler.api_character_items),
     ('POST', rx(r'/api/characters/(\d+)/items/([a-f0-9]{32})/action'), Handler.api_character_item_action),
+    ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/action'), Handler.api_character_cyberware_action),
     ('GET', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modifications),
     ('POST', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modification_install),
     ('POST', rx(r'/api/characters/(\d+)/modifications/([a-f0-9]{32})/action'), Handler.api_character_modification_action),

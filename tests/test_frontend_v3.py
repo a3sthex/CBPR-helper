@@ -132,6 +132,20 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('blackIceRuntimeHtml', source)
         self.assertIn('Deploy in Combat', source)
 
+    def test_character_sheet_has_concrete_cyberware_host_lifecycle(self):
+        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        self.assertIn('cyberwareLifecycleHtml', source)
+        self.assertIn('effective_cyberware', source)
+        self.assertIn('data-cyberware-action', source)
+        self.assertIn('host_instance_ids', source)
+        self.assertIn('Install into Host', source)
+        self.assertIn('Humanity will NOT be restored', source)
+        self.assertIn('/cyberware/${instanceId}/action', source)
+        self.assertIn('STAGED · NOT INSTALLED', source)
+        self.assertIn('pairedCyberHostId', source)
+        self.assertIn('cyberPhysicalHosts', source)
+        self.assertIn('clientInstanceId', source)
+
     def test_live_session_has_validated_net_context_and_queue_controls(self):
         ncnet = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')
         app = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
