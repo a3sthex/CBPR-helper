@@ -515,6 +515,39 @@ class WeaponModificationEffectTests(unittest.TestCase):
         self.assertFalse(conflict['allowed'])
         self.assertTrue(any('Conflicts' in reason for reason in conflict['reasons']))
 
+    def test_range_table_modification_uses_host_specific_configuration(self):
+        pistol = self.owned('guns-0', 'c' * 32)
+        upgrade = self.owned('gun_upgrades-19', 'd' * 32)
+        upgrade['state'] = 'installed'
+        pistol_info = server.weapon_range_table_info(pistol)
+        self.assertEqual(pistol_info['base'], 'Pistol')
+        self.assertEqual(pistol_info['choices'], ['Snubnose Pistol', 'Long Barrel Pistol'])
+        schema = server.weapon_modification_configuration_schema('gun_upgrades-19', pistol)[0]
+        self.assertEqual(schema['base_value'], 'Pistol')
+        self.assertEqual([choice['value'] for choice in schema['choices']],
+                         ['Snubnose Pistol', 'Long Barrel Pistol'])
+        clean = server.clean_weapon_modification_choices(
+            'gun_upgrades-19', {'range_table': 'Long Barrel Pistol'}, pistol)
+        self.assertEqual(clean, {'range_table': 'Long Barrel Pistol'})
+        with self.assertRaises(server.ApiError):
+            server.clean_weapon_modification_choices(
+                'gun_upgrades-19', {'range_table': 'Sniper Rifle'}, pistol)
+        modification = {
+            'modification_id': 'e' * 32, 'host_instance_id': pistol['instance_id'],
+            'upgrade_instance_id': upgrade['instance_id'], 'slots_used': 0, 'active': True,
+            'configuration': {
+                'choices': clean,
+                'effect_rules': server.weapon_modification_rules_for_catalog('gun_upgrades-19'),
+            },
+        }
+        result = server.evaluate_effective_weapon(
+            pistol, [modification], {upgrade['instance_id']: upgrade},
+            {'inventory': [pistol, upgrade], 'cyberware': []})
+        self.assertEqual(result['base']['range_table'], 'Pistol')
+        self.assertEqual(result['effective']['range_table'], 'Long Barrel Pistol')
+        self.assertEqual(result['base']['damage'], result['effective']['damage'])
+        self.assertEqual(result['base']['magazine'], result['effective']['magazine'])
+
     def test_bayonet_concealability_has_manual_alternate_attack_rule(self):
         host = self.owned('guns-5', '5' * 32)  # Shotgun / Shoulder Arms
         bayonet = self.owned('gun_upgrades-3', '6' * 32)

@@ -285,14 +285,17 @@ def load_effect_rules():
         configuration = rule.get('configuration')
         if configuration is not None:
             if (not isinstance(configuration, dict) or
-                    set(configuration) - {'key', 'label_en', 'label_ru', 'required', 'choices'} or
+                    set(configuration) - {'key', 'label_en', 'label_ru', 'required',
+                                          'choices', 'choice_source'} or
                     not re.fullmatch(r'[a-z0-9_.-]{2,80}', str(configuration.get('key') or '')) or
                     not isinstance(configuration.get('required', False), bool) or
-                    not isinstance(configuration.get('choices'), list) or
-                    not configuration['choices']):
+                    configuration.get('choice_source') not in (None, 'compatible_range_tables') or
+                    (configuration.get('choice_source') is None and
+                     (not isinstance(configuration.get('choices'), list) or
+                      not configuration['choices']))):
                 raise RuntimeError(f'Invalid configuration in weapon rule {rule_id}')
             choice_values = set()
-            for choice in configuration['choices']:
+            for choice in configuration.get('choices') or []:
                 if (not isinstance(choice, dict) or
                         set(choice) - {'value', 'label_en', 'label_ru'} or
                         not re.fullmatch(r'[a-z0-9_.-]{1,80}', str(choice.get('value') or '')) or
@@ -316,6 +319,7 @@ def load_effect_rules():
                                                  'weapon.attack_check',
                                                  'weapon.alternate_profile',
                                                  'weapon.autofire_profile',
+                                                 'weapon.range_table',
                                                  'weapon.tag'}):
                 raise RuntimeError(f'Invalid weapon effect in rule {rule_id}')
             if effect['target'] == 'weapon.magazine':
@@ -372,6 +376,11 @@ def load_effect_rules():
                         ('enhanced_multiplier' in effect and
                          effect.get('enhanced_multiplier') not in (1, 2, 3, 4))):
                     raise RuntimeError(f'Invalid Autofire enhancement in rule {rule_id}')
+            elif effect['target'] == 'weapon.range_table':
+                if (effect.get('operation') != 'configure' or not configuration or
+                        effect.get('configuration_key') != configuration.get('key') or
+                        configuration.get('choice_source') != 'compatible_range_tables'):
+                    raise RuntimeError(f'Invalid Range Table configuration in rule {rule_id}')
             elif effect['target'] == 'weapon.tag':
                 if (effect.get('operation') != 'grant' or
                         effect.get('value') not in ('Power Weapon', 'Smart Weapon', 'Tech Weapon')):
@@ -441,14 +450,62 @@ def weapon_modification_rules_for_catalog(catalog_id):
             if rule.get('catalog_id') == catalog_id]
 
 
-def weapon_modification_configuration_schema(catalog_id):
-    return [copy.deepcopy(rule['configuration'])
-            for rule in weapon_modification_rules_for_catalog(catalog_id)
-            if isinstance(rule.get('configuration'), dict)]
+WEAPON_RANGE_FAMILIES = {
+    'pistol': ['Snubnose Pistol', 'Pistol', 'Long Barrel Pistol'],
+    'smg': ['Subcompact SMG', 'SMG'],
+    'shotgun': ['Short Barrel Shotgun', 'Shotgun', 'Long Barrel Shotgun'],
+    'rifle': ['Carbine', 'Assault Rifle', 'Battle Rifle', 'Marksman Rifle',
+              'Scout Rifle', 'Sniper Rifle', 'Anti-materiel Rifle'],
+    'bow': ['Shortbow', 'Bow', 'Longbow'],
+    'grenade_launcher': ['Grenade Launcher'],
+    'rocket_launcher': ['Rocket Launcher', 'Missile Launcher'],
+}
 
 
-def clean_weapon_modification_choices(catalog_id, raw):
-    schemas = weapon_modification_configuration_schema(catalog_id)
+def weapon_range_table_info(host):
+    weapon_type = str((host.get('mechanics') or {}).get('type') or '')
+    low = weapon_type.lower()
+    if 'pistol' in low:
+        family, base = 'pistol', 'Pistol'
+    elif 'smg' in low:
+        family, base = 'smg', 'SMG'
+    elif 'shotgun' in low:
+        family, base = 'shotgun', 'Shotgun'
+    elif any(token in low for token in ('rifle', 'carbine')):
+        family = 'rifle'
+        base = weapon_type if weapon_type in WEAPON_RANGE_FAMILIES[family] else 'Assault Rifle'
+    elif 'bow' in low:
+        family, base = 'bow', 'Bow'
+    elif 'grenade launcher' in low:
+        family, base = 'grenade_launcher', 'Grenade Launcher'
+    elif 'rocket launcher' in low or 'missile launcher' in low:
+        family = 'rocket_launcher'
+        base = 'Missile Launcher' if 'missile' in low else 'Rocket Launcher'
+    else:
+        return {'family': None, 'base': None, 'choices': []}
+    available_rows = {str(row[0]) for row in (catalog().get('range_table') or [])[1:] if row}
+    choices = [name for name in WEAPON_RANGE_FAMILIES[family]
+               if name in available_rows and name != base]
+    return {'family': family, 'base': base, 'choices': choices}
+
+
+def weapon_modification_configuration_schema(catalog_id, host=None):
+    schemas = [copy.deepcopy(rule['configuration'])
+               for rule in weapon_modification_rules_for_catalog(catalog_id)
+               if isinstance(rule.get('configuration'), dict)]
+    for schema in schemas:
+        if schema.get('choice_source') == 'compatible_range_tables':
+            info = weapon_range_table_info(host or {})
+            schema['choices'] = [
+                {'value': name, 'label_en': name, 'label_ru': name}
+                for name in info['choices']]
+            schema['base_value'] = info['base']
+            schema['weapon_family'] = info['family']
+    return schemas
+
+
+def clean_weapon_modification_choices(catalog_id, raw, host=None):
+    schemas = weapon_modification_configuration_schema(catalog_id, host)
     raw = raw or {}
     if not isinstance(raw, dict):
         raise ApiError(400, 'Modification configuration должна быть объектом')
@@ -502,6 +559,9 @@ def evaluate_effective_weapon(host, modifications, owned_by_id, character):
     base_feature_text = ' '.join(str(value) for value in (host_catalog.get('fields') or {}).values()).lower()
     base_has_autofire = 'autofire' in base_feature_text
     excellent_quality = 'excellent' in str(base.get('quality') or '').lower()
+    range_info = weapon_range_table_info(host)
+    base_range_table = range_info.get('base')
+    effective_range_table = base_range_table
     base_magazine = _num(base.get('magazine')) or 0
     effective_magazine = base_magazine
     base_concealable = base.get('concealable')
@@ -592,6 +652,15 @@ def evaluate_effective_weapon(host, modifications, owned_by_id, character):
                             'source': effect.get('source'),
                         })
                         autofire_profiles.append(profile)
+                elif effect['target'] == 'weapon.range_table' and requirements_met:
+                    choice = (config.get('choices') or {}).get(effect.get('configuration_key'))
+                    if choice in range_info.get('choices', []):
+                        effect['before'] = effective_range_table
+                        effective_range_table = choice
+                        effect['after'] = effective_range_table
+                    else:
+                        effect['active'] = False
+                        effect['suppressed_reason'] = 'Required compatible Range Table choice is missing'
                 elif effect['target'] == 'weapon.tag' and requirements_met:
                     if effect.get('value') not in weapon_tags:
                         weapon_tags.append(effect.get('value'))
@@ -623,10 +692,12 @@ def evaluate_effective_weapon(host, modifications, owned_by_id, character):
         effective['magazine'] = effective_magazine
     if effective_concealable is not None:
         effective['concealable'] = effective_concealable
+    if effective_range_table is not None:
+        effective['range_table'] = effective_range_table
     slot_pools = weapon_slot_capacity(host, modifications, owned_by_id)
     return {
         'instance_id': host.get('instance_id'),
-        'base': base, 'effective': effective,
+        'base': {**base, 'range_table': base_range_table}, 'effective': effective,
         'attack_modifier': attack_modifier,
         'alternate_attacks': alternate_attacks,
         'autofire_profiles': autofire_profiles,
@@ -2278,6 +2349,11 @@ def weapon_upgrade_compatibility(host, upgrade, active_modifications=None,
     if 'except grenade launchers and rocket launchers' in text and any(
             token in weapon_type for token in ('grenade launcher', 'rocket launcher')):
         reasons.append('Cannot be installed on Grenade/Rocket Launchers')
+    configuration_schemas = weapon_modification_configuration_schema(
+        catalog_item_id_for_entry(upgrade), host)
+    if any(schema.get('required') and not schema.get('choices')
+           for schema in configuration_schemas):
+        reasons.append('No compatible configuration choices for this weapon type')
 
     pools = weapon_slot_capacity(host, active_modifications, owned_by_id)
     required = max(0, int(upgrade.get('slots_used') or 0))
@@ -7099,11 +7175,14 @@ class Handler(BaseHTTPRequestHandler):
         for upgrade in (entry for entry in data.get('inventory') or []
                         if isinstance(entry, dict) and entry.get('cat') == 'gun_upgrades'):
             matrix = {}
+            configuration_by_host = {}
             for host in (entry for entry in data.get('inventory') or []
                          if isinstance(entry, dict) and entry.get('cat') == 'guns'):
                 active = [mod for mod in modifications if mod['host_instance_id'] == host.get('instance_id')]
                 matrix[host['instance_id']] = weapon_upgrade_compatibility(
                     host, upgrade, active, owned)
+                configuration_by_host[host['instance_id']] = weapon_modification_configuration_schema(
+                    catalog_item_id_for_entry(upgrade), host)
             upgrades.append({
                 'instance_id': upgrade.get('instance_id'),
                 'catalog_item_id': catalog_item_id_for_entry(upgrade),
@@ -7114,6 +7193,7 @@ class Handler(BaseHTTPRequestHandler):
                 'compatibility_text': upgrade.get('compatibility_text') or '',
                 'configuration_schemas': weapon_modification_configuration_schema(
                     catalog_item_id_for_entry(upgrade)),
+                'configuration_by_host': configuration_by_host,
                 'compatibility': matrix,
             })
         for modification in modifications:
@@ -7157,7 +7237,7 @@ class Handler(BaseHTTPRequestHandler):
         if upgrade.get('state') != 'carried':
             raise ApiError(409, 'Upgrade должен находиться в состоянии carried')
         choices = clean_weapon_modification_choices(
-            catalog_item_id_for_entry(upgrade), (body or {}).get('configuration'))
+            catalog_item_id_for_entry(upgrade), (body or {}).get('configuration'), host)
         active = [mod for mod in character_modifications(conn, row['id'])
                   if mod['host_instance_id'] == host_id]
         compatibility = weapon_upgrade_compatibility(host, upgrade, active, owned)

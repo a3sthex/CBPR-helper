@@ -603,6 +603,30 @@
           "source": "CEMK 31"
         }
       ]
+    },
+    {
+      "id": "range-table-modification-effective",
+      "catalog_id": "gun_upgrades-19",
+      "label_en": "Range Table Modification",
+      "label_ru": "Модификация таблицы дистанции",
+      "requirements": {},
+      "configuration": {
+        "key": "range_table",
+        "label_en": "Replacement Range Table",
+        "label_ru": "Новая таблица дистанции",
+        "required": true,
+        "choice_source": "compatible_range_tables"
+      },
+      "effects": [
+        {
+          "id": "configured-range-table",
+          "target": "weapon.range_table",
+          "operation": "configure",
+          "configuration_key": "range_table",
+          "source": "IR5 112"
+        }
+      ],
+      "manual_rules": []
     }
   ]
 }

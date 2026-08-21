@@ -620,6 +620,50 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             })
         self.assertEqual(cannot_remove.exception.status, 409)
 
+    def test_range_table_modification_rejects_cross_family_choice(self):
+        edited = copy.deepcopy(self.character_data)
+        edited['inventory'] = [
+            {
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': server.item_by_id(item_id)['cat'],
+                'name': server.item_by_id(item_id)['name'], 'qty': 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            }
+            for item_id in ('guns-0', 'gun_upgrades-19')
+        ]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add pistol and range modification', 'data': edited,
+        })
+        by_name = {item['name']: item for item in updated['data']['inventory']}
+        host, upgrade = by_name['Medium Pistol'], by_name['Range Table Modification']
+        management = self.call(server.Handler.api_character_modifications, self.match(1))
+        upgrade_payload = next(item for item in management['upgrades']
+                               if item['instance_id'] == upgrade['instance_id'])
+        schema = upgrade_payload['configuration_by_host'][host['instance_id']][0]
+        self.assertEqual(schema['base_value'], 'Pistol')
+        self.assertEqual([choice['value'] for choice in schema['choices']],
+                         ['Snubnose Pistol', 'Long Barrel Pistol'])
+        with self.assertRaises(server.ApiError) as cross_family:
+            self.call(server.Handler.api_character_modification_install, self.match(1), {
+                'revision': 1, 'host_instance_id': host['instance_id'],
+                'upgrade_instance_id': upgrade['instance_id'], 'manual_confirm': True,
+                'configuration': {'range_table': 'Sniper Rifle'},
+                'reason': 'try invalid cross-family range table',
+            })
+        self.assertEqual(cross_family.exception.status, 400)
+        installed = self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 1, 'host_instance_id': host['instance_id'],
+            'upgrade_instance_id': upgrade['instance_id'], 'manual_confirm': True,
+            'configuration': {'range_table': 'Long Barrel Pistol'},
+            'reason': 'Install long-barrel range profile',
+        })
+        effective = installed['character']['derived']['effective_weapons'][host['instance_id']]
+        self.assertEqual(effective['base']['range_table'], 'Pistol')
+        self.assertEqual(effective['effective']['range_table'], 'Long Barrel Pistol')
+        self.assertEqual(effective['base']['damage'], effective['effective']['damage'])
+        self.assertEqual(installed['management']['modifications'][0]['configuration']['choices'],
+                         {'range_table': 'Long Barrel Pistol'})
+
     def test_configurable_smg_upgrade_requires_valid_autofire_choice(self):
         edited = copy.deepcopy(self.character_data)
         edited['inventory'] = [

@@ -2888,6 +2888,17 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Character Sheet показывает rebuild tag, active/inactive requirement, automated Attack bonus и все ручные действия с source/page;
 - base ROF/Damage/SP не изменяются до выполнения контекстного attack flow.
 
+**Статус B.6.7 — реализована Range Table Modification:**
+
+- installation требует обязательный выбор replacement Range Table, вычисленный сервером для конкретного host instance;
+- допустимые families разделены на Pistol, SMG, Shotgun, Rifle, Bow, Grenade Launcher и Rocket/Missile Launcher;
+- Pistol может выбрать Snubnose/Pistol/Long Barrel family, но не может подменить таблицу на Sniper Rifle; cross-family payload блокируется;
+- base Range Table хранится отдельно, Character Sheet показывает `Pistol → Long Barrel Pistol`, а Remove возвращает base;
+- Damage, ammunition types, Magazine и остальные mechanics не меняются;
+- выбор хранится в immutable modification config snapshot и проходит тот же Trust + Audit lifecycle;
+- Range Table Modification остаётся manual-confirmed из-за source-specific individual eligibility, даже когда family choice валиден;
+- фактический Range DV picker/attack context будет использовать effective table в будущем combat action, но текущий этап уже создаёт единый authoritative value.
+
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
@@ -2903,8 +2914,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
    - дальше: только подтверждённые source-specific overrides и presets с доступными engine targets.
 10. ✅ Общая relational host/modification model и atomic lifecycle.
 11. ◐ Weapon Upgrades прямо в Character Sheet.
-    - готово: instance binding, slot pools, lifecycle, Magazines/Smartgun/Bayonet/scopes, Underbarrels, Autofire profiles и Power/Smart/Tech Rebuild tags/rules;
-    - дальше: Range Table choices, contextual ricochet/charge, full Autofire action/ammo и Tech overrides.
+    - готово: instance binding, slot pools, lifecycle, Magazines/Smartgun/Bayonet/scopes, Underbarrels, Autofire/Rebuild profiles и host-specific Range Table choices;
+    - дальше: contextual ricochet/charge, full Autofire action/ammo и Tech overrides.
 12. Vehicle Upgrades и Garage integration.
 13. Cyberdeck/Cyberware/Armor/Tech modification hosts.
 14. JSON import.

@@ -78,6 +78,8 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('data-upgrade-config', source)
         self.assertIn('autofire_profiles', source)
         self.assertIn('Autofire Check', source)
+        self.assertIn('configuration_by_host', source)
+        self.assertIn('Range ${esc(rangeBase)}→${esc(rangeEffective)}', source)
         self.assertIn('weaponEffective.tags', source)
         self.assertIn('effect-manual-text', source)
 
