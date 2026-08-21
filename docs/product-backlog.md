@@ -19,13 +19,15 @@
 
 ## 2. Night Market, продавцы и Full Catalog
 
-### Текущее состояние
+### Текущее состояние после пакета A
 
-- Night Market Showcase ежедневно выбирает набор предметов и меняет цены.
-- В Showcase нельзя открыть нормальное описание предмета.
-- У Showcase нет поиска, сортировки и удобной группировки.
-- Full Catalog позволяет немедленно купить почти любой предмет по каталожной цене.
-- Из-за этого Night Market теряет игровую и механическую ценность.
+- Night Market ежедневно и детерминированно формирует ассортимент шести Vendor Personas.
+- У продавцов есть собственные категории, цены, поиск, фильтры, сортировка и полные карточки предметов.
+- Database / Codex работает как справочник без мгновенной покупки.
+- Сервер разрешает покупку только из текущего Night Market.
+- Пока ассортимент является ежедневным snapshot без постоянного количества единиц: у предложения нет `available/reserved/sold`.
+- Один catalog item пока адресуется только по item ID, поэтому независимые предложения одного предмета от нескольких продавцов ещё не различаются.
+- `New Today`, Reservation, Sold Out, Reputation/Favor gates, Legal Retail и Fixer Requests ещё не реализованы.
 
 ### Предлагаемая структура
 
@@ -94,6 +96,26 @@
 ### Рекомендация
 
 Главное решение: **Full Catalog перестаёт быть универсальным магазином**. Он остаётся справочником. Реальная покупка идёт через постоянную розницу или конкретных продавцов Night Market. Это делает Showcase полезным и усиливает атмосферу.
+
+### Продолжение Market — пакет A.2 (запланировано, не реализовано)
+
+1. **Finite Stock.** Каждое предложение получает собственный `offer_id` и серверные количества `available`, `reserved`, `sold`. Покупка атомарно уменьшает остаток, чтобы две вкладки не могли забрать последнюю единицу одновременно.
+2. **Reserved / Sold Out.** Карточка остаётся видимой после исчерпания товара с понятным статусом. Reservation имеет владельца, срок действия и освобождается после отмены/таймаута; простое добавление в локальную корзину не считается резервом.
+3. **Один предмет у нескольких продавцов.** Один `catalog_item_id` может одновременно иметь несколько независимых offers с разной ценой, количеством, требованиями и Vendor Persona. Покупка адресуется по `offer_id`, а не только по item ID.
+4. **New Today.** Метка и фильтр сравнивают новый snapshot с предыдущим ассортиментом продавца. Это именно новое предложение/возврат в продажу, а не любой предмет текущего дня.
+5. **Vendor Locations.** У продавца появляется связь с Location/POI, кнопка перехода на карту и возможные location-specific offers. Геометрия и страницы локаций реализуются вместе с пакетом E, но Market хранит стабильный `location_id`.
+6. **Reputation / Favor requirements.** Offer может требовать отношение к конкретной Organization/Vendor. Проверка выполняется сервером; скрытые требования не отправляются обычному игроку. Полная механика зависит от Organization Reputation/Favor/Heat.
+7. **Legal Retail / Common Supply.** Опциональная постоянная розница с явным campaign allowlist, фиксированной ценой и отдельными правилами доступности. Она не должна снова превращать весь Codex в универсальный магазин.
+8. **Fixer Item Requests.** Character отправляет запрос на catalog/custom item, количество, бюджет и срок. Fixer/GM может принять запрос, назначить цену/продавца/время и превратить его в персональный либо Crew offer с ledger/history.
+
+#### Рекомендуемый порядок A.2
+
+1. `offer_id` + persisted daily stock + atomic Sold Out;
+2. несколько offers одного item у разных Vendors;
+3. `New Today` и история snapshots;
+4. Reservation с TTL;
+5. Legal Retail и Fixer Requests;
+6. Reputation/Favor gates и Vendor Locations после появления зависимых World/Organization моделей.
 
 ---
 
@@ -2634,12 +2656,16 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 ### Пакет A — Catalog & Market Rework
 
-1. Исправить numeric normalization и EN/RU item tags.
-2. Добавить item detail во все Market cards.
-3. Добавить sorting/filtering/compare.
-4. Вывести armor locations.
-5. Убрать мгновенную покупку из Database/Full Catalog.
-6. Добавить Vendor Personas и vendor-specific stock.
+**Статус A.1 — базовая переработка реализована.**
+
+1. ✅ Исправить numeric normalization и EN/RU item tags.
+2. ✅ Добавить item detail во все Market cards.
+3. ✅ Добавить sorting/filtering/compare.
+4. ✅ Вывести armor locations.
+5. ✅ Убрать мгновенную покупку из Database/Full Catalog.
+6. ✅ Добавить Vendor Personas и vendor-specific stock.
+
+**A.2 остаётся в backlog:** persisted finite stock, `Reserved/Sold Out`, независимые multi-vendor offers, `New Today`, Legal Retail, Fixer Requests, Reputation/Favor gates и Vendor Locations. Подробная спецификация и порядок находятся в разделе 2.
 
 ### Пакет B — Character Ownership
 
