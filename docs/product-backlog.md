@@ -505,6 +505,94 @@ Second Smartgun Link +1 — NOT STACKED (same stack group)
 Heavy Armor REF -2 — ACTIVE (strictest armor penalty)
 ```
 
+#### Set Bonuses и item synergies
+
+Некоторые эффекты появляются не у одного item, а только при наличии набора или нескольких копий. Их лучше хранить отдельными `synergy_rules`, а не дублировать один эффект в каждом предмете.
+
+```text
+synergy_rules
+- id
+- required_all[]
+- required_counts{}
+- required_states[]
+- effects[]
+- stack_group / stack_policy
+- source/page
+```
+
+Пример комплекта Fashionware:
+
+```text
+Light Tattoo installations: 3/3
+→ +2 to Wardrobe & Style checks
+→ bonus applies once
+
+Chemskin: installed
+TechHair: installed
+→ +2 to Personal Grooming checks
+→ bonus applies once
+```
+
+Если у Character установлены три Light Tattoo, Chemskin и TechHair одновременно, итоговые бонусы независимы:
+
+```text
+Wardrobe & Style checks: +2
+Personal Grooming checks: +2
+```
+
+Это не `+6`: три Light Tattoo являются условием одного set bonus, а Chemskin + TechHair — условием другого set bonus. Все пять Fashionware имеют HL 0, но остаются отдельными item instances/installations.
+
+Пример определения:
+
+```json
+{
+  "id": "light-tattoo-trio",
+  "required_counts": {
+    "catalog:cyberware-52": {"minimum": 3, "state": "installed"}
+  },
+  "effects": [
+    {
+      "target": "skill.Wardrobe & Style.check",
+      "operation": "add",
+      "value": 2,
+      "stack_group": "light_tattoo_style_bonus",
+      "stack_policy": "unique"
+    }
+  ]
+}
+```
+
+```json
+{
+  "id": "chemskin-techhair-combo",
+  "required_all": [
+    {"catalog_id": "cyberware-51", "state": "installed"},
+    {"catalog_id": "cyberware-55", "state": "installed"}
+  ],
+  "effects": [
+    {
+      "target": "skill.Personal Grooming.check",
+      "operation": "add",
+      "value": 2,
+      "stack_group": "chemskin_techhair_grooming_bonus",
+      "stack_policy": "unique"
+    }
+  ]
+}
+```
+
+Character Sheet показывает прогресс даже до активации:
+
+```text
+FASHION SYNERGIES
+Light Tattoo Ensemble       2/3   INACTIVE
+Chemskin + TechHair         2/2   ACTIVE   Personal Grooming +2
+```
+
+При снятии/удалении одной Light Tattoo количество становится 2/3 и Wardrobe & Style bonus автоматически выключается, не меняя base Skill Level. При удалении Chemskin или TechHair выключается только Personal Grooming bonus. Оба изменения записываются в Ledger.
+
+Эта же модель подходит для парного cyberware, armor sets, weapon+ammo synergies, installed Hardware combinations и других комплектов.
+
 #### Recalculation order
 
 Нужен детерминированный pipeline, одинаковый на сервере и в UI:
@@ -1949,6 +2037,288 @@ Program Manager лучше реализовать до полноценного 
 4. сделать Netrunner Session panel;
 5. затем добавить NET Architecture floors/nodes и live run.
 
+### 16.14 Cyberpunk Tabletop / VTT и hybrid play
+
+На далёкую перспективу NC//NET может получить собственный tabletop, но не стоит пытаться сразу копировать весь Foundry/Roll20. Сильнее будет специализированный Cyberpunk tabletop, напрямую связанный с Dossiers, NPC, Items, Effects, Sessions, NET и Locations.
+
+#### Что означают Online, Offline и Hybrid
+
+```text
+Online
+Все подключаются к серверу через интернет.
+
+In-person / LAN
+GM, общий экран и телефоны игроков находятся в одной локальной сети.
+Интернет не обязателен; локальный NC//NET server остаётся источником состояния.
+
+Hybrid
+Часть игроков сидит за одним столом, часть подключается удалённо.
+Все видят одну Session и один event stream.
+```
+
+Важно: PWA-кэш сам по себе не даёт многопользовательскую игру без интернета. Для truly offline table play нужен работающий локальный server в LAN. Для remote players нужен VPS/relay или публично доступный server.
+
+#### Рекомендуемая стратегия развёртывания
+
+##### Этап 1 — один server, два режима
+
+Один и тот же NC//NET запускается:
+
+- на домашнем Ubuntu server с `--lan` для офлайн-игры за столом;
+- на VPS для online/hybrid игры.
+
+Состояние не синхронизируется между двумя независимыми серверами автоматически. GM использует один выбранный canonical server для кампании.
+
+##### Этап 2 — optional remote relay
+
+Домашний server остаётся canonical, а маленький VPS выступает безопасным relay для удалённых игроков. Это сложнее обычного VPS, но позволяет продолжить локальную игру при проблемах с внешним доступом.
+
+##### Этап 3 — local-first replication (очень далёкое будущее)
+
+Локальный и облачный узлы умеют временно работать независимо, а затем синхронизировать event logs. Это требует conflict resolution, entity revisions, stable IDs и сложной модели владения. Не планировать до стабилизации обычного VTT.
+
+#### Tabletop MVP
+
+Первая полезная версия:
+
+1. Scenes/Battle Maps;
+2. square/hex/gridless режим;
+3. Tokens;
+4. drag & drop;
+5. измерение расстояния;
+6. Initiative tracker;
+7. HP/SP/Shield/Ammo/Conditions на token;
+8. Dice Log;
+9. ручной Fog of War;
+10. GM/Player permissions;
+11. Player shared screen;
+12. reconnect без потери состояния.
+
+Не включать в MVP:
+
+- voice/video;
+- marketplace модулей;
+- сложное динамическое освещение;
+- 3D dice;
+- macro language;
+- полноценную plugin API.
+
+Эти функции дороги и уже хорошо решаются внешними инструментами.
+
+#### Scene model
+
+```text
+vtt_scenes
+- id
+- session_id / location_id
+- name
+- kind: encounter | city | net_architecture | handout
+- background_media_id
+- width / height
+- grid_type / grid_size / grid_offset
+- scale / distance_unit
+- fog_config
+- active
+- created_by / updated
+```
+
+Layers:
+
+```text
+background
+map drawings
+walls/cover
+GM notes
+fog
+public tokens
+hidden tokens
+templates/effects
+pings
+```
+
+#### Token model
+
+Token не дублирует Dossier без связи, а ссылается на entity:
+
+```text
+vtt_tokens
+- id
+- scene_id
+- entity_type: character | npc | persona | vehicle | black_ice | custom
+- entity_id / session_combatant_id
+- name / image
+- x / y / rotation / size
+- elevation
+- visible
+- owner_user_ids
+- vision settings
+- status icons
+- revision
+```
+
+Session combatant остаётся источником HP/SP/Ammo/Conditions. Token отвечает за положение и визуальное состояние.
+
+#### Cyberpunk-specific interactions
+
+При выборе token доступны действия из его sheet:
+
+```text
+Attack
+Damage
+Autofire
+Reload
+Move / Measure
+Apply Armor
+Critical Injury
+Use Consumable
+Skill Check
+Open Dossier
+```
+
+Targeting flow:
+
+```text
+Select attacker
+→ choose weapon/action
+→ select target
+→ measure range
+→ choose DV / Evasion
+→ roll preview
+→ apply result with GM confirmation or Trust mode
+→ write Session Activity
+```
+
+Cover, aimed shots, melee armor halving, Autofire и Critical Injuries используют существующий Rules/Effects Engine.
+
+#### In-person Table Mode
+
+Интерфейсы:
+
+```text
+GM Screen
+- полный контроль, secrets, hidden tokens, encounter tools
+
+Shared Table Screen
+- карта без GM controls
+- текущий turn
+- видимые tokens/status
+- QR/PIN для подключения
+
+Player Phone
+- свой Dossier
+- быстрые actions
+- dice
+- target/ping
+- consumables
+```
+
+Один телевизор/проектор может открыть специальный `#/table/:session` без служебных панелей. GM управляет с ноутбука, игроки при желании используют телефоны. Все устройства подключаются по LAN URL и короткому Session PIN.
+
+#### Online mode
+
+Дополнительно нужны:
+
+- presence/connected users;
+- reconnect и state snapshot;
+- cursor/ping throttling;
+- permissions на token;
+- invite/session link;
+- rate limits;
+- asset access control;
+- latency-safe optimistic movement;
+- authoritative dice/events на server.
+
+Voice/video лучше оставить Discord/другому сервису.
+
+#### Real-time architecture
+
+Текущий `ThreadingHTTPServer` подходит для существующего приложения, но не для полноценного VTT real-time слоя. В будущем потребуется:
+
+- WebSocket-capable application server;
+- authoritative Session state;
+- append-only `vtt_events` с последовательным `seq`;
+- периодические snapshots;
+- optimistic revisions;
+- idempotent commands;
+- reconnect from last acknowledged event;
+- presence как ephemeral state, не вечная запись в БД.
+
+```text
+Client command
+→ server permission/rules validation
+→ transaction
+→ append event
+→ update snapshot
+→ broadcast to connected clients
+```
+
+Сначала это можно реализовать отдельным VTT service рядом с текущим Python server, а не переписывать весь NC//NET за один этап.
+
+#### Fog, walls и lighting
+
+Порядок:
+
+1. ручная маска Fog;
+2. reveal/hide polygons;
+3. walls/doors/cover metadata;
+4. простая token vision;
+5. динамическое освещение только после профилирования производительности.
+
+Для Cyberpunk большую пользу раньше дадут Cover, range measurement и elevation, чем сложные красивые источники света.
+
+#### Handouts и journals
+
+GM может отправить игрокам:
+
+- изображение;
+- текстовый документ;
+- Item;
+- Intel Fragment;
+- Location;
+- Persona;
+- NET File;
+- evidence.
+
+Handout можно раскрыть отдельному Character, Crew или всем игрокам. Открытие фиксируется в Session log, если это важно для сюжета.
+
+#### NET tabletop mode
+
+NET Architecture отображается как отдельный scene kind:
+
+- Floors/Nodes вместо метровой карты;
+- Netrunner и Black ICE tokens;
+- Password/File/Control Node;
+- Initiative;
+- Program/REZ cards;
+- скрытые GM nodes;
+- reveal по Pathfinder/движению;
+- Meatspace Session и NET scene идут в одном Round timeline.
+
+#### Offline resilience
+
+Для LAN режима:
+
+- все критические JS/CSS/fonts/assets хранятся локально;
+- никакой зависимости от Google Fonts/CDN;
+- PWA кэширует shell и справочники;
+- server продолжает работать без внешнего интернета;
+- локальный DNS/понятный адрес и QR;
+- автоматический backup перед Session и после Session;
+- browser reconnect после сна телефона;
+- кнопка `Export Session Bundle` для аварийного переноса.
+
+#### Этапы VTT
+
+```text
+VTT-0  Подготовка: item instances, effects, NPC, Session events, permissions
+VTT-1  Scenes, tokens, shared screen, movement, initiative
+VTT-2  Cyberpunk attacks/range/damage/conditions
+VTT-3  Fog, drawings, handouts, journals
+VTT-4  NET Architecture scene
+VTT-5  Hybrid relay and stronger offline resilience
+VTT-6  Walls/vision/lighting and extension API if still needed
+```
+
 ### Рекомендуемые дополнения с максимальной отдачей
 
 Если выбирать только пять следующих идей вне уже утверждённого backlog:
@@ -2011,6 +2381,16 @@ Program Manager лучше реализовать до полноценного 
 3. Pagination/summary endpoints.
 4. Browser E2E и visual regression по темам.
 5. Health endpoint, HEAD, self-hosted fonts.
+
+### P4 — далёкое будущее / Cyberpunk Tabletop
+
+1. LAN Table Mode и Shared Player Screen.
+2. VTT Scenes/Tokens/Initiative/Event Stream.
+3. Cyberpunk attack/range/damage integration.
+4. Fog/Handouts/Journals.
+5. NET Architecture tabletop scene.
+6. Online presence/reconnect и optional hybrid relay.
+7. Walls/vision/lighting только после полезного MVP.
 
 ---
 
@@ -2099,6 +2479,18 @@ Program Manager лучше реализовать до полноценного 
 9. Реализовать Netrunner Session panel и Enemy Netrunner profile.
 10. После стабилизации добавить NET Architecture Builder/live run.
 
+### Пакет I — Tabletop Foundations (далёкое будущее)
+
+1. Подготовить stable entity IDs, permissions и authoritative Session events.
+2. Добавить официальный LAN/Table deployment mode, local assets и Shared Screen.
+3. Реализовать Scenes, Tokens, Grid/Measurement и Initiative sync.
+4. Связать token actions с Dossiers/NPC/Weapons/Effects.
+5. Добавить server-authoritative Dice/Event Log и reconnect snapshots.
+6. Реализовать manual Fog, Drawings и Handouts.
+7. Добавить online presence и remote session access на VPS/relay.
+8. Реализовать NET Architecture как отдельный scene type.
+9. Только затем рассматривать walls/vision/lighting/plugin API.
+
 ---
 
 ## 19. Открытые вопросы для следующего просмотра
@@ -2148,3 +2540,10 @@ Program Manager лучше реализовать до полноценного 
 43. Может ли Player создавать custom effect свободно или только через Trust + Audit editor с обязательной причиной?
 44. Temporary effects отсчитываются по реальному времени, campaign clock или Session rounds?
 45. Нужно ли показывать base/effective breakdown публичным зрителям Dossier или только owner/GM?
+46. В VTT canonical server обычно домашний LAN или VPS, и нужен ли optional relay между ними?
+47. Требуется ли truly offline режим без интернета или достаточно in-person режима при доступном VPS?
+48. Какие карты обязательны в VTT MVP: square, hex и gridless одновременно или начать с gridless/square?
+49. Применяет ли GM урон сразу или target owner подтверждает результат в Trust mode?
+50. Нужен ли Shared Table Screen без авторизации через короткий read-only PIN?
+51. Насколько рано нужны Fog/Walls/Vision и стоит ли полностью отказаться от dynamic lighting в пользу простоты?
+52. Set bonuses и active effect breakdown видны всем или только owner/GM?
