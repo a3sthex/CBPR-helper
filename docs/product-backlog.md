@@ -313,6 +313,283 @@ Cancel
 
 Нельзя тихо удалить host и оставить orphan modifications. Передача комплектом сохраняет историю и все instance links; отсоединение создаёт отдельные inventory instances.
 
+### Structured Effects & Modifiers Engine
+
+Многие предметы не просто занимают место в Inventory. Они могут:
+
+- менять STAT;
+- давать бонус/штраф к Skill или конкретному Check;
+- менять Initiative, MOVE, BODY, Humanity и Derived values;
+- менять Damage, ROF, Magazine, Hands, Concealability или Quality оружия;
+- изменять SP/penalties брони;
+- давать сопротивление, immunity или situational bonus;
+- создавать временный эффект после Use;
+- менять NET Actions, Interface checks и Program stats;
+- работать только при выполнении требования или в определённом контексте.
+
+Нельзя реализовывать каждый такой предмет отдельным `if item.name == ...` в разных экранах. Нужен единый декларативный движок эффектов.
+
+#### Base, effective и current values
+
+Система хранит отдельно:
+
+```text
+base_value        купленное/развитое постоянное значение
+modifiers         активные источники бонусов и штрафов
+effective_value   результат расчёта
+current_value     расходуемое состояние, если применимо
+```
+
+Пример:
+
+```text
+REF base: 8
+Armor penalty: -2
+Drug effect: +1
+REF effective: 7
+```
+
+Экипировка не должна переписывать `base REF 8` на `6`. Иначе после снятия предмета невозможно надёжно восстановить исходное значение.
+
+Для Skill:
+
+```text
+Handgun Level: 6        (покупается за IP)
+Situational modifier: +1
+Effective Check Base: REF effective + Handgun Level + modifiers
+```
+
+Стоимость следующего Skill Level считается от базового Level, а не от временного бонуса.
+
+#### Effect definition
+
+У Catalog Item, Upgrade, Cyberware, Program, Condition или Consumable появляется массив структурированных эффектов:
+
+```json
+{
+  "id": "smartgun-attack-bonus",
+  "target": "weapon.attack_check",
+  "operation": "add",
+  "value": 1,
+  "scope": {"host_instance": true},
+  "active_when": ["installed", "requirements_met"],
+  "stack_group": "smartgun_link",
+  "stack_policy": "highest",
+  "duration": "while_installed",
+  "priority": 200,
+  "source": "CP:R page ..."
+}
+```
+
+Разрешённые targets должны быть белым списком, например:
+
+```text
+character.stat.INT/REF/DEX/TECH/COOL/WILL/LUCK/MOVE/BODY/EMP
+character.initiative
+character.hp_max
+character.death_save
+character.humanity_current/max
+skill.<name>.check
+skill.<name>.level (редко; отдельно от progression)
+weapon.damage
+weapon.attack_check
+weapon.rof
+weapon.magazine
+weapon.hands
+weapon.quality
+weapon.concealable
+weapon.autofire_max
+armor.sp
+armor.penalty.REF/DEX/MOVE
+vehicle.sdp/speed/seats/cargo
+netrunner.net_actions
+program.PER/SPD/ATK/DEF/REZ
+check.<context>
+```
+
+Operations:
+
+```text
+add
+set
+minimum
+maximum
+multiply
+replace_notation
+grant_action
+grant_resistance
+grant_tag
+```
+
+Нельзя хранить исполняемый JavaScript/Python в данных предмета. Только проверенная JSON-схема и серверный allowlist.
+
+#### Activation conditions
+
+Эффект работает, когда источник:
+
+```text
+carried
+held
+equipped
+installed
+rezzed
+consumed
+activated
+inside vehicle
+at location
+```
+
+И может иметь условия:
+
+```text
+requirements_met
+specific weapon type/skill
+specific target
+melee/ranged/autofire only
+while Seriously Wounded
+while in NET Architecture
+once per Turn/Round/Session
+manual GM toggle
+```
+
+Если требования перестали выполняться, effect отключается, но сам item не исчезает.
+
+#### Duration и temporary effects
+
+```text
+permanent
+while_equipped
+while_installed
+while_rezzed
+until_end_of_turn
+rounds: N
+minutes/hours: N
+until_rest
+until_treated
+session
+manual
+```
+
+Consumable после `Use` создаёт отдельный `active_effect_instance`. Сам предмет уменьшается в количестве, но эффект продолжает жить до окончания duration, даже если stack уже исчез из Inventory.
+
+```text
+active_effect_instances
+- id
+- character/session/weapon target
+- effect_definition_id / custom snapshot
+- source_item_instance_id
+- applied_by
+- started_at / expires_at / remaining_rounds
+- active
+- notes
+```
+
+#### Stacking rules
+
+Для каждого эффекта явно задаётся политика:
+
+```text
+stack                 складываются
+highest               работает наибольший
+lowest                работает самый строгий штраф
+unique                только одна копия
+replace               новый заменяет старый
+independent            отдельные target instances
+```
+
+UI должен объяснять конфликт:
+
+```text
+Smartgun Link +1 — ACTIVE
+Second Smartgun Link +1 — NOT STACKED (same stack group)
+Heavy Armor REF -2 — ACTIVE (strictest armor penalty)
+```
+
+#### Recalculation order
+
+Нужен детерминированный pipeline, одинаковый на сервере и в UI:
+
+1. base values;
+2. `set/minimum/maximum` foundations по priority;
+3. additive modifiers;
+4. multipliers/replacements;
+5. caps и rules exceptions;
+6. derived values;
+7. current resource clamping без потери history.
+
+Порядок должен быть покрыт тестами на конфликты эффектов. Клиент показывает preview, но сервер остаётся авторитетным и возвращает breakdown.
+
+#### Character Sheet UI
+
+Каждое изменённое значение получает индикатор:
+
+```text
+REF 7  [base 8]
+```
+
+По нажатию:
+
+```text
+REF breakdown
+Base                         8
+Heavy Armor                 -2
+Active Drug                 +1 (34 min remaining)
+Effective                    7
+```
+
+Для оружия:
+
+```text
+Magazine 50 [base 25]
+Damage 5d6
+Attack +1
+```
+
+Breakdown показывает источник, duration, requirements и почему effect активен/неактивен.
+
+#### Rolls и Session
+
+Все Skill/Attack/Damage rolls используют effective values из одного evaluator. Нельзя считать бонус на карточке, но забывать его в Dice Roller или NPC Session.
+
+Session хранит snapshot/temporary effects и Round duration. Permanent character source остаётся в Dossier, временное состояние сессии не загрязняет постоянный Ledger после завершения.
+
+#### Import strategy
+
+Автоматически разбирать весь свободный текст описаний в effects рискованно. Рекомендуемый порядок:
+
+1. нормализовать очевидные поля из Data Pool;
+2. создать curated overrides для предметов с механическими эффектами;
+3. добавить schema validation и source/page;
+4. помечать неподдержанный эффект `manual_resolution_required`;
+5. постепенно расширять покрытие с regression tests.
+
+Карточка честно показывает:
+
+```text
+AUTOMATED EFFECT
+```
+
+или:
+
+```text
+MANUAL RULE — read description
+```
+
+Так система не будет притворяться, что применила правило, которое на самом деле не распознано.
+
+#### Custom effects
+
+В Trust + Audit режиме игрок/Admin может добавить custom modifier:
+
+```text
+Target: Perception checks
+Modifier: +2
+Duration: while equipped
+Reason: Tech-upgraded optics
+```
+
+Custom effect всегда заметно помечается, содержит автора/причину и попадает в Ledger. GM может отключить или откатить его.
+
 ---
 
 ## 4. Свободное редактирование Character Sheet
@@ -1699,7 +1976,7 @@ Program Manager лучше реализовать до полноценного 
 ### P1 — основной продуктовый пакет
 
 1. Trust + Audit character editor, включая Admin edit чужих Dossiers.
-2. Item instances, состояния, consumables и host-based Upgrades/Attachments.
+2. Item instances, Structured Effects Engine, consumables и host-based Upgrades/Attachments.
 3. Market vendors + Database без универсальной покупки.
 4. Database tags/i18n/armor locations.
 5. Feed/Contract preview перед публикацией.
@@ -1755,11 +2032,15 @@ Program Manager лучше реализовать до полноценного 
 3. Мигрировать stack inventory к стабильным item instances.
 4. Добавить custom/found items.
 5. Consumable/use/equip/install.
-6. Общая host/modification model.
-7. Weapon Upgrades прямо в Character Sheet.
-8. Vehicle Upgrades и Garage integration.
-9. Cyberdeck/Cyberware/Armor/Tech modification hosts.
-10. JSON import.
+6. Structured Effects & Modifiers schema/evaluator.
+7. Base/effective/current breakdown в Character Sheet и Rolls.
+8. Duration, stacking и active effect instances.
+9. Curated effect overrides для Data Pool с source metadata.
+10. Общая host/modification model.
+11. Weapon Upgrades прямо в Character Sheet.
+12. Vehicle Upgrades и Garage integration.
+13. Cyberdeck/Cyberware/Armor/Tech modification hosts.
+14. JSON import.
 
 ### Пакет C — Publishing Preview
 
@@ -1862,3 +2143,8 @@ Program Manager лучше реализовать до полноценного 
 38. Как Tech Maker Upgrade сочетается и складывается с catalog attachments?
 39. Vehicle принадлежит одному Character, Family/Crew или Organization, и кто может управлять upgrades?
 40. Разрешено ли передавать/продавать host вместе со всеми upgrades одной операцией по умолчанию?
+41. Какой порядок `set/add/multiply/cap` использовать для конфликтующих modifiers и какие rules exceptions нужны?
+42. Какие item effects автоматизируются в первой версии, а какие остаются `manual_resolution_required`?
+43. Может ли Player создавать custom effect свободно или только через Trust + Audit editor с обязательной причиной?
+44. Temporary effects отсчитываются по реальному времени, campaign clock или Session rounds?
+45. Нужно ли показывать base/effective breakdown публичным зрителям Dossier или только owner/GM?
