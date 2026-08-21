@@ -620,6 +620,59 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             })
         self.assertEqual(cannot_remove.exception.status, 409)
 
+    def test_exotic_scope_requires_rail_and_blocks_dependency_removal(self):
+        edited = copy.deepcopy(self.character_data)
+        catalog_ids = ('guns-30', 'gun_upgrades-16', 'gun_upgrades-7')
+        edited['inventory'] = [
+            {
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': server.item_by_id(item_id)['cat'],
+                'name': server.item_by_id(item_id)['name'], 'qty': 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            }
+            for item_id in catalog_ids
+        ]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add exotic weapon workshop parts', 'data': edited,
+        })
+        by_name = {item['name']: item for item in updated['data']['inventory']}
+        host = by_name['Militech Fox Dual Ammo']
+        rail, scope = by_name['Compatibility Rail'], by_name['Infrared Nightvision Scope']
+        installed_rail = self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 1, 'host_instance_id': host['instance_id'],
+            'upgrade_instance_id': rail['instance_id'], 'manual_confirm': True,
+            'reason': 'Weaponstech check passed for Compatibility Rail',
+        })
+        rail_mod_id = installed_rail['modification_id']
+        host_summary = next(item for item in installed_rail['management']['hosts']
+                            if item['instance_id'] == host['instance_id'])
+        self.assertEqual(host_summary['slot_pools']['scope'], {'total': 1, 'used': 0})
+        installed_scope = self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 2, 'host_instance_id': host['instance_id'],
+            'upgrade_instance_id': scope['instance_id'], 'manual_confirm': False,
+            'reason': 'Install infrared scope on dedicated rail',
+        })
+        scope_mod_id = installed_scope['modification_id']
+        host_summary = next(item for item in installed_scope['management']['hosts']
+                            if item['instance_id'] == host['instance_id'])
+        self.assertEqual(host_summary['slot_pools']['scope'], {'total': 1, 'used': 1})
+
+        rail_match = re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{rail_mod_id}')
+        with self.assertRaises(server.ApiError) as dependency:
+            self.call(server.Handler.api_character_modification_action, rail_match, {
+                'revision': 3, 'action': 'remove', 'reason': 'try removing occupied rail',
+            })
+        self.assertEqual(dependency.exception.status, 409)
+        scope_match = re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{scope_mod_id}')
+        removed_scope = self.call(server.Handler.api_character_modification_action, scope_match, {
+            'revision': 3, 'action': 'remove', 'reason': 'Remove scope before rail',
+        })
+        self.assertEqual(removed_scope['character']['revision'], 4)
+        removed_rail = self.call(server.Handler.api_character_modification_action, rail_match, {
+            'revision': 4, 'action': 'remove', 'reason': 'Rail no longer has dependents',
+        })
+        self.assertEqual(removed_rail['character']['revision'], 5)
+
     def test_active_effect_instances_apply_expire_tick_and_audit(self):
         character = copy.deepcopy(self.character_data)
         character['skills']['Handgun'] = 3

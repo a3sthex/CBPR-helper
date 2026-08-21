@@ -75,7 +75,8 @@ ITEM_INTERACTION_FIELDS = (
     'requires_host_type',
 )
 ITEM_MODIFICATION_FIELDS = (
-    'host_type', 'modification_kind', 'modification_group', 'slots_used', 'compatibility_text',
+    'host_type', 'modification_kind', 'modification_group', 'slot_type',
+    'grants_slots', 'slots_used', 'compatibility_text',
     'permanent_installation', 'unique_per_host', 'compatibility_manual',
     'installation_source',
 )
@@ -283,8 +284,9 @@ def load_effect_rules():
             raise RuntimeError(f'Invalid installed requirement in weapon rule {rule_id}')
         effects = rule.get('effects') or []
         manual_rules = rule.get('manual_rules') or []
-        if not isinstance(effects, list) or not effects or not isinstance(manual_rules, list):
-            raise RuntimeError(f'Weapon modification rule {rule_id} has no effects')
+        if (not isinstance(effects, list) or not isinstance(manual_rules, list) or
+                not (effects or manual_rules)):
+            raise RuntimeError(f'Weapon modification rule {rule_id} has no effects or manual rule')
         for effect in effects:
             if (not isinstance(effect, dict) or
                     set(effect) - {'id', 'target', 'operation', 'value', 'values', 'source'} or
@@ -328,6 +330,14 @@ def item_effect_coverage(catalog_id):
     rules += [
         ('modification', rule) for rule in payload.get('weapon_modification_rules') or []
         if rule.get('catalog_id') == catalog_id]
+    catalog_item = item_by_id(catalog_id) or {}
+    if catalog_item.get('grants_slots'):
+        rules.append(('modification', {
+            'id': f'{catalog_id}-slot-grant', 'label_en': catalog_item.get('name'),
+            'label_ru': catalog_item.get('name'),
+            'effects': [{'source': catalog_item.get('installation_source')}],
+            'manual_rules': [],
+        }))
     if not rules:
         return None
     return {
@@ -381,13 +391,19 @@ def evaluate_effective_weapon(host, modifications, owned_by_id, character):
         if not isinstance(rules, list):
             rules = weapon_modification_rules_for_catalog(catalog_item_id_for_entry(upgrade))
         if not rules:
+            grants = copy.deepcopy(upgrade.get('grants_slots') or {})
             sources.append({
-                'id': f'manual:{modification.get("modification_id")}',
+                'id': f'{"slot-grant" if grants else "manual"}:{modification.get("modification_id")}',
                 'label_en': upgrade.get('name') or config.get('upgrade_name') or 'Upgrade',
                 'label_ru': upgrade.get('name') or config.get('upgrade_name') or 'Upgrade',
-                'active': True, 'automated': False, 'manual_resolution_required': True,
+                'active': True, 'automated': bool(grants),
+                'manual_resolution_required': not bool(grants),
                 'source': upgrade.get('installation_source') or upgrade.get('source'),
-                'effects': [], 'manual_rules': [],
+                'effects': [
+                    {'target': f'weapon.{pool}_slots', 'operation': 'add',
+                     'value': amount, 'active': True}
+                    for pool, amount in grants.items()],
+                'manual_rules': [],
             })
             continue
         for rule in rules:
@@ -440,10 +456,14 @@ def evaluate_effective_weapon(host, modifications, owned_by_id, character):
         effective['magazine'] = effective_magazine
     if effective_concealable is not None:
         effective['concealable'] = effective_concealable
+    slot_pools = weapon_slot_capacity(host, modifications, owned_by_id)
     return {
         'instance_id': host.get('instance_id'),
         'base': base, 'effective': effective,
         'attack_modifier': attack_modifier,
+        'slot_pools': slot_pools,
+        'slots_total': sum(pool['total'] for pool in slot_pools.values()),
+        'slots_used': sum(pool['used'] for pool in slot_pools.values()),
         'modifiers': applied, 'sources': sources,
     }
 
@@ -2017,6 +2037,33 @@ def weapon_is_exotic(entry):
     return 'exotic weapon' in text or 'exotic ranged weapon' in text
 
 
+def weapon_slot_capacity(host, active_modifications=None, owned_by_id=None):
+    active_modifications = active_modifications or []
+    owned_by_id = owned_by_id or {}
+    pools = {
+        'attachment': {'total': 0 if weapon_is_exotic(host) else 3, 'used': 0},
+        'scope': {'total': 0, 'used': 0},
+    }
+    for modification in active_modifications:
+        if not modification.get('active', True):
+            continue
+        upgrade = owned_by_id.get(modification.get('upgrade_instance_id')) or {}
+        for pool, amount in (upgrade.get('grants_slots') or {}).items():
+            if pool in pools:
+                pools[pool]['total'] += max(0, int(amount or 0))
+    for modification in active_modifications:
+        if not modification.get('active', True):
+            continue
+        upgrade = owned_by_id.get(modification.get('upgrade_instance_id')) or {}
+        required = max(0, int(modification.get('slots_used') or 0))
+        configured_pool = (modification.get('configuration') or {}).get('slot_pool')
+        pool = configured_pool if configured_pool in pools else 'attachment'
+        if not configured_pool and upgrade.get('slot_type') == 'scope' and weapon_is_exotic(host):
+            pool = 'scope'
+        pools[pool]['used'] += required
+    return pools
+
+
 def weapon_upgrade_compatibility(host, upgrade, active_modifications=None,
                                  owned_by_id=None):
     active_modifications = active_modifications or []
@@ -2035,8 +2082,13 @@ def weapon_upgrade_compatibility(host, upgrade, active_modifications=None,
     text = str(upgrade.get('compatibility_text') or
                (upgrade_catalog.get('mechanics') or {}).get('compatible_weapons') or '').lower()
     exotic = weapon_is_exotic(host)
-    if 'non-exotic' in text and exotic:
-        reasons.append('Requires a Non-Exotic weapon')
+    installed_upgrades = [owned_by_id.get(modification.get('upgrade_instance_id')) or {}
+                          for modification in active_modifications]
+    has_scope_rail = any(item.get('name') == 'Compatibility Rail'
+                         for item in installed_upgrades)
+    scope_upgrade = upgrade.get('slot_type') == 'scope'
+    if 'non-exotic' in text and exotic and not (scope_upgrade and has_scope_rail):
+        reasons.append('Requires a Non-Exotic weapon or Compatibility Rail')
     if 'all exotic ranged weapons' in text and not exotic:
         reasons.append('Requires an Exotic weapon')
     if 'shoulder arms' in text and skill != 'shoulder arms':
@@ -2054,12 +2106,17 @@ def weapon_upgrade_compatibility(host, upgrade, active_modifications=None,
             token in weapon_type for token in ('grenade launcher', 'rocket launcher')):
         reasons.append('Cannot be installed on Grenade/Rocket Launchers')
 
-    slots_total = 0 if exotic else 3
-    slots_used = sum(int(modification.get('slots_used') or 0)
-                     for modification in active_modifications if modification.get('active', True))
+    pools = weapon_slot_capacity(host, active_modifications, owned_by_id)
     required = max(0, int(upgrade.get('slots_used') or 0))
-    if slots_used + required > slots_total:
-        reasons.append(f'Not enough attachment slots ({slots_used}/{slots_total}, needs {required})')
+    preferred_pool = 'scope' if scope_upgrade and exotic else 'attachment'
+    if required and pools[preferred_pool]['used'] + required > pools[preferred_pool]['total']:
+        # A non-Exotic scope normally consumes a general attachment slot. An Exotic
+        # scope may only consume the dedicated slot granted by Compatibility Rail.
+        reasons.append(
+            f'Not enough {preferred_pool} slots '
+            f'({pools[preferred_pool]["used"]}/{pools[preferred_pool]["total"]}, needs {required})')
+    slots_total = sum(pool['total'] for pool in pools.values())
+    slots_used = sum(pool['used'] for pool in pools.values())
     catalog_id = catalog_item_id_for_entry(upgrade)
     group = upgrade.get('modification_group')
     for modification in active_modifications:
@@ -2074,7 +2131,11 @@ def weapon_upgrade_compatibility(host, upgrade, active_modifications=None,
     return {
         'allowed': not reasons, 'manual_resolution_required': manual,
         'reasons': reasons, 'slots_total': slots_total, 'slots_used': slots_used,
+        'slot_pools': pools, 'slot_pool': preferred_pool if required else None,
+        'slot_pool_after': pools[preferred_pool]['used'] + required,
+        'slot_pool_total': pools[preferred_pool]['total'],
         'slots_required': required, 'slots_after': slots_used + required,
+        'grants_slots': copy.deepcopy(upgrade.get('grants_slots') or {}),
         'compatibility_text': upgrade.get('compatibility_text') or '',
     }
 
@@ -4462,6 +4523,7 @@ SERVER_ERROR_EN = {
     'Эта modification не может быть снята': 'This modification cannot be removed',
     'Неизвестное действие с modification': 'Unknown modification action',
     'Укажите причину снятия modification': 'Modification removal reason is required',
+    'Сначала снимите modifications, зависящие от granted slots': 'Remove modifications that depend on granted slots first',
     'Все слоты заняты': 'All slots are filled',
     'Вы уже записаны': 'You are already signed up',
     'Для специализированного навыка повышайте parent-pool': 'Increase the parent pool for a specialized Skill',
@@ -6835,14 +6897,16 @@ class Handler(BaseHTTPRequestHandler):
         for host in (entry for entry in data.get('inventory') or []
                      if isinstance(entry, dict) and entry.get('cat') == 'guns'):
             active = [mod for mod in modifications if mod['host_instance_id'] == host.get('instance_id')]
+            pools = weapon_slot_capacity(host, active, owned)
             host_summary = {
                 'instance_id': host.get('instance_id'), 'name': host.get('custom_name') or host.get('name'),
                 'catalog_item_id': catalog_item_id_for_entry(host), 'state': host.get('state'),
                 'weapon_type': (host.get('mechanics') or {}).get('type'),
                 'skill': (host.get('mechanics') or {}).get('skill'),
                 'exotic': weapon_is_exotic(host),
-                'slots_total': 0 if weapon_is_exotic(host) else 3,
-                'slots_used': sum(mod['slots_used'] for mod in active),
+                'slots_total': sum(pool['total'] for pool in pools.values()),
+                'slots_used': sum(pool['used'] for pool in pools.values()),
+                'slot_pools': pools,
                 'modification_ids': [mod['modification_id'] for mod in active],
             }
             hosts.append(host_summary)
@@ -6921,6 +6985,8 @@ class Handler(BaseHTTPRequestHandler):
             'upgrade_name': upgrade.get('custom_name') or upgrade.get('name'),
             'compatibility': compatibility,
             'manual_confirmed': bool((body or {}).get('manual_confirm')),
+            'slot_pool': compatibility.get('slot_pool'),
+            'grants_slots': copy.deepcopy(upgrade.get('grants_slots') or {}),
             'effect_rules': weapon_modification_rules_for_catalog(
                 catalog_item_id_for_entry(upgrade)),
             'effects_rules_version': load_effect_rules().get('rules_version'),
@@ -6931,7 +6997,7 @@ class Handler(BaseHTTPRequestHandler):
             'configuration_json,notes,source_type,installed_by,installed_at,created,updated) '
             'VALUES(?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?)',
             (modification_id, row['id'], host_id, upgrade_id, 'weapon',
-             upgrade.get('modification_kind') or 'attachment',
+             compatibility.get('slot_pool') or upgrade.get('slot_type') or 'attachment',
              int(upgrade.get('slots_used') or 0), 1 if upgrade.get('permanent_installation') else 0,
              json.dumps(configuration, ensure_ascii=False), str((body or {}).get('notes') or '')[:2000],
              upgrade.get('acquisition_source') or 'inventory', user['id'], now, now, now))
@@ -6993,6 +7059,18 @@ class Handler(BaseHTTPRequestHandler):
                         if isinstance(entry, dict) and entry.get('instance_id') == modification['upgrade_instance_id']), None)
         if not upgrade:
             raise ApiError(409, 'Upgrade instance отсутствует в Inventory')
+        host = next((entry for entry in data.get('inventory') or []
+                     if isinstance(entry, dict) and entry.get('instance_id') == modification['host_instance_id']), None)
+        remaining_modifications = [item for item in character_modifications(conn, row['id'])
+                                   if item['modification_id'] != modification_id]
+        owned = {entry.get('instance_id'): entry for entry in data.get('inventory') or []
+                 if isinstance(entry, dict) and entry.get('instance_id')}
+        if host:
+            remaining_pools = weapon_slot_capacity(host, remaining_modifications, owned)
+            overloaded = [name for name, pool in remaining_pools.items()
+                          if pool['used'] > pool['total']]
+            if overloaded:
+                raise ApiError(409, 'Сначала снимите modifications, зависящие от granted slots')
         upgrade['state'] = 'carried'
         upgrade.pop('host_instance_id', None)
         now = time.time()

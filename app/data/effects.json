@@ -265,6 +265,40 @@
           "source": "CP:R 343"
         }
       ]
+    },
+    {
+      "id": "infrared-nightvision-scope-rule",
+      "catalog_id": "gun_upgrades-7",
+      "label_en": "Infrared Nightvision Scope",
+      "label_ru": "Инфракрасный прицел",
+      "requirements": {},
+      "effects": [],
+      "manual_rules": [
+        {
+          "id": "infrared-obscurement-penalty",
+          "text_en": "When looking through the scope, reduce firing penalties from darkness, smoke, fog, and similar obscurement to 0.",
+          "text_ru": "При прицеливании через scope штрафы к стрельбе из-за темноты, дыма, тумана и похожих помех уменьшаются до 0.",
+          "condition": "looking_through_scope_and_obscured",
+          "source": "CP:R 343"
+        }
+      ]
+    },
+    {
+      "id": "sniping-scope-rule",
+      "catalog_id": "gun_upgrades-10",
+      "label_en": "Sniping Scope",
+      "label_ru": "Снайперский прицел",
+      "requirements": {},
+      "effects": [],
+      "manual_rules": [
+        {
+          "id": "sniping-scope-long-range-check",
+          "text_en": "+1 Check only at 51m/yards or farther with single shot or an Aimed Shot; does not stack with TeleOptics.",
+          "text_ru": "+1 к Check только на дистанции 51 м/ярд и дальше при single shot или Aimed Shot; не складывается с TeleOptics.",
+          "condition": "range_51_plus_single_or_aimed_without_teleoptics",
+          "source": "CP:R 343"
+        }
+      ]
     }
   ]
 }

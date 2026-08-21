@@ -353,6 +353,52 @@ class WeaponModificationEffectTests(unittest.TestCase):
         self.assertEqual(host['mechanics']['magazine'], 12)
         self.assertEqual(host['mechanics']['concealable'], 'YES')
 
+    def test_compatibility_rail_grants_exotic_scope_only_capacity(self):
+        host = self.owned('guns-30', '7' * 32)
+        rail = self.owned('gun_upgrades-16', '8' * 32)
+        infrared = self.owned('gun_upgrades-7', '9' * 32)
+        sniping = self.owned('gun_upgrades-10', 'a' * 32)
+        owned = {item['instance_id']: item for item in (host, rail, infrared, sniping)}
+        self.assertTrue(server.weapon_is_exotic(host))
+        before = server.weapon_upgrade_compatibility(host, infrared, [], owned)
+        self.assertFalse(before['allowed'])
+        rail_check = server.weapon_upgrade_compatibility(host, rail, [], owned)
+        self.assertTrue(rail_check['allowed'])
+        self.assertTrue(rail_check['manual_resolution_required'])
+
+        rail['state'] = 'installed'
+        rail_mod = {
+            'modification_id': 'd' * 32, 'host_instance_id': host['instance_id'],
+            'upgrade_instance_id': rail['instance_id'], 'slots_used': 0, 'active': True,
+            'configuration': {'slot_pool': None},
+        }
+        with_rail = server.weapon_upgrade_compatibility(host, infrared, [rail_mod], owned)
+        self.assertTrue(with_rail['allowed'])
+        self.assertEqual(with_rail['slot_pool'], 'scope')
+        self.assertEqual(with_rail['slot_pool_total'], 1)
+        infrared['state'] = 'installed'
+        scope_mod = {
+            'modification_id': 'e' * 32, 'host_instance_id': host['instance_id'],
+            'upgrade_instance_id': infrared['instance_id'], 'slots_used': 1, 'active': True,
+            'configuration': {'slot_pool': 'scope'},
+        }
+        pools = server.weapon_slot_capacity(host, [rail_mod, scope_mod], owned)
+        self.assertEqual(pools['scope'], {'total': 1, 'used': 1})
+        evaluated = server.evaluate_effective_weapon(
+            host, [rail_mod, scope_mod], owned,
+            {'inventory': [host, rail, infrared], 'cyberware': []})
+        rail_source = next(source for source in evaluated['sources']
+                           if source['id'].startswith('slot-grant:'))
+        scope_source = next(source for source in evaluated['sources']
+                            if source['id'] == 'infrared-nightvision-scope-rule')
+        self.assertTrue(rail_source['automated'])
+        self.assertEqual(rail_source['effects'][0]['target'], 'weapon.scope_slots')
+        self.assertTrue(scope_source['manual_rules'][0]['manual_resolution_required'])
+        second_scope = server.weapon_upgrade_compatibility(
+            host, sniping, [rail_mod, scope_mod], owned)
+        self.assertFalse(second_scope['allowed'])
+        self.assertTrue(any('scope slots' in reason for reason in second_scope['reasons']))
+
     def test_bayonet_concealability_has_manual_alternate_attack_rule(self):
         host = self.owned('guns-5', '5' * 32)  # Shotgun / Shoulder Arms
         bayonet = self.owned('gun_upgrades-3', '6' * 32)
@@ -672,6 +718,10 @@ class CatalogArmorTests(unittest.TestCase):
         self.assertTrue(by_name['Ammo Compatibity Internals']['compatibility_manual'])
         self.assertTrue(by_name['Reinforced String']['permanent_installation'])
         self.assertEqual(by_name['Reinforced String']['compatibility_text'], 'Bows, Crossbows')
+        self.assertEqual(by_name['Infrared Nightvision Scope']['slot_type'], 'scope')
+        self.assertEqual(by_name['Sniping Scope']['slot_type'], 'scope')
+        self.assertEqual(by_name['Compatibility Rail']['grants_slots'], {'scope': 1})
+        self.assertEqual(by_name['Compatibility Rail']['slots_used'], 0)
 
     def test_night_market_is_grouped_by_deterministic_vendors(self):
         market = server.night_market()

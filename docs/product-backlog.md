@@ -2840,7 +2840,19 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - magazine state синхронизируется с effective capacity при Install/Remove/Reload: увеличение не создаёт патроны, уменьшение безопасно clamp-ит current magazine;
 - upgrade effect применяется только к конкретному host instance; второй одноимённый пистолет сохраняет base mechanics;
 - config snapshot защищает уже установленный upgrade от тихого изменения будущего catalog rule;
-- остальные underbarrel/rebuild/IR effects, Compatibility Rail slot grants и Tech overrides продолжаются только через отдельные curated definitions.
+- остальные underbarrel/rebuild/IR effects и Tech overrides продолжаются только через отдельные curated definitions.
+
+**Статус B.6.3 — реализованы Advanced Weapon Slot Pools:**
+
+- importer различает general attachment, scope и underbarrel slot types, а также declarative `grants_slots`;
+- Compatibility Rail на Exotic weapon создаёт отдельный `scope 0/1`, не превращая его в универсальный attachment slot;
+- Scope изначально несовместим с Exotic host и становится доступным только после установки конкретного Rail instance;
+- scope capacity считается отдельно от general slots; второй scope блокируется понятной причиной;
+- Rail нельзя снять, пока установленный scope зависит от выданного им slot; сначала снимается dependent modification;
+- Character Sheet и Manage Upgrades показывают usage каждого slot pool;
+- Compatibility Rail помечается как automated slot grant, а Infrared Nightvision Scope и Sniping Scope показывают source-specific `MANUAL RULE`;
+- situational scope bonuses не добавляются ко всем атакам: darkness/range/Aimed Shot/TeleOptics conditions остаются ручными до появления контекстного attack evaluator;
+- rail/scope rules сохраняются в installation snapshot и участвуют в том же atomic Ledger lifecycle.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -2857,8 +2869,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
    - дальше: только подтверждённые source-specific overrides и presets с доступными engine targets.
 10. ✅ Общая relational host/modification model и atomic lifecycle.
 11. ◐ Weapon Upgrades прямо в Character Sheet.
-    - готово: instance binding, compatibility/slots, Install/Remove UI, Ledger и curated effective mechanics для Magazines/Smartgun/Bayonet;
-    - дальше: underbarrels/rebuilds, config choices, Compatibility Rail и Tech overrides.
+    - готово: instance binding, compatibility/slot pools, Compatibility Rail, Install/Remove UI, Ledger и curated effective mechanics для Magazines/Smartgun/Bayonet/scopes;
+    - дальше: underbarrels/rebuilds, config choices и Tech overrides.
 12. Vehicle Upgrades и Garage integration.
 13. Cyberdeck/Cyberware/Armor/Tech modification hosts.
 14. JSON import.

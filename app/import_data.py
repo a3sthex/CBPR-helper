@@ -122,6 +122,8 @@ def item_modification_metadata(cat, name, row, desc):
         'choose to replace', 'dv17', 'tech upgraded',
     )
     kind = 'rebuild' if 'rebuild.' in low else 'attachment'
+    slot_type = 'scope' if ('scope' in name.lower() or 'scope attachment' in low) else (
+        'underbarrel' if 'underbarrel' in name.lower() else 'attachment')
     group = None
     if 'magazine' in name.lower():
         group = 'weapon_magazine'
@@ -129,10 +131,15 @@ def item_modification_metadata(cat, name, row, desc):
         group = 'weapon_rebuild'
     elif name in ('Smartgun Link',):
         group = 'smart_weapon_link'
+    elif name == 'Compatibility Rail':
+        group = 'weapon_scope_rail'
+    grants_slots = {'scope': 1} if name == 'Compatibility Rail' else {}
     return {
         'host_type': 'weapon',
         'modification_kind': kind,
         'modification_group': group,
+        'slot_type': slot_type,
+        'grants_slots': grants_slots,
         'slots_used': slots_used,
         'compatibility_text': compatibility,
         'permanent_installation': bool(re.search(r'can\s*not be uninstalled|cannot be uninstalled', low)),

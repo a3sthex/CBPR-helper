@@ -69,6 +69,8 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('attack_modifier', source)
         self.assertIn('Mag ${magBase}→${magEffective}', source)
         self.assertIn('requirements_met', source)
+        self.assertIn('slot_pools', source)
+        self.assertIn('MANUAL COMPATIBILITY CHECK REQUIRED', source)
 
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
