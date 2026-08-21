@@ -40,7 +40,7 @@ if [ ! -f "$REPO_DIR/app/server.py" ]; then
 fi
 
 # каталог данных (создаётся при первом запуске сам, но пусть будет)
-mkdir -p "$REPO_DIR/app/data"
+mkdir -p "$REPO_DIR/app/data" "$REPO_DIR/app/data/backups"
 
 # если каталога предметов нет — собираем из Data Pool.xlsx
 if [ ! -f "$REPO_DIR/app/data/items.json" ]; then
@@ -74,9 +74,48 @@ WantedBy=multi-user.target
 EOF
 )"
 
+BACKUP_UNIT="$(cat <<EOF
+[Unit]
+Description=NC//NET daily online campaign backup
+After=local-fs.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=$REPO_DIR
+Environment=CBPR_DB_PATH=$REPO_DIR/app/data/cbpr.db
+Environment=CBPR_BACKUP_DIR=$REPO_DIR/app/data/backups
+Environment=CBPR_BACKUP_RETENTION=14
+ExecStart=$PYTHON $REPO_DIR/app/backup.py create --retention 14 --reason scheduled
+User=$RUN_USER
+Group=$RUN_GROUP
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+EOF
+)"
+
+BACKUP_TIMER="$(cat <<'EOF'
+[Unit]
+Description=Run NC//NET campaign backup every day
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=cbpr-backup.service
+
+[Install]
+WantedBy=timers.target
+EOF
+)"
+
 if [ "$DRY_RUN" = "1" ]; then
-    echo "---- DRY RUN: будет создан файл /etc/systemd/system/cbpr.service ----"
+    echo "---- DRY RUN: /etc/systemd/system/cbpr.service ----"
     echo "$UNIT"
+    echo "---- DRY RUN: /etc/systemd/system/cbpr-backup.service ----"
+    echo "$BACKUP_UNIT"
+    echo "---- DRY RUN: /etc/systemd/system/cbpr-backup.timer ----"
+    echo "$BACKUP_TIMER"
     echo "--------------------------------------------------------------------"
     exit 0
 fi
@@ -104,10 +143,13 @@ if [ ! -d /run/systemd/system ]; then
     exit 0
 fi
 
-echo "Создаю службу cbpr.service…"
+echo "Создаю службы cbpr.service и ежедневного backup…"
 printf '%s\n' "$UNIT" | $SUDO tee /etc/systemd/system/cbpr.service >/dev/null
+printf '%s\n' "$BACKUP_UNIT" | $SUDO tee /etc/systemd/system/cbpr-backup.service >/dev/null
+printf '%s\n' "$BACKUP_TIMER" | $SUDO tee /etc/systemd/system/cbpr-backup.timer >/dev/null
 $SUDO systemctl daemon-reload
 $SUDO systemctl enable cbpr.service >/dev/null
+$SUDO systemctl enable --now cbpr-backup.timer >/dev/null
 $SUDO systemctl restart cbpr.service
 sleep 2
 
@@ -124,3 +166,6 @@ echo " Настрой домен и deploy/nginx-cbpr.conf; не открыва�
 echo " Логи в реальном времени:    journalctl -u cbpr -f"
 echo " Перезапуск:                 $SUDO systemctl restart cbpr"
 echo " Остановка:                  $SUDO systemctl stop cbpr"
+echo " Backup timer:               $SUDO systemctl status cbpr-backup.timer"
+echo " Backup сейчас:              $SUDO systemctl start cbpr-backup.service"
+echo " Проверка копий:             $PYTHON app/backup.py list"

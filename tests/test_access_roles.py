@@ -246,6 +246,8 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertIn('crop-output-width', source)
         self.assertIn('id="rg-invite"', source)
         self.assertIn("api('/api/admin/invites'", source)
+        self.assertIn("api('/api/admin/backups'", source)
+        self.assertIn('data-backup-verify', source)
         self.assertIn("api('/api/account/sessions'", source)
         self.assertIn("api('/api/account/password'", source)
         self.assertIn('data-admin-status', source)

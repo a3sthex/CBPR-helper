@@ -510,6 +510,39 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         revision = self.conn.execute('SELECT revision FROM characters WHERE id=1').fetchone()['revision']
         self.assertEqual(revision, 1)
 
+    def test_admin_creates_lists_and_verifies_campaign_backup(self):
+        with self.assertRaises(server.ApiError) as player_denied:
+            self.call(server.Handler.api_admin_backups)
+        self.assertEqual(player_denied.exception.status, 403)
+
+        backup_dir = Path(self.tmp.name) / 'api-backups'
+        uploads_dir = Path(self.tmp.name) / 'api-uploads'
+        uploads_dir.mkdir()
+        (uploads_dir / 'portrait.webp').write_bytes(b'private portrait')
+        original = (server.DB_PATH, server.BACKUP_DIR, server.UPLOAD_DIR)
+        server.DB_PATH, server.BACKUP_DIR, server.UPLOAD_DIR = (
+            self.db_path, str(backup_dir), str(uploads_dir))
+        try:
+            self.conn.execute("UPDATE users SET account_role='admin',is_gm=1 WHERE username='gm'")
+            self.conn.commit()
+            self.current = self.user('gm')
+            created = self.call(server.Handler.api_admin_backup_create, body={
+                'reason': 'API regression',
+            })
+            self.assertNotIn('path', created)
+            self.assertTrue((backup_dir / created['name']).is_file())
+            listed = self.call(server.Handler.api_admin_backups)
+            self.assertEqual(listed['backups'][0]['name'], created['name'])
+            verified = self.call(
+                server.Handler.api_admin_backup_verify,
+                re.match(r'^([A-Za-z0-9_.-]+)$', created['name']))
+            self.assertTrue(verified['valid'])
+            audit = self.conn.execute(
+                "SELECT * FROM account_security_audit WHERE event_type='backup_created'").fetchone()
+            self.assertEqual(audit['detail'], created['name'])
+        finally:
+            server.DB_PATH, server.BACKUP_DIR, server.UPLOAD_DIR = original
+
     def test_production_install_is_loopback_https_only_and_login_route_is_unique(self):
         installer = (ROOT / 'deploy/install.sh').read_text(encoding='utf-8')
         nginx = (ROOT / 'deploy/nginx-cbpr.conf').read_text(encoding='utf-8')
@@ -518,6 +551,8 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertIn('--host 127.0.0.1', installer)
         self.assertIn('Environment=CBPR_SECURE_COOKIES=1', installer)
         self.assertIn('Environment=CBPR_REGISTRATION_MODE=invite', installer)
+        self.assertIn('cbpr-backup.timer', installer)
+        self.assertIn('app/backup.py create --retention 14', installer)
         self.assertIn('return 308 https://$host$request_uri', nginx)
         self.assertIn('listen 443 ssl http2', nginx)
         login_routes = [route for route in server.ROUTES

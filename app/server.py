@@ -33,6 +33,8 @@ DB_PATH = os.path.abspath(os.path.expanduser(
 STATIC_DIR = os.path.join(BASE, 'static')
 ITEMS_PATH = os.path.join(DATA_DIR, 'items.json')
 UPLOAD_DIR = os.path.join(DATA_DIR, 'uploads')
+BACKUP_DIR = os.path.abspath(os.path.expanduser(
+    os.environ.get('CBPR_BACKUP_DIR') or os.path.join(DATA_DIR, 'backups')))
 
 MOSCOW = timezone(timedelta(hours=3))
 SESSION_TTL = 30 * 24 * 3600
@@ -871,6 +873,20 @@ def configured_admin_usernames():
     return {part.strip().lower() for part in raw.split(',') if part.strip()}
 
 
+def backup_tools_module():
+    if BASE not in sys.path:
+        sys.path.insert(0, BASE)
+    import backup as tools
+    return tools
+
+
+def backup_retention():
+    try:
+        return max(1, min(365, int(os.environ.get('CBPR_BACKUP_RETENTION', '14'))))
+    except (TypeError, ValueError):
+        return 14
+
+
 def backup_database(conn, label):
     """Create a bounded SQLite backup before a destructive-capable schema migration."""
     if not os.path.isfile(DB_PATH) or os.path.getsize(DB_PATH) == 0:
@@ -1536,6 +1552,7 @@ def db():
 def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
+    os.makedirs(BACKUP_DIR, exist_ok=True)
     conn = db()
     conn.execute('PRAGMA journal_mode=WAL')
     conn.execute('PRAGMA synchronous=NORMAL')
@@ -2695,6 +2712,10 @@ def server_error_message(message, language):
         ('недоступный выбор', 'unavailable choice'),
         ('уже на минимальном Level', 'is already at minimum Level'),
         ('Некорректное число в поле контракта:', 'Invalid number in Contract field:'),
+        ('Не удалось прочитать резервные копии:', 'Could not read backups:'),
+        ('Не удалось создать резервную копию:', 'Could not create backup:'),
+        ('Резервная копия не прошла проверку:', 'Backup verification failed:'),
+        ('Резервная копия не найдена:', 'Backup not found:'),
     ]
     out = str(message)
     for ru, en in replacements:
@@ -3253,6 +3274,57 @@ class Handler(BaseHTTPRequestHandler):
         updated = conn.execute('SELECT * FROM registration_invites WHERE id=?',
                                (row['id'],)).fetchone()
         self.send_json(self.invite_payload(updated))
+
+    def api_admin_backups(self, conn, qs, m, body):
+        self.require_admin(conn)
+        tools = backup_tools_module()
+        try:
+            backups = tools.list_bundles(BACKUP_DIR)
+        except (tools.BackupError, OSError) as error:
+            raise ApiError(500, f'Не удалось прочитать резервные копии: {error}')
+        self.send_json({'backups': backups, 'retention': backup_retention()})
+
+    def api_admin_backup_create(self, conn, qs, m, body):
+        actor = self.require_admin(conn)
+        tools = backup_tools_module()
+        try:
+            retention = backup_retention()
+            result = tools.create_bundle(
+                DB_PATH, UPLOAD_DIR, BACKUP_DIR, ITEMS_PATH, retention,
+                str((body or {}).get('reason') or 'manual')[:120])
+        except (tools.BackupError, OSError, sqlite3.DatabaseError) as error:
+            raise ApiError(500, f'Не удалось создать резервную копию: {error}')
+        record_account_security(conn, actor['id'], actor['id'], 'backup_created', result['name'])
+        conn.commit()
+        self.send_json({key: value for key, value in result.items() if key != 'path'}, status=201)
+
+    def api_admin_backup_verify(self, conn, qs, m, body):
+        self.require_admin(conn)
+        tools = backup_tools_module()
+        try:
+            path = tools.bundle_path(BACKUP_DIR, m.group(1))
+            result = tools.verify_bundle(path)
+        except (tools.BackupError, OSError, sqlite3.DatabaseError) as error:
+            raise ApiError(400, f'Резервная копия не прошла проверку: {error}')
+        self.send_json(result)
+
+    def api_admin_backup_download(self, conn, qs, m, body):
+        self.require_admin(conn)
+        tools = backup_tools_module()
+        try:
+            path = tools.bundle_path(BACKUP_DIR, m.group(1))
+        except (tools.BackupError, OSError) as error:
+            raise ApiError(404, f'Резервная копия не найдена: {error}')
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/gzip')
+        self.send_header('Content-Disposition', f'attachment; filename="{path.name}"')
+        self.send_header('Content-Length', str(path.stat().st_size))
+        self.send_header('Cache-Control', 'private, no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        with open(path, 'rb') as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                self.wfile.write(chunk)
 
     # ------------------------------------------------------------ NC//NET notifications / VK
 
@@ -5581,6 +5653,10 @@ ROUTES = [
     ('GET', rx(r'/api/admin/invites'), Handler.api_admin_invites),
     ('POST', rx(r'/api/admin/invites'), Handler.api_admin_invite_create),
     ('DELETE', rx(r'/api/admin/invites/(\d+)'), Handler.api_admin_invite_revoke),
+    ('GET', rx(r'/api/admin/backups'), Handler.api_admin_backups),
+    ('POST', rx(r'/api/admin/backups'), Handler.api_admin_backup_create),
+    ('POST', rx(r'/api/admin/backups/([A-Za-z0-9_.-]+)/verify'), Handler.api_admin_backup_verify),
+    ('GET', rx(r'/api/admin/backups/([A-Za-z0-9_.-]+)/download'), Handler.api_admin_backup_download),
     ('GET', rx(r'/api/notifications'), Handler.api_notifications),
     ('POST', rx(r'/api/notifications/(\d+)/read'), Handler.api_notification_read),
     ('GET', rx(r'/api/admin/vk'), Handler.api_admin_vk_status),

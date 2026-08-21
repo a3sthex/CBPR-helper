@@ -115,13 +115,24 @@ cd CBPR-helper && git pull && systemctl restart cbpr   # обновить до �
 
 Не добавляйте порт 8000 в `ufw` или security group: снаружи должны быть доступны только 80/443 для nginx.
 
-**Резервная копия** (все аккаунты, персонажи и посты лежат в одном файле `app/data/cbpr.db`):
+### Резервные копии
+
+`install.sh` устанавливает `cbpr-backup.timer`: каждый день около 04:00 он создаёт online SQLite snapshot, добавляет uploads и checksummed manifest в `app/data/backups/`. Останавливать сайт не требуется. По умолчанию хранятся последние 14 bundle-файлов.
 
 ```bash
-systemctl stop cbpr
-cp CBPR-helper/app/data/cbpr.db ~/cbpr-backup-$(date +%F).db
-tar -czf ~/cbpr-uploads-$(date +%F).tar.gz -C CBPR-helper/app/data uploads 2>/dev/null || true
-systemctl start cbpr
+systemctl status cbpr-backup.timer          # расписание
+systemctl start cbpr-backup.service         # создать backup сейчас
+journalctl -u cbpr-backup.service -n 50     # результат последнего запуска
+python3 app/backup.py list                   # список копий
+python3 app/backup.py verify ИМЯ.tar.gz      # integrity + SHA-256 каждого файла
+```
+
+Admin также может создавать, проверять и скачивать bundle в Admin Console. Bundle содержит приватные данные, password hashes и media — храните его как секрет. Для другой директории/retention используются `CBPR_BACKUP_DIR` и `CBPR_BACKUP_RETENTION`. Пошаговое безопасное восстановление и перенос на VPS описаны в [`docs/backup-restore.md`](docs/backup-restore.md).
+
+Ручное создание без systemd:
+
+```bash
+python3 app/backup.py create --retention 14 --reason manual
 ```
 
 ### Домен и HTTPS (обязательно для production)
