@@ -573,6 +573,43 @@ class VehicleModificationTests(unittest.TestCase):
                      'acquisition_source': source})
         return item
 
+    def test_effective_vehicle_separates_sdp_body_sp_glass_and_seats(self):
+        vehicle = self.owned('vehicles-2', 'c' * 32)
+        upgrades = [
+            self.owned('vehicles_upgrades-9', 'd' * 32),
+            self.owned('vehicles_upgrades-0', 'e' * 32),
+            self.owned('vehicles_upgrades-1', 'f' * 32),
+            self.owned('vehicles_upgrades-1', '1' * 31 + '0'),
+            self.owned('vehicles_upgrades-6', '2' * 31 + '0'),
+            self.owned('vehicles_upgrades-6', '3' * 31 + '0'),
+        ]
+        for item in upgrades:
+            item['state'] = 'installed'
+        owned = {item['instance_id']: item for item in [vehicle, *upgrades]}
+        modifications = [{
+            'modification_id': f'{index + 1:032x}',
+            'host_instance_id': vehicle['instance_id'],
+            'upgrade_instance_id': upgrade['instance_id'],
+            'host_type': 'vehicle', 'active': True, 'slots_used': 0,
+            'configuration': {
+                'effect_rules': server.vehicle_modification_rules_for_catalog(
+                    upgrade['catalog_item_id'])},
+        } for index, upgrade in enumerate(upgrades)]
+        result = server.evaluate_effective_vehicle(vehicle, modifications, owned)
+        self.assertEqual(result['base']['sdp'], 50)
+        self.assertEqual(result['effective']['sdp'], 70)
+        self.assertEqual(result['base']['body_sp'], 0)
+        self.assertEqual(result['effective']['body_sp'], 13)
+        self.assertEqual(result['base']['glass_hp'], 0)
+        self.assertEqual(result['effective']['glass_hp'], 30)
+        self.assertEqual(result['base']['seats'], 4)
+        self.assertEqual(result['effective']['seats'], 8)
+        self.assertEqual(vehicle['mechanics']['sdp'], 50)
+        glass_sources = [source for source in result['sources']
+                         if source['id'] == 'bulletproof-glass-effective']
+        self.assertEqual(len(glass_sources), 2)
+        self.assertTrue(glass_sources[0]['manual_rules'][0]['manual_resolution_required'])
+
     def test_vehicle_availability_prerequisites_conflicts_and_role_access(self):
         car = self.owned('vehicles-2', '1' * 32)
         bike = self.owned('vehicles-0', '2' * 32)
@@ -949,6 +986,13 @@ class CatalogArmorTests(unittest.TestCase):
         self.assertTrue(by_name['Onboard Rocket Pod']['permanent_installation'])
         self.assertIn('Folding Frame', by_name['Enclosure (Bicycle)']['conflicting_upgrades'])
         self.assertIn('Enclosure', by_name['Folding Frame (Bicycle)']['conflicting_upgrades'])
+        self.assertEqual(by_name['Seating Upgrade']['repeatable_max'], 99)
+        vehicles = {item['name']: item for item in server.catalog()['items']
+                    if item['cat'] == 'vehicles'}
+        self.assertEqual(vehicles['SH-45 Patroller']['mechanics']['body_sp'], 0)
+        self.assertEqual(vehicles['SH-45 Patroller']['mechanics']['glass_hp'], 15)
+        self.assertEqual(vehicles['Zetatech AeroCop']['mechanics']['body_sp'], 13)
+        self.assertEqual(vehicles['Zetatech AeroCop']['mechanics']['glass_hp'], 30)
 
     def test_night_market_is_grouped_by_deterministic_vendors(self):
         market = server.night_market()

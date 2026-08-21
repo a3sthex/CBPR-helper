@@ -925,24 +925,40 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         })
         housing_mod_id = installed_housing['modification_id']
         self.assertEqual(installed_housing['character']['revision'], 3)
+        effective_vehicle = installed_housing['character']['derived']['effective_vehicles'][vehicle['instance_id']]
+        self.assertEqual(effective_vehicle['base']['sdp'], 50)
+        self.assertEqual(effective_vehicle['effective']['sdp'], 70)
+        self.assertEqual(effective_vehicle['state'], {'sdp_current': 70, 'sdp_max': 70})
+        damaged = self.call(server.Handler.api_character_resource, self.match(1), {
+            'revision': 3, 'resource': 'vehicle_sdp', 'subject': vehicle['instance_id'],
+            'action': 'delta', 'value': -10,
+        })
+        self.assertEqual(damaged['revision'], 4)
+        self.assertEqual(damaged['data']['vehicle_state'][vehicle['instance_id']],
+                         {'sdp_current': 60, 'sdp_max': 70})
+        damage_ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertEqual(damage_ledger['entries'][0]['category'], 'vehicle')
+        self.assertIn('Vehicle SDP', damage_ledger['entries'][0]['reason'])
         heavy_match = re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{heavy_mod_id}')
         with self.assertRaises(server.ApiError) as dependency:
             self.call(server.Handler.api_character_modification_action, heavy_match, {
-                'revision': 3, 'action': 'remove', 'reason': 'try removing prerequisite',
+                'revision': 4, 'action': 'remove', 'reason': 'try removing prerequisite',
             })
         self.assertEqual(dependency.exception.status, 409)
         housing_match = re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{housing_mod_id}')
         removed_housing = self.call(server.Handler.api_character_modification_action,
                                     housing_match, {
-            'revision': 3, 'action': 'remove', 'reason': 'Remove dependent housing first',
+            'revision': 4, 'action': 'remove', 'reason': 'Remove dependent housing first',
         })
-        self.assertEqual(removed_housing['character']['revision'], 4)
+        self.assertEqual(removed_housing['character']['revision'], 5)
         removed_heavy = self.call(server.Handler.api_character_modification_action,
                                   heavy_match, {
-            'revision': 4, 'action': 'remove', 'reason': 'Remove Heavy Chassis after housing',
+            'revision': 5, 'action': 'remove', 'reason': 'Remove Heavy Chassis after housing',
         })
-        self.assertEqual(removed_heavy['character']['revision'], 5)
+        self.assertEqual(removed_heavy['character']['revision'], 6)
         self.assertFalse(removed_heavy['management']['modifications'])
+        final_state = removed_heavy['character']['data']['vehicle_state'][vehicle['instance_id']]
+        self.assertEqual(final_state, {'sdp_current': 40, 'sdp_max': 50})
 
     def test_active_effect_instances_apply_expire_tick_and_audit(self):
         character = copy.deepcopy(self.character_data)

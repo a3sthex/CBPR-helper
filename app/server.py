@@ -158,14 +158,16 @@ def load_effect_rules():
     item_rules = payload.get('item_effect_rules') or []
     use_rules = payload.get('use_effect_rules') or []
     weapon_rules = payload.get('weapon_modification_rules') or []
+    vehicle_rules = payload.get('vehicle_modification_rules') or []
     if (payload.get('version') != 1 or
             set(payload) - {'version', 'rules_version', 'synergy_rules',
                             'item_effect_rules', 'use_effect_rules',
-                            'weapon_modification_rules'} or
+                            'weapon_modification_rules', 'vehicle_modification_rules'} or
             not isinstance(rules, list) or len(rules) > 500 or
             not isinstance(item_rules, list) or len(item_rules) > 500 or
             not isinstance(use_rules, list) or len(use_rules) > 500 or
-            not isinstance(weapon_rules, list) or len(weapon_rules) > 500):
+            not isinstance(weapon_rules, list) or len(weapon_rules) > 500 or
+            not isinstance(vehicle_rules, list) or len(vehicle_rules) > 500):
         raise RuntimeError('Unsupported effects data format')
     seen = set()
     for rule in rules:
@@ -398,6 +400,47 @@ def load_effect_rules():
                     not str(manual.get('text_en') or '').strip() or
                     not str(manual.get('text_ru') or '').strip()):
                 raise RuntimeError(f'Invalid manual rule in weapon rule {rule_id}')
+    for rule in vehicle_rules:
+        if not isinstance(rule, dict) or set(rule) - {
+                'id', 'catalog_id', 'label_en', 'label_ru', 'effects', 'manual_rules'}:
+            raise RuntimeError('Vehicle modification rule contains non-allowlisted fields')
+        rule_id = str(rule.get('id') or '')
+        if not re.fullmatch(r'[a-z0-9_.-]{3,100}', rule_id) or rule_id in seen:
+            raise RuntimeError('Invalid or duplicate vehicle modification rule id')
+        seen.add(rule_id)
+        item = item_by_id(rule.get('catalog_id'))
+        if not item or item.get('cat') != 'vehicles_upgrades':
+            raise RuntimeError(f'Unknown vehicle upgrade in rule {rule_id}')
+        effects = rule.get('effects') or []
+        manual_rules = rule.get('manual_rules') or []
+        if not isinstance(effects, list) or not effects or not isinstance(manual_rules, list):
+            raise RuntimeError(f'Vehicle modification rule {rule_id} has no effects')
+        for effect in effects:
+            if (not isinstance(effect, dict) or
+                    set(effect) - {'id', 'target', 'operation', 'value', 'values', 'source'} or
+                    not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(effect.get('id') or '')) or
+                    effect.get('target') not in {'vehicle.sdp_max', 'vehicle.body_sp',
+                                                 'vehicle.glass_hp', 'vehicle.seats'}):
+                raise RuntimeError(f'Invalid vehicle effect in rule {rule_id}')
+            target, operation = effect['target'], effect.get('operation')
+            if target == 'vehicle.glass_hp':
+                values = effect.get('values')
+                if (operation != 'set_by_count' or not isinstance(values, dict) or
+                        set(values) != {'1', '2'} or
+                        any(not isinstance(value, int) or value < 0 for value in values.values())):
+                    raise RuntimeError(f'Invalid glass effect in rule {rule_id}')
+            elif target in ('vehicle.body_sp',):
+                if operation != 'set' or not isinstance(effect.get('value'), int):
+                    raise RuntimeError(f'Invalid vehicle SP effect in rule {rule_id}')
+            elif operation != 'add' or not isinstance(effect.get('value'), int):
+                raise RuntimeError(f'Invalid additive vehicle effect in rule {rule_id}')
+        for manual in manual_rules:
+            if (not isinstance(manual, dict) or
+                    set(manual) - {'id', 'text_en', 'text_ru', 'condition', 'source'} or
+                    not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(manual.get('id') or '')) or
+                    not str(manual.get('text_en') or '').strip() or
+                    not str(manual.get('text_ru') or '').strip()):
+                raise RuntimeError(f'Invalid manual rule in vehicle rule {rule_id}')
     _effect_rules = payload
     return payload
 
@@ -412,6 +455,9 @@ def item_effect_coverage(catalog_id):
         if rule.get('catalog_id') == catalog_id]
     rules += [
         ('modification', rule) for rule in payload.get('weapon_modification_rules') or []
+        if rule.get('catalog_id') == catalog_id]
+    rules += [
+        ('modification', rule) for rule in payload.get('vehicle_modification_rules') or []
         if rule.get('catalog_id') == catalog_id]
     catalog_item = item_by_id(catalog_id) or {}
     if catalog_item.get('grants_slots'):
@@ -449,6 +495,12 @@ def catalog_item_payload(item):
 def weapon_modification_rules_for_catalog(catalog_id):
     return [copy.deepcopy(rule) for rule in
             load_effect_rules().get('weapon_modification_rules') or []
+            if rule.get('catalog_id') == catalog_id]
+
+
+def vehicle_modification_rules_for_catalog(catalog_id):
+    return [copy.deepcopy(rule) for rule in
+            load_effect_rules().get('vehicle_modification_rules') or []
             if rule.get('catalog_id') == catalog_id]
 
 
@@ -721,6 +773,110 @@ def character_effective_weapons(character, modifications):
                               if modification.get('host_instance_id') == host.get('instance_id')]
         result[host['instance_id']] = evaluate_effective_weapon(
             host, host_modifications, owned, character)
+    return result
+
+
+def evaluate_effective_vehicle(host, modifications, owned_by_id):
+    base = copy.deepcopy(host.get('mechanics') or {})
+    base_sdp = max(0, _num(base.get('sdp')) or 0)
+    base_body_sp = max(0, _num(base.get('body_sp')) or 0)
+    base_glass_hp = max(0, _num(base.get('glass_hp')) or 0)
+    base_seats = _num(base.get('seats'))
+    effective_sdp = base_sdp
+    effective_body_sp = base_body_sp
+    effective_glass_hp = base_glass_hp
+    effective_seats = base_seats if base_seats is not None else base.get('seats')
+    sources = []
+    active_catalog_counts = {}
+    for modification in modifications:
+        upgrade = owned_by_id.get(modification.get('upgrade_instance_id')) or {}
+        catalog_id = catalog_item_id_for_entry(upgrade)
+        active_catalog_counts[catalog_id] = active_catalog_counts.get(catalog_id, 0) + 1
+    for modification in modifications:
+        upgrade = owned_by_id.get(modification.get('upgrade_instance_id')) or {}
+        config = modification.get('configuration') or {}
+        catalog_id = catalog_item_id_for_entry(upgrade)
+        rules = config.get('effect_rules')
+        if not isinstance(rules, list) or not rules:
+            rules = vehicle_modification_rules_for_catalog(catalog_id)
+        if not rules:
+            sources.append({
+                'id': f'manual:{modification.get("modification_id")}',
+                'label_en': upgrade.get('name') or config.get('upgrade_name') or 'Upgrade',
+                'label_ru': upgrade.get('name') or config.get('upgrade_name') or 'Upgrade',
+                'active': True, 'automated': False, 'effects': [],
+                'manual_rules': [], 'source': upgrade.get('installation_source') or upgrade.get('source'),
+            })
+            continue
+        for rule in rules:
+            rule_effects = []
+            for definition in rule.get('effects') or []:
+                effect = copy.deepcopy(definition)
+                effect['active'] = True
+                effect['modification_id'] = modification.get('modification_id')
+                effect['before'] = None
+                if effect['target'] == 'vehicle.sdp_max':
+                    effect['before'] = effective_sdp
+                    effective_sdp += int(effect['value'])
+                    effect['after'] = effective_sdp
+                elif effect['target'] == 'vehicle.body_sp':
+                    effect['before'] = effective_body_sp
+                    effective_body_sp = max(effective_body_sp, int(effect['value']))
+                    effect['after'] = effective_body_sp
+                elif effect['target'] == 'vehicle.glass_hp':
+                    effect['before'] = effective_glass_hp
+                    count = min(2, active_catalog_counts.get(catalog_id, 1))
+                    effective_glass_hp = max(
+                        effective_glass_hp, int((effect.get('values') or {}).get(str(count), 0)))
+                    effect['after'] = effective_glass_hp
+                elif effect['target'] == 'vehicle.seats':
+                    if isinstance(effective_seats, int):
+                        effect['before'] = effective_seats
+                        effective_seats += int(effect['value'])
+                        effect['after'] = effective_seats
+                    else:
+                        effect['active'] = False
+                        effect['suppressed_reason'] = 'Base seats are not a fixed numeric value'
+                rule_effects.append(effect)
+            sources.append({
+                'id': rule['id'], 'label_en': rule.get('label_en') or rule['id'],
+                'label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
+                'active': any(effect.get('active') for effect in rule_effects),
+                'automated': True, 'effects': rule_effects,
+                'manual_rules': [
+                    {**copy.deepcopy(manual), 'manual_resolution_required': True}
+                    for manual in rule.get('manual_rules') or []],
+                'source': next((effect.get('source') for effect in rule_effects
+                                if effect.get('source')), None),
+                'modification_id': modification.get('modification_id'),
+            })
+    effective = copy.deepcopy(base)
+    effective.update({'sdp': effective_sdp, 'body_sp': effective_body_sp,
+                      'glass_hp': effective_glass_hp, 'seats': effective_seats})
+    state = copy.deepcopy((host.get('_vehicle_state') or {}))
+    if not state:
+        state = {'sdp_current': effective_sdp, 'sdp_max': effective_sdp}
+    return {
+        'instance_id': host.get('instance_id'),
+        'base': {**base, 'sdp': base_sdp, 'body_sp': base_body_sp,
+                 'glass_hp': base_glass_hp, 'seats': base_seats if base_seats is not None else base.get('seats')},
+        'effective': effective, 'state': state, 'sources': sources,
+    }
+
+
+def character_effective_vehicles(character, modifications):
+    owned = {item.get('instance_id'): item for item in character.get('inventory') or []
+             if isinstance(item, dict) and item.get('instance_id')}
+    states = character.get('vehicle_state') or {}
+    result = {}
+    for host in (item for item in character.get('inventory') or []
+                 if isinstance(item, dict) and item.get('cat') == 'vehicles'):
+        copy_host = copy.deepcopy(host)
+        copy_host['_vehicle_state'] = copy.deepcopy(states.get(host.get('instance_id')) or {})
+        host_modifications = [modification for modification in modifications
+                              if modification.get('host_instance_id') == host.get('instance_id')]
+        result[host['instance_id']] = evaluate_effective_vehicle(
+            copy_host, host_modifications, owned)
     return result
 
 
@@ -2525,6 +2681,26 @@ def sync_weapon_states_with_modifications(conn, character_id, data):
     return effective_weapons
 
 
+def sync_vehicle_states_with_modifications(conn, character_id, data):
+    modifications = character_modifications(conn, character_id)
+    effective_vehicles = character_effective_vehicles(data, modifications)
+    states = data.setdefault('vehicle_state', {})
+    vehicles = {item.get('instance_id'): item for item in data.get('inventory') or []
+                if isinstance(item, dict) and item.get('cat') == 'vehicles'}
+    for instance_id, vehicle in effective_vehicles.items():
+        new_max = max(0, _num((vehicle.get('effective') or {}).get('sdp')) or 0)
+        base_max = max(0, _num((vehicles.get(instance_id, {}).get('mechanics') or {}).get('sdp')) or 0)
+        state = states.setdefault(instance_id, {'sdp_current': base_max, 'sdp_max': base_max})
+        old_max = max(0, _num(state.get('sdp_max')) or base_max)
+        old_current = max(0, min(old_max, _num(state.get('sdp_current'))
+                                 if _num(state.get('sdp_current')) is not None else old_max))
+        damage = max(0, old_max - old_current)
+        state['sdp_max'] = new_max
+        state['sdp_current'] = max(0, new_max - damage)
+        vehicle['state'] = copy.deepcopy(state)
+    return effective_vehicles
+
+
 def backfill_character_item_instances(conn):
     """One-time, idempotent migration of legacy JSON stacks to stable instances."""
     if not conn.execute(
@@ -3105,6 +3281,7 @@ def record_character_changes(conn, character_id, actor_user_id, before, after,
         'skills': 'skill', 'skill_pools': 'skill', 'stats': 'stat',
         'reputation': 'reputation', 'inventory': 'inventory',
         'cyberware': 'cyberware', 'armor': 'armor',
+        'vehicle_state': 'vehicle',
         'archived': 'status', 'public': 'status', 'visibility': 'status',
     }
     recorded = set()
@@ -3220,6 +3397,11 @@ def character_change_summary(before, after, limit=250):
     for modification_id in sorted(set(old_mod_state) | set(new_mod_state)):
         add(f'modification_state.{modification_id}', 'Modification resource state',
             old_mod_state.get(modification_id), new_mod_state.get(modification_id))
+    old_vehicle_state = before.get('vehicle_state') if isinstance(before.get('vehicle_state'), dict) else {}
+    new_vehicle_state = after.get('vehicle_state') if isinstance(after.get('vehicle_state'), dict) else {}
+    for vehicle_id in sorted(set(old_vehicle_state) | set(new_vehicle_state)):
+        add(f'vehicle_state.{vehicle_id}', 'Vehicle SDP',
+            old_vehicle_state.get(vehicle_id), new_vehicle_state.get(vehicle_id))
 
     def synergy_views(data):
         result = {}
@@ -4897,6 +5079,7 @@ SERVER_ERROR_EN = {
     'Vehicle configuration пока не поддерживается': 'Vehicle configuration is not supported yet',
     'Неподдерживаемый тип modification host': 'Unsupported modification host type',
     'Сначала снимите зависимые vehicle upgrades': 'Remove dependent vehicle upgrades first',
+    'Vehicle instance не найден': 'Vehicle instance not found',
     'Все слоты заняты': 'All slots are filled',
     'Вы уже записаны': 'You are already signed up',
     'Для специализированного навыка повышайте parent-pool': 'Increase the parent pool for a specialized Skill',
@@ -6867,6 +7050,8 @@ class Handler(BaseHTTPRequestHandler):
             derived['modifications'] = modifications
             derived['effective_weapons'] = character_effective_weapons(
                 full_data, modifications)
+            derived['effective_vehicles'] = character_effective_vehicles(
+                full_data, modifications)
         if public_view and not visibility['combat']:
             derived = {}
         elif public_view:
@@ -6996,6 +7181,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(400, 'В Character Sheet нет изменений')
         validate_active_modification_references(conn, row['id'], after)
         sync_weapon_states_with_modifications(conn, row['id'], after)
+        sync_vehicle_states_with_modifications(conn, row['id'], after)
         persist_character_item_instances(
             conn, row['id'], after, 'trust_audit_edit', source_ref=reason, prune=True)
         revision_after = current_revision + 1
@@ -7221,6 +7407,7 @@ class Handler(BaseHTTPRequestHandler):
         ensure_progression(target)
         validate_active_modification_references(conn, row['id'], target)
         sync_weapon_states_with_modifications(conn, row['id'], target)
+        sync_vehicle_states_with_modifications(conn, row['id'], target)
         persist_character_item_instances(
             conn, row['id'], target, 'ledger_revert',
             source_ref=f'ledger:{entry["id"]}', prune=True)
@@ -7308,11 +7495,13 @@ class Handler(BaseHTTPRequestHandler):
                 'configuration_by_host': configuration_by_host,
                 'compatibility': matrix,
             })
+        effective_vehicle_map = character_effective_vehicles(data, modifications)
         vehicle_hosts = []
         for host in (entry for entry in data.get('inventory') or []
                      if isinstance(entry, dict) and entry.get('cat') == 'vehicles'):
             active = [mod for mod in modifications if mod['host_instance_id'] == host.get('instance_id')]
             mechanics = host.get('mechanics') or {}
+            vehicle_effective = effective_vehicle_map.get(host.get('instance_id')) or {}
             vehicle_hosts.append({
                 'instance_id': host.get('instance_id'),
                 'catalog_item_id': catalog_item_id_for_entry(host),
@@ -7323,6 +7512,10 @@ class Handler(BaseHTTPRequestHandler):
                 'combat_speed': mechanics.get('combat_speed'),
                 'narrative_speed': mechanics.get('narrative_speed'),
                 'nomad_access': mechanics.get('nomad_access'),
+                'base': vehicle_effective.get('base') or mechanics,
+                'effective': vehicle_effective.get('effective') or mechanics,
+                'vehicle_state': vehicle_effective.get('state') or {},
+                'effect_sources': vehicle_effective.get('sources') or [],
                 'modification_ids': [mod['modification_id'] for mod in active],
             })
         vehicle_upgrades = []
@@ -7403,7 +7596,8 @@ class Handler(BaseHTTPRequestHandler):
             choices = {}
             compatibility = vehicle_upgrade_compatibility(
                 host, upgrade, active, owned, data)
-            effect_rules = []
+            effect_rules = vehicle_modification_rules_for_catalog(
+                catalog_item_id_for_entry(upgrade))
         else:
             raise ApiError(400, 'Неподдерживаемый тип modification host')
         if not compatibility['allowed']:
@@ -7448,6 +7642,8 @@ class Handler(BaseHTTPRequestHandler):
         upgrade['host_instance_id'] = host_id
         if host_type == 'weapon':
             sync_weapon_states_with_modifications(conn, row['id'], data)
+        elif host_type == 'vehicle':
+            sync_vehicle_states_with_modifications(conn, row['id'], data)
         revision_after = current_revision + 1
         persist_character_item_instances(conn, row['id'], data, 'modification_install')
         ledger_id = record_character_change_set(
@@ -7575,6 +7771,8 @@ class Handler(BaseHTTPRequestHandler):
             'WHERE modification_id=?', (user['id'], now, now, modification_id))
         if modification.get('host_type') == 'weapon':
             sync_weapon_states_with_modifications(conn, row['id'], data)
+        elif modification.get('host_type') == 'vehicle':
+            sync_vehicle_states_with_modifications(conn, row['id'], data)
         revision_after = current_revision + 1
         persist_character_item_instances(conn, row['id'], data, 'modification_remove')
         config = modification.get('configuration') or {}
@@ -7977,6 +8175,22 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(piece, dict): raise ApiError(400, 'Локация брони не экипирована')
             maximum = _num(piece.get('maximum')) or _num(piece.get('sp')) or _num(piece.get('sdp')) or 0
             piece['current'] = maximum if action == 'reset' else max(0, min(maximum, (_num(piece.get('current')) or 0) + value))
+        elif resource == 'vehicle_sdp':
+            if _num((body or {}).get('revision')) != (_row_value(row, 'revision', 0) or 0):
+                raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+            instance_id = str((body or {}).get('subject') or '')
+            sync_vehicle_states_with_modifications(conn, row['id'], data)
+            state = (data.get('vehicle_state') or {}).get(instance_id)
+            if not state:
+                raise ApiError(400, 'Vehicle instance не найден')
+            maximum = _num(state.get('sdp_max')) or 0
+            current = _num(state.get('sdp_current')) or 0
+            state['sdp_current'] = maximum if action == 'reset' else max(
+                0, min(maximum, current + value))
+            self.send_json(self.save_character_data(
+                conn, row, data, user['id'],
+                f'Vehicle SDP {instance_id}: {current} → {state["sdp_current"]}'))
+            return
         elif resource == 'weapon':
             sync_weapon_states_with_modifications(conn, row['id'], data)
             key = str((body or {}).get('subject') or '')

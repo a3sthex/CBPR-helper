@@ -2903,13 +2903,26 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 - importer нормализует Vehicle Upgrades: availability, Nomad Access, repeatability, prerequisites, conditional host prerequisites, conflicts, permanent/manual markers и source;
 - общая `item_modifications` model теперь поддерживает второй host type `vehicle` без отдельной несовместимой таблицы;
-- Character Sheet показывает Vehicle Garage с конкретными vehicle instances, base SDP/SP/Seats/Speed/Nomad Access и установленными upgrades;
+- Character Sheet показывает Vehicle Garage с конкретными vehicle instances, base SDP/protection/Seats/Speed/Nomad Access и установленными upgrades;
 - Manage Vehicle Upgrades показывает physical upgrades из Inventory, availability, причины блокировки, prerequisites/conflicts и repeatable limit;
 - Heavy Chassis блокируется на Bikes/Jetskis/Gyrocopters; Housing Capacity на Compact/High Performance Groundcar требует установленный Heavy Chassis;
 - prerequisite upgrade нельзя снять раньше зависимого; permanent vehicle weapons/parts нельзя удалить обычным Remove;
 - Nomad Access остаётся отдельной семантикой: купленный/найденный physical upgrade устанавливается независимо от Role, а item с source `Role Access` требует соответствующий Nomad Rank;
 - Install/Remove используют те же atomic revision, stable instance links, Ledger и safe revert, что weapon modifications;
-- effective Vehicle SDP/SP/Seats/Glass/NOS, mounted weapons и Garage resource state остаются B.7.2.
+- effective Vehicle durability, mounted weapons и Garage resource state вынесены в B.7.2.
+
+**Статус B.7.2 — реализована Effective Vehicle Durability:**
+
+- vehicle protection разделено на `SDP current/max`, `Body SP` и `Glass HP per window`; общий неоднозначный `SP` больше не используется в Garage;
+- importer отдельно извлекает Body SP и Glass HP из готовых combat vehicles, включая машины только с бронированным стеклом;
+- Heavy Chassis добавляет `+20 Max SDP`, но не выдаёт SP; при Install/Remove сохраняется уже полученный damage, а не создаётся бесплатный ремонт;
+- Armored Chassis устанавливает `Body SP 13` и не меняет Glass;
+- Bulletproof Glass даёт 15 HP/window первой установкой и 30 HP/window второй; окна остаются individual damage по manual rule;
+- Seating Upgrade добавляет +2 numeric Seats за каждую разрешённую установку; non-numeric per-room seats не автоматизируются;
+- Cycle Armor устанавливает Body SP 7, Reinforced Frame добавляет +5 Max SDP;
+- Vehicle Garage показывает `base → effective`, current/max SDP, Body SP, Glass HP/window, Seats и source/manual rules;
+- доступны server-authoritative SDP damage/repair controls с revision guard и Ledger;
+- base vehicle mechanics не переписываются, а старые installed upgrades получают curated effects через safe fallback rules.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -2929,8 +2942,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: instance binding, slot pools, lifecycle, Magazines/Smartgun/Bayonet/scopes, Underbarrels, Autofire/Rebuild profiles и host-specific Range Table choices;
     - дальше: contextual ricochet/charge, full Autofire action/ammo и Tech overrides.
 12. ◐ Vehicle Upgrades и Garage integration.
-    - готово: vehicle instances, compatibility/access/prerequisites, Garage UI и Install/Remove lifecycle;
-    - дальше: effective SDP/SP/Seats/Glass/NOS и mounted weapon profiles.
+    - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective SDP/Body SP/Glass/Seats и Garage damage controls;
+    - дальше: NOS state, mounted weapon profiles, cargo/rooms и repair workflows.
 13. Cyberdeck/Cyberware/Armor/Tech modification hosts.
 14. JSON import.
 

@@ -167,7 +167,8 @@ def vehicle_modification_metadata(cat, name, row, desc):
     repeatable_max = 1
     if name == 'Bulletproof Glass':
         repeatable_max = 2
-    elif 'multiple upgrades' in low or 'additional upgrade' in low:
+    elif ('multiple upgrades' in low or 'additional upgrade' in low or
+          'multiple times' in low):
         repeatable_max = 99
     availability = normalize_display_value(row.get('Availability') or '')
     nomad_access = row.get('Nomad Access')
@@ -521,6 +522,12 @@ def main():
                 it['mechanics']['armor_locations'] = locations
                 it['mechanics']['armor_bundled'] = bundled
                 it['mechanics']['armor_penalties'] = it['penalties']
+            if cat == 'vehicles':
+                protection = str(r.get('SP') or '')
+                body_match = re.search(r'(\d+)\s*SP(?:\s*\(Body\))?', protection, re.I)
+                glass_match = re.search(r'(\d+)\s*HP\s*\(Glass\)', protection, re.I)
+                it['mechanics']['body_sp'] = int(body_match.group(1)) if body_match else 0
+                it['mechanics']['glass_hp'] = int(glass_match.group(1)) if glass_match else 0
             if cat in ('guns', 'melee', 'grenades') and r.get('Damage'):
                 dm = re.search(r'(\d+d\d+(?:\s*[/×x]\s*\d+)?)', str(r['Damage']))
                 it['damage'] = dm.group(1) if dm else str(r['Damage']).strip()

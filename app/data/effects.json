@@ -628,5 +628,75 @@
       ],
       "manual_rules": []
     }
+  ],
+  "vehicle_modification_rules": [
+    {
+      "id": "armored-chassis-effective",
+      "catalog_id": "vehicles_upgrades-0",
+      "label_en": "Armored Chassis",
+      "label_ru": "Бронированное шасси",
+      "effects": [
+        {"id": "armored-chassis-body-sp", "target": "vehicle.body_sp", "operation": "set", "value": 13, "source": "CP:R 163"}
+      ],
+      "manual_rules": []
+    },
+    {
+      "id": "bulletproof-glass-effective",
+      "catalog_id": "vehicles_upgrades-1",
+      "label_en": "Bulletproof Glass",
+      "label_ru": "Пуленепробиваемое стекло",
+      "effects": [
+        {"id": "bulletproof-glass-hp", "target": "vehicle.glass_hp", "operation": "set_by_count", "values": {"1": 15, "2": 30}, "source": "CP:R 163"}
+      ],
+      "manual_rules": [
+        {"id": "glass-windows-individual", "text_en": "Each vehicle window sustains damage individually.", "text_ru": "Каждое окно транспорта получает повреждения отдельно.", "condition": "individual_windows", "source": "CP:R 163"}
+      ]
+    },
+    {
+      "id": "heavy-chassis-effective",
+      "catalog_id": "vehicles_upgrades-9",
+      "label_en": "Heavy Chassis",
+      "label_ru": "Тяжёлое шасси",
+      "effects": [
+        {"id": "heavy-chassis-sdp", "target": "vehicle.sdp_max", "operation": "add", "value": 20, "source": "CP:R 164"}
+      ],
+      "manual_rules": [
+        {"id": "heavy-chassis-towing", "text_en": "The upgraded vehicle can tow up to 10 tons.", "text_ru": "Улучшенный транспорт может буксировать до 10 тонн.", "condition": "towing_capacity", "source": "CP:R 164"}
+      ]
+    },
+    {
+      "id": "seating-upgrade-effective",
+      "catalog_id": "vehicles_upgrades-6",
+      "label_en": "Seating Upgrade",
+      "label_ru": "Дополнительные сиденья",
+      "effects": [
+        {"id": "seating-upgrade-seats", "target": "vehicle.seats", "operation": "add", "value": 2, "source": "CP:R 163"}
+      ],
+      "manual_rules": [
+        {"id": "seating-ejector-options", "text_en": "Sidecar, enclosure, ejector-seat, parachute, and collision details require manual configuration and resolution.", "text_ru": "Sidecar, enclosure, ejector-seat, parachute и столкновения требуют ручной конфигурации и применения.", "condition": "optional_seating_configuration", "source": "CP:R 163"}
+      ]
+    },
+    {
+      "id": "cycle-armor-effective",
+      "catalog_id": "vehicles_upgrades-29",
+      "label_en": "Cycle Armor",
+      "label_ru": "Броня велосипеда",
+      "effects": [
+        {"id": "cycle-armor-body-sp", "target": "vehicle.body_sp", "operation": "set", "value": 7, "source": "DLC:Wheels 4"}
+      ],
+      "manual_rules": []
+    },
+    {
+      "id": "reinforced-frame-effective",
+      "catalog_id": "vehicles_upgrades-36",
+      "label_en": "Reinforced Frame",
+      "label_ru": "Усиленная рама",
+      "effects": [
+        {"id": "reinforced-frame-sdp", "target": "vehicle.sdp_max", "operation": "add", "value": 5, "source": "DLC:Wheels 5"}
+      ],
+      "manual_rules": [
+        {"id": "reinforced-frame-body-limit", "text_en": "The reinforced frame permits riders with BODY 11 or higher.", "text_ru": "Усиленная рама позволяет ездить персонажам с BODY 11 или выше.", "condition": "rider_body_limit", "source": "DLC:Wheels 5"}
+      ]
+    }
   ]
 }
