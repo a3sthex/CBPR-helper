@@ -620,6 +620,74 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             })
         self.assertEqual(cannot_remove.exception.status, 409)
 
+    def test_underbarrel_profile_has_independent_unloaded_magazine_and_revert(self):
+        edited = copy.deepcopy(self.character_data)
+        catalog_ids = ('guns-6', 'gun_upgrades-6', 'ammo-3')
+        edited['inventory'] = [
+            {
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': server.item_by_id(item_id)['cat'],
+                'name': server.item_by_id(item_id)['name'], 'qty': 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            }
+            for item_id in catalog_ids
+        ]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add rifle, underbarrel and grenade ammo', 'data': edited,
+        })
+        by_name = {item['name']: item for item in updated['data']['inventory']}
+        host = by_name['Assault Rifle']
+        upgrade = by_name['Grenade Launcher Underbarrel']
+        installed = self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 1, 'host_instance_id': host['instance_id'],
+            'upgrade_instance_id': upgrade['instance_id'], 'manual_confirm': False,
+            'reason': 'Install underbarrel launcher',
+        })
+        modification_id = installed['modification_id']
+        profile = installed['character']['derived']['effective_weapons'][host['instance_id']]['alternate_attacks'][0]
+        self.assertEqual(profile['skill'], 'Heavy Weapons')
+        self.assertEqual(profile['damage'], '6d6')
+        self.assertEqual(profile['state']['magazine'], 0)
+        self.assertEqual(profile['state']['magazine_max'], 1)
+        self.assertEqual(profile['state']['reserve'], 10)
+        self.assertEqual(
+            installed['character']['derived']['effective_weapons'][host['instance_id']]['effective']['concealable'],
+            'NO')
+        source = next(item for item in
+                      installed['character']['derived']['effective_weapons'][host['instance_id']]['sources']
+                      if item['id'] == 'grenade-underbarrel-profile')
+        self.assertTrue(source['manual_rules'][0]['manual_resolution_required'])
+
+        mod_match = re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{modification_id}')
+        with self.assertRaises(server.ApiError) as empty:
+            self.call(server.Handler.api_character_modification_action, mod_match, {
+                'revision': 2, 'action': 'fire',
+            })
+        self.assertEqual(empty.exception.status, 409)
+        reloaded = self.call(server.Handler.api_character_modification_action, mod_match, {
+            'revision': 2, 'action': 'reload',
+        })
+        profile = reloaded['character']['derived']['effective_weapons'][host['instance_id']]['alternate_attacks'][0]
+        self.assertEqual((profile['state']['magazine'], profile['state']['reserve']), (1, 9))
+        fired = self.call(server.Handler.api_character_modification_action, mod_match, {
+            'revision': 3, 'action': 'fire',
+        })
+        profile = fired['character']['derived']['effective_weapons'][host['instance_id']]['alternate_attacks'][0]
+        self.assertEqual(profile['state']['magazine'], 0)
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertTrue(ledger['entries'][0]['can_revert'])
+        reverted = self.call(server.Handler.api_character_ledger_revert,
+                             self.match(1, ledger['entries'][0]['id']),
+                             {'revision': 4, 'reason': 'Undo accidental underbarrel shot'})
+        profile = reverted['derived']['effective_weapons'][host['instance_id']]['alternate_attacks'][0]
+        self.assertEqual(profile['state']['magazine'], 1)
+
+        removed = self.call(server.Handler.api_character_modification_action, mod_match, {
+            'revision': 5, 'action': 'remove', 'reason': 'Detach underbarrel launcher',
+        })
+        self.assertFalse(removed['character']['derived']['effective_weapons'][host['instance_id']]['alternate_attacks'])
+        self.assertNotIn(modification_id, removed['character']['data'].get('modification_state', {}))
+
     def test_exotic_scope_requires_rail_and_blocks_dependency_removal(self):
         edited = copy.deepcopy(self.character_data)
         catalog_ids = ('guns-30', 'gun_upgrades-16', 'gun_upgrades-7')

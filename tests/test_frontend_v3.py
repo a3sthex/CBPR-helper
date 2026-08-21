@@ -71,6 +71,9 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('requirements_met', source)
         self.assertIn('slot_pools', source)
         self.assertIn('MANUAL COMPATIBILITY CHECK REQUIRED', source)
+        self.assertIn('alternate_attacks', source)
+        self.assertIn('data-mod-weapon-action', source)
+        self.assertIn('alternate-weapon-profile', source)
 
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')

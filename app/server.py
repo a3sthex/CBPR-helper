@@ -289,10 +289,12 @@ def load_effect_rules():
             raise RuntimeError(f'Weapon modification rule {rule_id} has no effects or manual rule')
         for effect in effects:
             if (not isinstance(effect, dict) or
-                    set(effect) - {'id', 'target', 'operation', 'value', 'values', 'source'} or
+                    set(effect) - {'id', 'target', 'operation', 'value', 'values',
+                                   'profile', 'source'} or
                     not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(effect.get('id') or '')) or
                     effect.get('target') not in {'weapon.magazine', 'weapon.concealable',
-                                                 'weapon.attack_check'}):
+                                                 'weapon.attack_check',
+                                                 'weapon.alternate_profile'}):
                 raise RuntimeError(f'Invalid weapon effect in rule {rule_id}')
             if effect['target'] == 'weapon.magazine':
                 values = effect.get('values')
@@ -304,6 +306,19 @@ def load_effect_rules():
             elif effect['target'] == 'weapon.concealable':
                 if effect.get('operation') != 'set' or effect.get('value') not in ('YES', 'NO'):
                     raise RuntimeError(f'Invalid concealability effect in rule {rule_id}')
+            elif effect['target'] == 'weapon.alternate_profile':
+                profile = effect.get('profile')
+                if (effect.get('operation') != 'grant' or not isinstance(profile, dict) or
+                        set(profile) - {'id', 'label_en', 'label_ru', 'skill', 'damage',
+                                        'rof', 'magazine', 'ammo_kind', 'hands_required'} or
+                        not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(profile.get('id') or '')) or
+                        profile.get('skill') not in SKILL_BY_NAME or
+                        not re.fullmatch(r'\d+d\d+', str(profile.get('damage') or '')) or
+                        not isinstance(profile.get('rof'), int) or profile['rof'] < 1 or
+                        not isinstance(profile.get('magazine'), int) or profile['magazine'] < 1 or
+                        profile.get('ammo_kind') not in ('grenade', 'shotgun') or
+                        profile.get('hands_required') != 2):
+                    raise RuntimeError(f'Invalid alternate profile in rule {rule_id}')
             elif (effect.get('operation') != 'add' or
                   not isinstance(effect.get('value'), (int, float)) or
                   abs(effect['value']) > 10):
@@ -369,6 +384,33 @@ def weapon_modification_rules_for_catalog(catalog_id):
             if rule.get('catalog_id') == catalog_id]
 
 
+def weapon_profiles_from_rules(rules):
+    return [copy.deepcopy(effect['profile']) for rule in rules or []
+            for effect in rule.get('effects') or []
+            if effect.get('target') == 'weapon.alternate_profile' and
+            isinstance(effect.get('profile'), dict)]
+
+
+def ammo_reserve_for_profile(character, ammo_kind):
+    total = 0
+    for item in character.get('inventory') or []:
+        if not isinstance(item, dict) or item.get('cat') != 'ammo':
+            continue
+        mechanics = item.get('mechanics') or {}
+        compatible = str(mechanics.get('compatible_weapons') or '').lower()
+        if ammo_kind == 'grenade':
+            matched = 'grenade' in compatible
+        elif ammo_kind == 'shotgun':
+            matched = ('shotgun' in compatible or 'slug' in compatible or
+                       'all except grenades & rockets' in compatible)
+        else:
+            matched = False
+        if matched:
+            total += max(1, _num(item.get('qty')) or 1) * max(
+                1, _num(mechanics.get('quantity_per_purchase')) or 1)
+    return total
+
+
 def evaluate_effective_weapon(host, modifications, owned_by_id, character):
     base = copy.deepcopy(host.get('mechanics') or {})
     effective = copy.deepcopy(base)
@@ -377,6 +419,7 @@ def evaluate_effective_weapon(host, modifications, owned_by_id, character):
     base_concealable = base.get('concealable')
     effective_concealable = base_concealable
     attack_modifier = 0
+    alternate_attacks = []
     applied = []
     sources = []
     installed_cyberware = {
@@ -428,6 +471,17 @@ def evaluate_effective_weapon(host, modifications, owned_by_id, character):
                     effect['before'] = effective_concealable
                     effective_concealable = effect['value']
                     effect['after'] = effective_concealable
+                elif effect['target'] == 'weapon.alternate_profile' and requirements_met:
+                    profile = copy.deepcopy(effect['profile'])
+                    profile.update({
+                        'modification_id': modification.get('modification_id'),
+                        'upgrade_instance_id': modification.get('upgrade_instance_id'),
+                        'source': effect.get('source'),
+                        'state': copy.deepcopy(
+                            (character.get('modification_state') or {}).get(
+                                modification.get('modification_id'), {})),
+                    })
+                    alternate_attacks.append(profile)
                 elif effect['target'] == 'weapon.attack_check' and requirements_met:
                     effect['before'] = attack_modifier
                     attack_modifier += effect['value']
@@ -461,6 +515,7 @@ def evaluate_effective_weapon(host, modifications, owned_by_id, character):
         'instance_id': host.get('instance_id'),
         'base': base, 'effective': effective,
         'attack_modifier': attack_modifier,
+        'alternate_attacks': alternate_attacks,
         'slot_pools': slot_pools,
         'slots_total': sum(pool['total'] for pool in slot_pools.values()),
         'slots_used': sum(pool['used'] for pool in slot_pools.values()),
@@ -2857,6 +2912,11 @@ def character_change_summary(before, after, limit=250):
         old_view = (old_piece or {}).get('name') if isinstance(old_piece, dict) else None
         new_view = (new_piece or {}).get('name') if isinstance(new_piece, dict) else None
         add(f'armor.{location}', f'Armor: {location}', old_view, new_view)
+    old_mod_state = before.get('modification_state') if isinstance(before.get('modification_state'), dict) else {}
+    new_mod_state = after.get('modification_state') if isinstance(after.get('modification_state'), dict) else {}
+    for modification_id in sorted(set(old_mod_state) | set(new_mod_state)):
+        add(f'modification_state.{modification_id}', 'Modification resource state',
+            old_mod_state.get(modification_id), new_mod_state.get(modification_id))
 
     def synergy_views(data):
         result = {}
@@ -4524,6 +4584,9 @@ SERVER_ERROR_EN = {
     'Неизвестное действие с modification': 'Unknown modification action',
     'Укажите причину снятия modification': 'Modification removal reason is required',
     'Сначала снимите modifications, зависящие от granted slots': 'Remove modifications that depend on granted slots first',
+    'Modification не имеет alternate attack profile': 'Modification has no alternate attack profile',
+    'Alternate weapon разряжен': 'Alternate weapon is unloaded',
+    'Нет боеприпасов для перезарядки alternate weapon': 'No ammunition is available to reload the alternate weapon',
     'Все слоты заняты': 'All slots are filled',
     'Вы уже записаны': 'You are already signed up',
     'Для специализированного навыка повышайте parent-pool': 'Increase the parent pool for a specialized Skill',
@@ -6991,6 +7054,15 @@ class Handler(BaseHTTPRequestHandler):
                 catalog_item_id_for_entry(upgrade)),
             'effects_rules_version': load_effect_rules().get('rules_version'),
         }
+        profiles = weapon_profiles_from_rules(configuration['effect_rules'])
+        if profiles:
+            profile = profiles[0]
+            data.setdefault('modification_state', {})[modification_id] = {
+                'profile_id': profile['id'],
+                'magazine': 0,
+                'magazine_max': int(profile['magazine']),
+                'reserve': ammo_reserve_for_profile(data, profile['ammo_kind']),
+            }
         conn.execute(
             'INSERT INTO item_modifications(modification_id,character_id,host_instance_id,'
             'upgrade_instance_id,host_type,slot_type,slots_used,active,permanent,'
@@ -7046,9 +7118,48 @@ class Handler(BaseHTTPRequestHandler):
         modification = item_modification_payload(modification_row)
         if not modification['active']:
             raise ApiError(409, 'Modification уже снята')
+        action = str((body or {}).get('action') or '').lower()
+        if action in ('fire', 'reload'):
+            before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+            data = copy.deepcopy(before)
+            state = (data.get('modification_state') or {}).get(modification_id)
+            if not isinstance(state, dict) or not state.get('profile_id'):
+                raise ApiError(400, 'Modification не имеет alternate attack profile')
+            if action == 'fire':
+                if (_num(state.get('magazine')) or 0) <= 0:
+                    raise ApiError(409, 'Alternate weapon разряжен')
+                state['magazine'] = (_num(state.get('magazine')) or 0) - 1
+                reason = f'Fire alternate profile {state["profile_id"]}'
+            else:
+                current = _num(state.get('magazine')) or 0
+                maximum = _num(state.get('magazine_max')) or 0
+                reserve = _num(state.get('reserve')) or 0
+                moved = min(max(0, maximum - current), reserve)
+                if moved <= 0:
+                    raise ApiError(409, 'Нет боеприпасов для перезарядки alternate weapon')
+                state['magazine'] = current + moved
+                state['reserve'] = reserve - moved
+                reason = f'Reload alternate profile {state["profile_id"]} ×{moved}'
+            now = time.time()
+            revision_after = current_revision + 1
+            ledger_id = record_character_change_set(
+                conn, row['id'], user['id'], before, data, reason,
+                current_revision, revision_after, category='modification')
+            conn.execute('UPDATE item_modifications SET updated=? WHERE modification_id=?',
+                         (now, modification_id))
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                         (json.dumps(data, ensure_ascii=False), now, revision_after, row['id']))
+            conn.commit()
+            fresh = self.get_char(conn, row['id'])
+            self.send_json({
+                'ledger_id': ledger_id,
+                'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+                'management': self.modification_management_payload(conn, fresh),
+            })
+            return
         if modification['permanent']:
             raise ApiError(409, 'Эта modification не может быть снята')
-        if str((body or {}).get('action') or '').lower() != 'remove':
+        if action != 'remove':
             raise ApiError(400, 'Неизвестное действие с modification')
         reason = str((body or {}).get('reason') or '').strip()[:500]
         if len(reason) < 3:
@@ -7073,6 +7184,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(409, 'Сначала снимите modifications, зависящие от granted slots')
         upgrade['state'] = 'carried'
         upgrade.pop('host_instance_id', None)
+        data.setdefault('modification_state', {}).pop(modification_id, None)
         now = time.time()
         conn.execute(
             'UPDATE item_modifications SET active=0,removed_by=?,removed_at=?,updated=? '

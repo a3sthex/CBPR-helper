@@ -299,6 +299,90 @@
           "source": "CP:R 343"
         }
       ]
+    },
+    {
+      "id": "grenade-underbarrel-profile",
+      "catalog_id": "gun_upgrades-6",
+      "label_en": "Grenade Launcher Underbarrel",
+      "label_ru": "Подствольный гранатомёт",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "grenade-underbarrel-attack",
+          "target": "weapon.alternate_profile",
+          "operation": "grant",
+          "profile": {
+            "id": "grenade_launcher_underbarrel",
+            "label_en": "Underbarrel Grenade Launcher",
+            "label_ru": "Подствольный гранатомёт",
+            "skill": "Heavy Weapons",
+            "damage": "6d6",
+            "rof": 1,
+            "magazine": 1,
+            "ammo_kind": "grenade",
+            "hands_required": 2
+          },
+          "source": "CP:R 343"
+        },
+        {
+          "id": "grenade-underbarrel-concealability",
+          "target": "weapon.concealable",
+          "operation": "set",
+          "value": "NO",
+          "source": "CP:R 343"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "grenade-underbarrel-two-hands",
+          "text_en": "The host must be wielded in two hands to use this alternate attack profile.",
+          "text_ru": "Для использования этого alternate attack profile host необходимо держать двумя руками.",
+          "condition": "host_wielded_two_hands",
+          "source": "CP:R 343"
+        }
+      ]
+    },
+    {
+      "id": "shotgun-underbarrel-profile",
+      "catalog_id": "gun_upgrades-8",
+      "label_en": "Shotgun Underbarrel",
+      "label_ru": "Подствольный дробовик",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "shotgun-underbarrel-attack",
+          "target": "weapon.alternate_profile",
+          "operation": "grant",
+          "profile": {
+            "id": "shotgun_underbarrel",
+            "label_en": "Underbarrel Shotgun",
+            "label_ru": "Подствольный дробовик",
+            "skill": "Shoulder Arms",
+            "damage": "5d6",
+            "rof": 1,
+            "magazine": 2,
+            "ammo_kind": "shotgun",
+            "hands_required": 2
+          },
+          "source": "CP:R 343"
+        },
+        {
+          "id": "shotgun-underbarrel-concealability",
+          "target": "weapon.concealable",
+          "operation": "set",
+          "value": "NO",
+          "source": "CP:R 343"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "shotgun-underbarrel-two-hands",
+          "text_en": "The host must be wielded in two hands to use this alternate attack profile.",
+          "text_ru": "Для использования этого alternate attack profile host необходимо держать двумя руками.",
+          "condition": "host_wielded_two_hands",
+          "source": "CP:R 343"
+        }
+      ]
     }
   ]
 }

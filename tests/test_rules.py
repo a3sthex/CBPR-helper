@@ -399,6 +399,18 @@ class WeaponModificationEffectTests(unittest.TestCase):
         self.assertFalse(second_scope['allowed'])
         self.assertTrue(any('scope slots' in reason for reason in second_scope['reasons']))
 
+    def test_underbarrel_rules_grant_separate_attack_profiles(self):
+        grenade_rules = server.weapon_modification_rules_for_catalog('gun_upgrades-6')
+        shotgun_rules = server.weapon_modification_rules_for_catalog('gun_upgrades-8')
+        grenade = server.weapon_profiles_from_rules(grenade_rules)[0]
+        shotgun = server.weapon_profiles_from_rules(shotgun_rules)[0]
+        self.assertEqual((grenade['skill'], grenade['damage'], grenade['magazine']),
+                         ('Heavy Weapons', '6d6', 1))
+        self.assertEqual((shotgun['skill'], shotgun['damage'], shotgun['magazine']),
+                         ('Shoulder Arms', '5d6', 2))
+        self.assertEqual(grenade['hands_required'], 2)
+        self.assertEqual(shotgun['ammo_kind'], 'shotgun')
+
     def test_bayonet_concealability_has_manual_alternate_attack_rule(self):
         host = self.owned('guns-5', '5' * 32)  # Shotgun / Shoulder Arms
         bayonet = self.owned('gun_upgrades-3', '6' * 32)

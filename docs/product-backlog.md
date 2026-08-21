@@ -2854,6 +2854,18 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - situational scope bonuses не добавляются ко всем атакам: darkness/range/Aimed Shot/TeleOptics conditions остаются ручными до появления контекстного attack evaluator;
 - rail/scope rules сохраняются в installation snapshot и участвуют в том же atomic Ledger lifecycle.
 
+**Статус B.6.4 — реализованы Underbarrel Weapon Profiles:**
+
+- Grenade Launcher Underbarrel и Shotgun Underbarrel создают отдельный alternate attack profile на конкретном host instance;
+- profiles имеют собственные Skill, Damage, ROF, magazine/current/reserve и source snapshot, не заменяя основную атаку оружия;
+- Grenade profile: Heavy Weapons, 6d6, Mag 1; Shotgun profile: Shoulder Arms, 5d6, Mag 2;
+- новый underbarrel всегда устанавливается разряженным; Reload переносит боеприпасы из отдельного reserve и не создаёт их автоматически;
+- Fire/Reload являются server-authoritative modification actions с revision guard, readable Ledger и безопасным revert resource state;
+- снятие underbarrel удаляет его active profile/state, а revert восстановления modification возвращает snapshot;
+- требование держать host двумя руками показывается как `MANUAL RULE`: система пока не притворяется, что умеет отслеживать текущий хват оружия;
+- Character Sheet показывает alternate profile, Attack/Damage, отдельный Mag/Reserve и controls под основной карточкой host;
+- общий ammo ownership/transfer между несколькими weapons и automatic two-hand enforcement остаются следующими combat/loadout интеграциями.
+
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
@@ -2869,8 +2881,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
    - дальше: только подтверждённые source-specific overrides и presets с доступными engine targets.
 10. ✅ Общая relational host/modification model и atomic lifecycle.
 11. ◐ Weapon Upgrades прямо в Character Sheet.
-    - готово: instance binding, compatibility/slot pools, Compatibility Rail, Install/Remove UI, Ledger и curated effective mechanics для Magazines/Smartgun/Bayonet/scopes;
-    - дальше: underbarrels/rebuilds, config choices и Tech overrides.
+    - готово: instance binding, compatibility/slot pools, Compatibility Rail, Install/Remove UI, Ledger, Magazines/Smartgun/Bayonet/scopes и Underbarrel profiles;
+    - дальше: rebuilds, Autofire/config choices, shared ammo ownership и Tech overrides.
 12. Vehicle Upgrades и Garage integration.
 13. Cyberdeck/Cyberware/Armor/Tech modification hosts.
 14. JSON import.
