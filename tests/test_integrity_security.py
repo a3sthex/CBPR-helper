@@ -1126,6 +1126,46 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertTrue(ledger['entries'][0]['delta']['cyberware_lifecycle'][
             'quick_change_no_humanity_loss'])
 
+    def test_permanent_armor_tech_upgrade_applies_sp_and_reverts(self):
+        data = copy.deepcopy(self.character_data)
+        armor = copy.deepcopy(server.item_by_id('armor-3'))
+        armor.update({'key': 'armor-3', 'catalog_item_id': 'armor-3',
+                      'instance_id': 'd' * 32, 'state': 'equipped', 'qty': 1})
+        data['inventory'] = [armor]
+        data['armor'] = {'body': {
+            'key': 'armor-3', 'source_key': 'armor-3',
+            'catalog_item_id': 'armor-3', 'instance_id': armor['instance_id'],
+            'name': armor['name'], 'sp': 11, 'maximum': 11, 'current': 7,
+            'penalties': {}, 'bundled': False,
+        }}
+        self.conn.execute('UPDATE characters SET data=? WHERE id=1',
+                          (json.dumps(data),))
+        self.conn.commit()
+        match = re.match(r'^(\d+)/([a-f0-9]{32})$',
+                         f'1/{armor["instance_id"]}')
+        upgraded = self.call(server.Handler.api_character_armor_tech_upgrade, match, {
+            'revision': 0, 'tech_name': 'Maker Prime', 'manual_confirm': True,
+            'reason': 'Upgrade Expertise increases concrete armor SP',
+        })
+        body = upgraded['character']['data']['armor']['body']
+        self.assertEqual((body['sp'], body['current'], body['maximum']), (12, 8, 12))
+        self.assertEqual(upgraded['character']['derived']['sp_body'], 12)
+        host = upgraded['character']['derived']['effective_armor_hosts']['hosts'][0]
+        self.assertEqual(host['tech_upgrade']['mode'], 'sp_plus_one')
+        with self.assertRaisesRegex(server.ApiError, 'уже имеет Tech Upgrade'):
+            self.call(server.Handler.api_character_armor_tech_upgrade, match, {
+                'revision': 1, 'tech_name': 'Second Tech', 'manual_confirm': True,
+                'reason': 'Attempt a second upgrade on same armor',
+            })
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        reverted = self.call(
+            server.Handler.api_character_ledger_revert,
+            re.match(r'^(\d+)/(\d+)$', f'1/{ledger["entries"][0]["id"]}'), {
+                'revision': 1, 'reason': 'Revert Armor Tech Upgrade',
+            })
+        self.assertEqual(reverted['derived']['sp_body'], 11)
+        self.assertNotIn('armor_tech_state', reverted['data'])
+
     def test_generic_popup_ranged_binds_concrete_weapon_permanently(self):
         data = copy.deepcopy(self.character_data)
         arm = copy.deepcopy(server.item_by_id('cyberware-109'))

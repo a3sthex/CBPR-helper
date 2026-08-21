@@ -3150,6 +3150,19 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - generic Very Heavy/two-handed/incompatible weapon binding блокируется сервером;
 - Dartgun, Popup Net Launcher, Gas Jet, generic Popup attachment effect projection и destructive unbinding остаются отдельными source-specific расширениями.
 
+**Статус B.10.1 — реализованы Concrete Armor/Shield Hosts и Tech Upgrade foundation:**
+
+- каждый owned Armor/Shield item instance отображается как отдельный concrete host с catalog ID, допустимыми locations, equipped state и current/max durability projection;
+- Shield HP теперь извлекается из source fields/description (`10 HP`/`15 HP`), а не ошибочно трактуется как `SP 0`;
+- permanent Tech Maker Upgrade привязывается к concrete armor instance, требует explicit successful Check confirmation, Tech identity и reason;
+- для обычной Armor source-confirmed Upgrade Expertise автоматически даёт `SP +1` ровно один раз; equipped projection, current SP, maximum SP и derived Body/Head SP обновляются атомарно;
+- Tech Upgrade добавляет один current SP вместе с новым максимумом, не скрывая предыдущую абляцию;
+- Shield остаётся concrete host, но его Tech payload маркируется `MANUAL SHIELD TECH UPGRADE`: платформа не выдумывает универсальный HP/SP эффект без source-specific ruling;
+- повторный Tech Upgrade того же host блокируется; upgrade permanent и не может быть тихо удалён generic editor или продан отдельно;
+- armor/shield host projection server-side скрывается, если public Dossier запрещает equipment visibility;
+- Tech identity, mode, permanence, source, manual flag и before/after snapshot записываются в Ledger и поддерживают safe revert;
+- Armor repair workflow, paid services, Shield-specific curated Tech modes и generic Tech Maker invention/upgrade hosts остаются следующими этапами.
+
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
@@ -3171,8 +3184,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, action budget, cross-character REZ, safe curated effects, concrete Cyberware hosts, sides, clinic audit, Quick Change, curated option payloads, Therapy, fixed Integrated Cyberweapons и generic Popup concrete binding;
-    - дальше: special cyberweapon ammo, Armor/Shield hosts и Tech Maker modifications.
+    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, concrete Cyberware/Popup weapon binding, Therapy и concrete Armor/Shield hosts с permanent Armor SP +1 Tech Upgrade;
+    - дальше: Shield-specific modes, Armor repair/services, special cyberweapon ammo и generic Tech Maker modifications.
 14. JSON import.
 
 ### Пакет C — Publishing Preview

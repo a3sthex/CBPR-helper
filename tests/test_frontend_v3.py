@@ -161,6 +161,10 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('data-popup-weapon-bind', source)
         self.assertIn('/popup-weapon/bind', source)
         self.assertIn('permanent bound weapon', source)
+        self.assertIn('armorHostLifecycleHtml', source)
+        self.assertIn('data-armor-tech-upgrade', source)
+        self.assertIn('/tech-upgrade', source)
+        self.assertIn('MANUAL SHIELD TECH UPGRADE', source)
 
     def test_live_session_has_validated_net_context_and_queue_controls(self):
         ncnet = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')

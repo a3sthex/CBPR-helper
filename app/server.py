@@ -2156,10 +2156,16 @@ def derive(char, active_effects=None):
     # На каждой локации работает только наибольший SP. Штраф применяется
     # один раз — самый строгий отдельно для REF, DEX и MOVE.
     armor = char.get('armor') or {}
+    armor_hosts = effective_armor_hosts(char)
+    armor_host_by_id = {item['instance_id']: item for item in armor_hosts['hosts']}
     body_pieces = [armor.get('body'), armor.get('body_outer'), armor.get('body_inner')]
     head_pieces = [armor.get('head')]
-    body_pieces = [a for a in body_pieces if isinstance(a, dict)]
-    head_pieces = [a for a in head_pieces if isinstance(a, dict)]
+    body_pieces = [copy.deepcopy(a) for a in body_pieces if isinstance(a, dict)]
+    head_pieces = [copy.deepcopy(a) for a in head_pieces if isinstance(a, dict)]
+    for piece in body_pieces + head_pieces:
+        host = armor_host_by_id.get(piece.get('instance_id'))
+        if host and host.get('effective_sp') is not None:
+            piece['sp'] = host['effective_sp']
     body_sps = [_num(a.get('sp')) for a in body_pieces]
     head_sps = [_num(a.get('sp')) for a in head_pieces]
     body_sps = [sp for sp in body_sps if sp is not None]
@@ -2179,6 +2185,7 @@ def derive(char, active_effects=None):
         stat: values['effective'] for stat, values in out['effects']['stats'].items()
     }
     out['effective_cyberware'] = effective_cyberware_loadout(char)
+    out['effective_armor_hosts'] = armor_hosts
     return out
 
 
@@ -5513,6 +5520,7 @@ def clean_character(data):
     # Runtime/audit containers are server-owned and never accepted on creation.
     out.pop('cyberware_state', None)
     out.pop('therapy_state', None)
+    out.pop('armor_tech_state', None)
     out['handle'] = str(out.get('handle') or '').strip()[:60]
     if not out['handle']:
         raise ApiError(400, 'Нужен псевдоним (Handle) персонажа')
@@ -5933,13 +5941,20 @@ def clean_character_trust_update(old_data, incoming):
             raise ApiError(400, f'Броня {item["name"]} отсутствует в Inventory')
         used.add(owned['instance_id'])
         owned['state'] = 'equipped'
-        maximum = _num(item.get('sp')) or _num(item.get('sdp')) or 0
+        tech_state = (data.get('armor_tech_state') or {}).get(owned['instance_id']) or {}
+        base_maximum = (armor_shield_hp(item) if location == 'shield' else
+                        (_num(item.get('sp')) or _num(item.get('sdp')) or 0))
+        automated_sp_upgrade = (
+            location != 'shield' and tech_state.get('active') is True and
+            tech_state.get('mode') == 'sp_plus_one')
+        maximum = base_maximum + (1 if automated_sp_upgrade else 0)
         current = _num(piece.get('current'))
         armor[location] = {
             'key': str(piece.get('key') or owned.get('key') or catalog_id),
             'source_key': catalog_id, 'catalog_item_id': catalog_id,
             'instance_id': owned['instance_id'], 'name': item['name'],
-            'sp': item.get('sp'), 'sdp': item.get('sdp'),
+            'sp': maximum if location != 'shield' else item.get('sp'),
+            'sdp': maximum if location == 'shield' else item.get('sdp'),
             'penalties': copy.deepcopy(item.get('penalties') or {}),
             'bundled': bundled, 'maximum': maximum,
             'current': max(0, min(maximum, current if current is not None else maximum)),
@@ -6010,6 +6025,71 @@ def creation_skill_cost(data):
             if allocated[base] > pool:
                 raise ApiError(400, f'{base}: распределено {allocated[base]} при parent-pool {pool}')
     return total
+
+
+def armor_shield_hp(item):
+    catalog_item = item_by_id(catalog_item_id_for_entry(item)) or item or {}
+    text = ' '.join([str(catalog_item.get('desc') or ''),
+                     *[str(value) for value in (catalog_item.get('fields') or {}).values()]])
+    match = re.search(r'(\d+)\s*HP', text, re.I)
+    return int(match.group(1)) if match else 0
+
+
+def effective_armor_hosts(data):
+    """Project concrete Armor/Shield instances and permanent Tech upgrades."""
+    inventory = [item for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('cat') == 'armor' and
+                 item.get('instance_id')]
+    equipped = data.get('armor') if isinstance(data.get('armor'), dict) else {}
+    tech_states = data.get('armor_tech_state') \
+        if isinstance(data.get('armor_tech_state'), dict) else {}
+    hosts = []
+    for item in inventory:
+        catalog_item = item_by_id(catalog_item_id_for_entry(item)) or item
+        locations = list(catalog_item.get('armor_locations') or item.get('armor_locations') or [])
+        shield = 'shield' in locations
+        base_sp = _num(catalog_item.get('sp') if not shield else None)
+        base_sdp = armor_shield_hp(item) if shield else None
+        state = tech_states.get(item['instance_id'])
+        state = state if isinstance(state, dict) else {}
+        upgraded = state.get('active') is True
+        mode = state.get('mode')
+        effective_sp = (base_sp + 1) if upgraded and mode == 'sp_plus_one' and \
+            base_sp is not None else base_sp
+        effective_sdp = base_sdp
+        equipped_locations = [
+            location for location in ('head', 'body', 'shield')
+            if isinstance(equipped.get(location), dict) and
+            equipped[location].get('instance_id') == item['instance_id']]
+        current_by_location = {
+            location: _num(equipped[location].get('current'))
+            for location in equipped_locations}
+        hosts.append({
+            'instance_id': item['instance_id'],
+            'catalog_item_id': catalog_item_id_for_entry(item),
+            'name': item.get('custom_name') or item.get('name') or 'Armor',
+            'host_kind': 'shield' if shield else 'armor',
+            'locations': locations, 'equipped_locations': equipped_locations,
+            'state': item.get('state') or 'carried',
+            'base_sp': base_sp, 'effective_sp': effective_sp,
+            'base_sdp': base_sdp, 'effective_sdp': effective_sdp,
+            'current_by_location': current_by_location,
+            'tech_upgrade': copy.deepcopy(state) if upgraded else None,
+            'tech_upgrade_available': not upgraded and
+                (base_sp is not None or shield),
+            'automated_upgrade_available': not upgraded and base_sp is not None and not shield,
+            'manual_resolution_required': shield,
+        })
+    return {'hosts': hosts, 'upgraded_count': sum(bool(item['tech_upgrade']) for item in hosts)}
+
+
+def validate_armor_tech_references(data):
+    states = data.get('armor_tech_state') if isinstance(data.get('armor_tech_state'), dict) else {}
+    armor_ids = {item.get('instance_id') for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('cat') == 'armor'}
+    if any(instance_id not in armor_ids or not isinstance(state, dict)
+           for instance_id, state in states.items()):
+        raise ApiError(409, 'Повреждена связь Armor/Shield Tech Upgrade')
 
 
 CYBERWARE_HOST_ACCEPTED_NAMES = {
@@ -7395,6 +7475,14 @@ SERVER_ERROR_EN = {
     'Installed generic Popup Weapon option не найден': 'Installed generic Popup Weapon option not found',
     'Popup Weapon уже имеет permanent bound weapon': 'Popup Weapon already has a permanent bound weapon',
     'Permanent Popup Weapon binding нельзя продать отдельно': 'Permanent Popup Weapon binding cannot be sold separately',
+    'Повреждена связь Armor/Shield Tech Upgrade': 'Armor/Shield Tech Upgrade binding is corrupted',
+    'Armor Tech Upgrade содержит неподдерживаемые поля': 'Armor Tech Upgrade contains unsupported fields',
+    'Подтвердите успешный Tech Upgrade Check': 'Confirm a successful Tech Upgrade Check',
+    'Укажите Tech и причину Armor Upgrade': 'Specify the Tech and Armor Upgrade reason',
+    'Concrete Armor/Shield instance не найден': 'Concrete Armor/Shield instance not found',
+    'Armor/Shield уже имеет Tech Upgrade': 'Armor/Shield already has a Tech Upgrade',
+    'Armor instance не имеет upgradeable SP': 'Armor instance has no upgradeable SP',
+    'Permanent Armor Tech Upgrade нельзя продать отдельно': 'Permanent Armor Tech Upgrade cannot be sold separately',
     'Run доступен только Attacker Program': 'Run is available only for an Attacker Program',
     'Saved Program instance недоступен для восстановления': 'Saved Program instance is unavailable for restore',
     'Недостаточно Cyberdeck slots для Backup restore': 'Not enough Cyberdeck slots for Backup restore',
@@ -9487,7 +9575,7 @@ class Handler(BaseHTTPRequestHandler):
             if not visibility['equipment']:
                 for private_key in ('modifications', 'effective_weapons',
                                     'effective_vehicles', 'effective_cyberdecks',
-                                    'effective_cyberware'):
+                                    'effective_cyberware', 'effective_armor_hosts'):
                     derived.pop(private_key, None)
             for effect in (derived.get('effects') or {}).get('instances') or []:
                 for private_key in ('reason', 'actor', 'source_item_instance_id'):
@@ -9495,6 +9583,11 @@ class Handler(BaseHTTPRequestHandler):
             for modification in derived.get('modifications') or []:
                 for private_key in ('notes', 'installer', 'configuration'):
                     modification.pop(private_key, None)
+            for armor_host in (derived.get('effective_armor_hosts') or {}).get('hosts', []):
+                tech_upgrade = armor_host.get('tech_upgrade')
+                if isinstance(tech_upgrade, dict):
+                    for private_key in ('tech_name', 'installed_by', 'reason'):
+                        tech_upgrade.pop(private_key, None)
             for vehicle in (derived.get('effective_vehicles') or {}).values():
                 repair_state = vehicle.get('state') or {}
                 if isinstance(repair_state.get('repair'), dict):
@@ -9632,6 +9725,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(400, 'В Character Sheet нет изменений')
         validate_cyberware_trust_lifecycle(before, after)
         validate_bound_popup_weapon_references(after)
+        validate_armor_tech_references(after)
         validate_active_modification_references(conn, row['id'], after)
         sync_weapon_states_with_modifications(conn, row['id'], after)
         sync_vehicle_states_with_modifications(conn, row['id'], after)
@@ -9884,6 +9978,8 @@ class Handler(BaseHTTPRequestHandler):
                 (now, str(modification_id), row['id']))
         ensure_character_item_instances(target)
         ensure_progression(target)
+        validate_armor_tech_references(target)
+        validate_bound_popup_weapon_references(target)
         validate_active_modification_references(conn, row['id'], target)
         sync_weapon_states_with_modifications(conn, row['id'], target)
         sync_vehicle_states_with_modifications(conn, row['id'], target)
@@ -11757,6 +11853,88 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     @atomic_endpoint
+    def api_character_armor_tech_upgrade(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'tech_name', 'manual_confirm', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Armor Tech Upgrade содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        if (body or {}).get('manual_confirm') is not True:
+            raise ApiError(400, 'Подтвердите успешный Tech Upgrade Check')
+        tech_name = str((body or {}).get('tech_name') or '').strip()[:120]
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(tech_name) < 2 or len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите Tech и причину Armor Upgrade')
+        instance_id = str(m.group(2)).lower()
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        armor_item = next((item for item in data.get('inventory') or []
+                           if isinstance(item, dict) and item.get('instance_id') == instance_id and
+                           item.get('cat') == 'armor'), None)
+        if not armor_item:
+            raise ApiError(404, 'Concrete Armor/Shield instance не найден')
+        states = data.setdefault('armor_tech_state', {})
+        if isinstance(states.get(instance_id), dict) and states[instance_id].get('active'):
+            raise ApiError(409, 'Armor/Shield уже имеет Tech Upgrade')
+        catalog_item = item_by_id(catalog_item_id_for_entry(armor_item)) or armor_item
+        locations = catalog_item.get('armor_locations') or []
+        shield = 'shield' in locations
+        base_sp = _num(catalog_item.get('sp'))
+        if not shield and base_sp is None:
+            raise ApiError(409, 'Armor instance не имеет upgradeable SP')
+        mode = 'manual_shield_upgrade' if shield else 'sp_plus_one'
+        now = time.time()
+        state = {
+            'active': True, 'mode': mode, 'permanent': True,
+            'tech_name': tech_name, 'installed_by': user['id'],
+            'installed_at': now, 'source': 'CP:R 148 · Upgrade Expertise',
+            'manual_resolution_required': shield,
+            'reason': reason_detail,
+        }
+        states[instance_id] = state
+        if not shield:
+            for location in ('head', 'body'):
+                piece = (data.get('armor') or {}).get(location)
+                if isinstance(piece, dict) and piece.get('instance_id') == instance_id:
+                    previous_max = _num(piece.get('maximum'))
+                    previous_max = previous_max if previous_max is not None else base_sp
+                    previous_current = _num(piece.get('current'))
+                    previous_current = previous_current if previous_current is not None else previous_max
+                    piece['sp'] = base_sp + 1
+                    piece['maximum'] = base_sp + 1
+                    piece['current'] = min(base_sp + 1, previous_current + 1)
+        validate_armor_tech_references(data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'armor_tech_upgrade',
+            source_ref=reason_detail, prune=True)
+        revision_after = current_revision + 1
+        reason = (f'Tech Upgrade {armor_item.get("name")} '
+                  f'({"SP +1" if not shield else "MANUAL SHIELD"}): {reason_detail}')
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='modification')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['armor_tech_upgrade'] = {
+            'instance_id': instance_id, 'mode': mode, 'permanent': True,
+            'tech_name': tech_name, 'manual_resolution_required': shield,
+        }
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'upgrade': state,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
     def api_character_popup_weapon_bind(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
         allowed = {'revision', 'weapon_instance_id', 'permanent_confirmed', 'reason'}
@@ -12556,6 +12734,10 @@ class Handler(BaseHTTPRequestHandler):
                 (isinstance(cyber_states.get(ent.get('instance_id')), dict) and
                  cyber_states[ent.get('instance_id')].get('bound_weapon_instance_id'))):
             raise ApiError(409, 'Permanent Popup Weapon binding нельзя продать отдельно')
+        armor_tech = data.get('armor_tech_state') if isinstance(
+            data.get('armor_tech_state'), dict) else {}
+        if isinstance(armor_tech.get(ent.get('instance_id')), dict):
+            raise ApiError(409, 'Permanent Armor Tech Upgrade нельзя продать отдельно')
         if str(ent.get('state') or 'carried') in ('equipped', 'installed'):
             raise ApiError(409, 'Сначала снимите или извлеките предмет')
         ammo_units_before = ammo_rounds(ent) if ent.get('cat') == 'ammo' else None
@@ -15034,6 +15216,7 @@ ROUTES = [
     ('POST', rx(r'/api/characters/(\d+)/items/([a-f0-9]{32})/action'), Handler.api_character_item_action),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/action'), Handler.api_character_cyberware_action),
     ('POST', rx(r'/api/characters/(\d+)/therapy/action'), Handler.api_character_therapy_action),
+    ('POST', rx(r'/api/characters/(\d+)/armor/([a-f0-9]{32})/tech-upgrade'), Handler.api_character_armor_tech_upgrade),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/popup-weapon/bind'), Handler.api_character_popup_weapon_bind),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/weapon/action'), Handler.api_character_cyberware_weapon_action),
     ('GET', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modifications),

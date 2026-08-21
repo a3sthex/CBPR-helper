@@ -1407,6 +1407,30 @@ class CreationValidationTests(unittest.TestCase):
             legs['instance_id'], server.cyberware_secondary_host_id(legs['instance_id'])])
         server.validate_cyberware_slots(paired)
 
+    def test_concrete_armor_hosts_apply_sp_upgrade_and_parse_shield_hp(self):
+        armor = copy.deepcopy(server.item_by_id('armor-3'))
+        armor.update({'key': 'armor-3', 'catalog_item_id': 'armor-3',
+                      'instance_id': '6' * 32, 'state': 'equipped'})
+        shield = copy.deepcopy(server.item_by_id('armor-24'))
+        shield.update({'key': 'armor-24', 'catalog_item_id': 'armor-24',
+                       'instance_id': '7' * 32, 'state': 'carried'})
+        data = {
+            'inventory': [armor, shield],
+            'armor': {'body': {'instance_id': armor['instance_id'],
+                               'name': armor['name'], 'sp': 11,
+                               'maximum': 11, 'current': 7}},
+            'armor_tech_state': {armor['instance_id']: {
+                'active': True, 'mode': 'sp_plus_one', 'tech_name': 'Maker'}},
+        }
+        hosts = server.effective_armor_hosts(data)['hosts']
+        armor_host = next(item for item in hosts if item['instance_id'] == armor['instance_id'])
+        shield_host = next(item for item in hosts if item['instance_id'] == shield['instance_id'])
+        self.assertEqual((armor_host['base_sp'], armor_host['effective_sp']), (11, 12))
+        self.assertEqual(shield_host['base_sdp'], 15)
+        self.assertTrue(shield_host['manual_resolution_required'])
+        derived = server.derive(data)
+        self.assertEqual(derived['sp_body'], 12)
+
     def test_curated_integrated_cyberweapon_profiles_are_allowlisted(self):
         expected = {
             'cyberware-15': ('ranged', '5d6', 2),
