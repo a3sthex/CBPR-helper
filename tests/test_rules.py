@@ -1000,6 +1000,34 @@ class CyberdeckModificationTests(unittest.TestCase):
         self.assertEqual(rolled['total'], sum(rolled['rolls']))
         self.assertTrue(all(1 <= value <= 6 for value in rolled['rolls']))
 
+    def test_defense_sequencer_queues_manual_eligibility_trigger(self):
+        deck = self.owned('net_stuff-1', '3' * 32)
+        sequencer = self.owned('net_stuff-23', '4' * 32)
+        armor_trigger = self.owned('programs-12', '5' * 32)
+        armor_ready = self.owned('programs-12', '6' * 32)
+        for item in (sequencer, armor_trigger, armor_ready):
+            item['state'] = 'installed'
+        modifications = [
+            self.modification(deck, sequencer, 1),
+            self.modification(deck, armor_trigger, 2),
+            self.modification(deck, armor_ready, 3),
+        ]
+        data = {
+            'inventory': [deck, sequencer, armor_trigger, armor_ready],
+            'program_state': {
+                armor_trigger['instance_id']: {'status': 'derezzed'},
+                armor_ready['instance_id']: {'status': 'inactive'},
+            },
+        }
+        count = server.queue_defense_sequencer_trigger(
+            data, modifications, deck['instance_id'], armor_trigger['instance_id'])
+        self.assertEqual(count, 1)
+        pending = data['modification_state'][modifications[0]['modification_id']]
+        self.assertTrue(pending['pending_armor_rez'])
+        self.assertTrue(pending['manual_eligibility_required'])
+        self.assertEqual(pending['eligible_armor_instance_ids'],
+                         [armor_ready['instance_id']])
+
     def test_black_ice_entity_snapshots_stats_mode_and_target_type(self):
         killer = self.owned('programs-25', 'f' * 32)
         waiting = server.initial_black_ice_entity(

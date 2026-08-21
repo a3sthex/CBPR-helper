@@ -1352,7 +1352,8 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
 
     def test_black_ice_attacks_apply_anti_program_damage_and_keep_brain_effects_manual(self):
         source_data = copy.deepcopy(self.character_data)
-        source_ids = ('net_stuff-1', 'programs-25', 'programs-17', 'programs-20')
+        source_ids = (
+            'net_stuff-2', 'programs-25', 'programs-17', 'programs-20', 'programs-23')
         source_data['inventory'] = [
             {
                 'key': item_id, 'catalog_item_id': item_id,
@@ -1369,9 +1370,10 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             })
         source_by_name = {item['name']: item
                           for item in source_updated['data']['inventory']}
-        source_deck = source_by_name['Cyberdeck (Standard Quality)']
-        killer, hellhound, raven = (
-            source_by_name['Killer'], source_by_name['Hellhound'], source_by_name['Raven'])
+        source_deck = source_by_name['Cyberdeck (Excellent Quality)']
+        killer, hellhound, raven, wisp = (
+            source_by_name['Killer'], source_by_name['Hellhound'],
+            source_by_name['Raven'], source_by_name['Wisp'])
         self.call(server.Handler.api_character_modification_install, self.match(1), {
             'revision': 1, 'host_instance_id': source_deck['instance_id'],
             'upgrade_instance_id': killer['instance_id'], 'manual_confirm': False,
@@ -1386,6 +1388,11 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             'revision': 3, 'host_instance_id': source_deck['instance_id'],
             'upgrade_instance_id': raven['instance_id'], 'manual_confirm': False,
             'reason': 'Install Raven curated effect source',
+        })
+        self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 4, 'host_instance_id': source_deck['instance_id'],
+            'upgrade_instance_id': wisp['instance_id'], 'manual_confirm': False,
+            'reason': 'Install Wisp action penalty source',
         })
 
         target_data = copy.deepcopy(self.character_data)
@@ -1476,7 +1483,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             f'1/{source_deck["instance_id"]}/{killer["instance_id"]}')
         killer_entity = self.call(server.Handler.api_character_black_ice_deploy,
                                   killer_deploy, {
-            'revision': 4, 'mode': 'deploy_combat', 'session_id': session_id,
+            'revision': 5, 'mode': 'deploy_combat', 'session_id': session_id,
             'session_floor_id': floor['floor_id'], 'session_node_id': node['node_id'],
             'target_combatant_id': target_combatant,
             'reason': 'Deploy Killer against target Program source',
@@ -1486,7 +1493,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             f'1/{source_deck["instance_id"]}/{hellhound["instance_id"]}')
         hellhound_entity = self.call(server.Handler.api_character_black_ice_deploy,
                                      hellhound_deploy, {
-            'revision': 5, 'mode': 'deploy_combat', 'session_id': session_id,
+            'revision': 6, 'mode': 'deploy_combat', 'session_id': session_id,
             'session_floor_id': floor['floor_id'], 'session_node_id': node['node_id'],
             'target_combatant_id': target_combatant,
             'reason': 'Deploy Hellhound against target Netrunner',
@@ -1496,10 +1503,20 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             f'1/{source_deck["instance_id"]}/{raven["instance_id"]}')
         raven_entity = self.call(server.Handler.api_character_black_ice_deploy,
                                  raven_deploy, {
-            'revision': 6, 'mode': 'deploy_combat', 'session_id': session_id,
+            'revision': 7, 'mode': 'deploy_combat', 'session_id': session_id,
             'session_floor_id': floor['floor_id'], 'session_node_id': node['node_id'],
             'target_combatant_id': target_combatant,
             'reason': 'Deploy Raven against target Defender Program',
+        })['net_entity']
+        wisp_deploy = re.match(
+            r'^(\d+)/([a-f0-9]{32})/([a-f0-9]{32})$',
+            f'1/{source_deck["instance_id"]}/{wisp["instance_id"]}')
+        wisp_entity = self.call(server.Handler.api_character_black_ice_deploy,
+                                wisp_deploy, {
+            'revision': 8, 'mode': 'deploy_combat', 'session_id': session_id,
+            'session_floor_id': floor['floor_id'], 'session_node_id': node['node_id'],
+            'target_combatant_id': target_combatant,
+            'reason': 'Deploy Wisp for next-turn action penalty',
         })['net_entity']
 
         self.current = self.user('gm')
@@ -1574,6 +1591,31 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertTrue(manual_result['success'])
         self.assertNotIn('damage_total', manual_result)
         self.assertIn('2d6 damage', manual_result['manual_effect'])
+        wisp_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$',
+            f'{session_id}/{wisp_entity["net_entity_id"]}')
+        with mock.patch.object(server.secrets, 'randbelow', side_effect=[9, 0]):
+            wisp_attack = self.call(server.Handler.api_session_black_ice_attack,
+                                    wisp_match, {
+                'reason': 'Wisp applies next-turn NET Action penalty',
+            })
+        self.assertTrue(wisp_attack['result']['success'])
+        self.assertEqual(wisp_attack['result']['next_action_penalty'], 1)
+        self.call(server.Handler.api_session_net_state_update,
+                  self.match(session_id), {
+            'round': 1, 'active_turn': 0,
+            'reason': 'Advance NET Round to apply Wisp penalty',
+        })
+        self.current = self.user('other')
+        penalty_action = self.call(server.Handler.api_session_net_action,
+                                   self.match(session_id), {
+            'action': 'eye_dee', 'actor_combatant_id': target_combatant,
+            'reason': 'Use first action under Wisp penalty',
+        })
+        target_runner = next(item for item in penalty_action['session']['net']['runners']
+                             if item['combatant_id'] == target_combatant)
+        self.assertEqual((target_runner['actions_used'], target_runner['actions_max']),
+                         (1, 2))
         self.assertEqual(
             self.conn.execute('SELECT revision FROM characters WHERE id=2').fetchone()['revision'],
             7)
@@ -1955,6 +1997,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
                 'action': 'program_attack', 'actor_combatant_id': actor_id,
                 'program_instance_id': banhammer['instance_id'],
                 'target_entity_id': entity_id, 'character_revision': 4,
+                'target_character_revision': 4,
                 'reason': 'Run Banhammer against Killer; resolve damage manually',
             })
         result = attack['result']
@@ -1962,7 +2005,8 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertGreaterEqual(result['actor_total'], 6)
         self.assertGreaterEqual(result['defense_total'], 3)
         self.assertEqual(result['damage_total'], 12)
-        self.assertEqual(result['damage_application'], 'manual')
+        self.assertEqual(result['damage_application'], 'automated')
+        self.assertEqual(result['rez_after'], 8)
         self.assertIn('Does 3d6 REZ', result['manual_effect'])
         self.assertEqual(result['character_revision'], 5)
         stored = json.loads(self.conn.execute(
@@ -1977,10 +2021,15 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             })
         self.assertEqual(reverted_attack['data']['program_state'][
             banhammer['instance_id']]['run_count'], 0)
+        restored_entity = next(
+            item['net_entity'] for item in reverted_attack['derived']['effective_cyberdecks'][
+                deck['instance_id']]['programs'] if item['name'] == 'Killer')
+        self.assertEqual(restored_entity['rez_current'], 20)
         replayed_attack = self.call(server.Handler.api_session_net_action, action_match, {
             'action': 'program_attack', 'actor_combatant_id': actor_id,
             'program_instance_id': banhammer['instance_id'],
             'target_entity_id': entity_id, 'character_revision': 6,
+            'target_character_revision': 6,
             'reason': 'Run corrected Banhammer attack against Killer',
         })
         self.assertEqual(replayed_attack['result']['character_revision'], 7)

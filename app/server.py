@@ -3319,6 +3319,35 @@ def cyberdeck_item_compatibility(host, upgrade, active_modifications=None,
 PROGRAM_RUNTIME_STATUSES = {'inactive', 'rezzed', 'derezzed', 'destroyed'}
 
 
+def queue_defense_sequencer_trigger(data, modifications, deck_instance_id,
+                                     source_program_instance_id):
+    owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+             if isinstance(item, dict) and item.get('instance_id')}
+    sequencers = [mod for mod in modifications
+                  if mod.get('host_instance_id') == deck_instance_id and
+                  (owned.get(mod.get('upgrade_instance_id')) or {}).get('name') ==
+                  'Defense Sequencer']
+    eligible = [
+        item.get('instance_id') for mod in modifications
+        for item in [owned.get(mod.get('upgrade_instance_id')) or {}]
+        if mod.get('host_instance_id') == deck_instance_id and
+        item.get('name') == 'Armor' and item.get('instance_id') != source_program_instance_id and
+        ((data.get('program_state') or {}).get(item.get('instance_id')) or {}).get(
+            'status', 'inactive') == 'inactive']
+    if not sequencers or not eligible:
+        return 0
+    for sequencer in sequencers:
+        data.setdefault('modification_state', {})[sequencer['modification_id']] = {
+            'resource_type': 'defense_sequencer',
+            'pending_armor_rez': True,
+            'trigger_program_instance_id': source_program_instance_id,
+            'eligible_armor_instance_ids': eligible,
+            'manual_eligibility_required': True,
+            'source': 'DL:Up 5 / IR3 41',
+        }
+    return len(eligible)
+
+
 def initial_program_runtime_state(item, deck_instance_id, modification_id, existing=None):
     existing = existing if isinstance(existing, dict) else {}
     category = cyberdeck_program_category(item)
@@ -3445,6 +3474,8 @@ def evaluate_effective_cyberdeck(host, modifications, owned_by_id, character=Non
         if item.get('modification_kind') == 'cyberdeck_hardware':
             hardware_state = copy.deepcopy((character.get('modification_state') or {}).get(
                 modification.get('modification_id')) or {})
+            if hardware_state:
+                payload['runtime_state'] = hardware_state
             if item.get('name') == 'Backup Drive':
                 payload['backup_state'] = hardware_state or {
                     'resource_type': 'backup_drive', 'saved_programs': []}
@@ -4203,6 +4234,8 @@ def session_net_state(value):
             'actions_recorded': max(0, int(_num(item.get('actions_recorded')) or 0)),
             'action_round': max(0, int(_num(item.get('action_round')) or 0)),
             'actions_used': max(0, int(_num(item.get('actions_used')) or 0)),
+            'action_penalty': max(0, min(3, int(_num(
+                item.get('action_penalty')) or 0))),
             'next_action_penalty': max(0, min(3, int(_num(
                 item.get('next_action_penalty')) or 0))),
             'last_action_at': _num(item.get('last_action_at')),
@@ -6517,6 +6550,7 @@ SERVER_ERROR_EN = {
     'Program Attack target entity недоступна': 'Program Attack target entity is unavailable',
     'Program Attack требует installed Attacker Program': 'Program Attack requires an installed Attacker Program',
     'NET Action budget исчерпан для текущего NET Round': 'NET Action budget is exhausted for the current NET Round',
+    'Target Dossier изменён в другой вкладке': 'Target Dossier changed in another tab',
     'Нет допустимых Programs для curated Black ICE effect': 'No eligible Programs for the curated Black ICE effect',
     'Выбранная target Program недопустима': 'Selected target Program is not eligible',
     'Нет права выполнять Black ICE attack': 'No permission to perform a Black ICE attack',
@@ -10040,6 +10074,9 @@ class Handler(BaseHTTPRequestHandler):
             reason = f'Destroy Program {program.get("name")}: {detail}'
         else:
             raise ApiError(400, 'Program action: run/rez/damage/derez/deactivate/destroy')
+        if runtime['status'] in ('derezzed', 'destroyed'):
+            queue_defense_sequencer_trigger(
+                data, modifications, deck_id, program_id)
         validate_active_modification_references(conn, row['id'], data)
         persist_character_item_instances(
             conn, row['id'], data, 'program_action', source_ref=reason, prune=True)
@@ -10999,6 +11036,7 @@ class Handler(BaseHTTPRequestHandler):
                 'atk': entity.get('atk'), 'def': entity.get('def'),
                 'rez_current': entity.get('rez_current'),
                 'rez_max': entity.get('rez_max'),
+                'entity_character_revision': character['revision'],
                 'visible': link['visible'],
             }
             source_program = next((item for item in character_data.get('inventory') or []
@@ -11080,13 +11118,13 @@ class Handler(BaseHTTPRequestHandler):
                 'combatant_id': combatant['id'], 'character_id': character['id'],
                 'node_id': None, 'jacked_in': False, 'actions_recorded': 0,
                 'action_round': state['round'], 'actions_used': 0,
-                'next_action_penalty': 0,
+                'action_penalty': 0, 'next_action_penalty': 0,
             }
             node = node_by_id.get(runner.get('node_id'))
-            current_actions_used = runner.get('actions_used', 0) \
-                if runner.get('action_round') == state['round'] else 0
-            action_penalty = runner.get('next_action_penalty', 0) \
-                if runner.get('action_round') == state['round'] else 0
+            same_action_round = runner.get('action_round') == state['round']
+            current_actions_used = runner.get('actions_used', 0) if same_action_round else 0
+            action_penalty = (runner.get('action_penalty', 0) if same_action_round else
+                              runner.get('next_action_penalty', 0))
             actions_max = max(2, net_actions_for_interface(interface_rank) - action_penalty)
             runner_payload = {
                 'combatant_id': combatant['id'],
@@ -11952,7 +11990,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(404, 'Live NET Session не найдена')
         allowed = {'action', 'actor_combatant_id', 'target_node_id',
                    'program_instance_id', 'target_entity_id',
-                   'character_revision', 'reason'}
+                   'character_revision', 'target_character_revision', 'reason'}
         if set(body or {}) - allowed:
             raise ApiError(400, 'NET action содержит неподдерживаемые поля')
         actor_id = _num((body or {}).get('actor_combatant_id'))
@@ -11988,7 +12026,8 @@ class Handler(BaseHTTPRequestHandler):
                 'node_id': None, 'previous_node_id': None, 'jacked_in': False,
                 'interface_rank': interface_rank, 'actions_recorded': 0,
                 'action_round': state['round'], 'actions_used': 0,
-                'next_action_penalty': 0, 'last_action_at': None,
+                'action_penalty': 0, 'next_action_penalty': 0,
+                'last_action_at': None,
             }
             state['runners'].append(runner)
         runner['interface_rank'] = interface_rank
@@ -11996,9 +12035,11 @@ class Handler(BaseHTTPRequestHandler):
         if runner.get('action_round') != state['round']:
             runner['action_round'] = state['round']
             runner['actions_used'] = 0
+            runner['action_penalty'] = runner.get('next_action_penalty', 0)
             runner['next_action_penalty'] = 0
         consumes_net_action = action not in ('jack_in', 'jack_out')
-        actions_max = net_actions_for_interface(interface_rank)
+        actions_max = max(
+            2, net_actions_for_interface(interface_rank) - runner.get('action_penalty', 0))
         if consumes_net_action and runner.get('actions_used', 0) >= actions_max:
             raise ApiError(409, 'NET Action budget исчерпан для текущего NET Round')
         target_node_id = str((body or {}).get('target_node_id') or '').lower()
@@ -12008,6 +12049,10 @@ class Handler(BaseHTTPRequestHandler):
                   'interface_rank': interface_rank}
         character_before = None
         character_ledger_id = None
+        target_character = None
+        target_character_data = None
+        target_character_before = None
+        target_character_ledger_id = None
         if action == 'jack_in':
             if not target_node or target_node['type'] != 'access_point':
                 raise ApiError(400, 'Jack In требует Access Point node')
@@ -12111,10 +12156,15 @@ class Handler(BaseHTTPRequestHandler):
                              if item['net_entity_id'] == entity_id and item['active']), None)
                 if not link or link.get('node_id') != current_node['node_id']:
                     raise ApiError(409, 'Program Attack требует Black ICE на текущем node')
-                target_character = conn.execute('SELECT data FROM characters WHERE id=?',
+                target_character = conn.execute('SELECT * FROM characters WHERE id=?',
                                                 (link['character_id'],)).fetchone()
-                target_entity = (json.loads(target_character['data']).get('net_entities') or {}).get(
-                    entity_id) if target_character else None
+                target_character_data = enrich_owned_item_interactions(
+                    ensure_progression(json.loads(target_character['data']))) \
+                    if target_character else None
+                if target_character and target_character['id'] == character['id']:
+                    target_character_data = character_data
+                target_entity = (target_character_data.get('net_entities') or {}).get(
+                    entity_id) if target_character_data else None
                 if not isinstance(target_entity, dict) or target_entity.get('status') not in (
                         'lying_in_wait', 'hunting'):
                     raise ApiError(409, 'Program Attack target entity недоступна')
@@ -12155,12 +12205,51 @@ class Handler(BaseHTTPRequestHandler):
                 damage_dice = ATTACKER_PROGRAM_BLACK_ICE_DAMAGE.get(
                     str(program.get('name') or ''))
                 if success and damage_dice:
+                    expected_target_revision = _num(
+                        (body or {}).get('target_character_revision'))
+                    if expected_target_revision != (
+                            _row_value(target_character, 'revision', 0) or 0):
+                        raise ApiError(409, 'Target Dossier изменён в другой вкладке')
                     damage = roll_dice(damage_dice, 6)
+                    if target_character['id'] != character['id']:
+                        target_character_before = copy.deepcopy(target_character_data)
+                    previous_target_rez = int(target_entity.get('rez_current') or 0)
+                    target_entity['rez_current'] = max(
+                        0, previous_target_rez - damage['total'])
+                    target_entity['updated_at'] = now
+                    source_program_id = str(
+                        target_entity.get('source_program_instance_id') or '')
+                    target_program_item = next(
+                        (item for item in target_character_data.get('inventory') or []
+                         if isinstance(item, dict) and
+                         item.get('instance_id') == source_program_id), None)
+                    target_modifications = character_modifications(
+                        conn, target_character['id'])
+                    target_program_modification = next(
+                        (item for item in target_modifications
+                         if item.get('upgrade_instance_id') == source_program_id), None)
+                    if target_program_item and target_program_modification:
+                        target_runtime = initial_program_runtime_state(
+                            target_program_item,
+                            target_program_modification['host_instance_id'],
+                            target_program_modification['modification_id'],
+                            (target_character_data.get('program_state') or {}).get(
+                                source_program_id))
+                        target_runtime['rez_current'] = target_entity['rez_current']
+                        if target_entity['rez_current'] == 0:
+                            target_entity['status'] = 'derezzed'
+                            target_runtime['status'] = 'derezzed'
+                            link['initiative'] = 0
+                        target_character_data.setdefault('program_state', {})[
+                            source_program_id] = target_runtime
                     result.update({
                         'damage_rolls': damage['rolls'],
                         'damage_total': damage['total'],
                         'damage_target': 'black_ice_rez',
-                        'damage_application': 'manual',
+                        'damage_application': 'automated',
+                        'rez_before': previous_target_rez,
+                        'rez_after': target_entity['rez_current'],
+                        'target_derezzed': target_entity['rez_current'] == 0,
                     })
             else:
                 raise ApiError(400, 'NET action: jack_in/jack_out/move/pathfinder/backdoor/eye_dee/control/program_attack')
@@ -12178,6 +12267,29 @@ class Handler(BaseHTTPRequestHandler):
         }
         state.setdefault('action_log', []).append(action_entry)
         state['action_log'] = state['action_log'][-100:]
+        if target_character_before is not None:
+            target_revision_before = _row_value(target_character, 'revision', 0) or 0
+            target_character_ledger_id = record_character_change_set(
+                conn, target_character['id'], user['id'],
+                target_character_before, target_character_data,
+                f'Live NET target damage from {result["summary"]}: {reason}',
+                target_revision_before, target_revision_before + 1,
+                category='item_action')
+            target_ledger_row = conn.execute(
+                'SELECT delta_json FROM character_ledger WHERE id=?',
+                (target_character_ledger_id,)).fetchone()
+            target_delta = parse_json_object(target_ledger_row['delta_json'])
+            target_delta.update({
+                'revertible': False, 'multi_character_operation': True,
+                'session_id': session['id'],
+            })
+            conn.execute('UPDATE character_ledger SET session_id=?,delta_json=? WHERE id=?',
+                         (session['id'], json.dumps(target_delta, ensure_ascii=False),
+                          target_character_ledger_id))
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                         (json.dumps(target_character_data, ensure_ascii=False), now,
+                          target_revision_before + 1, target_character['id']))
+            result['target_character_revision'] = target_revision_before + 1
         if character_before is not None:
             revision_before = _row_value(character, 'revision', 0) or 0
             character_ledger_id = record_character_change_set(
@@ -12191,6 +12303,12 @@ class Handler(BaseHTTPRequestHandler):
                 'session_id': session['id'], 'before': before_state,
                 'after': copy.deepcopy(state),
             }
+            if target_character_ledger_id is not None:
+                ledger_delta.update({
+                    'revertible': False, 'multi_character_operation': True,
+                    'linked_target_ledger_id': target_character_ledger_id,
+                    'linked_target_character_id': target_character['id'],
+                })
             conn.execute('UPDATE character_ledger SET session_id=?,delta_json=? WHERE id=?',
                          (session['id'], json.dumps(ledger_delta, ensure_ascii=False),
                           character_ledger_id))
@@ -12380,6 +12498,12 @@ class Handler(BaseHTTPRequestHandler):
                     if runtime['rez_current'] == 0:
                         runtime['status'] = 'derezzed'
                 target_data.setdefault('program_state', {})[target_program_id] = runtime
+                if runtime['status'] in ('derezzed', 'destroyed'):
+                    pending = queue_defense_sequencer_trigger(
+                        target_data, target_modifications,
+                        runtime.get('deck_instance_id'), target_program_id)
+                    if pending:
+                        result['defense_sequencer_pending'] = pending
                 result.update({
                     'damage_rolls': damage['rolls'], 'damage_total': damage['total'],
                     'rez_before': previous_rez, 'rez_after': runtime['rez_current'],
@@ -12395,6 +12519,11 @@ class Handler(BaseHTTPRequestHandler):
                 'success': attack_total > defense_total,
                 'manual_effect': effect['manual_effect'],
             })
+            if result['success'] and source_program.get('name') == 'Wisp':
+                target_runner['next_action_penalty'] = max(
+                    1, target_runner.get('next_action_penalty', 0))
+                result['next_action_penalty'] = 1
+                result['action_penalty_minimum'] = 2
             if result['success'] and effect['resolution'] in (
                     'automated_random_destroy', 'automated_random_derez_plus_manual'):
                 target_modifications = character_modifications(conn, target_character['id'])
@@ -12482,6 +12611,12 @@ class Handler(BaseHTTPRequestHandler):
                     runtime['rez_current'] = 0
                     result['derezzed'] = True
                 target_data.setdefault('program_state', {})[target_program_id] = runtime
+                if runtime['status'] in ('derezzed', 'destroyed'):
+                    pending = queue_defense_sequencer_trigger(
+                        target_data, target_modifications,
+                        runtime.get('deck_instance_id'), target_program_id)
+                    if pending:
+                        result['defense_sequencer_pending'] = pending
                 result.update({
                     'selection_mode': selection_mode,
                     'target_program_instance_id': target_program_id,

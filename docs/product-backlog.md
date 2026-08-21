@@ -3057,11 +3057,21 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - NET Action budget теперь authoritative для каждого Netrunner и NET Round: Interface 1–3 даёт 2 actions, 4–6 — 3, 7–9 — 4, Rank 10 — 5;
 - Jack In/Jack Out не расходуют NET Action, остальные topology/Program actions расходуют budget даже при failed check; новый NET Round автоматически открывает новый budget;
 - Session Dashboard и Player View показывают `used/max`, cumulative action count и блокируют сервером попытку превысить лимит;
-- successful Sword/Banhammer attack дополнительно получает server damage roll 3d6/2d6 против Black ICE; применение к чужому Character runtime пока остаётся `manual`, чтобы не создавать небезопасный multi-character partial revert;
+- successful Sword/Banhammer attack дополнительно получает server damage roll 3d6/2d6 против Black ICE; применение к чужому Character runtime на этом этапе оставалось manual;
 - Asp при hit случайно выбирает любую installed Program и уничтожает concrete copy; Raven случайно выбирает Rezzed Defender и переводит её в `derezzed`, сохраняя brain damage как `MANUAL EFFECT`;
 - Asp/Raven поддерживают explicit GM override, Character revision guard, stable instance updates, slot release, Backup Drive и linked Session+Character Ledger revert;
 - уничтожение active Black ICE Program корректно архивирует её NET entity и удаляет link из Initiative Queue;
-- Wisp next-turn action penalty, Defense Sequencer unused-Armor trigger, Anti-Personnel HP/status effects и автоматическое применение Sword/Banhammer damage остаются следующими точечными интеграциями.
+- Wisp next-turn penalty, Defense Sequencer и автоматическое cross-character применение Sword/Banhammer damage были вынесены в B.8.9.
+
+**Статус B.8.9 — реализованы Cross-Character REZ и Turn Effects:**
+
+- successful Sword/Banhammer attack атомарно уменьшает REZ target Black ICE на 3d6/2d6; при 0 REZ entity и source Program переходят в `derezzed` и покидают Initiative;
+- cross-character Program Attack обновляет оба Dossier и Session одной transaction; обе Ledger entries помечаются immutable multi-character operation, полностью исключая опасный частичный Undo;
+- same-character Program Attack остаётся safely revertible вместе с Program run count, target ICE REZ и Session Action Log;
+- Wisp при hit ставит `next_action_penalty=1`; в следующем NET Round action budget уменьшается на 1, но никогда не становится ниже 2;
+- Defense Sequencer создаёт validated pending Armor Rez trigger и список inactive Armor candidates, оставляя source-specific `not used during this Netrun` eligibility явной ручной проверкой;
+- Hardware panel показывает `PENDING ARMOR REZ · MANUAL ELIGIBILITY`, не выдавая eligibility за доказанный автоматический факт;
+- Anti-Personnel HP/STAT/status effects, Defense Sequencer automatic next-Turn execution и Cloak/Scanner/Virus остаются следующими точечными интеграциями.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -3084,8 +3094,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET graph/actions, action budget и safe curated Program effects;
-    - дальше: remaining cross-character effects, затем Cyberware/Armor/Tech hosts.
+    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, action budget, cross-character REZ и safe curated effects;
+    - дальше: remaining meatspace/status effects, затем Cyberware/Armor/Tech hosts.
 14. JSON import.
 
 ### Пакет C — Publishing Preview
