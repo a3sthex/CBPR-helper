@@ -2767,15 +2767,27 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - custom item не может сам назначить себе consumable/equippable или внедрить use/equip mechanics;
 - mounted host links, мягкий ready limit и автоматическое применение Structured Effects остаются следующими подэтапами.
 
+**Статус B.5 — реализован фундамент Structured Effects & Modifiers:**
+
+- effect/synergy definitions вынесены в отдельный declarative `effects.json` с `rules_version`, allowlist targets/operations/fields и fail-closed validation;
+- данные эффектов не могут содержать JavaScript/Python или произвольные поля;
+- серверный pipeline поддерживает `set / minimum / maximum / add / multiply`, priority и `stack / highest / lowest / unique / replace`;
+- Character Sheet хранит base Skill/STAT без перезаписи и возвращает отдельные modifiers/effective values;
+- Skill table и dice rolls используют effective check base, а IP progression продолжает считать стоимость от base Skill Level;
+- Armor penalties и Humanity-derived EMP включены в общий readable stat breakdown;
+- подтверждённые правила `3+ Light Tattoo → Wardrobe & Style checks +2` и `Chemskin + TechHair → Personal Grooming checks +2` работают независимо и только один раз;
+- UI показывает прогресс набора, ACTIVE/INACTIVE, источник и итоговый бонус; активация/деактивация synergy попадает в readable Ledger diff;
+- temporary/custom active effect instances, duration/round tracking и более широкий curated effects catalog остаются B.5.2.
+
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
 4. ✅ Добавить custom/found items и acquisition provenance.
 5. ✅ Consumable/use и базовый Equippable Active Gear: equip modes, hands/slots, Activate/Deactivate, Active Loadout.
    - остаётся: mounted host links и расширение курируемой разметки предметов.
-6. Structured Effects & Modifiers schema/evaluator.
-7. Base/effective/current breakdown в Character Sheet и Rolls.
-8. Duration, stacking и active effect instances.
+6. ✅ Structured Effects & Modifiers declarative schema/evaluator и первые curated synergies.
+7. ✅ Base/modifiers/effective breakdown для STAT/Skill checks в Character Sheet и Rolls.
+8. Duration, temporary/custom active effect instances и Session round tracking.
 9. Curated effect overrides для Data Pool с source metadata.
 10. Общая host/modification model.
 11. Weapon Upgrades прямо в Character Sheet.

@@ -2246,17 +2246,20 @@ function fullSkillsTableHtml(char, derived, interactive) {
   for (const [cat, name, stat, is2] of state.meta.skills) {
     if (cat !== lastCat) { rows.push(`<div class="skill-cat">${esc(skillCategoryLabel(cat))}</div>`); lastCat = cat; }
     const lvl = specialized.has(name) ? characterSkillPool(char, name) : characterSkillLevel(char, name);
-    const statValue = stat === 'EMP' ? (derived.emp_cur ?? (char.stats || {}).EMP) : (char.stats || {})[stat];
-    rows.push(`<div class="skill-row ${specialized.has(name) ? 'skill-parent' : ''} ${lvl === 0 ? 'zero-level' : ''}">
+    const statBase=(char.stats||{})[stat],statBreakdown=derived.effects?.stats?.[stat];
+    const statValue=statBreakdown?.effective??(stat==='EMP'?(derived.emp_cur??statBase):statBase);
+    const skillEffect=derived.effects?.skills?.[name],checkModifier=num(skillEffect?.check_modifier)||0,checkBase=(num(statValue)||0)+lvl+checkModifier;
+    const statDisplay=statBreakdown&&statBreakdown.base!==statBreakdown.effective?`${statBreakdown.base}→${statBreakdown.effective}`:`${num(statValue)??0}`;
+    rows.push(`<div class="skill-row ${specialized.has(name) ? 'skill-parent' : ''} ${lvl === 0 ? 'zero-level' : ''} ${checkModifier?'modified':''}">
       <button class="skill-name-btn sname" data-skill-info="${esc(name)}">${esc(name)} ${is2 ? '<span class="muted small">(×2)</span>' : '<span class="muted small">(×1)</span>'}</button>
-      <span class="sstat">${esc(stat)} <b>${num(statValue) ?? 0}</b></span><span class="slvl"><b>${lvl}</b></span>${specialized.has(name)?`<span class="sbase"><small>Allocated ${specializedChildren(char,name).reduce((sum,child)=>sum+paidSpecializationLevel(char,name,child),0)} · Free ${Math.max(0,lvl-specializedChildren(char,name).reduce((sum,child)=>sum+paidSpecializationLevel(char,name,child),0))}</small></span><span></span>`:`<span class="sbase"><b>${(num(statValue)||0)+lvl}</b></span>${interactive?`<button class="mini-step" data-roll-check="${esc(name)}|${(num(statValue)||0)+lvl}">🎲</button>`:'<span></span>'}`}</div>`);
+      <span class="sstat">${esc(stat)} <b>${esc(statDisplay)}</b></span><span class="slvl"><b>${lvl}</b></span>${specialized.has(name)?`<span class="sbase"><small>Allocated ${specializedChildren(char,name).reduce((sum,child)=>sum+paidSpecializationLevel(char,name,child),0)} · Free ${Math.max(0,lvl-specializedChildren(char,name).reduce((sum,child)=>sum+paidSpecializationLevel(char,name,child),0))}</small></span><span></span>`:`<span class="sbase"><b>${checkBase}</b>${checkModifier?` <span class="chip effect-bonus">${checkModifier>0?'+':''}${checkModifier}</span>`:''}</span>${interactive?`<button class="mini-step" data-roll-check="${esc(name)}|${checkBase}">🎲</button>`:'<span></span>'}`}</div>`);
     if (specialized.has(name)) {
       for (const child of specializedChildren(char, name)) {
         rows.push(`<div class="skill-row subskill-row ${child.lvl === 0 ? 'zero-level' : ''}"><span class="sname subskill-name">↳ ${esc(child.name)}${name === 'Language' && child.name === char.native_language && child.lvl === 4 ? ' <span class="chip">культурный</span>' : ''}</span><span class="sstat">${esc(stat)} <b>${num(statValue) ?? 0}</b></span><span class="slvl"><b>${child.lvl}</b></span><span class="sbase"><b>${(num(statValue) || 0) + child.lvl}</b></span>${interactive?`<button class="mini-step" data-roll-check="${esc(name+' ('+child.name+')')}|${(num(statValue)||0)+child.lvl}">🎲</button>`:'<span></span>'}</div>`);
       }
     }
   }
-  return `<div class="skill-table-head"><span>${T('Skill','Навык')}</span><span>STAT</span><span>LVL</span><span>BASE</span><span></span></div><div class="skill-list full-skill-list">${rows.join('')}</div>`;
+  return `<div class="skill-table-head"><span>${T('Skill','Навык')}</span><span>STAT</span><span>${T('BASE LVL','БАЗ. УР.')}</span><span>${T('CHECK BASE','БАЗА ПРОВЕРКИ')}</span><span></span></div><div class="skill-list full-skill-list">${rows.join('')}</div>`;
 }
 
 function chromeGroupedHtml(items, withInfo) {
@@ -2536,7 +2539,7 @@ async function openImprovementModal(characterPayload){
 
 function combatSheetHtml(ch, derived, mine) {
   const weapons=(ch.inventory||[]).filter(item=>['guns','melee'].includes(item.cat)),states=ch.weapon_state||{};
-  const weaponRows=weapons.map(item=>{const key=String(item.instance_id||item.key||item.source_key||item.name),state=states[key]||{},skill=item.mechanics?.skill||'',meta=stateMetaSkill(skill),stat=meta&&meta[2],statValue=stat==='EMP'?(derived.emp_cur??ch.stats.EMP):(ch.stats||{})[stat],base=(num(statValue)||0)+(num((ch.skills||{})[skill])||0),damage=item.mechanics?.damage;return `<article class="weapon-sheet-card"><div><h3>${esc(item.custom_name||item.name)}</h3><div class="mechanic-chips">${itemMechanicChips(item)}${skill?`<span class="chip">${esc(skill)} BASE ${base}</span>`:''}</div></div><div class="weapon-controls">${state.magazine_max?`<b>Mag ${state.magazine}/${state.magazine_max}</b><span>Reserve ${state.reserve||0}</span>${mine?`<button data-weapon-action="${esc(key)}|fire">Fire</button><button data-weapon-action="${esc(key)}|reload">Reload</button>`:''}`:''}${mine&&skill?`<button data-attack-roll="${esc(item.custom_name||item.name)}|${base}">Attack 🎲</button>`:''}${damage?`<button data-damage-roll="${esc(item.custom_name||item.name)}|${damage.dice}|${damage.sides}|${damage.multiplier||1}">Damage 🎲</button>`:''}</div></article>`;}).join('');
+  const weaponRows=weapons.map(item=>{const key=String(item.instance_id||item.key||item.source_key||item.name),state=states[key]||{},skill=item.mechanics?.skill||'',meta=stateMetaSkill(skill),stat=meta&&meta[2],statValue=stat==='EMP'?(derived.emp_cur??ch.stats.EMP):(ch.stats||{})[stat],rawBase=(num(statValue)||0)+(num((ch.skills||{})[skill])||0),base=derived.effects?.skills?.[skill]?.effective_check_base??rawBase,damage=item.mechanics?.damage;return `<article class="weapon-sheet-card"><div><h3>${esc(item.custom_name||item.name)}</h3><div class="mechanic-chips">${itemMechanicChips(item)}${skill?`<span class="chip">${esc(skill)} BASE ${rawBase!==base?`${rawBase}→${base}`:base}</span>`:''}</div></div><div class="weapon-controls">${state.magazine_max?`<b>Mag ${state.magazine}/${state.magazine_max}</b><span>Reserve ${state.reserve||0}</span>${mine?`<button data-weapon-action="${esc(key)}|fire">Fire</button><button data-weapon-action="${esc(key)}|reload">Reload</button>`:''}`:''}${mine&&skill?`<button data-attack-roll="${esc(item.custom_name||item.name)}|${base}">Attack 🎲</button>`:''}${damage?`<button data-damage-roll="${esc(item.custom_name||item.name)}|${damage.dice}|${damage.sides}|${damage.multiplier||1}">Damage 🎲</button>`:''}</div></article>`;}).join('');
   const armor=['head','body','shield'].map(location=>{const piece=(ch.armor||{})[location];if(!piece)return '';return `<div class="armor-resource"><b>${location[0].toUpperCase()+location.slice(1)} · ${esc(piece.name)}</b><span>${piece.current??piece.sp??piece.sdp} / ${piece.maximum??piece.sp??piece.sdp} ${location==='shield'?'SDP':'SP'}</span>${mine?`<div><button data-armor-action="${location}|-1">Ablate</button><button data-armor-action="${location}|1">Repair 1</button><button data-armor-action="${location}|reset">Reset</button></div>`:''}</div>`;}).join('');
   return `<div class="combat-sheet-grid"><section><h2>Weapons</h2>${weaponRows||'<div class="empty">No weapons.</div>'}</section><section><h2>Armor</h2>${armor||'<div class="empty">No equipped armor.</div>'}</section></div>`;
 }
@@ -2570,6 +2573,7 @@ async function viewSheet(id) {
   const cw = ch.cyberware || [];
   const inv = ch.inventory || [];
   const activeGear=inv.filter(item=>item.state==='equipped'&&item.equippable);
+  const synergies=d.effects?.synergies||[];
   const lpRows = ch.lifepath ? lifepathNarrative(ch.lifepath, ch.role, ch.role_lifepath, ch.lifepath_mode) : [];
   const armor = ch.armor || {};
   const armorSlots = [
@@ -2615,9 +2619,9 @@ async function viewSheet(id) {
       </div>
       <div class="panel mb">
         <h2>📊 ${T('Characteristics','Характеристики')}</h2>
-        <div class="statgrid">${state.meta.stats.map(s => `
-          <div class="stat"><div class="v">${(ch.stats || {})[s] != null ? ch.stats[s] : '—'}</div><div class="k">${s}</div></div>`).join('')}</div>
+        <div class="statgrid">${state.meta.stats.map(s => {const effect=d.effects?.stats?.[s],base=(ch.stats||{})[s],effective=effect?.effective??base,modified=base!=null&&effective!==base;return `<div class="stat ${modified?'modified':''}"><div class="v">${modified?`${base}→${effective}`:(base??'—')}</div><div class="k">${s}</div>${modified?`<small>${esc((effect.modifiers||[]).filter(item=>item.applied).map(item=>`${item.value>0?'+':''}${item.value} ${item.source||item.id}`).join(' · '))}</small>`:''}</div>`;}).join('')}</div>
       </div>
+      ${synergies.length?`<div class="panel mb effect-panel"><h2>✨ ${T('Structured Effects & Synergies','Структурированные эффекты и синергии')}</h2><div class="small muted mb">${T('Base values are never overwritten. Active modifiers are applied only to effective checks.','Базовые значения не перезаписываются. Активные модификаторы применяются только к effective checks.')} · ${esc(d.effects.rules_version||'')}</div>${synergies.map(rule=>{const label=APP_I18N.current()==='ru'?rule.label_ru:rule.label_en,progress=rule.requirements.map(req=>`${req.label} ${req.current}/${req.required}`).join(' · '),effects=rule.effects.map(effect=>`${effect.target.replace(/^skill\.|\.check$/g,'')} ${effect.value>0?'+':''}${effect.value}`).join(' · ');return `<article class="synergy-row ${rule.active?'active':'inactive'}"><div><b>${esc(label)}</b><span>${esc(progress)}</span></div><span class="tag">${rule.active?T('ACTIVE','АКТИВНО'):T('INACTIVE','НЕАКТИВНО')}</span>${rule.active?`<strong>${esc(effects)}</strong>`:''}</article>`;}).join('')}</div>`:''}
       <div class="panel mb" id="sheet-skills">
         <h2>🎯 Skills</h2>
         <div class="small muted mb">${T('STAT · LVL · BASE = current STAT + LVL; EMP reflects Humanity Loss.','STAT · LVL · BASE = текущий STAT + LVL; EMP учитывает Humanity Loss.')}</div>

@@ -139,7 +139,7 @@ class DerivedRulesTests(unittest.TestCase):
         self.assertEqual(result['humanity_max'], 60)
 
     def test_armor_uses_highest_sp_and_strictest_penalty_once(self):
-        result = server.derive({'armor': {
+        result = server.derive({'stats': {'REF': 8, 'DEX': 7, 'MOVE': 6}, 'armor': {
             'body_outer': {'sp': 11, 'penalties': {'REF': 0, 'DEX': 0, 'MOVE': 0}},
             'body_inner': {'sp': 7, 'penalties': {'REF': -2, 'DEX': -3, 'MOVE': -4}},
             'head': {'sp': 13, 'penalties': {'REF': -3, 'DEX': -2, 'MOVE': -2}},
@@ -147,6 +147,101 @@ class DerivedRulesTests(unittest.TestCase):
         self.assertEqual(result['sp_body'], 11)
         self.assertEqual(result['sp_head'], 13)
         self.assertEqual(result['armor_penalties'], {'REF': -3, 'DEX': -3, 'MOVE': -4})
+        self.assertEqual(result['effects']['stats']['REF']['base'], 8)
+        self.assertEqual(result['effects']['stats']['REF']['effective'], 5)
+
+
+class StructuredEffectsTests(unittest.TestCase):
+    def fashion_character(self, light_tattoos=0, chemskin=False, techhair=False):
+        chrome = []
+        for index in range(light_tattoos):
+            chrome.append({
+                'instance_id': f'{index + 1:032x}', 'key': 'cyberware-52',
+                'catalog_item_id': 'cyberware-52', 'name': 'Light Tattoo',
+                'state': 'installed', 'hl': 0, 'type': 'Fashionware',
+            })
+        for catalog_id, name, enabled in (
+                ('cyberware-51', 'Chemskin', chemskin),
+                ('cyberware-55', 'TechHair', techhair)):
+            if enabled:
+                chrome.append({
+                    'instance_id': f'{len(chrome) + 10:032x}', 'key': catalog_id,
+                    'catalog_item_id': catalog_id, 'name': name,
+                    'state': 'installed', 'hl': 0, 'type': 'Fashionware',
+                })
+        return {
+            'stats': {'COOL': 6, 'EMP': 6},
+            'skills': {'Wardrobe & Style': 4, 'Personal Grooming': 3},
+            'cyberware': chrome, 'armor': {},
+        }
+
+    def test_confirmed_fashionware_synergies_apply_once_and_independently(self):
+        partial = server.derive(self.fashion_character(
+            light_tattoos=2, chemskin=True, techhair=True))
+        by_id = {rule['id']: rule for rule in partial['effects']['synergies']}
+        self.assertFalse(by_id['light-tattoo-trio']['active'])
+        self.assertEqual(by_id['light-tattoo-trio']['requirements'][0]['current'], 2)
+        self.assertTrue(by_id['chemskin-techhair-combo']['active'])
+        self.assertEqual(
+            partial['effects']['skills']['Personal Grooming']['effective_check_base'], 11)
+        self.assertEqual(
+            partial['effects']['skills']['Wardrobe & Style']['effective_check_base'], 10)
+
+        complete_character = self.fashion_character(
+            light_tattoos=5, chemskin=True, techhair=True)
+        complete = server.derive(complete_character)
+        self.assertEqual(
+            complete['effects']['skills']['Wardrobe & Style']['effective_check_base'], 12)
+        self.assertEqual(
+            complete['effects']['skills']['Personal Grooming']['effective_check_base'], 11)
+        self.assertEqual(
+            complete['effects']['skills']['Wardrobe & Style']['check_modifier'], 2)
+        self.assertEqual(
+            complete['effects']['skills']['Personal Grooming']['check_modifier'], 2)
+        self.assertEqual(complete_character['skills']['Wardrobe & Style'], 4)
+        self.assertEqual(complete_character['skills']['Personal Grooming'], 3)
+
+    def test_synergy_activation_is_visible_in_readable_change_summary(self):
+        before = self.fashion_character(light_tattoos=2)
+        after = self.fashion_character(light_tattoos=3)
+        changes = server.character_change_summary(before, after)
+        effect = next(change for change in changes
+                      if change['path'] == 'effects.synergy.light-tattoo-trio')
+        self.assertIn('INACTIVE', effect['before'])
+        self.assertIn('ACTIVE', effect['after'])
+        self.assertIn('Light Tattoo Ensemble', effect['label'])
+
+    def test_modifier_pipeline_is_deterministic_and_respects_stacking(self):
+        modifiers = [
+            {'id': 'unique-a', 'target': 'skill.Handgun.check', 'operation': 'add',
+             'value': 2, 'stack_group': 'same', 'stack_policy': 'unique', 'priority': 100},
+            {'id': 'unique-b', 'target': 'skill.Handgun.check', 'operation': 'add',
+             'value': 2, 'stack_group': 'same', 'stack_policy': 'unique', 'priority': 200},
+            {'id': 'stacked', 'target': 'skill.Handgun.check', 'operation': 'add',
+             'value': 1, 'stack_group': 'other', 'stack_policy': 'stack', 'priority': 100},
+            {'id': 'multiplier', 'target': 'skill.Handgun.check', 'operation': 'multiply',
+             'value': 2, 'stack_group': 'multiply', 'stack_policy': 'unique', 'priority': 300},
+        ]
+        value, breakdown = server.apply_modifier_pipeline(5, modifiers)
+        self.assertEqual(value, 16)  # (5 + 2 + 1) × 2
+        self.assertEqual(sum(1 for item in breakdown if item['applied']), 3)
+        self.assertEqual(sum(1 for item in breakdown if not item['applied']), 1)
+
+    def test_effect_schema_rejects_non_allowlisted_or_executable_fields(self):
+        server.validate_effect_definition({
+            'id': 'safe-effect', 'target': 'skill.Handgun.check',
+            'operation': 'add', 'value': 1,
+        })
+        with self.assertRaises(RuntimeError):
+            server.validate_effect_definition({
+                'id': 'unsafe-effect', 'target': 'skill.Handgun.check',
+                'operation': 'add', 'value': 1, 'javascript': 'alert(1)',
+            })
+        with self.assertRaises(RuntimeError):
+            server.validate_effect_definition({
+                'id': 'unsafe-target', 'target': '__proto__.polluted',
+                'operation': 'add', 'value': 1,
+            })
 
 
 class CreationValidationTests(unittest.TestCase):

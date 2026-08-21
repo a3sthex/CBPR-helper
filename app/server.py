@@ -32,6 +32,7 @@ DB_PATH = os.path.abspath(os.path.expanduser(
     os.environ.get('CBPR_DB_PATH') or os.path.join(DATA_DIR, 'cbpr.db')))
 STATIC_DIR = os.path.join(BASE, 'static')
 ITEMS_PATH = os.path.join(DATA_DIR, 'items.json')
+EFFECTS_PATH = os.path.join(DATA_DIR, 'effects.json')
 UPLOAD_DIR = os.path.join(DATA_DIR, 'uploads')
 BACKUP_DIR = os.path.abspath(os.path.expanduser(
     os.environ.get('CBPR_BACKUP_DIR') or os.path.join(DATA_DIR, 'backups')))
@@ -96,6 +97,88 @@ def enrich_owned_item_interactions(data):
                 else:
                     entry.pop(key, None)
     return data
+
+
+_effect_rules = None
+EFFECT_OPERATIONS = {'add', 'set', 'minimum', 'maximum', 'multiply'}
+EFFECT_STACK_POLICIES = {'stack', 'highest', 'lowest', 'unique', 'replace'}
+
+
+def effect_target_allowed(target):
+    target = str(target or '')
+    if target.startswith('character.stat.'):
+        return target.removeprefix('character.stat.') in STATS
+    if target.startswith('skill.') and target.endswith('.check'):
+        return target[6:-6] in SKILL_BY_NAME
+    return False
+
+
+def validate_effect_definition(effect):
+    allowed_keys = {
+        'id', 'target', 'operation', 'value', 'stack_group', 'stack_policy',
+        'priority', 'source',
+    }
+    if not isinstance(effect, dict) or set(effect) - allowed_keys:
+        raise RuntimeError('Effect contains non-allowlisted fields')
+    if not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(effect.get('id') or '')):
+        raise RuntimeError('Invalid declarative effect id')
+    if not effect_target_allowed(effect.get('target')):
+        raise RuntimeError(f'Effect target is not allowlisted: {effect.get("target")}')
+    if effect.get('operation') not in EFFECT_OPERATIONS:
+        raise RuntimeError(f'Effect operation is not allowlisted: {effect.get("operation")}')
+    value = effect.get('value')
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or abs(value) > 1000:
+        raise RuntimeError('Effect value must be a finite bounded number')
+    if effect.get('stack_policy', 'stack') not in EFFECT_STACK_POLICIES:
+        raise RuntimeError('Invalid effect stack policy')
+    if not isinstance(effect.get('priority', 100), int):
+        raise RuntimeError('Effect priority must be an integer')
+
+
+def load_effect_rules():
+    global _effect_rules
+    if _effect_rules is not None:
+        return _effect_rules
+    with open(EFFECTS_PATH, encoding='utf-8') as handle:
+        payload = json.load(handle)
+    rules = payload.get('synergy_rules')
+    if payload.get('version') != 1 or not isinstance(rules, list) or len(rules) > 500:
+        raise RuntimeError('Unsupported effects data format')
+    seen = set()
+    for rule in rules:
+        if not isinstance(rule, dict) or set(rule) - {
+                'id', 'label_en', 'label_ru', 'required_counts', 'required_all', 'effects'}:
+            raise RuntimeError('Synergy rule contains non-allowlisted fields')
+        rule_id = str(rule.get('id') or '')
+        if not re.fullmatch(r'[a-z0-9_.-]{3,100}', rule_id) or rule_id in seen:
+            raise RuntimeError('Invalid or duplicate synergy rule id')
+        seen.add(rule_id)
+        required_counts = rule.get('required_counts') or {}
+        required_all = rule.get('required_all') or []
+        if not isinstance(required_counts, dict) or not isinstance(required_all, list):
+            raise RuntimeError(f'Invalid requirements in synergy {rule_id}')
+        for requirement in required_counts.values():
+            if (not isinstance(requirement, dict) or
+                    set(requirement) - {'minimum', 'state', 'label'} or
+                    requirement.get('state', 'installed') != 'installed' or
+                    not isinstance(requirement.get('minimum', 1), int)):
+                raise RuntimeError(f'Invalid count requirement in synergy {rule_id}')
+        for requirement in required_all:
+            if (not isinstance(requirement, dict) or
+                    set(requirement) - {'catalog_id', 'state', 'label'} or
+                    requirement.get('state', 'installed') != 'installed'):
+                raise RuntimeError(f'Invalid all requirement in synergy {rule_id}')
+        requirements = list(required_counts.keys()) + [
+            item.get('catalog_id') for item in required_all]
+        if not requirements or any(not item_by_id(item_id) for item_id in requirements):
+            raise RuntimeError(f'Unknown catalog requirement in synergy {rule_id}')
+        effects = rule.get('effects')
+        if not isinstance(effects, list) or not effects:
+            raise RuntimeError(f'Synergy {rule_id} has no effects')
+        for effect in effects:
+            validate_effect_definition(effect)
+    _effect_rules = payload
+    return payload
 
 
 # ---------------------------------------------------------------- правила
@@ -339,6 +422,158 @@ def _armor_penalties(piece):
     return {stat: legacy for stat in ('REF', 'DEX', 'MOVE')} if legacy else {}
 
 
+def resolve_modifier_stack(modifiers):
+    """Apply explicit stacking groups and return applied/suppressed modifiers."""
+    groups = {}
+    for modifier in modifiers:
+        group = (modifier.get('target'), modifier.get('stack_group') or modifier.get('id'))
+        groups.setdefault(group, []).append(copy.deepcopy(modifier))
+    resolved = []
+    for rows in groups.values():
+        rows.sort(key=lambda item: (-int(item.get('priority', 100)), str(item.get('id') or '')))
+        policy = rows[0].get('stack_policy', 'stack')
+        selected = rows
+        if policy == 'unique':
+            selected = rows[:1]
+        elif policy == 'highest':
+            selected = [max(rows, key=lambda item: item.get('value', 0))]
+        elif policy == 'lowest':
+            selected = [min(rows, key=lambda item: item.get('value', 0))]
+        elif policy == 'replace':
+            selected = rows[:1]
+        selected_ids = {id(item) for item in selected}
+        for item in rows:
+            item['applied'] = id(item) in selected_ids
+            if not item['applied']:
+                item['suppressed_reason'] = f'not stacked ({policy})'
+            resolved.append(item)
+    return sorted(resolved, key=lambda item: (
+        str(item.get('target') or ''), int(item.get('priority', 100)), str(item.get('id') or '')))
+
+
+def apply_modifier_pipeline(base_value, modifiers):
+    applied = [item for item in resolve_modifier_stack(modifiers) if item.get('applied')]
+    order = {'set': 0, 'minimum': 1, 'maximum': 1, 'add': 2, 'multiply': 3}
+    applied.sort(key=lambda item: (
+        order.get(item.get('operation'), 99), int(item.get('priority', 100)),
+        str(item.get('id') or '')))
+    value = base_value
+    for item in applied:
+        operation, amount = item['operation'], item['value']
+        if operation == 'set':
+            value = amount
+        elif operation == 'minimum':
+            value = max(value, amount)
+        elif operation == 'maximum':
+            value = min(value, amount)
+        elif operation == 'add':
+            value += amount
+        elif operation == 'multiply':
+            value *= amount
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return value, resolve_modifier_stack(modifiers)
+
+
+def evaluate_character_effects(char, derived):
+    """Evaluate allowlisted declarative effects without mutating base Character data."""
+    payload = load_effect_rules()
+    cyberware = [item for item in char.get('cyberware') or [] if isinstance(item, dict)]
+
+    def installed_count(catalog_id, state='installed'):
+        return sum(1 for item in cyberware
+                   if catalog_item_id_for_entry(item) == catalog_id and
+                   str(item.get('state') or 'installed') == state)
+
+    modifiers = []
+    synergies = []
+    for rule in payload.get('synergy_rules') or []:
+        requirements = []
+        active = True
+        for catalog_id, requirement in (rule.get('required_counts') or {}).items():
+            minimum = max(1, int(requirement.get('minimum') or 1))
+            current = installed_count(catalog_id, requirement.get('state') or 'installed')
+            met = current >= minimum
+            active = active and met
+            requirements.append({
+                'catalog_id': catalog_id,
+                'label': requirement.get('label') or item_by_id(catalog_id)['name'],
+                'current': current, 'required': minimum, 'met': met,
+            })
+        for requirement in rule.get('required_all') or []:
+            catalog_id = requirement['catalog_id']
+            current = installed_count(catalog_id, requirement.get('state') or 'installed')
+            met = current >= 1
+            active = active and met
+            requirements.append({
+                'catalog_id': catalog_id,
+                'label': requirement.get('label') or item_by_id(catalog_id)['name'],
+                'current': min(current, 1), 'required': 1, 'met': met,
+            })
+        effects = []
+        for definition in rule.get('effects') or []:
+            effect = copy.deepcopy(definition)
+            effect.update({
+                'rule_id': rule['id'], 'rule_label_en': rule.get('label_en') or rule['id'],
+                'rule_label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
+                'active': active,
+            })
+            effects.append(effect)
+            if active:
+                modifiers.append(effect)
+        synergies.append({
+            'id': rule['id'], 'label_en': rule.get('label_en') or rule['id'],
+            'label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
+            'active': active, 'requirements': requirements, 'effects': effects,
+        })
+
+    by_target = {}
+    for modifier in modifiers:
+        by_target.setdefault(modifier['target'], []).append(modifier)
+
+    stats = {}
+    for stat in STATS:
+        base = _num((char.get('stats') or {}).get(stat)) or 0
+        stat_modifiers = list(by_target.get(f'character.stat.{stat}', []))
+        armor_penalty = _num((derived.get('armor_penalties') or {}).get(stat)) or 0
+        if armor_penalty:
+            stat_modifiers.append({
+                'id': f'armor-penalty-{stat.lower()}', 'target': f'character.stat.{stat}',
+                'operation': 'add', 'value': armor_penalty,
+                'stack_group': f'armor_penalty_{stat.lower()}', 'stack_policy': 'lowest',
+                'priority': 100, 'source': 'Equipped Armor', 'active': True,
+            })
+        if stat == 'EMP' and derived.get('emp_cur') is not None:
+            stat_modifiers.append({
+                'id': 'humanity-current-emp', 'target': 'character.stat.EMP',
+                'operation': 'set', 'value': derived['emp_cur'],
+                'stack_group': 'humanity_current_emp', 'stack_policy': 'replace',
+                'priority': 50, 'source': 'Current Humanity', 'active': True,
+            })
+        effective, breakdown = apply_modifier_pipeline(base, stat_modifiers)
+        stats[stat] = {'base': base, 'effective': effective, 'modifiers': breakdown}
+
+    skills = {}
+    for name, metadata in SKILL_BY_NAME.items():
+        stat = metadata[2]
+        level = _num((char.get('skills') or {}).get(name)) or 0
+        check_modifiers = list(by_target.get(f'skill.{name}.check', []))
+        check_modifier, breakdown = apply_modifier_pipeline(0, check_modifiers)
+        stat_effective = stats.get(stat, {'effective': 0})['effective']
+        skills[name] = {
+            'stat': stat, 'stat_effective': stat_effective,
+            'level_base': level, 'check_modifier': check_modifier,
+            'effective_check_base': stat_effective + level + check_modifier,
+            'modifiers': breakdown,
+        }
+    return {
+        'rules_version': payload.get('rules_version'),
+        'stats': stats, 'skills': skills,
+        'synergies': synergies,
+        'modifiers': resolve_modifier_stack(modifiers),
+    }
+
+
 def derive(char):
     """Производные показатели листа персонажа по правилам CP:R/CEMK."""
     st = char.get('stats') or {}
@@ -400,6 +635,10 @@ def derive(char):
             penalties[stat] = min(penalties[stat], value)
     out['armor_penalties'] = penalties
     out['armor_penalty'] = min(penalties.values())
+    out['effects'] = evaluate_character_effects(char, out)
+    out['effective_stats'] = {
+        stat: values['effective'] for stat, values in out['effects']['stats'].items()
+    }
     return out
 
 
@@ -1892,6 +2131,26 @@ def character_change_summary(before, after, limit=250):
         old_view = (old_piece or {}).get('name') if isinstance(old_piece, dict) else None
         new_view = (new_piece or {}).get('name') if isinstance(new_piece, dict) else None
         add(f'armor.{location}', f'Armor: {location}', old_view, new_view)
+
+    def synergy_views(data):
+        result = {}
+        for rule in derive(data).get('effects', {}).get('synergies', []):
+            progress = ', '.join(
+                f"{item['label']} {item['current']}/{item['required']}"
+                for item in rule.get('requirements') or [])
+            result[rule['id']] = {
+                'label': rule.get('label_en') or rule['id'],
+                'status': 'ACTIVE' if rule.get('active') else 'INACTIVE',
+                'progress': progress,
+            }
+        return result
+
+    old_synergies, new_synergies = synergy_views(before), synergy_views(after)
+    for rule_id in sorted(set(old_synergies) | set(new_synergies)):
+        old_view, new_view = old_synergies.get(rule_id), new_synergies.get(rule_id)
+        add(f'effects.synergy.{rule_id}',
+            f'Effect: {(new_view or old_view or {}).get("label", rule_id)}',
+            old_view, new_view)
     return changes
 
 
@@ -2023,6 +2282,7 @@ def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
     os.makedirs(BACKUP_DIR, exist_ok=True)
+    load_effect_rules()  # fail closed on invalid or non-allowlisted declarative effects
     conn = db()
     conn.execute('PRAGMA journal_mode=WAL')
     conn.execute('PRAGMA synchronous=NORMAL')
@@ -5284,6 +5544,7 @@ class Handler(BaseHTTPRequestHandler):
             'autofire_table': cat['autofire_table'],
             'general_dv': GENERAL_DV,
             'rule_sources': RULE_SOURCES,
+            'effects_rules_version': load_effect_rules().get('rules_version'),
             'registration_mode': registration_mode(),
             'character_visibility_defaults': CHARACTER_VISIBILITY_DEFAULTS,
         })

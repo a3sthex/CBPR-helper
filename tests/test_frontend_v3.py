@@ -41,6 +41,14 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('data-item-equip', source)
         self.assertIn("'deactivate':'activate'", source)
 
+    def test_character_sheet_uses_structured_effect_breakdowns(self):
+        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        self.assertIn('Structured Effects & Synergies', source)
+        self.assertIn('derived.effects?.skills?.[name]', source)
+        self.assertIn('effective_check_base', source)
+        self.assertIn('check_modifier', source)
+        self.assertIn('effect-bonus', source)
+
     def test_wizard_v3_runtime_contract(self):
         meta = {
             'stats': server.STATS,

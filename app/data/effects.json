@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "rules_version": "cp-red-2070-campaign-2026-08-21",
+  "synergy_rules": [
+    {
+      "id": "light-tattoo-trio",
+      "label_en": "Light Tattoo Ensemble",
+      "label_ru": "Ансамбль Light Tattoo",
+      "required_counts": {
+        "cyberware-52": {
+          "minimum": 3,
+          "state": "installed",
+          "label": "Light Tattoo"
+        }
+      },
+      "effects": [
+        {
+          "id": "light-tattoo-style-bonus",
+          "target": "skill.Wardrobe & Style.check",
+          "operation": "add",
+          "value": 2,
+          "stack_group": "light_tattoo_style_bonus",
+          "stack_policy": "unique",
+          "priority": 200,
+          "source": "CP:R 358"
+        }
+      ]
+    },
+    {
+      "id": "chemskin-techhair-combo",
+      "label_en": "Chemskin + TechHair",
+      "label_ru": "Chemskin + TechHair",
+      "required_all": [
+        {
+          "catalog_id": "cyberware-51",
+          "state": "installed",
+          "label": "Chemskin"
+        },
+        {
+          "catalog_id": "cyberware-55",
+          "state": "installed",
+          "label": "TechHair"
+        }
+      ],
+      "effects": [
+        {
+          "id": "chemskin-techhair-grooming-bonus",
+          "target": "skill.Personal Grooming.check",
+          "operation": "add",
+          "value": 2,
+          "stack_group": "chemskin_techhair_grooming_bonus",
+          "stack_policy": "unique",
+          "priority": 200,
+          "source": "CP:R 358"
+        }
+      ]
+    }
+  ]
+}
