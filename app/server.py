@@ -74,6 +74,11 @@ ITEM_INTERACTION_FIELDS = (
     'activation_required', 'active_actions', 'equip_limit', 'exclusive_group',
     'requires_host_type',
 )
+ITEM_MODIFICATION_FIELDS = (
+    'host_type', 'modification_kind', 'modification_group', 'slots_used', 'compatibility_text',
+    'permanent_installation', 'unique_per_host', 'compatibility_manual',
+    'installation_source',
+)
 
 
 def catalog_interaction_data(item):
@@ -91,7 +96,7 @@ def enrich_owned_item_interactions(data):
             item = item_by_id(catalog_item_id_for_entry(entry))
             if not item:
                 continue
-            for key in ITEM_INTERACTION_FIELDS:
+            for key in ITEM_INTERACTION_FIELDS + ITEM_MODIFICATION_FIELDS:
                 if key in item:
                     entry[key] = copy.deepcopy(item[key])
                 else:
@@ -1437,6 +1442,35 @@ CREATE INDEX IF NOT EXISTS idx_active_effects_session
   ON active_effect_instances(session_id,active,remaining_rounds);
 """
 
+ITEM_MODIFICATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS item_modifications(
+  modification_id TEXT PRIMARY KEY,
+  character_id INTEGER NOT NULL,
+  host_instance_id TEXT NOT NULL,
+  upgrade_instance_id TEXT NOT NULL,
+  host_type TEXT NOT NULL,
+  slot_type TEXT NOT NULL DEFAULT 'attachment',
+  slots_used INTEGER NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1,
+  permanent INTEGER NOT NULL DEFAULT 0,
+  configuration_json TEXT NOT NULL DEFAULT '{}',
+  notes TEXT NOT NULL DEFAULT '',
+  source_type TEXT NOT NULL DEFAULT 'inventory',
+  installed_by INTEGER NOT NULL,
+  installed_at REAL NOT NULL,
+  removed_by INTEGER,
+  removed_at REAL,
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_item_modifications_host
+  ON item_modifications(character_id,host_instance_id,active,installed_at);
+CREATE INDEX IF NOT EXISTS idx_item_modifications_upgrade
+  ON item_modifications(upgrade_instance_id,active);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_item_modifications_active_upgrade
+  ON item_modifications(upgrade_instance_id) WHERE active=1;
+"""
+
 NOTIFICATION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS notifications(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1480,6 +1514,7 @@ MIGRATION_TACTICAL_PROFILES = 6
 MIGRATION_ITEM_INSTANCES = 7
 MIGRATION_ACTIVE_EFFECTS = 8
 MIGRATION_EFFECT_PRESETS = 9
+MIGRATION_ITEM_MODIFICATIONS = 10
 DB_BACKUP_LIMIT = 5
 _RATE_LIMIT_BUCKETS = {}
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -1789,6 +1824,106 @@ def persist_character_item_instances(conn, character_id, data, source_type,
             conn.execute('DELETE FROM item_instances WHERE character_id=?', (int(character_id),))
 
 
+def item_modification_payload(row):
+    item = dict(row)
+    item['active'] = bool(item.get('active'))
+    item['permanent'] = bool(item.get('permanent'))
+    item['configuration'] = parse_json_object(item.pop('configuration_json', '{}'))
+    return item
+
+
+def character_modifications(conn, character_id, include_inactive=False):
+    where = '' if include_inactive else 'AND m.active=1'
+    rows = conn.execute(
+        'SELECT m.*,u.display_name installer FROM item_modifications m '
+        'JOIN users u ON u.id=m.installed_by WHERE m.character_id=? ' + where +
+        ' ORDER BY m.installed_at,m.modification_id', (int(character_id),)).fetchall()
+    return [item_modification_payload(row) for row in rows]
+
+
+def weapon_is_exotic(entry):
+    item = item_by_id(catalog_item_id_for_entry(entry))
+    text = ' '.join((
+        str((item or {}).get('name') or ''), str((item or {}).get('desc') or ''),
+        str(((item or {}).get('mechanics') or {}).get('quality') or ''),
+    )).lower()
+    return 'exotic weapon' in text or 'exotic ranged weapon' in text
+
+
+def weapon_upgrade_compatibility(host, upgrade, active_modifications=None,
+                                 owned_by_id=None):
+    active_modifications = active_modifications or []
+    owned_by_id = owned_by_id or {}
+    reasons = []
+    manual = bool(upgrade.get('compatibility_manual'))
+    if host.get('cat') != 'guns':
+        reasons.append('Host is not a ranged weapon')
+    if upgrade.get('cat') != 'gun_upgrades' or upgrade.get('host_type') != 'weapon':
+        reasons.append('Item is not a weapon upgrade')
+    host_catalog = item_by_id(catalog_item_id_for_entry(host)) or {}
+    upgrade_catalog = item_by_id(catalog_item_id_for_entry(upgrade)) or {}
+    mechanics = host_catalog.get('mechanics') or host.get('mechanics') or {}
+    weapon_type = str(mechanics.get('type') or '').lower()
+    skill = str(mechanics.get('skill') or '').lower()
+    text = str(upgrade.get('compatibility_text') or
+               (upgrade_catalog.get('mechanics') or {}).get('compatible_weapons') or '').lower()
+    exotic = weapon_is_exotic(host)
+    if 'non-exotic' in text and exotic:
+        reasons.append('Requires a Non-Exotic weapon')
+    if 'all exotic ranged weapons' in text and not exotic:
+        reasons.append('Requires an Exotic weapon')
+    if 'shoulder arms' in text and skill != 'shoulder arms':
+        reasons.append('Requires a Shoulder Arms weapon')
+    is_bow = 'bow' in weapon_type or 'crossbow' in weapon_type
+    if text.strip().startswith('bows, crossbows') and not is_bow:
+        reasons.append('Requires a Bow or Crossbow')
+    if ('except bows' in text or 'excluding bows' in text or 'excluding bows & crossbows' in text) and is_bow:
+        reasons.append('Cannot be installed on Bows/Crossbows')
+    if 'sniper rifles' in text and 'all ranged' not in text and 'sniper rifle' not in weapon_type:
+        reasons.append('Requires a Sniper Rifle')
+    if text.startswith('all pistols') and 'pistol' not in weapon_type:
+        reasons.append('Requires a Pistol')
+    if 'except grenade launchers and rocket launchers' in text and any(
+            token in weapon_type for token in ('grenade launcher', 'rocket launcher')):
+        reasons.append('Cannot be installed on Grenade/Rocket Launchers')
+
+    slots_total = 0 if exotic else 3
+    slots_used = sum(int(modification.get('slots_used') or 0)
+                     for modification in active_modifications if modification.get('active', True))
+    required = max(0, int(upgrade.get('slots_used') or 0))
+    if slots_used + required > slots_total:
+        reasons.append(f'Not enough attachment slots ({slots_used}/{slots_total}, needs {required})')
+    catalog_id = catalog_item_id_for_entry(upgrade)
+    group = upgrade.get('modification_group')
+    for modification in active_modifications:
+        installed = owned_by_id.get(modification.get('upgrade_instance_id')) or {}
+        if upgrade.get('unique_per_host') and catalog_item_id_for_entry(installed) == catalog_id:
+            reasons.append('Only one copy may be installed on this host')
+        if group and installed.get('modification_group') == group:
+            reasons.append(f'Conflicts with installed {installed.get("name") or "upgrade"}')
+        names = {str(upgrade.get('name') or ''), str(installed.get('name') or '')}
+        if names == {'Smart Rebuild', 'Smartgun Link'}:
+            reasons.append('Smart Rebuild conflicts with Smartgun Link')
+    return {
+        'allowed': not reasons, 'manual_resolution_required': manual,
+        'reasons': reasons, 'slots_total': slots_total, 'slots_used': slots_used,
+        'slots_required': required, 'slots_after': slots_used + required,
+        'compatibility_text': upgrade.get('compatibility_text') or '',
+    }
+
+
+def validate_active_modification_references(conn, character_id, data):
+    owned = {entry.get('instance_id'): entry for bucket in ('inventory', 'cyberware')
+             for entry in data.get(bucket) or [] if isinstance(entry, dict) and entry.get('instance_id')}
+    for modification in character_modifications(conn, character_id):
+        host = owned.get(modification['host_instance_id'])
+        upgrade = owned.get(modification['upgrade_instance_id'])
+        if not host or not upgrade:
+            raise ApiError(409, 'Сначала снимите установленные модификации')
+        if upgrade.get('state') != 'installed' or upgrade.get('host_instance_id') != host.get('instance_id'):
+            raise ApiError(409, 'Повреждена связь установленной модификации')
+
+
 def backfill_character_item_instances(conn):
     """One-time, idempotent migration of legacy JSON stacks to stable instances."""
     if not conn.execute(
@@ -1845,6 +1980,7 @@ def apply_schema_migrations(conn, make_backup=True):
         (MIGRATION_ITEM_INSTANCES, 'stable character item instances'),
         (MIGRATION_ACTIVE_EFFECTS, 'active character effect instances'),
         (MIGRATION_EFFECT_PRESETS, 'effect preset snapshots'),
+        (MIGRATION_ITEM_MODIFICATIONS, 'host item modifications'),
     ]
     pending = [version for version, _ in migrations if version not in applied]
     if make_backup and pending:
@@ -1891,6 +2027,8 @@ def apply_schema_migrations(conn, make_backup=True):
     if MIGRATION_EFFECT_PRESETS not in applied:
         ensure_column(conn, 'active_effect_instances', 'preset_id', 'TEXT')
         ensure_column(conn, 'active_effect_instances', 'context_json', "TEXT NOT NULL DEFAULT '{}'")
+    if MIGRATION_ITEM_MODIFICATIONS not in applied:
+        conn.executescript(ITEM_MODIFICATION_SCHEMA)
     # Re-run additive CREATE IF NOT EXISTS blocks so patch-level tables added to an
     # already-applied migration remain safe during development and rolling deploys.
     conn.executescript(NETWORK_SCHEMA)
@@ -1899,6 +2037,7 @@ def apply_schema_migrations(conn, make_backup=True):
     conn.executescript(NOTIFICATION_SCHEMA)
     conn.executescript(ITEM_INSTANCE_SCHEMA)
     conn.executescript(ACTIVE_EFFECT_SCHEMA)
+    conn.executescript(ITEM_MODIFICATION_SCHEMA)
     # Recover safely if a rolling/patch deployment recorded the migration before
     # every additive column reached a particular database.
     ensure_column(conn, 'users', 'avatar_media_id', 'TEXT')
@@ -3223,7 +3362,8 @@ def canonical_owned_entry(entry, bucket, old_entries):
         })
         for unsafe in ('catalog_item_id', 'source_key', 'damage', 'sp', 'hl', 'fields',
                        'mechanics', 'requirements', 'capacity', 'type',
-                       *ITEM_INTERACTION_FIELDS, 'effect_coverage', 'active', 'equipped_mode',
+                       *ITEM_INTERACTION_FIELDS, *ITEM_MODIFICATION_FIELDS,
+                       'effect_coverage', 'active', 'equipped_mode',
                        'equipped_slot', 'host_instance_id'):
             owned.pop(unsafe, None)
         # Custom items may control storage shape, but never Use/Equip mechanics.
@@ -3255,7 +3395,7 @@ def canonical_owned_entry(entry, bucket, old_entries):
             'source': item.get('source'),
             'price': (existing or {}).get('price', item.get('price') or 0),
         })
-        for key in ITEM_INTERACTION_FIELDS:
+        for key in ITEM_INTERACTION_FIELDS + ITEM_MODIFICATION_FIELDS:
             if key in item:
                 owned[key] = copy.deepcopy(item[key])
             else:
@@ -4125,6 +4265,21 @@ SERVER_ERROR_EN = {
     'Эффект уже включён': 'Effect is already enabled',
     'Tick доступен только для round effect': 'Tick is only available for round effects',
     'Round effect сейчас не активен': 'Round effect is not currently active',
+    'Сначала снимите установленные модификации': 'Remove installed modifications first',
+    'Повреждена связь установленной модификации': 'Installed modification link is corrupted',
+    'Modification содержит неподдерживаемые поля': 'Modification contains unsupported fields',
+    'Некорректный host или upgrade instance': 'Invalid host or upgrade instance',
+    'Укажите причину установки modification': 'Modification installation reason is required',
+    'Host или upgrade не найден в Inventory': 'Host or upgrade was not found in Inventory',
+    'Host должен быть исправен и находиться при персонаже': 'Host must be functional and carried by the character',
+    'Upgrade должен находиться в состоянии carried': 'Upgrade must be in the carried state',
+    'Требуется ручное подтверждение сложного правила совместимости': 'Complex compatibility rule requires manual confirmation',
+    'Modification action содержит неподдерживаемые поля': 'Modification action contains unsupported fields',
+    'Modification не найдена': 'Modification not found',
+    'Modification уже снята': 'Modification is already removed',
+    'Эта modification не может быть снята': 'This modification cannot be removed',
+    'Неизвестное действие с modification': 'Unknown modification action',
+    'Укажите причину снятия modification': 'Modification removal reason is required',
     'Все слоты заняты': 'All slots are filled',
     'Вы уже записаны': 'You are already signed up',
     'Для специализированного навыка повышайте parent-pool': 'Increase the parent pool for a specialized Skill',
@@ -4335,6 +4490,7 @@ def server_error_message(message, language):
         ('Недопустимая броня для локации', 'Invalid Armor for location'),
         ('SP брони', 'Armor SP for'),
         ('Штрафы брони', 'Armor penalties for'),
+        ('Несовместимая модификация:', 'Incompatible modification:'),
         ('допустимо от', 'allowed range is'),
         (' до ', ' to '),
         ('требуется число', 'must be numeric'),
@@ -6089,12 +6245,17 @@ class Handler(BaseHTTPRequestHandler):
         data = public_character_data(full_data) if public_view else full_data
         active_effects = character_effect_instances(conn, row['id']) if conn is not None else []
         derived = derive(full_data, active_effects)
+        if conn is not None:
+            derived['modifications'] = character_modifications(conn, row['id'])
         if public_view and not visibility['combat']:
             derived = {}
         elif public_view:
             for effect in (derived.get('effects') or {}).get('instances') or []:
                 for private_key in ('reason', 'actor', 'source_item_instance_id'):
                     effect.pop(private_key, None)
+            for modification in derived.get('modifications') or []:
+                for private_key in ('notes', 'installer', 'configuration'):
+                    modification.pop(private_key, None)
         return {
             'id': row['id'], 'revision': _row_value(row, 'revision', 0),
             'owner_id': row['owner_id'] if (not public_view or owner_name) else None,
@@ -6213,6 +6374,7 @@ class Handler(BaseHTTPRequestHandler):
         after = clean_character_trust_update(before, (body or {}).get('data'))
         if before == after:
             raise ApiError(400, 'В Character Sheet нет изменений')
+        validate_active_modification_references(conn, row['id'], after)
         persist_character_item_instances(
             conn, row['id'], after, 'trust_audit_edit', source_ref=reason, prune=True)
         revision_after = current_revision + 1
@@ -6277,6 +6439,7 @@ class Handler(BaseHTTPRequestHandler):
         conn.execute("DELETE FROM media WHERE attached_type='character' AND attached_id=?", (row['id'],))
         conn.execute('DELETE FROM ip_ledger WHERE character_id=?', (row['id'],))
         conn.execute('DELETE FROM character_ledger WHERE character_id=?', (row['id'],))
+        conn.execute('DELETE FROM item_modifications WHERE character_id=?', (row['id'],))
         conn.execute('DELETE FROM item_instances WHERE character_id=?', (row['id'],))
         conn.execute('DELETE FROM active_effect_instances WHERE character_id=?', (row['id'],))
         conn.execute('DELETE FROM characters WHERE id=?', (row['id'],))
@@ -6374,7 +6537,7 @@ class Handler(BaseHTTPRequestHandler):
             item['can_revert'] = bool(
                 delta.get('revertible') and
                 _num(delta.get('revision_after')) == current_revision and
-                item['category'] in ('sheet_update', 'sheet_revert', 'item_action'))
+                item['category'] in ('sheet_update', 'sheet_revert', 'item_action', 'modification'))
             item['has_snapshot'] = bool(item.get('before_json'))
             item.pop('before_json', None)
             item.pop('after_json', None)
@@ -6392,7 +6555,7 @@ class Handler(BaseHTTPRequestHandler):
         entry = conn.execute(
             'SELECT * FROM character_ledger WHERE id=? AND character_id=?',
             (int(m.group(2)), row['id'])).fetchone()
-        if not entry or entry['category'] not in ('sheet_update', 'sheet_revert', 'item_action'):
+        if not entry or entry['category'] not in ('sheet_update', 'sheet_revert', 'item_action', 'modification'):
             raise ApiError(404, 'Изменение Character Sheet не найдено')
         delta = parse_json_object(entry['delta_json'])
         if (not delta.get('revertible') or
@@ -6423,8 +6586,19 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             conn.execute('UPDATE active_effect_instances SET active=1,updated=? WHERE effect_id=?',
                          (now, str(effect_id)))
+        for modification_id in delta.get('created_modification_ids') or []:
+            conn.execute(
+                'UPDATE item_modifications SET active=0,removed_by=?,removed_at=?,updated=? '
+                'WHERE modification_id=? AND character_id=?',
+                (user['id'], now, now, str(modification_id), row['id']))
+        for modification_id in delta.get('removed_modification_ids') or []:
+            conn.execute(
+                'UPDATE item_modifications SET active=1,removed_by=NULL,removed_at=NULL,updated=? '
+                'WHERE modification_id=? AND character_id=?',
+                (now, str(modification_id), row['id']))
         ensure_character_item_instances(target)
         ensure_progression(target)
+        validate_active_modification_references(conn, row['id'], target)
         persist_character_item_instances(
             conn, row['id'], target, 'ledger_revert',
             source_ref=f'ledger:{entry["id"]}', prune=True)
@@ -6435,7 +6609,8 @@ class Handler(BaseHTTPRequestHandler):
             conn, row['id'], user['id'], before, target, reason,
             current_revision, revision_after, category='sheet_revert',
             reverts_ledger_id=entry['id'])
-        if delta.get('created_effect_ids') or delta.get('replaced_effect_ids'):
+        if (delta.get('created_effect_ids') or delta.get('replaced_effect_ids') or
+                delta.get('created_modification_ids') or delta.get('removed_modification_ids')):
             revert_delta_row = conn.execute(
                 'SELECT delta_json FROM character_ledger WHERE id=?',
                 (revert_ledger_id,)).fetchone()
@@ -6463,6 +6638,197 @@ class Handler(BaseHTTPRequestHandler):
             item['item'] = parse_json_object(item.pop('data_json'))
             payload.append(item)
         self.send_json({'character_id': row['id'], 'instances': payload})
+
+    def modification_management_payload(self, conn, row):
+        data = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        owned = {entry.get('instance_id'): entry for bucket in ('inventory', 'cyberware')
+                 for entry in data.get(bucket) or [] if isinstance(entry, dict) and entry.get('instance_id')}
+        modifications = character_modifications(conn, row['id'])
+        hosts = []
+        for host in (entry for entry in data.get('inventory') or []
+                     if isinstance(entry, dict) and entry.get('cat') == 'guns'):
+            active = [mod for mod in modifications if mod['host_instance_id'] == host.get('instance_id')]
+            host_summary = {
+                'instance_id': host.get('instance_id'), 'name': host.get('custom_name') or host.get('name'),
+                'catalog_item_id': catalog_item_id_for_entry(host), 'state': host.get('state'),
+                'weapon_type': (host.get('mechanics') or {}).get('type'),
+                'skill': (host.get('mechanics') or {}).get('skill'),
+                'exotic': weapon_is_exotic(host),
+                'slots_total': 0 if weapon_is_exotic(host) else 3,
+                'slots_used': sum(mod['slots_used'] for mod in active),
+                'modification_ids': [mod['modification_id'] for mod in active],
+            }
+            hosts.append(host_summary)
+        upgrades = []
+        for upgrade in (entry for entry in data.get('inventory') or []
+                        if isinstance(entry, dict) and entry.get('cat') == 'gun_upgrades'):
+            matrix = {}
+            for host in (entry for entry in data.get('inventory') or []
+                         if isinstance(entry, dict) and entry.get('cat') == 'guns'):
+                active = [mod for mod in modifications if mod['host_instance_id'] == host.get('instance_id')]
+                matrix[host['instance_id']] = weapon_upgrade_compatibility(
+                    host, upgrade, active, owned)
+            upgrades.append({
+                'instance_id': upgrade.get('instance_id'),
+                'catalog_item_id': catalog_item_id_for_entry(upgrade),
+                'name': upgrade.get('custom_name') or upgrade.get('name'),
+                'state': upgrade.get('state'), 'slots_used': upgrade.get('slots_used') or 0,
+                'permanent_installation': bool(upgrade.get('permanent_installation')),
+                'compatibility_manual': bool(upgrade.get('compatibility_manual')),
+                'compatibility_text': upgrade.get('compatibility_text') or '',
+                'compatibility': matrix,
+            })
+        for modification in modifications:
+            config = modification.get('configuration') or {}
+            modification['host_name'] = (owned.get(modification['host_instance_id']) or {}).get('custom_name') or (owned.get(modification['host_instance_id']) or {}).get('name') or config.get('host_name')
+            modification['upgrade_name'] = (owned.get(modification['upgrade_instance_id']) or {}).get('custom_name') or (owned.get(modification['upgrade_instance_id']) or {}).get('name') or config.get('upgrade_name')
+        return {
+            'character_id': row['id'], 'revision': _row_value(row, 'revision', 0) or 0,
+            'hosts': hosts, 'upgrades': upgrades, 'modifications': modifications,
+        }
+
+    def api_character_modifications(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        self.send_json(self.modification_management_payload(conn, row))
+
+    @atomic_endpoint
+    def api_character_modification_install(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        if set(body or {}) - {'revision', 'host_instance_id', 'upgrade_instance_id',
+                              'manual_confirm', 'reason', 'notes'}:
+            raise ApiError(400, 'Modification содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        host_id = str((body or {}).get('host_instance_id') or '').lower()
+        upgrade_id = str((body or {}).get('upgrade_instance_id') or '').lower()
+        if not INSTANCE_ID_RE.fullmatch(host_id) or not INSTANCE_ID_RE.fullmatch(upgrade_id):
+            raise ApiError(400, 'Некорректный host или upgrade instance')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину установки modification')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        owned = {entry.get('instance_id'): entry for entry in data.get('inventory') or []
+                 if isinstance(entry, dict) and entry.get('instance_id')}
+        host, upgrade = owned.get(host_id), owned.get(upgrade_id)
+        if not host or not upgrade:
+            raise ApiError(404, 'Host или upgrade не найден в Inventory')
+        if host.get('state') in ('stored', 'broken', 'consumed'):
+            raise ApiError(409, 'Host должен быть исправен и находиться при персонаже')
+        if upgrade.get('state') != 'carried':
+            raise ApiError(409, 'Upgrade должен находиться в состоянии carried')
+        active = [mod for mod in character_modifications(conn, row['id'])
+                  if mod['host_instance_id'] == host_id]
+        compatibility = weapon_upgrade_compatibility(host, upgrade, active, owned)
+        if not compatibility['allowed']:
+            raise ApiError(400, 'Несовместимая модификация: ' + '; '.join(compatibility['reasons']))
+        if compatibility['manual_resolution_required'] and not bool((body or {}).get('manual_confirm')):
+            raise ApiError(409, 'Требуется ручное подтверждение сложного правила совместимости')
+        modification_id = secrets.token_hex(16)
+        now = time.time()
+        configuration = {
+            'host_catalog_item_id': catalog_item_id_for_entry(host),
+            'upgrade_catalog_item_id': catalog_item_id_for_entry(upgrade),
+            'host_name': host.get('custom_name') or host.get('name'),
+            'upgrade_name': upgrade.get('custom_name') or upgrade.get('name'),
+            'compatibility': compatibility,
+            'manual_confirmed': bool((body or {}).get('manual_confirm')),
+        }
+        conn.execute(
+            'INSERT INTO item_modifications(modification_id,character_id,host_instance_id,'
+            'upgrade_instance_id,host_type,slot_type,slots_used,active,permanent,'
+            'configuration_json,notes,source_type,installed_by,installed_at,created,updated) '
+            'VALUES(?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?)',
+            (modification_id, row['id'], host_id, upgrade_id, 'weapon',
+             upgrade.get('modification_kind') or 'attachment',
+             int(upgrade.get('slots_used') or 0), 1 if upgrade.get('permanent_installation') else 0,
+             json.dumps(configuration, ensure_ascii=False), str((body or {}).get('notes') or '')[:2000],
+             upgrade.get('acquisition_source') or 'inventory', user['id'], now, now, now))
+        upgrade['state'] = 'installed'
+        upgrade['host_instance_id'] = host_id
+        revision_after = current_revision + 1
+        persist_character_item_instances(conn, row['id'], data, 'modification_install')
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data,
+            f'Install {configuration["upgrade_name"]} on {configuration["host_name"]}: {reason}',
+            current_revision, revision_after, category='modification')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['created_modification_ids'] = [modification_id]
+        if upgrade.get('permanent_installation'):
+            delta['revertible'] = False
+            delta['permanent_modification'] = True
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now, revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'modification_id': modification_id,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+            'management': self.modification_management_payload(conn, fresh),
+        }, status=201)
+
+    @atomic_endpoint
+    def api_character_modification_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        if set(body or {}) - {'revision', 'action', 'reason'}:
+            raise ApiError(400, 'Modification action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        modification_id = str(m.group(2)).lower()
+        modification_row = conn.execute(
+            'SELECT * FROM item_modifications WHERE modification_id=? AND character_id=?',
+            (modification_id, row['id'])).fetchone()
+        if not modification_row:
+            raise ApiError(404, 'Modification не найдена')
+        modification = item_modification_payload(modification_row)
+        if not modification['active']:
+            raise ApiError(409, 'Modification уже снята')
+        if modification['permanent']:
+            raise ApiError(409, 'Эта modification не может быть снята')
+        if str((body or {}).get('action') or '').lower() != 'remove':
+            raise ApiError(400, 'Неизвестное действие с modification')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину снятия modification')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        upgrade = next((entry for entry in data.get('inventory') or []
+                        if isinstance(entry, dict) and entry.get('instance_id') == modification['upgrade_instance_id']), None)
+        if not upgrade:
+            raise ApiError(409, 'Upgrade instance отсутствует в Inventory')
+        upgrade['state'] = 'carried'
+        upgrade.pop('host_instance_id', None)
+        now = time.time()
+        conn.execute(
+            'UPDATE item_modifications SET active=0,removed_by=?,removed_at=?,updated=? '
+            'WHERE modification_id=?', (user['id'], now, now, modification_id))
+        revision_after = current_revision + 1
+        persist_character_item_instances(conn, row['id'], data, 'modification_remove')
+        config = modification.get('configuration') or {}
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data,
+            f'Remove {config.get("upgrade_name") or upgrade.get("name")}: {reason}',
+            current_revision, revision_after, category='modification')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['removed_modification_ids'] = [modification_id]
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now, revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+            'management': self.modification_management_payload(conn, fresh),
+        })
 
     def api_character_effects(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
@@ -6924,6 +7290,7 @@ class Handler(BaseHTTPRequestHandler):
                 'source': it.get('source'),
             }
             owned.update(catalog_interaction_data(it))
+            owned.update({key: copy.deepcopy(it[key]) for key in ITEM_MODIFICATION_FIELDS if key in it})
             coverage = item_effect_coverage(it.get('id'))
             if coverage:
                 owned['effect_coverage'] = coverage
@@ -6993,6 +7360,12 @@ class Handler(BaseHTTPRequestHandler):
         if index is None:
             raise ApiError(404, 'Предмет не найден в инвентаре')
         ent = inv[index]
+        linked = conn.execute(
+            'SELECT 1 FROM item_modifications WHERE character_id=? AND active=1 '
+            'AND (host_instance_id=? OR upgrade_instance_id=?)',
+            (row['id'], ent.get('instance_id'), ent.get('instance_id'))).fetchone()
+        if linked:
+            raise ApiError(409, 'Сначала снимите установленные модификации')
         if str(ent.get('state') or 'carried') in ('equipped', 'installed'):
             raise ApiError(409, 'Сначала снимите или извлеките предмет')
         qty = min(qty, int(ent.get('qty') or 1))
@@ -8077,6 +8450,9 @@ ROUTES = [
     ('POST', rx(r'/api/characters/(\d+)/ledger/(\d+)/revert'), Handler.api_character_ledger_revert),
     ('GET', rx(r'/api/characters/(\d+)/items'), Handler.api_character_items),
     ('POST', rx(r'/api/characters/(\d+)/items/([a-f0-9]{32})/action'), Handler.api_character_item_action),
+    ('GET', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modifications),
+    ('POST', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modification_install),
+    ('POST', rx(r'/api/characters/(\d+)/modifications/([a-f0-9]{32})/action'), Handler.api_character_modification_action),
     ('GET', rx(r'/api/characters/(\d+)/effects'), Handler.api_character_effects),
     ('POST', rx(r'/api/characters/(\d+)/effects'), Handler.api_character_effect_create),
     ('POST', rx(r'/api/characters/(\d+)/effects/([a-f0-9]{32})/action'), Handler.api_character_effect_action),

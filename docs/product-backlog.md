@@ -2816,6 +2816,20 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - item-action Ledger хранит created/replaced effect IDs; безопасный revert возвращает дозу, архивирует созданный эффект и восстанавливает предыдущий ещё не истёкший effect;
 - Pharma/Drug правила без однозначного allowlisted numeric effect остаются ручными до появления нужных targets/resources/conditions.
 
+**Статус B.6.1 — реализован фундамент Host / Modification Model:**
+
+- migration 10 создаёт `item_modifications` со стабильными `host_instance_id → upgrade_instance_id`, active/removal history, slots, permanent flag, installer, config snapshot и source;
+- importer нормализует Gun Upgrades: `host_type`, attachment slots, compatibility text, rebuild/attachment kind, unique/group conflicts, permanent installation и manual compatibility marker;
+- первый host type — конкретный экземпляр ranged weapon; одинаковые пистолеты получают независимые наборы upgrades;
+- сервер проверяет ownership, carried/installed state, weapon category/type/Skill, Exotic/Non-Exotic ограничения, Bows/Pistols/Shoulder Arms и attachment capacity;
+- сложные source rules не угадываются: они требуют явного `manual_confirm` и записываются в Trust + Audit;
+- Character Sheet показывает slots и установленные upgrades; `Manage Upgrades` предлагает совместимые экземпляры из Inventory с причинами блокировки;
+- Install/Remove атомарно меняют upgrade instance state, relational link, Dossier revision и readable Ledger;
+- modified host/installed upgrade нельзя тихо удалить или продать; сначала требуется снять modification;
+- linked Ledger revert восстанавливает relational link и Inventory state вместе, а небезопасный автоматический redo блокируется;
+- permanent attachments нельзя снять обычным Remove, а их installation change set не получает опасную кнопку revert;
+- effective weapon mechanics от конкретных upgrades, Compatibility Rail capacity и Tech/manual override effects остаются B.6.2.
+
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
@@ -2829,8 +2843,10 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 9. ◐ Curated effect overrides для Data Pool с source metadata.
    - готово: item-effect/use-effect schemas, coverage markers, Agent (Standard), Boost и Synthcoke;
    - дальше: только подтверждённые source-specific overrides и presets с доступными engine targets.
-10. Общая host/modification model.
-11. Weapon Upgrades прямо в Character Sheet.
+10. ✅ Общая relational host/modification model и atomic lifecycle.
+11. ◐ Weapon Upgrades прямо в Character Sheet.
+    - готово: instance binding, compatibility/slots, Install/Remove UI и Ledger;
+    - дальше: effective weapon mechanics, config choices и Tech overrides.
 12. Vehicle Upgrades и Garage integration.
 13. Cyberdeck/Cyberware/Armor/Tech modification hosts.
 14. JSON import.

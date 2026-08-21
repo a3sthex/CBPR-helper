@@ -597,6 +597,20 @@ class CatalogArmorTests(unittest.TestCase):
         self.assertFalse(items['Carryall'].get('consumable', False))
         self.assertFalse(items['Carryall'].get('equippable', False))
 
+    def test_gun_upgrades_have_normalized_host_slot_metadata(self):
+        by_name = {item['name']: item for item in server.catalog()['items']
+                   if item['cat'] == 'gun_upgrades'}
+        self.assertEqual(by_name['Power Rebuild']['host_type'], 'weapon')
+        self.assertEqual(by_name['Power Rebuild']['modification_kind'], 'rebuild')
+        self.assertEqual(by_name['Power Rebuild']['slots_used'], 2)
+        self.assertEqual(by_name['Smartgun Link']['slots_used'], 2)
+        self.assertEqual(by_name['Drum Magazine']['slots_used'], 1)
+        self.assertEqual(by_name['Drum Magazine']['modification_group'], 'weapon_magazine')
+        self.assertEqual(by_name['Ammo Compatibity Internals']['slots_used'], 0)
+        self.assertTrue(by_name['Ammo Compatibity Internals']['compatibility_manual'])
+        self.assertTrue(by_name['Reinforced String']['permanent_installation'])
+        self.assertEqual(by_name['Reinforced String']['compatibility_text'], 'Bows, Crossbows')
+
     def test_night_market_is_grouped_by_deterministic_vendors(self):
         market = server.night_market()
         self.assertEqual(len(market['vendors']), 6)

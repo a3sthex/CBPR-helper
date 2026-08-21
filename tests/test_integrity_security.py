@@ -482,6 +482,130 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertFalse(after_revert_ledger['entries'][0]['can_revert'])
         self.assertTrue(after_revert_ledger['entries'][0]['delta']['effect_linked_revert'])
 
+    def test_weapon_modifications_bind_instances_slots_and_revert_atomically(self):
+        edited = copy.deepcopy(self.character_data)
+        catalog_ids = ('guns-0', 'guns-8', 'gun_upgrades-9', 'gun_upgrades-4',
+                       'gun_upgrades-5', 'gun_upgrades-17')
+        edited['inventory'] = [
+            {
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': server.item_by_id(item_id)['cat'],
+                'name': server.item_by_id(item_id)['name'],
+                'price': server.item_by_id(item_id).get('price') or 0,
+                'qty': 1, 'state': 'carried', 'acquisition_source': 'loot',
+            }
+            for item_id in catalog_ids
+        ]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add weapon workshop inventory', 'data': edited,
+        })
+        by_name = {item['name']: item for item in updated['data']['inventory']}
+        pistol, bow = by_name['Medium Pistol'], by_name['Bow']
+        smart, drum = by_name['Smartgun Link'], by_name['Drum Magazine']
+        extended, string = by_name['Extended Magazine'], by_name['Reinforced String']
+
+        management = self.call(server.Handler.api_character_modifications, self.match(1))
+        pistol_summary = next(host for host in management['hosts']
+                              if host['instance_id'] == pistol['instance_id'])
+        self.assertEqual((pistol_summary['slots_used'], pistol_summary['slots_total']), (0, 3))
+        self.assertTrue(next(item for item in management['upgrades']
+                             if item['instance_id'] == smart['instance_id'])['compatibility'][pistol['instance_id']]['allowed'])
+
+        installed = self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 1, 'host_instance_id': pistol['instance_id'],
+            'upgrade_instance_id': smart['instance_id'], 'manual_confirm': False,
+            'reason': 'Install Smartgun Link from workshop stock',
+        })
+        self.assertEqual(installed['character']['revision'], 2)
+        smart_after = next(item for item in installed['character']['data']['inventory']
+                           if item['instance_id'] == smart['instance_id'])
+        self.assertEqual(smart_after['state'], 'installed')
+        self.assertEqual(smart_after['host_instance_id'], pistol['instance_id'])
+        modification_id = installed['modification_id']
+        self.assertEqual(installed['management']['hosts'][0]['slots_used'], 2)
+
+        forged = copy.deepcopy(installed['character']['data'])
+        forged['inventory'] = [item for item in forged['inventory']
+                               if item['instance_id'] != pistol['instance_id']]
+        with self.assertRaises(server.ApiError) as orphan:
+            self.call(server.Handler.api_character_sheet_update, self.match(1), {
+                'revision': 2, 'reason': 'try deleting modified host', 'data': forged,
+            })
+        self.assertEqual(orphan.exception.status, 409)
+
+        installed_drum = self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 2, 'host_instance_id': pistol['instance_id'],
+            'upgrade_instance_id': drum['instance_id'], 'manual_confirm': False,
+            'reason': 'Install Drum Magazine',
+        })
+        self.assertEqual(installed_drum['character']['revision'], 3)
+        host_after = next(host for host in installed_drum['management']['hosts']
+                          if host['instance_id'] == pistol['instance_id'])
+        self.assertEqual(host_after['slots_used'], 3)
+        extended_after = next(item for item in installed_drum['management']['upgrades']
+                              if item['instance_id'] == extended['instance_id'])
+        compatibility = extended_after['compatibility'][pistol['instance_id']]
+        self.assertFalse(compatibility['allowed'])
+        self.assertTrue(any('slots' in reason.lower() or 'conflicts' in reason.lower()
+                            for reason in compatibility['reasons']))
+
+        with self.assertRaises(server.ApiError) as sell_host:
+            self.call(server.Handler.api_sell, body={
+                'char_id': 1, 'instance_id': pistol['instance_id'], 'qty': 1,
+            })
+        self.assertEqual(sell_host.exception.status, 409)
+
+        mod_match = re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{modification_id}')
+        removed = self.call(server.Handler.api_character_modification_action, mod_match, {
+            'revision': 3, 'action': 'remove', 'reason': 'Return link to workshop stock',
+        })
+        self.assertEqual(removed['character']['revision'], 4)
+        removed_smart = next(item for item in removed['character']['data']['inventory']
+                             if item['instance_id'] == smart['instance_id'])
+        self.assertEqual(removed_smart['state'], 'carried')
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertTrue(ledger['entries'][0]['can_revert'])
+        reverted = self.call(
+            server.Handler.api_character_ledger_revert,
+            self.match(1, ledger['entries'][0]['id']),
+            {'revision': 4, 'reason': 'Undo accidental removal'},
+        )
+        self.assertEqual(reverted['revision'], 5)
+        restored = self.conn.execute(
+            'SELECT active FROM item_modifications WHERE modification_id=?',
+            (modification_id,)).fetchone()
+        self.assertEqual(restored['active'], 1)
+        restored_smart = next(item for item in reverted['data']['inventory']
+                              if item['instance_id'] == smart['instance_id'])
+        self.assertEqual(restored_smart['state'], 'installed')
+        self.assertFalse(self.call(server.Handler.api_character_ledger, self.match(1))['entries'][0]['can_revert'])
+
+        with self.assertRaises(server.ApiError) as needs_manual:
+            self.call(server.Handler.api_character_modification_install, self.match(1), {
+                'revision': 5, 'host_instance_id': bow['instance_id'],
+                'upgrade_instance_id': string['instance_id'], 'manual_confirm': False,
+                'reason': 'Install Reinforced String',
+            })
+        self.assertEqual(needs_manual.exception.status, 409)
+        permanent = self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 5, 'host_instance_id': bow['instance_id'],
+            'upgrade_instance_id': string['instance_id'], 'manual_confirm': True,
+            'reason': 'Archery check passed; install permanent string',
+        })
+        permanent_mod = next(mod for mod in permanent['management']['modifications']
+                             if mod['upgrade_instance_id'] == string['instance_id'])
+        self.assertTrue(permanent_mod['permanent'])
+        permanent_ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertFalse(permanent_ledger['entries'][0]['can_revert'])
+        self.assertTrue(permanent_ledger['entries'][0]['delta']['permanent_modification'])
+        permanent_match = re.match(r'^(\d+)/([a-f0-9]{32})$',
+                                   f'1/{permanent_mod["modification_id"]}')
+        with self.assertRaises(server.ApiError) as cannot_remove:
+            self.call(server.Handler.api_character_modification_action, permanent_match, {
+                'revision': 6, 'action': 'remove', 'reason': 'try removing permanent string',
+            })
+        self.assertEqual(cannot_remove.exception.status, 409)
+
     def test_active_effect_instances_apply_expire_tick_and_audit(self):
         character = copy.deepcopy(self.character_data)
         character['skills']['Handgun'] = 3

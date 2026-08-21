@@ -57,6 +57,15 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('item_sources', source)
         self.assertIn('effect_coverage', source)
 
+    def test_weapon_hosts_have_instance_bound_upgrade_management(self):
+        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        self.assertIn('function openWeaponUpgradeManager', source)
+        self.assertIn('data-manage-upgrades', source)
+        self.assertIn('host_instance_id', source)
+        self.assertIn('upgrade_instance_id', source)
+        self.assertIn('manual_confirm', source)
+        self.assertIn('/modifications', source)
+
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
         self.assertIn('created_effects', source)

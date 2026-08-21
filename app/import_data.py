@@ -107,6 +107,42 @@ def item_interaction_metadata(cat, name, row, desc):
     return metadata
 
 
+def item_modification_metadata(cat, name, row, desc):
+    """Normalize host/slot facts while leaving complex compatibility declarative."""
+    if cat != 'gun_upgrades':
+        return {}
+    text = str(desc or '').replace('’', "'")
+    low = text.lower()
+    slot_match = re.search(r'requires?\s+(\d+)\s+(?:attachment\s+)?slots?', low)
+    no_slot = bool(re.search(r"does(?:n't| not) require an attachment slot", low))
+    slots_used = 0 if no_slot else (int(slot_match.group(1)) if slot_match else 1)
+    compatibility = normalize_display_value(row.get('Available') or '')
+    complex_tokens = (
+        'individual eligibility', 'capable of firing', 'autofire',
+        'choose to replace', 'dv17', 'tech upgraded',
+    )
+    kind = 'rebuild' if 'rebuild.' in low else 'attachment'
+    group = None
+    if 'magazine' in name.lower():
+        group = 'weapon_magazine'
+    elif kind == 'rebuild':
+        group = 'weapon_rebuild'
+    elif name in ('Smartgun Link',):
+        group = 'smart_weapon_link'
+    return {
+        'host_type': 'weapon',
+        'modification_kind': kind,
+        'modification_group': group,
+        'slots_used': slots_used,
+        'compatibility_text': compatibility,
+        'permanent_installation': bool(re.search(r'can\s*not be uninstalled|cannot be uninstalled', low)),
+        'unique_per_host': bool(re.search(r'only one|cannot be attached.+with', low)),
+        'compatibility_manual': any(token in (compatibility + ' ' + low).lower()
+                                    for token in complex_tokens),
+        'installation_source': (row.get('Source') or '').strip() or None,
+    }
+
+
 def normalize_display_value(value):
     text = str(value).strip()
     if re.fullmatch(r'-?\d+\.0', text):
@@ -407,6 +443,7 @@ def main():
                     it['fields'][key] = normalize_display_value(val)
             it['mechanics'] = item_mechanics(cat, r, desc)
             it.update(item_interaction_metadata(cat, name, r, desc))
+            it.update(item_modification_metadata(cat, name, r, desc))
             requirements, capacity = structured_requirements(cat, r, desc)
             it['requirements'] = requirements
             if any(capacity.values()):
