@@ -121,11 +121,14 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('data-manage-cyberdeck', source)
         self.assertIn('data-install-deck-item', source)
         self.assertIn('data-remove-deck-item', source)
-        self.assertIn('PROGRAM EFFECTS ARE MANUAL', source)
+        self.assertIn('PROGRAM EFFECTS AND BLACK ICE ATTACKS ARE MANUAL', source)
         self.assertIn('data-program-action', source)
         self.assertIn('data-backup-restore', source)
         self.assertIn('REZ damage', source)
-        self.assertIn('BLACK ICE ENTITY REQUIRED', source)
+        self.assertIn('data-black-ice-deploy', source)
+        self.assertIn('data-net-entity-action', source)
+        self.assertIn('blackIceRuntimeHtml', source)
+        self.assertIn('Deploy in Combat', source)
 
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')

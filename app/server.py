@@ -3342,6 +3342,54 @@ def initial_program_runtime_state(item, deck_instance_id, modification_id, exist
     }
 
 
+NET_ENTITY_STATUSES = {
+    'lying_in_wait', 'hunting', 'derezzed', 'deactivated', 'destroyed',
+}
+
+
+def black_ice_target_type(item):
+    program_class = str((item.get('mechanics') or {}).get('program_class') or '')
+    return 'enemy_program_source' if 'Anti Program Black ICE' in program_class \
+        else 'enemy_netrunner'
+
+
+def active_black_ice_entity(character, program_instance_id):
+    entities = character.get('net_entities') or {}
+    return next((copy.deepcopy(entity) for entity in entities.values()
+                 if isinstance(entity, dict) and
+                 entity.get('source_program_instance_id') == program_instance_id and
+                 entity.get('status') in ('lying_in_wait', 'hunting', 'derezzed')), None)
+
+
+def initial_black_ice_entity(item, deck_instance_id, character_id, mode,
+                             floor_label, target_label=None):
+    mechanics = item.get('mechanics') or {}
+    maximum = max(1, int(_num(mechanics.get('rez')) or 1))
+    status = 'lying_in_wait' if mode == 'lie_in_wait' else 'hunting'
+    roll = secrets.randbelow(10) + 1 if status == 'hunting' else None
+    speed = max(0, int(_num(mechanics.get('spd')) or 0))
+    return {
+        'net_entity_id': secrets.token_hex(16),
+        'source_program_instance_id': item.get('instance_id'),
+        'deck_instance_id': deck_instance_id,
+        'owner_character_id': int(character_id),
+        'type': 'black_ice', 'name': item.get('custom_name') or item.get('name'),
+        'program_class': mechanics.get('program_class'),
+        'target_type': black_ice_target_type(item),
+        'floor_label': floor_label,
+        'target_label': target_label if status == 'hunting' else None,
+        'per': max(0, int(_num(mechanics.get('per')) or 0)),
+        'spd': speed, 'atk': max(0, int(_num(mechanics.get('atk')) or 0)),
+        'def': max(0, int(_num(mechanics.get('def')) or 0)),
+        'rez_current': maximum, 'rez_max': maximum,
+        'initiative_roll': roll,
+        'initiative': speed + roll if roll is not None else None,
+        'status': status, 'activated_at': time.time(),
+        'updated_at': time.time(), 'archived_at': None,
+        'manual_resolution_required': True,
+    }
+
+
 def evaluate_effective_cyberdeck(host, modifications, owned_by_id, character=None):
     character = character or {}
     usage = cyberdeck_slot_usage(host, modifications, owned_by_id)
@@ -3373,6 +3421,9 @@ def evaluate_effective_cyberdeck(host, modifications, owned_by_id, character=Non
             payload['runtime'] = initial_program_runtime_state(
                 item, host.get('instance_id'), modification.get('modification_id'),
                 (character.get('program_state') or {}).get(item.get('instance_id')))
+            if cyberdeck_program_category(item) == 'black_ice':
+                payload['net_entity'] = active_black_ice_entity(
+                    character, item.get('instance_id'))
             programs.append(payload)
     return {
         'instance_id': host.get('instance_id'),
@@ -4395,6 +4446,11 @@ def character_change_summary(before, after, limit=250):
     for program_id in sorted(set(old_program_state) | set(new_program_state)):
         add(f'program_state.{program_id}', 'Program runtime state',
             old_program_state.get(program_id), new_program_state.get(program_id))
+    old_net_entities = before.get('net_entities') if isinstance(before.get('net_entities'), dict) else {}
+    new_net_entities = after.get('net_entities') if isinstance(after.get('net_entities'), dict) else {}
+    for entity_id in sorted(set(old_net_entities) | set(new_net_entities)):
+        add(f'net_entities.{entity_id}', 'Black ICE NET entity',
+            old_net_entities.get(entity_id), new_net_entities.get(entity_id))
     old_vehicle_state = before.get('vehicle_state') if isinstance(before.get('vehicle_state'), dict) else {}
     new_vehicle_state = after.get('vehicle_state') if isinstance(after.get('vehicle_state'), dict) else {}
     for vehicle_id in sorted(set(old_vehicle_state) | set(new_vehicle_state)):
@@ -5958,7 +6014,9 @@ def ensure_progression(data):
     ensure_shared_ammo_state(data)
     if not isinstance(data.get('program_state'), dict):
         data['program_state'] = {}
-    data['schema_version'] = max(7, _num(data.get('schema_version')) or 0)
+    if not isinstance(data.get('net_entities'), dict):
+        data['net_entities'] = {}
+    data['schema_version'] = max(8, _num(data.get('schema_version')) or 0)
     return data
 
 
@@ -6148,6 +6206,23 @@ SERVER_ERROR_EN = {
     'Только одна копия этой Program может быть Rezzed': 'Only one copy of this Program may be Rezzed',
     'Derez требует Rezzed Program': 'Derez requires a Rezzed Program',
     'Deactivate требует Rezzed или Derezzed Program': 'Deactivate requires a Rezzed or Derezzed Program',
+    'Black ICE deployment содержит неподдерживаемые поля': 'Black ICE deployment contains unsupported fields',
+    'Installed Black ICE instance не найден': 'Installed Black ICE instance not found',
+    'Выбранная Program не является Black ICE': 'The selected Program is not Black ICE',
+    'Для этой Black ICE уже существует active NET entity': 'This Black ICE already has an active NET entity',
+    'Black ICE необходимо сначала Deactivate': 'Deactivate Black ICE first',
+    'Укажите Floor для Black ICE': 'Specify a Floor for Black ICE',
+    'Укажите target для deployed Black ICE': 'Specify a target for deployed Black ICE',
+    'Укажите причину Black ICE deployment': 'Provide a reason for Black ICE deployment',
+    'NET entity action содержит неподдерживаемые поля': 'NET entity action contains unsupported fields',
+    'Black ICE NET entity не найдена': 'Black ICE NET entity not found',
+    'Black ICE NET entity уже завершена': 'Black ICE NET entity is already completed',
+    'Source Black ICE installation отсутствует': 'Source Black ICE installation is missing',
+    'Укажите причину NET entity action': 'Provide a reason for the NET entity action',
+    'REZ damage требует active Black ICE': 'REZ damage requires active Black ICE',
+    'Slide требует hunting Black ICE': 'Slide requires hunting Black ICE',
+    'Engage требует lying-in-wait Black ICE': 'Engage requires lying-in-wait Black ICE',
+    'Укажите Floor и target для Black ICE': 'Specify a Floor and target for Black ICE',
     'Неподдерживаемый тип modification host': 'Unsupported modification host type',
     'Сначала снимите зависимые vehicle upgrades': 'Remove dependent vehicle upgrades first',
     'Vehicle instance не найден': 'Vehicle instance not found',
@@ -8145,6 +8220,13 @@ class Handler(BaseHTTPRequestHandler):
                 for repair in repair_state.get('repair_history') or []:
                     if isinstance(repair, dict):
                         repair.pop('technician', None)
+            for deck in (derived.get('effective_cyberdecks') or {}).values():
+                for program in deck.get('programs') or []:
+                    entity = program.get('net_entity')
+                    if isinstance(entity, dict):
+                        for private_key in ('floor_label', 'target_label',
+                                            'owner_character_id', 'initiative_roll'):
+                            entity.pop(private_key, None)
         return {
             'id': row['id'], 'revision': _row_value(row, 'revision', 0),
             'owner_id': row['owner_id'] if (not public_view or owner_name) else None,
@@ -9123,6 +9205,205 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     @atomic_endpoint
+    def api_character_black_ice_deploy(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'mode', 'floor_label', 'target_label', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Black ICE deployment содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        deck_id, program_id = str(m.group(2)).lower(), str(m.group(3)).lower()
+        modifications = character_modifications(conn, row['id'])
+        modification = next((item for item in modifications
+                             if item.get('host_instance_id') == deck_id and
+                             item.get('upgrade_instance_id') == program_id and
+                             item.get('host_type') == 'cyberdeck'), None)
+        if not modification:
+            raise ApiError(404, 'Installed Black ICE instance не найден')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('instance_id')}
+        program = owned.get(program_id)
+        if not program or cyberdeck_program_category(program) != 'black_ice':
+            raise ApiError(400, 'Выбранная Program не является Black ICE')
+        if active_black_ice_entity(data, program_id):
+            raise ApiError(409, 'Для этой Black ICE уже существует active NET entity')
+        runtime = initial_program_runtime_state(
+            program, deck_id, modification['modification_id'],
+            (data.get('program_state') or {}).get(program_id))
+        if runtime['status'] != 'inactive':
+            raise ApiError(409, 'Black ICE необходимо сначала Deactivate')
+        mode = str((body or {}).get('mode') or '')
+        if mode not in ('lie_in_wait', 'deploy_combat'):
+            raise ApiError(400, 'Black ICE mode: lie_in_wait/deploy_combat')
+        floor_label = str((body or {}).get('floor_label') or '').strip()[:120]
+        target_label = str((body or {}).get('target_label') or '').strip()[:120]
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(floor_label) < 1:
+            raise ApiError(400, 'Укажите Floor для Black ICE')
+        if mode == 'deploy_combat' and len(target_label) < 2:
+            raise ApiError(400, 'Укажите target для deployed Black ICE')
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Black ICE deployment')
+        entity = initial_black_ice_entity(
+            program, deck_id, row['id'], mode, floor_label, target_label)
+        entities = data.setdefault('net_entities', {})
+        entities[entity['net_entity_id']] = entity
+        if len(entities) > 200:
+            archived = sorted(
+                (item for item in entities.values()
+                 if item.get('status') in ('deactivated', 'destroyed')),
+                key=lambda item: item.get('archived_at') or 0)
+            for old in archived[:max(0, len(entities) - 200)]:
+                entities.pop(old.get('net_entity_id'), None)
+        runtime['status'] = 'rezzed'
+        runtime['rez_current'] = runtime['rez_max']
+        data.setdefault('program_state', {})[program_id] = runtime
+        reason = (
+            f'Deploy Black ICE {program.get("name")} as {entity["status"]} '
+            f'on {floor_label}: {reason_detail}')
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='item_action')
+        now = time.time()
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'net_entity': entity,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        }, status=201)
+
+    @atomic_endpoint
+    def api_character_net_entity_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'action', 'amount', 'floor_label',
+                   'target_label', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'NET entity action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        entity_id = str(m.group(2)).lower()
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        entity = (data.get('net_entities') or {}).get(entity_id)
+        if not isinstance(entity, dict) or entity.get('type') != 'black_ice':
+            raise ApiError(404, 'Black ICE NET entity не найдена')
+        if entity.get('status') not in ('lying_in_wait', 'hunting', 'derezzed'):
+            raise ApiError(409, 'Black ICE NET entity уже завершена')
+        program_id = str(entity.get('source_program_instance_id') or '')
+        deck_id = str(entity.get('deck_instance_id') or '')
+        modifications = character_modifications(conn, row['id'])
+        modification = next((item for item in modifications
+                             if item.get('host_instance_id') == deck_id and
+                             item.get('upgrade_instance_id') == program_id), None)
+        owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('instance_id')}
+        program = owned.get(program_id)
+        if not modification or not program:
+            raise ApiError(409, 'Source Black ICE installation отсутствует')
+        runtime = initial_program_runtime_state(
+            program, deck_id, modification['modification_id'],
+            (data.get('program_state') or {}).get(program_id))
+        action = str((body or {}).get('action') or '').lower()
+        detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(detail) < 3:
+            raise ApiError(400, 'Укажите причину NET entity action')
+        now = time.time()
+        removed_modification_ids = []
+        if action == 'damage':
+            if entity.get('status') not in ('lying_in_wait', 'hunting'):
+                raise ApiError(409, 'REZ damage требует active Black ICE')
+            amount = _num((body or {}).get('amount'))
+            if amount is None or int(amount) != amount or not 1 <= amount <= 100:
+                raise ApiError(400, 'Укажите REZ damage от 1 до 100')
+            previous = int(entity.get('rez_current') or 0)
+            entity['rez_current'] = max(0, previous - int(amount))
+            runtime['rez_current'] = entity['rez_current']
+            if entity['rez_current'] == 0:
+                entity['status'] = 'derezzed'
+                runtime['status'] = 'derezzed'
+            reason = (f'Black ICE REZ damage {entity.get("name")}: '
+                      f'{previous} → {entity["rez_current"]}; {detail}')
+        elif action == 'slide':
+            if entity.get('status') != 'hunting':
+                raise ApiError(409, 'Slide требует hunting Black ICE')
+            entity['status'] = 'lying_in_wait'
+            entity['target_label'] = None
+            entity['initiative'] = None
+            entity['initiative_roll'] = None
+            reason = f'Slide from Black ICE {entity.get("name")}: {detail}'
+        elif action == 'engage':
+            if entity.get('status') != 'lying_in_wait':
+                raise ApiError(409, 'Engage требует lying-in-wait Black ICE')
+            target_label = str((body or {}).get('target_label') or '').strip()[:120]
+            floor_label = str((body or {}).get('floor_label') or
+                              entity.get('floor_label') or '').strip()[:120]
+            if len(target_label) < 2 or not floor_label:
+                raise ApiError(400, 'Укажите Floor и target для Black ICE')
+            roll = secrets.randbelow(10) + 1
+            entity.update({
+                'status': 'hunting', 'target_label': target_label,
+                'floor_label': floor_label, 'initiative_roll': roll,
+                'initiative': int(entity.get('spd') or 0) + roll,
+            })
+            reason = f'Engage Black ICE {entity.get("name")} vs {target_label}: {detail}'
+        elif action == 'deactivate':
+            entity['status'] = 'deactivated'
+            entity['archived_at'] = now
+            runtime['status'] = 'inactive'
+            runtime['rez_current'] = runtime['rez_max']
+            reason = f'Deactivate Black ICE {entity.get("name")}: {detail}'
+        elif action == 'destroy':
+            entity['status'] = 'destroyed'
+            entity['rez_current'] = 0
+            entity['archived_at'] = now
+            runtime['status'] = 'destroyed'
+            runtime['rez_current'] = 0
+            program['state'] = 'broken'
+            program.pop('host_instance_id', None)
+            conn.execute(
+                'UPDATE item_modifications SET active=0,removed_by=?,removed_at=?,updated=? '
+                'WHERE modification_id=?',
+                (user['id'], now, now, modification['modification_id']))
+            removed_modification_ids.append(modification['modification_id'])
+            reason = f'Destroy Black ICE entity {entity.get("name")}: {detail}'
+        else:
+            raise ApiError(400, 'NET entity action: damage/slide/engage/deactivate/destroy')
+        entity['updated_at'] = now
+        data.setdefault('program_state', {})[program_id] = runtime
+        validate_active_modification_references(conn, row['id'], data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'net_entity_action', source_ref=reason, prune=True)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after,
+            category='modification' if removed_modification_ids else 'item_action')
+        if removed_modification_ids:
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            delta['removed_modification_ids'] = removed_modification_ids
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'net_entity': copy.deepcopy(entity),
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
     def api_character_program_action(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
         if set(body or {}) - {'revision', 'action', 'amount', 'reason'}:
@@ -9156,6 +9437,12 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(400, 'Укажите причину Program action')
         category = runtime['category']
         status = runtime['status']
+        active_entity = active_black_ice_entity(data, program_id) \
+            if category == 'black_ice' else None
+        if category == 'black_ice' and action != 'destroy':
+            raise ApiError(409, 'Black ICE actions require NET entity')
+        if category == 'black_ice' and action == 'destroy' and active_entity:
+            raise ApiError(409, 'Destroy active Black ICE through its NET entity')
         now = time.time()
         removed_modification_ids = []
         if action == 'run':
@@ -11154,6 +11441,8 @@ ROUTES = [
     ('GET', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modifications),
     ('POST', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modification_install),
     ('POST', rx(r'/api/characters/(\d+)/modifications/([a-f0-9]{32})/action'), Handler.api_character_modification_action),
+    ('POST', rx(r'/api/characters/(\d+)/cyberdecks/([a-f0-9]{32})/black-ice/([a-f0-9]{32})/deploy'), Handler.api_character_black_ice_deploy),
+    ('POST', rx(r'/api/characters/(\d+)/net-entities/([a-f0-9]{32})/action'), Handler.api_character_net_entity_action),
     ('POST', rx(r'/api/characters/(\d+)/cyberdecks/([a-f0-9]{32})/programs/([a-f0-9]{32})/action'), Handler.api_character_program_action),
     ('POST', rx(r'/api/characters/(\d+)/cyberdecks/([a-f0-9]{32})/hardware/([a-f0-9]{32})/restore'), Handler.api_character_backup_restore),
     ('GET', rx(r'/api/characters/(\d+)/effects'), Handler.api_character_effects),

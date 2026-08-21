@@ -1201,6 +1201,155 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertFalse(ledger['entries'][0]['can_revert'])
         self.assertEqual(ledger['entries'][0]['delta']['backup_drive_erased_programs'], 1)
 
+    def test_black_ice_net_entity_deploys_tracks_rez_and_reverts_destroy(self):
+        edited = copy.deepcopy(self.character_data)
+        item_ids = ('net_stuff-1', 'programs-25')
+        edited['inventory'] = [
+            {
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': server.item_by_id(item_id)['cat'],
+                'name': server.item_by_id(item_id)['name'], 'qty': 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            }
+            for item_id in item_ids
+        ]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add Black ICE entity test loadout', 'data': edited,
+        })
+        by_name = {item['name']: item for item in updated['data']['inventory']}
+        deck, killer = by_name['Cyberdeck (Standard Quality)'], by_name['Killer']
+        installed = self.call(
+            server.Handler.api_character_modification_install, self.match(1), {
+                'revision': 1, 'host_instance_id': deck['instance_id'],
+                'upgrade_instance_id': killer['instance_id'],
+                'manual_confirm': False, 'reason': 'Install Killer Black ICE',
+            })
+        killer_mod_id = installed['modification_id']
+        deploy_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})/([a-f0-9]{32})$',
+            f'1/{deck["instance_id"]}/{killer["instance_id"]}')
+        deployed = self.call(server.Handler.api_character_black_ice_deploy,
+                             deploy_match, {
+            'revision': 2, 'mode': 'deploy_combat', 'floor_label': 'Floor 3',
+            'target_label': 'Enemy Netrunner',
+            'reason': 'Deploy Killer into active NET combat',
+        })
+        entity = deployed['net_entity']
+        entity_id = entity['net_entity_id']
+        self.assertRegex(entity_id, r'^[a-f0-9]{32}$')
+        self.assertEqual(entity['status'], 'hunting')
+        self.assertEqual(entity['target_type'], 'enemy_program_source')
+        self.assertEqual(entity['rez_current'], 20)
+        self.assertGreaterEqual(entity['initiative'], 9)
+        self.assertLessEqual(entity['initiative'], 18)
+        runtime = deployed['character']['data']['program_state'][killer['instance_id']]
+        self.assertEqual(runtime['status'], 'rezzed')
+
+        public_data = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])
+        public_data['visibility'] = {
+            **server.ensure_character_visibility(public_data),
+            'equipment': True, 'combat': True,
+        }
+        self.conn.execute('UPDATE characters SET data=? WHERE id=1',
+                          (json.dumps(public_data),))
+        self.conn.commit()
+        self.current = self.user('other')
+        public = self.call(server.Handler.api_get_character, self.match(1))
+        public_entity = public['derived']['effective_cyberdecks'][
+            deck['instance_id']]['programs'][0]['net_entity']
+        self.assertNotIn('floor_label', public_entity)
+        self.assertNotIn('target_label', public_entity)
+        self.assertNotIn('initiative_roll', public_entity)
+        self.current = self.user('runner')
+
+        with self.assertRaises(server.ApiError) as duplicate:
+            self.call(server.Handler.api_character_black_ice_deploy,
+                      deploy_match, {
+                'revision': 3, 'mode': 'lie_in_wait', 'floor_label': 'Floor 3',
+                'reason': 'Try duplicate deployment from one Program copy',
+            })
+        self.assertEqual(duplicate.exception.status, 409)
+        entity_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$', f'1/{entity_id}')
+        damaged = self.call(server.Handler.api_character_net_entity_action,
+                            entity_match, {
+            'revision': 3, 'action': 'damage', 'amount': 5,
+            'reason': 'Killer takes Zap damage',
+        })
+        self.assertEqual(damaged['net_entity']['rez_current'], 15)
+        slid = self.call(server.Handler.api_character_net_entity_action,
+                         entity_match, {
+            'revision': 4, 'action': 'slide',
+            'reason': 'Enemy Netrunner succeeds on Slide',
+        })
+        self.assertEqual(slid['net_entity']['status'], 'lying_in_wait')
+        self.assertIsNone(slid['net_entity']['target_label'])
+        engaged = self.call(server.Handler.api_character_net_entity_action,
+                            entity_match, {
+            'revision': 5, 'action': 'engage', 'floor_label': 'Floor 3',
+            'target_label': 'Second Enemy Netrunner',
+            'reason': 'Killer acquires a new valid Program source',
+        })
+        self.assertEqual(engaged['net_entity']['status'], 'hunting')
+        derezzed = self.call(server.Handler.api_character_net_entity_action,
+                             entity_match, {
+            'revision': 6, 'action': 'damage', 'amount': 20,
+            'reason': 'Killer is reduced to zero REZ',
+        })
+        self.assertEqual(derezzed['net_entity']['status'], 'derezzed')
+        killer_mod_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$', f'1/{killer_mod_id}')
+        with self.assertRaises(server.ApiError) as active_uninstall:
+            self.call(server.Handler.api_character_modification_action,
+                      killer_mod_match, {
+                'revision': 7, 'action': 'remove',
+                'reason': 'Try uninstalling active Black ICE entity',
+            })
+        self.assertEqual(active_uninstall.exception.status, 409)
+        deactivated = self.call(server.Handler.api_character_net_entity_action,
+                                entity_match, {
+            'revision': 7, 'action': 'deactivate',
+            'reason': 'Spend NET Action to deactivate Killer',
+        })
+        self.assertEqual(deactivated['net_entity']['status'], 'deactivated')
+        self.assertEqual(deactivated['character']['data']['program_state'][
+            killer['instance_id']]['rez_current'], 20)
+
+        waiting = self.call(server.Handler.api_character_black_ice_deploy,
+                            deploy_match, {
+            'revision': 8, 'mode': 'lie_in_wait', 'floor_label': 'Floor 5',
+            'reason': 'Place Killer on Floor 5 to lie in wait',
+        })
+        waiting_entity = waiting['net_entity']
+        self.assertEqual(waiting_entity['status'], 'lying_in_wait')
+        waiting_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$',
+            f'1/{waiting_entity["net_entity_id"]}')
+        destroyed = self.call(server.Handler.api_character_net_entity_action,
+                              waiting_match, {
+            'revision': 9, 'action': 'destroy',
+            'reason': 'Destroy Killer entity and Program copy',
+        })
+        killer_after = next(item for item in destroyed['character']['data']['inventory']
+                            if item['instance_id'] == killer['instance_id'])
+        self.assertEqual(killer_after['state'], 'broken')
+        self.assertFalse(destroyed['character']['derived']['effective_cyberdecks'][
+            deck['instance_id']]['programs'])
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertTrue(ledger['entries'][0]['can_revert'])
+        reverted = self.call(server.Handler.api_character_ledger_revert,
+                             self.match(1, ledger['entries'][0]['id']), {
+            'revision': 10, 'reason': 'Undo incorrect Black ICE destruction',
+        })
+        restored_killer = next(item for item in reverted['data']['inventory']
+                               if item['instance_id'] == killer['instance_id'])
+        self.assertEqual(restored_killer['state'], 'installed')
+        restored_program = reverted['derived']['effective_cyberdecks'][
+            deck['instance_id']]['programs'][0]
+        self.assertEqual(restored_program['net_entity']['status'], 'lying_in_wait')
+        self.assertEqual(restored_program['runtime']['status'], 'rezzed')
+
     def test_vehicle_garage_installs_prerequisites_and_preserves_nomad_access_semantics(self):
         edited = copy.deepcopy(self.character_data)
         edited['inventory'] = [

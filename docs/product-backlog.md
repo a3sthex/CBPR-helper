@@ -2987,8 +2987,20 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - установленный Backup Drive сохраняет уничтоженные non-Black-ICE Programs вместе с их runtime snapshot; Meat Action Restore атомарно проверяет текущие model restrictions/slots и возвращает все доступные copies;
 - удаление Backup Drive с сохранёнными Programs стирает contents по source rule и специально создаёт non-revertible Ledger entry;
 - Character Sheet показывает status, REZ, Program actions, saved-program count и Backup restore controls;
-- попытка обычного `Rez` для Black ICE блокируется: система не изображает его обычной включённой Program и требует отдельный NET entity deployment в B.8.3;
+- попытка обычного `Rez` для Black ICE блокируется: система не изображает его обычной включённой Program и передаёт управление отдельному NET entity deployment;
 - Program effects, targets, NET checks и особые Hardware triggers пока остаются `MANUAL RESOLUTION`, без JavaScript/Python в item data.
+
+**Статус B.8.3 — реализованы Black ICE NET Entities:**
+
+- каждая установленная Black ICE copy может создать не более одной active `net_entity`, связанную со stable Program instance, Cyberdeck и Character;
+- deployment имеет два явных режима: `LIE IN WAIT` размещает ICE на указанном Floor без target/Initiative, `DEPLOY IN COMBAT` требует target и сохраняет server roll `SPD + 1d10`;
+- entity получает source-backed PER/SPD/ATK/DEF/REZ snapshot и target type: Anti-Personnel преследует enemy Netrunner, Anti-Program — enemy Program source;
+- поддерживаются authoritative actions `REZ Damage`, `Slide`, `Engage`, `Deactivate` и `Destroy Entity & Copy`; Slide возвращает ICE в lying-in-wait, а Engage назначает новую цель и Initiative;
+- REZ 0 переводит entity и Program runtime в `derezzed`; Deactivate архивирует entity и возвращает concrete Program в inactive/full-REZ state для будущего deployment;
+- Destroy архивирует entity, освобождает Cyberdeck slots и переводит source copy в `broken`; linked Ledger revert восстанавливает installation, runtime и entity context одним snapshot;
+- Character Sheet показывает отдельную Black ICE entity card со stats, status, Floor, Target и Initiative; deploy/entity controls защищены revision и требуют audit reason;
+- публичный Dossier server-side скрывает Floor, target, Character owner и raw initiative roll даже при открытом Equipment;
+- Floor/Target пока являются validated manual labels: NET Architecture IDs, Session Initiative Queue, attack rolls/effects и автоматический target legality остаются B.8.4/Live NET integration.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -3011,8 +3023,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: Cyberdeck host/loadout, model restrictions, non-Black-ICE Program runtime/REZ и Backup Drive lifecycle;
-    - дальше: Black ICE NET entities, затем Cyberware/Armor/Tech hosts.
+    - готово: Cyberdeck loadout, Program runtime/REZ, Backup Drive и Black ICE NET entity lifecycle;
+    - дальше: NET Architecture/Session integration, затем Cyberware/Armor/Tech hosts.
 14. JSON import.
 
 ### Пакет C — Publishing Preview

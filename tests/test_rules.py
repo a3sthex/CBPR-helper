@@ -109,7 +109,7 @@ class MediaAndProgressionTests(unittest.TestCase):
         self.assertEqual(data['luck_cur'], 6)
         self.assertEqual(data['active_role'], 'Solo')
         self.assertEqual(data['roles'][0]['rank'], 4)
-        self.assertEqual(data['schema_version'], 7)
+        self.assertEqual(data['schema_version'], 8)
 
 
 class LocalizationTests(unittest.TestCase):
@@ -925,6 +925,23 @@ class CyberdeckModificationTests(unittest.TestCase):
             'host_type': 'cyberdeck', 'slots_used': item.get('slots_used') or 1,
             'configuration': {},
         }
+
+    def test_black_ice_entity_snapshots_stats_mode_and_target_type(self):
+        killer = self.owned('programs-25', 'f' * 32)
+        waiting = server.initial_black_ice_entity(
+            killer, 'd' * 32, 1, 'lie_in_wait', 'Floor 3')
+        self.assertEqual(waiting['status'], 'lying_in_wait')
+        self.assertEqual(waiting['target_type'], 'enemy_program_source')
+        self.assertIsNone(waiting['initiative'])
+        self.assertEqual((waiting['per'], waiting['spd'], waiting['atk'],
+                          waiting['def'], waiting['rez_max']),
+                         (4, 8, 6, 2, 20))
+        deployed = server.initial_black_ice_entity(
+            killer, 'd' * 32, 1, 'deploy_combat', 'Floor 3', 'Armor.exe')
+        self.assertEqual(deployed['status'], 'hunting')
+        self.assertEqual(deployed['target_label'], 'Armor.exe')
+        self.assertGreaterEqual(deployed['initiative'], 9)
+        self.assertLessEqual(deployed['initiative'], 18)
 
     def test_program_runtime_state_uses_program_class_and_rez(self):
         armor = self.owned('programs-12', '0' * 32)
