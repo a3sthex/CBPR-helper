@@ -120,10 +120,11 @@ class AccessRoleMigrationTests(unittest.TestCase):
             handler = object.__new__(server.Handler)
             handler.send_json = lambda payload, status=200, cookies=None: response.update(
                 payload=payload, status=status, cookies=cookies)
-            server.Handler.api_register(handler, conn, {}, None, {
-                'username': 'newplayer', 'display_name': 'New Player',
-                'password': 'password', 'is_gm': True, 'account_role': 'admin',
-            })
+            with mock.patch.dict(os.environ, {'CBPR_REGISTRATION_MODE': 'open'}, clear=False):
+                server.Handler.api_register(handler, conn, {}, None, {
+                    'username': 'newplayer', 'display_name': 'New Player',
+                    'password': 'password', 'is_gm': True, 'account_role': 'admin',
+                })
             row = conn.execute("SELECT * FROM users WHERE username='newplayer'").fetchone()
             self.assertEqual(row['account_role'], 'player')
             self.assertFalse(row['is_gm'])
@@ -228,6 +229,9 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertIn("kind === 'feed_image' || kind === 'news_image' || kind === 'contract_image'", source)
         self.assertIn("'16:9': [1920,1080]", source)
         self.assertIn('crop-output-width', source)
+        self.assertIn('id="rg-invite"', source)
+        self.assertIn("api('/api/admin/invites'", source)
+        self.assertIn('data-dossier-visibility', source)
         self.assertIn('12_000_000', source)
         network = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')
         network_css = (ROOT / 'app/static/ncnet.css').read_text(encoding='utf-8')

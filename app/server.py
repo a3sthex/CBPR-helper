@@ -479,12 +479,25 @@ CREATE TABLE IF NOT EXISTS account_role_audit(
   reason TEXT NOT NULL,
   created REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS registration_invites(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code_hash TEXT UNIQUE NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  created_by INTEGER NOT NULL,
+  max_uses INTEGER NOT NULL DEFAULT 1,
+  uses INTEGER NOT NULL DEFAULT 0,
+  expires_at REAL,
+  disabled_at REAL,
+  created REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_char_owner ON characters(owner_id);
 CREATE INDEX IF NOT EXISTS idx_news_created ON news(created);
 CREATE INDEX IF NOT EXISTS idx_media_owner ON media(owner_id);
 CREATE INDEX IF NOT EXISTS idx_media_attached ON media(attached_type, attached_id);
 CREATE INDEX IF NOT EXISTS idx_ip_character ON ip_ledger(character_id, created);
 CREATE INDEX IF NOT EXISTS idx_role_audit_target ON account_role_audit(target_user_id, created);
+CREATE INDEX IF NOT EXISTS idx_registration_invites_active
+  ON registration_invites(disabled_at,expires_at,uses,max_uses);
 """
 
 NETWORK_SCHEMA = """
@@ -1349,7 +1362,7 @@ def record_character_changes(conn, character_id, actor_user_id, before, after,
         'skills': 'skill', 'skill_pools': 'skill', 'stats': 'stat',
         'reputation': 'reputation', 'inventory': 'inventory',
         'cyberware': 'cyberware', 'armor': 'armor',
-        'archived': 'status', 'public': 'status',
+        'archived': 'status', 'public': 'status', 'visibility': 'status',
     }
     recorded = set()
     for key, category in tracked.items():
@@ -1512,6 +1525,24 @@ def init_db():
 
 # ---------------------------------------------------------------- auth
 
+REGISTRATION_MODES = {'open', 'invite', 'closed'}
+
+
+def registration_mode():
+    mode = str(os.environ.get('CBPR_REGISTRATION_MODE', 'invite') or '').strip().lower()
+    return mode if mode in REGISTRATION_MODES else 'invite'
+
+
+def invite_code_hash(code):
+    normalized = re.sub(r'[^A-Za-z0-9]', '', str(code or '')).upper()
+    return hashlib.sha256(normalized.encode()).hexdigest() if normalized else ''
+
+
+def create_invite_code():
+    raw = secrets.token_hex(8).upper()
+    return f'NCNET-{raw[:4]}-{raw[4:8]}-{raw[8:12]}-{raw[12:16]}'
+
+
 def hash_password(pw):
     salt = secrets.token_hex(16)
     dk = hashlib.pbkdf2_hmac('sha256', pw.encode(), salt.encode(), PBKDF_ITERS)
@@ -1586,7 +1617,77 @@ def nm_price_map():
 # ---------------------------------------------------------------- валидация персонажа
 
 MAX_CHAR_BYTES = 300_000
-CHARACTER_PROFILE_FIELDS = {'notes', 'portrait_media_id', 'public'}
+CHARACTER_VISIBILITY_DEFAULTS = {
+    'portrait': True,
+    'identity': True,
+    'biography': True,
+    'stats': False,
+    'skills': False,
+    'lifepath': False,
+    'equipment': False,
+    'combat': False,
+    'player_name': False,
+}
+CHARACTER_PROFILE_FIELDS = {'notes', 'portrait_media_id', 'public', 'visibility'}
+
+
+def ensure_character_visibility(data):
+    raw = data.get('visibility') if isinstance(data, dict) else None
+    raw = raw if isinstance(raw, dict) else {}
+    visibility = {
+        key: raw[key] if isinstance(raw.get(key), bool) else default
+        for key, default in CHARACTER_VISIBILITY_DEFAULTS.items()
+    }
+    data['visibility'] = visibility
+    return visibility
+
+
+def public_character_data(data):
+    """Return an allowlisted Dossier view; private sheet fields never cross the API."""
+    source = copy.deepcopy(data if isinstance(data, dict) else {})
+    visibility = ensure_character_visibility(source)
+    allowed = {
+        'handle', 'role', 'role_rank', 'primary_role', 'active_role', 'roles',
+        'public', 'archived', 'archive_reason', 'schema_version', 'seed', 'visibility',
+    }
+    if visibility['portrait']:
+        allowed.add('portrait_media_id')
+    if visibility['identity']:
+        allowed.update({'first_name', 'last_name'})
+    if visibility['biography']:
+        allowed.update({'appearance', 'background', 'languages', 'lifestyle', 'housing'})
+    if visibility['stats']:
+        allowed.add('stats')
+    if visibility['skills']:
+        allowed.update({'skills', 'skill_pools', 'skill_specializations', 'native_language'})
+    if visibility['lifepath']:
+        allowed.update({'lifepath', 'role_lifepath', 'lifepath_mode'})
+    if visibility['equipment']:
+        allowed.update({'inventory', 'cyberware', 'armor', 'weapon_state'})
+    if visibility['combat']:
+        allowed.update({'hp_cur', 'humanity_cur', 'luck_cur', 'reputation'})
+    if visibility['player_name']:
+        allowed.add('player')
+    public = {key: source[key] for key in allowed if key in source}
+    if isinstance(public.get('roles'), list):
+        public['roles'] = [{
+            key: role[key] for key in ('name', 'rank', 'primary') if key in role
+        } for role in public['roles'] if isinstance(role, dict)]
+    return public
+
+
+def character_author_payload(character):
+    if not character:
+        return None
+    data = parse_json_object(character['data'])
+    visibility = ensure_character_visibility(data)
+    return {
+        'id': character['id'], 'kind': 'character',
+        'display_name': data.get('handle') or 'Unknown Edgerunner',
+        'handle': data.get('handle') or 'unknown',
+        'avatar_media_id': data.get('portrait_media_id') if visibility['portrait'] else None,
+        'accent_color': '#ff2d78',
+    }
 
 
 def clean_character_profile_patch(old_data, body):
@@ -1638,6 +1739,17 @@ def clean_character_profile_patch(old_data, body):
         if not isinstance(patch['public'], bool):
             raise ApiError(400, 'public должен быть логическим значением')
         clean['public'] = patch['public']
+    if 'visibility' in patch:
+        visibility = patch.get('visibility')
+        if not isinstance(visibility, dict):
+            raise ApiError(400, 'visibility должен быть объектом')
+        unknown = set(visibility) - set(CHARACTER_VISIBILITY_DEFAULTS)
+        if unknown or any(not isinstance(value, bool) for value in visibility.values()):
+            raise ApiError(400, 'Некорректные настройки видимости Dossier')
+        clean['visibility'] = {
+            key: visibility.get(key, old_data.get('visibility', {}).get(key, default))
+            for key, default in CHARACTER_VISIBILITY_DEFAULTS.items()
+        }
     return clean
 
 
@@ -1687,6 +1799,7 @@ def clean_character(data):
         raise ApiError(400, 'cash должен быть числом')
     out['portrait_media_id'] = str(out.get('portrait_media_id') or '')[:64]
     progressed = ensure_progression(out)
+    ensure_character_visibility(progressed)
     if any(role.get('role_lifepath') for role in progressed.get('roles', []) if not role.get('primary')):
         raise ApiError(400, 'Role-Based Lifepath разрешён только primary Role')
     return progressed
@@ -2439,6 +2552,13 @@ SERVER_ERROR_EN = {
     'Деньги изменяются только через Market, Payroll или Aftermath': 'Cash can only be changed through Market, Payroll, or Aftermath',
     'Legacy API доступен только для чтения; используйте NC//NET City Feed': 'Legacy API is read-only; use NC//NET City Feed',
     'Legacy API доступен только для чтения; используйте NC//NET Contracts': 'Legacy API is read-only; use NC//NET Contracts',
+    'visibility должен быть объектом': 'visibility must be an object',
+    'Некорректные настройки видимости Dossier': 'Invalid Dossier visibility settings',
+    'Регистрация новых аккаунтов отключена': 'New account registration is disabled',
+    'Пароль: минимум 8 символов': 'Password must contain at least 8 characters',
+    'Пароль слишком длинный': 'Password is too long',
+    'Приглашение не найдено': 'Invite not found',
+    'Приглашение недействительно или уже использовано': 'Invite is invalid or has already been used',
     'Слишком много запросов; попробуйте позже': 'Too many requests; try again later',
     'Недопустимый источник запроса': 'Invalid request origin',
 }
@@ -2676,25 +2796,47 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_register(self, conn, qs, m, body):
         self.rate_limit('register', 5, 300)
+        mode = registration_mode()
+        if mode == 'closed':
+            raise ApiError(403, 'Регистрация новых аккаунтов отключена')
         username = str(body.get('username') or '').strip().lower()
         password = str(body.get('password') or '')
         display = str(body.get('display_name') or '').strip()[:60] or username
         if not re.fullmatch(r'[a-z0-9_.\-]{3,24}', username):
             raise ApiError(400, 'Логин: 3–24 символа, латиница/цифры/._-')
-        if len(password) < 4:
-            raise ApiError(400, 'Пароль: минимум 4 символа')
+        if len(password) < 8:
+            raise ApiError(400, 'Пароль: минимум 8 символов')
+        if len(password) > 256:
+            raise ApiError(400, 'Пароль слишком длинный')
+        invite = None
         try:
+            conn.execute('BEGIN IMMEDIATE')
+            if mode == 'invite':
+                code_hash = invite_code_hash((body or {}).get('invite_code'))
+                now = time.time()
+                invite = conn.execute(
+                    'SELECT * FROM registration_invites WHERE code_hash=? AND disabled_at IS NULL '
+                    'AND (expires_at IS NULL OR expires_at>?) AND uses<max_uses',
+                    (code_hash, now)).fetchone()
+                if not invite:
+                    raise ApiError(403, 'Приглашение недействительно или уже использовано')
             cur = conn.execute(
                 'INSERT INTO users(username, display_name, pass_hash, is_gm, account_role, created) '
                 "VALUES(?,?,?,0,'player',?)",
                 (username, display, hash_password(password), time.time()))
+            if invite:
+                conn.execute('UPDATE registration_invites SET uses=uses+1 WHERE id=?',
+                             (invite['id'],))
             conn.commit()
+        except ApiError:
+            conn.rollback()
+            raise
         except sqlite3.IntegrityError:
+            conn.rollback()
             raise ApiError(409, 'Такой логин уже занят')
         token = create_session(conn, cur.lastrowid)
         u = conn.execute('SELECT * FROM users WHERE id=?', (cur.lastrowid,)).fetchone()
-        self.send_json(self.me_payload(u), cookies=[
-            session_cookie(token)])
+        self.send_json(self.me_payload(u), cookies=[session_cookie(token)])
 
     def api_login(self, conn, qs, m, body):
         self.rate_limit('login', 12, 60)
@@ -2818,6 +2960,54 @@ class Handler(BaseHTTPRequestHandler):
         updated = assign_account_role(
             conn, actor, int(m.group(1)), (body or {}).get('account_role'), reason)
         self.send_json(self.me_payload(updated))
+
+    def invite_payload(self, row):
+        now = time.time()
+        return {
+            'id': row['id'], 'label': row['label'],
+            'max_uses': row['max_uses'], 'uses': row['uses'],
+            'expires_at': row['expires_at'], 'disabled_at': row['disabled_at'],
+            'created_by': row['created_by'], 'created': row['created'],
+            'active': (not row['disabled_at'] and row['uses'] < row['max_uses'] and
+                       (row['expires_at'] is None or row['expires_at'] > now)),
+        }
+
+    def api_admin_invites(self, conn, qs, m, body):
+        self.require_admin(conn)
+        rows = conn.execute(
+            'SELECT * FROM registration_invites ORDER BY created DESC,id DESC LIMIT 200'
+        ).fetchall()
+        self.send_json({'registration_mode': registration_mode(),
+                        'invites': [self.invite_payload(row) for row in rows]})
+
+    def api_admin_invite_create(self, conn, qs, m, body):
+        actor = self.require_admin(conn)
+        label = str((body or {}).get('label') or '').strip()[:120]
+        max_uses = max(1, min(100, _num((body or {}).get('max_uses')) or 1))
+        expires_days = _num((body or {}).get('expires_days'))
+        expires_at = None if not expires_days else time.time() + max(1, min(365, expires_days)) * 86400
+        code = create_invite_code()
+        cur = conn.execute(
+            'INSERT INTO registration_invites(code_hash,label,created_by,max_uses,uses,'
+            'expires_at,created) VALUES(?,?,?,?,0,?,?)',
+            (invite_code_hash(code), label, actor['id'], max_uses, expires_at, time.time()))
+        conn.commit()
+        row = conn.execute('SELECT * FROM registration_invites WHERE id=?',
+                           (cur.lastrowid,)).fetchone()
+        self.send_json({**self.invite_payload(row), 'code': code}, status=201)
+
+    def api_admin_invite_revoke(self, conn, qs, m, body):
+        self.require_admin(conn)
+        row = conn.execute('SELECT * FROM registration_invites WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Приглашение не найдено')
+        conn.execute('UPDATE registration_invites SET disabled_at=? WHERE id=?',
+                     (time.time(), row['id']))
+        conn.commit()
+        updated = conn.execute('SELECT * FROM registration_invites WHERE id=?',
+                               (row['id'],)).fetchone()
+        self.send_json(self.invite_payload(updated))
 
     # ------------------------------------------------------------ NC//NET notifications / VK
 
@@ -3486,7 +3676,6 @@ class Handler(BaseHTTPRequestHandler):
                                (row['author_persona_id'],)).fetchone() if row['author_persona_id'] else None
         character = conn.execute('SELECT * FROM characters WHERE id=?',
                                  (row['author_character_id'],)).fetchone() if row['author_character_id'] else None
-        char_data = parse_json_object(character['data']) if character else {}
         can_edit = bool(user and (user['id'] == row['creator_user_id'] or user_is_admin(user) or
                         (persona and can_manage_persona(user, persona))))
         payload = {
@@ -3494,13 +3683,7 @@ class Handler(BaseHTTPRequestHandler):
             'creator_user_id': row['creator_user_id'],
             'author_persona_id': row['author_persona_id'],
             'author_character_id': row['author_character_id'],
-            'author': persona_payload(persona, False) if persona else ({
-                'id': character['id'], 'kind': 'character',
-                'display_name': char_data.get('handle') or 'Unknown Edgerunner',
-                'handle': char_data.get('handle') or 'unknown',
-                'avatar_media_id': char_data.get('portrait_media_id'),
-                'accent_color': '#ff2d78',
-            } if character else None),
+            'author': persona_payload(persona, False) if persona else character_author_payload(character),
             'storyline_id': row['storyline_id'], 'contract_id': row['contract_id'],
             'reply_to_post_id': row['reply_to_post_id'], 'district_id': row['district_id'],
             'headline': row['headline'], 'lead': row['lead'], 'body': row['body'],
@@ -3535,7 +3718,6 @@ class Handler(BaseHTTPRequestHandler):
                                (row['author_persona_id'],)).fetchone() if row['author_persona_id'] else None
         character = conn.execute('SELECT * FROM characters WHERE id=?',
                                  (row['author_character_id'],)).fetchone() if row['author_character_id'] else None
-        char_data = parse_json_object(character['data']) if character else {}
         return {
             'id': row['id'], 'post_id': row['post_id'],
             'parent_comment_id': row['parent_comment_id'], 'body': row['body'],
@@ -3543,13 +3725,7 @@ class Handler(BaseHTTPRequestHandler):
             'hidden': bool(row['hidden_at']),
             'hidden_reason': row['hidden_reason'] if (user_is_gm(user) or
                               (user and row['creator_user_id'] == user['id'])) else None,
-            'author': persona_payload(persona, False) if persona else ({
-                'id': character['id'], 'kind': 'character',
-                'display_name': char_data.get('handle') or 'Unknown Edgerunner',
-                'handle': char_data.get('handle') or 'unknown',
-                'avatar_media_id': char_data.get('portrait_media_id'),
-                'accent_color': '#ff2d78',
-            } if character else None),
+            'author': persona_payload(persona, False) if persona else character_author_payload(character),
             'mine': bool(user and row['creator_user_id'] == user['id']),
         }
 
@@ -3798,9 +3974,20 @@ class Handler(BaseHTTPRequestHandler):
         user = self.current_user(conn)
         allowed = bool(user and user['id'] == row['owner_id']); public_media = False
         if row['attached_type'] == 'character' and row['attached_id']:
-            char = conn.execute('SELECT owner_id,public FROM characters WHERE id=?', (row['attached_id'],)).fetchone()
-            public_media = bool(char and char['public'])
-            allowed = bool(char and (public_media or (user and user['id'] == char['owner_id'])))
+            char = conn.execute('SELECT owner_id,public,data FROM characters WHERE id=?',
+                                (row['attached_id'],)).fetchone()
+            char_data = parse_json_object(char['data']) if char else {}
+            portrait_visible = ensure_character_visibility(char_data)['portrait'] if char else False
+            authored_public = False
+            if char and portrait_visible and not char['public']:
+                authored_public = bool(conn.execute(
+                    "SELECT 1 FROM feed_posts WHERE author_character_id=? AND status='published' "
+                    "UNION SELECT 1 FROM feed_comments fc JOIN feed_posts fp ON fp.id=fc.post_id "
+                    "WHERE fc.author_character_id=? AND fc.hidden_at IS NULL AND fp.status='published' LIMIT 1",
+                    (char['id'], char['id'])).fetchone())
+            public_media = bool(char and portrait_visible and (char['public'] or authored_public))
+            allowed = bool(char and (public_media or
+                           (user and (user['id'] == char['owner_id'] or user_is_admin(user)))))
         elif row['attached_type'] == 'account' and row['attached_id']:
             account = conn.execute('SELECT id,show_display_name FROM users WHERE id=?',
                                    (row['attached_id'],)).fetchone()
@@ -3864,6 +4051,8 @@ class Handler(BaseHTTPRequestHandler):
             'autofire_table': cat['autofire_table'],
             'general_dv': GENERAL_DV,
             'rule_sources': RULE_SOURCES,
+            'registration_mode': registration_mode(),
+            'character_visibility_defaults': CHARACTER_VISIBILITY_DEFAULTS,
         })
 
     def api_stats(self, conn, qs, m, body):
@@ -3910,12 +4099,19 @@ class Handler(BaseHTTPRequestHandler):
 
     CHAR_LIST_FIELDS = ('id', 'owner_id', 'public', 'created', 'updated')
 
-    def char_payload(self, row, owner_name=None):
-        data = ensure_progression(json.loads(row['data']))
+    def char_payload(self, row, owner_name=None, public_view=False):
+        full_data = ensure_progression(json.loads(row['data']))
+        visibility = ensure_character_visibility(full_data)
+        data = public_character_data(full_data) if public_view else full_data
+        derived = derive(full_data)
+        if public_view and not visibility['combat']:
+            derived = {}
         return {
-            'id': row['id'], 'owner_id': row['owner_id'], 'public': bool(row['public']),
+            'id': row['id'],
+            'owner_id': row['owner_id'] if (not public_view or owner_name) else None,
+            'public': bool(row['public']),
             'owner_name': owner_name, 'created': row['created'], 'updated': row['updated'],
-            'data': data, 'derived': derive(data),
+            'data': data, 'derived': derived,
         }
 
     def api_my_characters(self, conn, qs, m, body):
@@ -3951,18 +4147,24 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             raise ApiError(404, 'Персонаж не найден')
         row = conn.execute(
-            'SELECT c.*, u.display_name owner FROM characters c '
-            'JOIN users u ON u.id=c.owner_id WHERE c.id=?', (cid,)).fetchone()
+            'SELECT c.*,u.display_name owner,u.show_display_name owner_show_name '
+            'FROM characters c JOIN users u ON u.id=c.owner_id WHERE c.id=?',
+            (cid,)).fetchone()
         if not row:
             raise ApiError(404, 'Персонаж не найден')
         return row
 
     def api_get_character(self, conn, qs, m, body):
         row = self.get_char(conn, m.group(1))
-        u = self.current_user(conn)
-        if not row['public'] and (not u or u['id'] != row['owner_id']):
+        user = self.current_user(conn)
+        owner_view = bool(user and user['id'] == row['owner_id'])
+        admin_view = user_is_admin(user)
+        if not row['public'] and not (owner_view or admin_view):
             raise ApiError(403, 'Персонаж приватный')
-        self.send_json(self.char_payload(row, row['owner']))
+        privileged_name = bool(owner_view or user_is_gm(user))
+        owner_name = row['owner'] if (privileged_name or row['owner_show_name']) else None
+        self.send_json(self.char_payload(
+            row, owner_name, public_view=not (owner_view or admin_view)))
 
     def api_save_character(self, conn, qs, m, body):
         u = self.require_user(conn)
@@ -4253,20 +4455,23 @@ class Handler(BaseHTTPRequestHandler):
 
 
     def api_roster(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        privileged = user_is_gm(user)
         rows = conn.execute(
-            'SELECT c.*, u.display_name owner FROM characters c '
-            'JOIN users u ON u.id=c.owner_id WHERE c.public=1 '
-            'ORDER BY u.id, c.id').fetchall()
+            'SELECT c.*,u.display_name owner,u.show_display_name owner_show_name '
+            'FROM characters c JOIN users u ON u.id=c.owner_id WHERE c.public=1 '
+            'ORDER BY u.id,c.id').fetchall()
         q = (q1(qs.get('q')) or '').strip().lower()
         out = []
-        for r in rows:
-            p = self.char_payload(r, r['owner'])
-            d = p['data']
-            hay = ' '.join(filter(None, [d.get('handle'), d.get('role'),
-                                         d.get('player'), r['owner']])).lower()
+        for row in rows:
+            owner_name = row['owner'] if (privileged or row['owner_show_name']) else None
+            payload = self.char_payload(row, owner_name, public_view=not privileged)
+            data = payload['data']
+            hay = ' '.join(filter(None, [data.get('handle'), data.get('role'),
+                                         data.get('player'), owner_name])).lower()
             if q and q not in hay:
                 continue
-            out.append(p)
+            out.append(payload)
         self.send_json({'characters': out})
 
     # ------------------------------------------------------------ рынок
@@ -5102,6 +5307,9 @@ ROUTES = [
     ('GET', rx(r'/api/gm/users'), Handler.api_gm_users),
     ('GET', rx(r'/api/admin/users'), Handler.api_admin_users),
     ('POST', rx(r'/api/admin/users/(\d+)/role'), Handler.api_admin_user_role),
+    ('GET', rx(r'/api/admin/invites'), Handler.api_admin_invites),
+    ('POST', rx(r'/api/admin/invites'), Handler.api_admin_invite_create),
+    ('DELETE', rx(r'/api/admin/invites/(\d+)'), Handler.api_admin_invite_revoke),
     ('GET', rx(r'/api/notifications'), Handler.api_notifications),
     ('POST', rx(r'/api/notifications/(\d+)/read'), Handler.api_notification_read),
     ('GET', rx(r'/api/admin/vk'), Handler.api_admin_vk_status),

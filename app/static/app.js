@@ -2624,7 +2624,7 @@ async function viewSheet(id) {
     <div class="row">
       <button id="sheet-back">← ${T('Characters','Персонажи')}</button>
       <button class="btn-sm" id="sheet-print">🖨️ Print</button><button class="btn-sm" id="sheet-json">⬇ JSON</button><button class="btn-sm" id="sheet-network">◎ ${T('Network','Сеть')}</button>${owner||state.me?.is_gm?`<button class="btn-sm" id="sheet-ledger">◫ ${T('Ledger','Журнал')}</button>`:''}
-      ${mine ? `<label class="btn-sm">🖼️ Portrait<input id="sheet-portrait-file" type="file" accept="image/jpeg,image/png,image/webp" hidden></label><button class="btn-primary" id="sheet-visibility">${c.public?T('🔒 Make private','🔒 Сделать приватным'):T('👁 Make public','👁 Сделать публичным')}</button>
+      ${mine ? `<label class="btn-sm">🖼️ Portrait<input id="sheet-portrait-file" type="file" accept="image/jpeg,image/png,image/webp" hidden></label><button class="btn-primary" id="sheet-privacy">◉ ${T('Dossier Privacy','Приватность Dossier')}</button>
                 <button class="btn-danger" id="sheet-del">🗑️ ${T('Delete','Удалить')}</button>` : ''}
     </div>
   </div>
@@ -2725,12 +2725,19 @@ async function viewSheet(id) {
   $('#sheet-print').onclick = () => window.print();
   $('#sheet-json').onclick = () => { const blob = new Blob([JSON.stringify(ch, null, 2)], {type:'application/json'}), a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${(ch.handle || 'character').replace(/[^a-z0-9_-]+/gi,'-')}.json`; a.click(); URL.revokeObjectURL(a.href); };
   $('#sheet-back').onclick = () => go('/dossiers');
-  const visibilityBtn = $('#sheet-visibility');
-  if (visibilityBtn) visibilityBtn.onclick = async () => {
-    try {
-      await api('/api/characters/' + c.id, {method:'PUT', body:{patch:{public:!c.public}}});
-      viewSheet(c.id);
-    } catch (e) { toast(e.message, true); }
+  const privacyBtn = $('#sheet-privacy');
+  if (privacyBtn) privacyBtn.onclick = () => {
+    const defaults=state.meta.character_visibility_defaults||{},visibility={...defaults,...(ch.visibility||{})};
+    const fields=[
+      ['portrait','Portrait','Портрет'],['identity','Identity / real name','Имя персонажа'],
+      ['biography','Biography / appearance','Биография / внешность'],['stats','Characteristics','Характеристики'],
+      ['skills','Skills','Навыки'],['lifepath','Lifepath','Lifepath'],
+      ['equipment','Inventory / Cyberware / Armor','Инвентарь / Cyberware / броня'],
+      ['combat','Combat values','Боевые показатели'],['player_name','Player name','Имя игрока'],
+    ];
+    const modal=openModal(`<h2>${T('Dossier Privacy','Приватность Dossier')}</h2><label class="checkbox mb"><input id="dossier-public" type="checkbox" ${c.public?'checked':''}> <b>${T('List this Dossier in Crew Registry','Показывать Dossier в Crew Registry')}</b></label><div class="panel"><p class="small muted">${T('Notes, Cash, IP and private service data are never included in the public Dossier.','Notes, Cash, IP и служебные данные никогда не входят в публичный Dossier.')}</p>${fields.map(([key,en,ru])=>`<label class="checkbox"><input data-dossier-visibility="${key}" type="checkbox" ${visibility[key]?'checked':''}> ${T(en,ru)}</label>`).join('')}</div><div class="row mt"><button id="dossier-privacy-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="dossier-privacy-save">${T('Save Privacy','Сохранить приватность')}</button></div>`,true);
+    $('#dossier-privacy-cancel',modal).onclick=closeModal;
+    $('#dossier-privacy-save',modal).onclick=async()=>{const next={};$$('[data-dossier-visibility]',modal).forEach(input=>next[input.dataset.dossierVisibility]=input.checked);try{await api('/api/characters/'+c.id,{method:'PUT',body:{patch:{public:$('#dossier-public',modal).checked,visibility:next}}});closeModal();viewSheet(c.id);toast(T('Dossier privacy updated.','Приватность Dossier обновлена.'));}catch(e){toast(e.message,true);}};
   };
   const delBtn = $('#sheet-del');
   if (delBtn) delBtn.onclick = async () => {
@@ -3245,7 +3252,7 @@ async function viewRoster(view) {
     const chars = data.characters;
     if (!chars.length) { $('#ro-list').innerHTML = '<div class="empty">Никого. Пока что.</div>'; return; }
     const byOwner = {};
-    chars.forEach(c => { (byOwner[c.owner_name] = byOwner[c.owner_name] || []).push(c); });
+    chars.forEach(c => { const owner=c.owner_name||T('Private operator','Приватный оператор');(byOwner[owner] = byOwner[owner] || []).push(c); });
     $('#ro-list').innerHTML = Object.entries(byOwner).map(([owner, list]) => `
       <h2 class="mt" style="color:var(--yellow)">👤 ${esc(owner)} <span class="muted small">(${list.length})</span></h2>
       <div class="grid cols-3">${list.map(c => rosterCard(c)).join('')}</div>`).join('');
@@ -3260,7 +3267,8 @@ function rosterCard(c) {
   const d = c.derived, ch = c.data;
   const st = ch.stats || {};
   return `
-  <div class="card">
+  <div class="card roster-card">
+    <img class="roster-portrait" src="${ch.portrait_media_id?`/api/media/${esc(ch.portrait_media_id)}`:`/role-art/${esc(String(ch.role||'solo').toLowerCase())}.webp`}" alt="${esc(ch.handle||T('Character portrait','Портрет персонажа'))}" loading="lazy">
     <div class="row" style="justify-content:space-between;align-items:baseline">
       <h3 class="ro-open user-content" style="cursor:pointer">${esc(ch.handle || T('Unnamed','Безымянный'))}</h3>
       ${ch.seed ? '<span class="tag seed">Data Pool</span>' : ''}
@@ -3286,12 +3294,12 @@ async function showRosterModal(id) {
   const cw = ch.cyberware || [];
   const extra = Object.entries(ch.extra || {});
   openModal(`
-    <h2 class="user-content">${esc(ch.handle)}</h2>
+    <div class="roster-modal-head"><img class="roster-modal-portrait" src="${ch.portrait_media_id?`/api/media/${esc(ch.portrait_media_id)}`:`/role-art/${esc(String(ch.role||'solo').toLowerCase())}.webp`}" alt=""><h2 class="user-content">${esc(ch.handle)}</h2></div>
     <div class="chips mb">
       <span class="tag role">${esc(ch.role || '—')}${ch.role_rank ? ' ' + ch.role_rank : ''}</span>
-      <span class="chip">${T('owner:','владелец:')} <span class="user-content">${esc(c.owner_name)}</span></span>
+      ${c.owner_name?`<span class="chip">${T('owner:','владелец:')} <span class="user-content">${esc(c.owner_name)}</span></span>`:''}
       ${ch.player ? `<span class="chip">${T('player:','игрок:')} <span class="user-content">${esc(ch.player)}</span></span>` : ''}
-      <span class="tag price">${money(ch.cash || 0)}</span>
+      ${ch.cash!=null?`<span class="tag price">${money(ch.cash)}</span>`:''}
       ${d.death_save ? `<span class="chip">Death Save ${d.death_save}</span>` : ''}
     </div>
     ${Object.keys(ch.stats || {}).length ? `
@@ -3482,6 +3490,7 @@ async function showJobModal(id) {
 /* ============================== вход / профиль ============================== */
 
 function viewLogin(view) {
+  const registrationMode=state.meta?.registration_mode||'invite';
   view.innerHTML = `
   <div class="grid cols-2" style="max-width:900px;margin:0 auto">
     <div class="panel">
@@ -3491,12 +3500,13 @@ function viewLogin(view) {
       <button class="btn-primary" id="lg-go">${T('Sign in','Войти')}</button>
     </div>
     <div class="panel accent">
-      <h2>${T('Register','Регистрация')}</h2>
+      ${registrationMode==='closed'?`<h2>${T('Registration closed','Регистрация закрыта')}</h2><p class="muted">${T('An NC//NET Admin creates new accounts.','Новые аккаунты создаёт Admin NC//NET.')}</p>`:`<h2>${T('Register','Регистрация')}</h2>
+      ${registrationMode==='invite'?`<label class="f"><span>${T('Invite code','Код приглашения')}</span><input id="rg-invite" autocomplete="one-time-code" placeholder="NCNET-XXXX-XXXX-XXXX-XXXX"></label>`:''}
       <label class="f"><span>${T('Username (Latin letters)','Логин (латиница)')}</span><input id="rg-u" autocomplete="username"></label>
       <label class="f"><span>${T('Display name','Отображаемое имя')}</span><input id="rg-d" placeholder="${T('How Night City knows you','Как тебя знают в городе')}"></label>
-      <label class="f"><span>${T('Password','Пароль')}</span><input id="rg-p" type="password" autocomplete="new-password"></label>
+      <label class="f"><span>${T('Password (8+ characters)','Пароль (от 8 символов)')}</span><input id="rg-p" type="password" minlength="8" autocomplete="new-password"></label>
       <p class="small muted">${T('New accounts receive Player access. NC//NET Admins assign GM permissions.','Новые аккаунты получают доступ Player. Права GM назначают администраторы NC//NET.')}</p>
-      <button class="btn-primary" id="rg-go">${T('Create account','Создать аккаунт')}</button>
+      <button class="btn-primary" id="rg-go">${T('Create account','Создать аккаунт')}</button>`}
     </div>
   </div>`;
   const doLogin = async () => {
@@ -3511,11 +3521,11 @@ function viewLogin(view) {
   };
   $('#lg-go').onclick = doLogin;
   $('#lg-p').onkeydown = (e) => { if (e.key === 'Enter') doLogin(); };
-  $('#rg-go').onclick = async () => {
+  if ($('#rg-go')) $('#rg-go').onclick = async () => {
     try {
       state.me = await api('/api/register', { method: 'POST', body: {
         username: $('#rg-u').value, display_name: $('#rg-d').value,
-        password: $('#rg-p').value } });
+        password: $('#rg-p').value,invite_code:$('#rg-invite')?.value||'' } });
       if(state.me.theme)APP_THEME.setFromProfile(state.me.theme);
       renderUserbox();
       refreshShellDossiers();
@@ -3568,9 +3578,12 @@ async function viewAdmin(view) {
     return;
   }
   view.innerHTML = spinner();
-  const data = await api('/api/admin/users');
+  const [data,inviteData] = await Promise.all([api('/api/admin/users'),api('/api/admin/invites')]);
   const counts = Object.fromEntries(['player','gm','admin'].map(role=>[role,data.users.filter(user=>user.account_role===role).length]));
-  view.innerHTML = `<div class="page-head"><div><h1>⚙️ ${T('NC//NET Administration','Администрирование NC//NET')}</h1><div class="sub">${T('Role changes require an explicit reason and are written to the immutable access audit.','Для изменения роли нужна явная причина; действие записывается в неизменяемый журнал доступа.')}</div></div><a class="btn-sm" href="#/gm">GM OPS →</a></div><div class="admin-summary-grid"><div class="panel"><b>${data.users.length}</b><span>${T('Accounts','Аккаунты')}</span></div><div class="panel"><b>${counts.player}</b><span>PLAYER</span></div><div class="panel"><b>${counts.gm}</b><span>GM</span></div><div class="panel"><b>${counts.admin}</b><span>ADMIN</span></div></div><div class="panel mt"><div class="admin-toolbar"><input id="admin-user-search" type="search" placeholder="${T('Search account…','Поиск аккаунта…')}" aria-label="${T('Search accounts','Поиск аккаунтов')}"><select id="admin-role-filter" aria-label="${T('Filter by role','Фильтр по роли')}"><option value="">${T('All roles','Все роли')}</option><option value="player">PLAYER</option><option value="gm">GM</option><option value="admin">ADMIN</option></select><span id="admin-visible-count" class="small muted"></span></div><div class="table-scroll"><table class="rtable admin-users"><thead><tr><th>${T('Account','Аккаунт')}</th><th>${T('Characters','Персонажи')}</th><th>${T('Privacy','Приватность')}</th><th>${T('Network access','Доступ к сети')}</th><th>${T('Required reason','Обязательная причина')}</th><th></th></tr></thead><tbody>${data.users.map(user=>`<tr data-admin-user="${user.id}" data-admin-original-role="${user.account_role}" data-admin-filter-role="${user.account_role}" data-admin-search="${esc(`${user.display_name} ${user.username} ${user.id}`.toLowerCase())}"><td><b class="user-content">${esc(user.display_name)}</b>${user.id===state.me.id?` <span class="tag">${T('YOU','ВЫ')}</span>`:''}<div class="small muted">@${esc(user.username)} · #${user.id} · ${new Date(user.created*1000).toLocaleDateString()}</div></td><td>${user.character_count}</td><td>${user.show_display_name?T('Name visible','Имя видно'):T('Hidden','Скрыто')}${user.vk_linked?' · VK ✓':''}</td><td><select data-admin-role aria-label="${T('Role for ','Роль для ')+esc(user.username)}">${['player','gm','admin'].map(role=>`<option value="${role}" ${user.account_role===role?'selected':''}>${role.toUpperCase()}</option>`).join('')}</select><div class="small warn-text" data-admin-self-warning hidden>${T('Changing your own access may close this console.','Изменение собственной роли может закрыть эту панель.')}</div></td><td><input data-admin-reason maxlength="500" placeholder="${T('Why is access changing?','Почему меняется доступ?')}"></td><td><button class="btn-sm" data-admin-apply disabled>${T('Apply','Применить')}</button></td></tr>`).join('')}</tbody></table></div><div id="admin-no-results" class="empty" hidden>${T('No matching accounts.','Подходящих аккаунтов нет.')}</div></div>${(data.role_audit||[]).length?`<details class="panel mt" open><summary>${T('Access Audit','Журнал доступа')} · ${data.role_audit.length}</summary><div class="admin-toolbar mt"><input id="admin-audit-search" type="search" placeholder="${T('Search audit…','Поиск по журналу…')}" aria-label="${T('Search access audit','Поиск по журналу доступа')}"></div><div id="admin-audit-list">${data.role_audit.map(entry=>`<div class="admin-audit-row" data-audit-search="${esc(`${entry.target_username} ${entry.actor_username} ${entry.role_before} ${entry.role_after} ${entry.reason}`.toLowerCase())}"><div><b class="user-content">@${esc(entry.target_username)}</b><div class="small muted">${timeAgo(entry.created)}</div></div><span class="tag">${esc(entry.role_before.toUpperCase())} → ${esc(entry.role_after.toUpperCase())}</span><span class="user-content">${esc(entry.reason)}</span><span class="small user-content">${T('by','от')} @${esc(entry.actor_username)}</span></div>`).join('')}</div></details>`:''}`;
+  const invitePanel=`<section class="panel mt"><div class="row" style="justify-content:space-between"><div><h2>${T('Registration Invites','Приглашения')}</h2><div class="small muted">${T('Mode','Режим')}: ${esc(inviteData.registration_mode)}</div></div><button id="admin-invite-new">＋ ${T('Create Invite','Создать приглашение')}</button></div>${inviteData.invites.length?inviteData.invites.map(invite=>`<div class="inv-row"><div class="iname"><b class="user-content">${esc(invite.label||T('Campaign invite','Приглашение в кампанию'))}</b><div class="small muted">${invite.uses}/${invite.max_uses} · ${invite.expires_at?new Date(invite.expires_at*1000).toLocaleString():T('no expiry','без срока')} · ${invite.active?T('active','активно'):T('inactive','неактивно')}</div></div>${invite.active?`<button class="btn-danger" data-invite-revoke="${invite.id}">${T('Revoke','Отозвать')}</button>`:''}</div>`).join(''):`<div class="empty">${T('No invites yet.','Приглашений пока нет.')}</div>`}</section>`;
+  view.innerHTML = `<div class="page-head"><div><h1>⚙️ ${T('NC//NET Administration','Администрирование NC//NET')}</h1><div class="sub">${T('Role changes require an explicit reason and are written to the immutable access audit.','Для изменения роли нужна явная причина; действие записывается в неизменяемый журнал доступа.')}</div></div><a class="btn-sm" href="#/gm">GM OPS →</a></div><div class="admin-summary-grid"><div class="panel"><b>${data.users.length}</b><span>${T('Accounts','Аккаунты')}</span></div><div class="panel"><b>${counts.player}</b><span>PLAYER</span></div><div class="panel"><b>${counts.gm}</b><span>GM</span></div><div class="panel"><b>${counts.admin}</b><span>ADMIN</span></div></div><div class="panel mt"><div class="admin-toolbar"><input id="admin-user-search" type="search" placeholder="${T('Search account…','Поиск аккаунта…')}" aria-label="${T('Search accounts','Поиск аккаунтов')}"><select id="admin-role-filter" aria-label="${T('Filter by role','Фильтр по роли')}"><option value="">${T('All roles','Все роли')}</option><option value="player">PLAYER</option><option value="gm">GM</option><option value="admin">ADMIN</option></select><span id="admin-visible-count" class="small muted"></span></div><div class="table-scroll"><table class="rtable admin-users"><thead><tr><th>${T('Account','Аккаунт')}</th><th>${T('Characters','Персонажи')}</th><th>${T('Privacy','Приватность')}</th><th>${T('Network access','Доступ к сети')}</th><th>${T('Required reason','Обязательная причина')}</th><th></th></tr></thead><tbody>${data.users.map(user=>`<tr data-admin-user="${user.id}" data-admin-original-role="${user.account_role}" data-admin-filter-role="${user.account_role}" data-admin-search="${esc(`${user.display_name} ${user.username} ${user.id}`.toLowerCase())}"><td><b class="user-content">${esc(user.display_name)}</b>${user.id===state.me.id?` <span class="tag">${T('YOU','ВЫ')}</span>`:''}<div class="small muted">@${esc(user.username)} · #${user.id} · ${new Date(user.created*1000).toLocaleDateString()}</div></td><td>${user.character_count}</td><td>${user.show_display_name?T('Name visible','Имя видно'):T('Hidden','Скрыто')}${user.vk_linked?' · VK ✓':''}</td><td><select data-admin-role aria-label="${T('Role for ','Роль для ')+esc(user.username)}">${['player','gm','admin'].map(role=>`<option value="${role}" ${user.account_role===role?'selected':''}>${role.toUpperCase()}</option>`).join('')}</select><div class="small warn-text" data-admin-self-warning hidden>${T('Changing your own access may close this console.','Изменение собственной роли может закрыть эту панель.')}</div></td><td><input data-admin-reason maxlength="500" placeholder="${T('Why is access changing?','Почему меняется доступ?')}"></td><td><button class="btn-sm" data-admin-apply disabled>${T('Apply','Применить')}</button></td></tr>`).join('')}</tbody></table></div><div id="admin-no-results" class="empty" hidden>${T('No matching accounts.','Подходящих аккаунтов нет.')}</div></div>${invitePanel}${(data.role_audit||[]).length?`<details class="panel mt" open><summary>${T('Access Audit','Журнал доступа')} · ${data.role_audit.length}</summary><div class="admin-toolbar mt"><input id="admin-audit-search" type="search" placeholder="${T('Search audit…','Поиск по журналу…')}" aria-label="${T('Search access audit','Поиск по журналу доступа')}"></div><div id="admin-audit-list">${data.role_audit.map(entry=>`<div class="admin-audit-row" data-audit-search="${esc(`${entry.target_username} ${entry.actor_username} ${entry.role_before} ${entry.role_after} ${entry.reason}`.toLowerCase())}"><div><b class="user-content">@${esc(entry.target_username)}</b><div class="small muted">${timeAgo(entry.created)}</div></div><span class="tag">${esc(entry.role_before.toUpperCase())} → ${esc(entry.role_after.toUpperCase())}</span><span class="user-content">${esc(entry.reason)}</span><span class="small user-content">${T('by','от')} @${esc(entry.actor_username)}</span></div>`).join('')}</div></details>`:''}`;
+  $('#admin-invite-new',view).onclick=()=>{const modal=openModal(`<h2>${T('Create Registration Invite','Создать приглашение')}</h2><label class="f"><span>${T('Label','Название')}</span><input id="invite-label" maxlength="120" placeholder="${T('Player name or purpose','Имя игрока или назначение')}"></label><div class="grid cols-2"><label class="f"><span>${T('Maximum uses','Количество использований')}</span><input id="invite-uses" type="number" min="1" max="100" value="1"></label><label class="f"><span>${T('Expires in days','Срок в днях')}</span><input id="invite-days" type="number" min="1" max="365" value="7"></label></div><button class="btn-primary" id="invite-create">${T('Create Invite','Создать приглашение')}</button>`);$('#invite-create',modal).onclick=async()=>{try{const created=await api('/api/admin/invites',{method:'POST',body:{label:$('#invite-label',modal).value,max_uses:Number($('#invite-uses',modal).value)||1,expires_days:Number($('#invite-days',modal).value)||7}});closeModal();prompt(T('Copy this code now. It is shown only once.','Скопируйте код сейчас. Он показывается только один раз.'),created.code);await viewAdmin(view);}catch(e){toast(e.message,true);}};};
+  $$('[data-invite-revoke]',view).forEach(button=>button.onclick=async()=>{if(!confirm(T('Revoke this invite?','Отозвать это приглашение?')))return;try{await api(`/api/admin/invites/${button.dataset.inviteRevoke}`,{method:'DELETE'});await viewAdmin(view);}catch(e){toast(e.message,true);}});
   const filterUsers=()=>{const query=$('#admin-user-search',view).value.trim().toLowerCase(),role=$('#admin-role-filter',view).value;let visible=0;$$('[data-admin-user]',view).forEach(row=>{const show=(!query||row.dataset.adminSearch.includes(query))&&(!role||row.dataset.adminFilterRole===role);row.hidden=!show;if(show)visible++;});$('#admin-visible-count',view).textContent=`${visible}/${data.users.length}`;$('#admin-no-results',view).hidden=visible!==0;};
   $('#admin-user-search',view).oninput=filterUsers;$('#admin-role-filter',view).onchange=filterUsers;filterUsers();
   if($('#admin-audit-search',view))$('#admin-audit-search',view).oninput=event=>{const query=event.target.value.trim().toLowerCase();$$('[data-audit-search]',view).forEach(row=>row.hidden=Boolean(query&&!row.dataset.auditSearch.includes(query)));};

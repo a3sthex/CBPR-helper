@@ -604,6 +604,10 @@ body { background: radial-gradient(1200px 500px at 80% -10%, color-mix(in srgb, 
 .crop-presets { display:flex;flex-wrap:wrap;gap:5px; }
 .crop-presets button { flex:0 0 auto; }
 .sheet-portrait { width:150px;aspect-ratio:4/5;object-fit:cover;border:2px solid var(--line);border-radius:10px;background:var(--bg2); }
+.roster-card { overflow:hidden; }
+.roster-portrait { display:block;width:calc(100% + 28px);height:190px;margin:-14px -14px 12px;object-fit:cover;object-position:center 25%;background:var(--bg2);border-bottom:1px solid var(--line); }
+.roster-modal-head { display:flex;align-items:center;gap:14px;margin-bottom:12px; }
+.roster-modal-portrait { width:110px;aspect-ratio:4/5;object-fit:cover;border:2px solid var(--line);border-radius:8px;background:var(--bg2); }
 .official-sheet-head { display:grid;grid-template-columns:auto 1fr auto;align-items:center; }
 .resource-stat { min-width:160px; }
 .resource-actions { display:flex;gap:3px;margin-top:5px; }

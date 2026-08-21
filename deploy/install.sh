@@ -62,6 +62,7 @@ After=network.target
 Type=simple
 WorkingDirectory=$REPO_DIR
 Environment=CBPR_SECURE_COOKIES=1
+Environment=CBPR_REGISTRATION_MODE=invite
 ExecStart=$PYTHON $REPO_DIR/app/server.py --host 127.0.0.1 --port $PORT
 Restart=always
 RestartSec=3
