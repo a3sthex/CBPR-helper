@@ -145,6 +145,11 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('pairedCyberHostId', source)
         self.assertIn('cyberPhysicalHosts', source)
         self.assertIn('clientInstanceId', source)
+        self.assertIn('Quick Detach', source)
+        self.assertIn('Quick Attach', source)
+        self.assertIn('MANUAL SURGERY / SERVICE', source)
+        self.assertIn('installation_side', source)
+        self.assertIn('chooseCyberSide', source)
 
     def test_live_session_has_validated_net_context_and_queue_controls(self):
         ncnet = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')

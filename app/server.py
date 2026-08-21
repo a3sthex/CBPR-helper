@@ -4892,6 +4892,7 @@ def character_change_summary(before, after, limit=250):
                     'source': old.get('acquisition_source'),
                     'hosts': cyberware_host_assignments(old)
                         if bucket == 'cyberware' else None,
+                    'side': old.get('installation_side') if bucket == 'cyberware' else None,
                     'description': old.get('desc') if old.get('is_custom') else None,
                 }
                 new_view = {
@@ -4902,6 +4903,7 @@ def character_change_summary(before, after, limit=250):
                     'source': new.get('acquisition_source'),
                     'hosts': cyberware_host_assignments(new)
                         if bucket == 'cyberware' else None,
+                    'side': new.get('installation_side') if bucket == 'cyberware' else None,
                     'description': new.get('desc') if new.get('is_custom') else None,
                 }
                 add(f'{bucket}.{identity}', f'{label}: {new_view["name"]}',
@@ -5508,6 +5510,8 @@ def clean_character(data):
     if len(raw.encode()) > MAX_CHAR_BYTES:
         raise ApiError(413, 'Лист персонажа слишком большой')
     out = dict(data)
+    # Runtime/audit containers are server-owned and never accepted on creation.
+    out.pop('cyberware_state', None)
     out['handle'] = str(out.get('handle') or '').strip()[:60]
     if not out['handle']:
         raise ApiError(400, 'Нужен псевдоним (Handle) персонажа')
@@ -5753,7 +5757,7 @@ def canonical_owned_entry(entry, bucket, old_entries):
     if bucket == 'cyberware':
         # Concrete host links and installation state are changed only through the
         # audited Cyberware lifecycle endpoint, never through a generic sheet PUT.
-        for key in ('host_instance', 'host_instances'):
+        for key in ('host_instance', 'host_instances', 'installation_side'):
             if existing and key in existing:
                 owned[key] = copy.deepcopy(existing[key])
             else:
@@ -5887,6 +5891,12 @@ def clean_character_trust_update(old_data, incoming):
                 raise ApiError(400, f'{bucket}: ожидается список до 500 записей')
             data[bucket] = [canonical_owned_entry(entry, bucket, old_entries) for entry in entries]
     ensure_character_item_instances(data)
+    valid_cyberware_ids = {item.get('instance_id') for item in data.get('cyberware') or []
+                           if isinstance(item, dict) and item.get('instance_id')}
+    if isinstance(data.get('cyberware_state'), dict):
+        data['cyberware_state'] = {
+            key: value for key, value in data['cyberware_state'].items()
+            if key in valid_cyberware_ids and isinstance(value, dict)}
     if len(data.get('inventory') or []) + len(data.get('cyberware') or []) > 500:
         raise ApiError(400, 'Инвентарь не может содержать больше 500 экземпляров')
 
@@ -6008,6 +6018,8 @@ CYBERWARE_HOST_ACCEPTED_NAMES = {
     'Cyberaudio Suite': {'cyberaudio suite', 'discount cyberaudio suite'},
     'Neural Link or Neuroport': {'neural link', 'neuroport'},
 }
+CYBERWARE_SIDED_HOST_KINDS = {'Cyberarm', 'Cyberleg', 'Cybereye'}
+CYBERWARE_INSTALLATION_SITES = {'Mall', 'Clinic', 'Hospital', 'Zoo', 'Tech', 'Manual'}
 
 
 def cyberware_is_installed(entry):
@@ -6072,10 +6084,61 @@ def cyberware_host_kind(entry):
     return None
 
 
+def cyberware_installation_profile(entry):
+    catalog_item = item_by_id(catalog_item_id_for_entry(entry)) or entry or {}
+    raw = str((catalog_item.get('mechanics') or {}).get('installation') or
+              ((catalog_item.get('fields') or {}).get('Install')) or '').strip()
+    biosystem_required = 'requires biosystem' in raw.lower()
+    site = raw.split('(', 1)[0].strip().title() if raw else 'Manual'
+    if site not in CYBERWARE_INSTALLATION_SITES:
+        site = 'Manual'
+    return {
+        'required_site': site, 'source_installation': raw or 'Manual',
+        'biosystem_required': biosystem_required,
+        'manual_resolution_required': True,
+        'source': catalog_item.get('source'),
+    }
+
+
+def cyberware_side_required(entry):
+    return bool(cyberware_host_kind(entry) in CYBERWARE_SIDED_HOST_KINDS and
+                not cyberware_is_paired_leg_foundation(entry))
+
+
+def validate_cyberware_sides(data, allow_unassigned=False):
+    occupied = set()
+    for entry in data.get('cyberware') or []:
+        if not isinstance(entry, dict) or not cyberware_is_installed(entry) or \
+                not cyberware_side_required(entry):
+            continue
+        side = str(entry.get('installation_side') or '').lower()
+        if side not in ('left', 'right'):
+            if allow_unassigned:
+                continue
+            raise ApiError(400, f'{entry.get("name") or "Cyberware"}: выберите left/right side')
+        key = (cyberware_host_kind(entry), side)
+        if key in occupied:
+            raise ApiError(409, f'{cyberware_host_kind(entry)}: сторона {side} уже занята')
+        occupied.add(key)
+    # A paired Cyberleg foundation occupies both physical leg sides.
+    paired_count = sum(
+        1 for entry in data.get('cyberware') or []
+        if isinstance(entry, dict) and cyberware_is_installed(entry) and
+        cyberware_is_paired_leg_foundation(entry))
+    regular_legs = sum(
+        1 for kind, _side in occupied if kind == 'Cyberleg')
+    if paired_count > 1 or (paired_count and regular_legs):
+        raise ApiError(409, 'Paired Cyberlegs требуют обе свободные стороны')
+
+
 def effective_cyberware_loadout(data):
     """Return concrete Cyberware foundations, options, slots, and staged items."""
     chrome = [item for item in data.get('cyberware') or []
               if isinstance(item, dict) and item.get('instance_id')]
+    raw_runtime_states = data.get('cyberware_state') \
+        if isinstance(data.get('cyberware_state'), dict) else {}
+    runtime_states = {key: value for key, value in raw_runtime_states.items()
+                      if isinstance(value, dict)}
     hosts = {}
     for entry in chrome:
         capacity = cyberware_capacity(entry)
@@ -6090,19 +6153,44 @@ def effective_cyberware_loadout(data):
             for side_index, physical_id in enumerate(physical_ids):
                 side = ('left' if side_index == 0 else 'right') \
                     if len(physical_ids) > 1 else None
+                installation_side = side or str(entry.get('installation_side') or '').lower() or None
                 hosts[physical_id] = {
                     'instance_id': physical_id,
                     'foundation_instance_id': parent_id,
                     'catalog_item_id': catalog_item_id_for_entry(entry),
                     'name': f'{base_name} · {side.title()}' if side else base_name,
                     'foundation_name': base_name,
-                    'host_kind': kind, 'physical_side': side,
+                    'host_kind': kind, 'physical_side': installation_side,
+                    'side_required': cyberware_side_required(entry),
+                    'side_status': 'assigned' if installation_side else
+                        ('required' if cyberware_side_required(entry) else 'not_applicable'),
                     'paired_foundation': len(physical_ids) > 1,
+                    'installation_profile': cyberware_installation_profile(entry),
                     'state': 'installed', 'slots_total': total,
                     'slots_used': 0, 'slots_free': total,
-                    'overloaded': False, 'options': [],
+                    'overloaded': False, 'quick_change_mount': False,
+                    'options': [],
                 }
 
+    side_counts = {}
+    for host in hosts.values():
+        if host['side_required'] and host.get('physical_side'):
+            key = (host['host_kind'], host['physical_side'])
+            side_counts[key] = side_counts.get(key, 0) + 1
+    paired_legs = {host['foundation_instance_id'] for host in hosts.values()
+                   if host['host_kind'] == 'Cyberleg' and host['paired_foundation']}
+    regular_leg_hosts = [host for host in hosts.values()
+                         if host['host_kind'] == 'Cyberleg' and
+                         not host['paired_foundation']]
+    for host in hosts.values():
+        key = (host['host_kind'], host.get('physical_side'))
+        conflict = bool(
+            (host['side_required'] and host.get('physical_side') and
+             side_counts.get(key, 0) > 1) or
+            (host['host_kind'] == 'Cyberleg' and
+             ((len(paired_legs) > 1) or (paired_legs and regular_leg_hosts))))
+        if conflict:
+            host['side_status'] = 'conflict'
     used = {host_id: 0 for host_id in hosts}
     option_rows = []
     unique_counts = {}
@@ -6137,6 +6225,7 @@ def effective_cyberware_loadout(data):
             'expected_host': expected, 'hosts_required': required,
             'slots_used_per_host': slots, 'host_instance_ids': host_ids,
             'compatible_host_ids': [],
+            'installation_profile': cyberware_installation_profile(entry),
             'status': 'staged' if not installed else ('installed' if not reasons else 'unbound'),
             'reasons': reasons,
             'unique': bool(capacity.get('unique')),
@@ -6168,6 +6257,8 @@ def effective_cyberware_loadout(data):
                 'slots_used': option['slots_used_per_host'],
                 'paired': option['hosts_required'] > 1,
             })
+            if option['name'] == 'Quick Change Mount':
+                host['quick_change_mount'] = True
             if host['overloaded']:
                 option['status'] = 'invalid'
                 if 'Host Option Slots exceeded' not in option['reasons']:
@@ -6189,13 +6280,21 @@ def effective_cyberware_loadout(data):
         'state': str(item.get('state') or 'installed'),
         'host_kind': cyberware_host_kind(item),
         'expected_host': cyberware_capacity(item).get('host'),
+        'side_required': cyberware_side_required(item),
+        'installation_side': item.get('installation_side') or
+            (runtime_states.get(item['instance_id']) or {}).get('installation_side'),
+        'installation_profile': cyberware_installation_profile(item),
+        'quick_change_detached': bool(
+            (runtime_states.get(item['instance_id']) or {}).get('quick_change_detached')),
         'hl': _num(item.get('hl')) or 0,
     } for item in chrome if not cyberware_is_installed(item)]
     standalone = [{
         'instance_id': item['instance_id'],
         'catalog_item_id': catalog_item_id_for_entry(item),
         'name': item.get('custom_name') or item.get('name') or 'Cyberware',
-        'state': 'installed', 'hl': _num(item.get('hl')) or 0,
+        'state': 'installed',
+        'installation_profile': cyberware_installation_profile(item),
+        'hl': _num(item.get('hl')) or 0,
     } for item in chrome
         if cyberware_is_installed(item) and item['instance_id'] not in hosted_ids and
         item['instance_id'] not in host_ids]
@@ -6267,6 +6366,8 @@ def validate_cyberware_trust_lifecycle(before, after):
             raise ApiError(409, 'Изменяйте Cyberware installation только через lifecycle action')
         if cyberware_host_assignments(previous) != cyberware_host_assignments(current):
             raise ApiError(409, 'Изменяйте concrete Cyberware hosts только через lifecycle action')
+        if previous.get('installation_side') != current.get('installation_side'):
+            raise ApiError(409, 'Изменяйте Cyberware side только через lifecycle action')
 
 
 def validate_cyberware_requirements(data):
@@ -6620,6 +6721,7 @@ def validate_creation(data):
     validate_creation_equipment(data)
     validate_cyberware_requirements(data)
     validate_cyberware_slots(data)
+    validate_cyberware_sides(data, allow_unassigned=True)
     if (derive(data).get('humanity_cur') or 0) < 0:
         raise ApiError(400, 'Нельзя завершить создание с Humanity ниже 0')
     validate_creation_budget(data)
@@ -6965,6 +7067,18 @@ SERVER_ERROR_EN = {
     'Cyberware уже не установлена': 'Cyberware is already uninstalled',
     'Стартовый Neuroport нельзя извлечь этим действием': 'The starting Neuroport cannot be removed with this action',
     'Одновременно допустим только один Cyberaudio Suite': 'Only one Cyberaudio Suite may be installed at a time',
+    'Paired Cyberlegs требуют обе свободные стороны': 'Paired Cyberlegs require both sides to be free',
+    'Изменяйте Cyberware side только через lifecycle action': 'Change Cyberware side only through a lifecycle action',
+    'Подтвердите manual surgery/service resolution': 'Confirm manual surgery/service resolution',
+    'Укажите clinic, surgeon или technician': 'Specify a clinic, surgeon, or technician',
+    'Подтвердите required Biosystem': 'Confirm the required Biosystem',
+    'Эта Cyberware не использует left/right side': 'This Cyberware does not use a left/right side',
+    'Configure side требует установленный sided foundation': 'Configure side requires an installed sided foundation',
+    'Выберите installation side: left/right': 'Choose installation side: left/right',
+    'Quick Detach требует установленный Cyberarm': 'Quick Detach requires an installed Cyberarm',
+    'Cyberarm не имеет установленный Quick Change Mount': 'Cyberarm has no installed Quick Change Mount',
+    'Quick Attach требует detached Quick Change Cyberarm': 'Quick Attach requires a detached Quick Change Cyberarm',
+    'Quick Change Cyberarm bundle повреждён': 'Quick Change Cyberarm bundle is corrupted',
     'Run доступен только Attacker Program': 'Run is available only for an Attacker Program',
     'Saved Program instance недоступен для восстановления': 'Saved Program instance is unavailable for restore',
     'Недостаточно Cyberdeck slots для Backup restore': 'Not enough Cyberdeck slots for Backup restore',
@@ -7309,6 +7423,10 @@ def server_error_message(message, language):
         ('при parent-pool', 'with parent pool'),
         ('требуется совместимых hosts:', 'required compatible hosts:'),
         ('Сначала извлеките зависимые Cyberware Options:', 'Uninstall dependent Cyberware Options first:'),
+        (': выберите left/right side', ': choose a left/right side'),
+        (': сторона ', ': side '),
+        (' уже занята', ' is already occupied'),
+        (': требуется installation site ', ': requires installation site '),
         ('заполните', 'complete'),
         ('выберите Team Member', 'choose a Team Member'),
         ('недоступный выбор', 'unavailable choice'),
@@ -10870,7 +10988,11 @@ class Handler(BaseHTTPRequestHandler):
     @atomic_endpoint
     def api_character_cyberware_action(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
-        allowed = {'revision', 'action', 'host_instance_ids', 'reason'}
+        allowed = {
+            'revision', 'action', 'host_instance_ids', 'installation_side',
+            'installation_site', 'technician', 'manual_resolution_confirmed',
+            'biosystem_confirmed', 'reason',
+        }
         if set(body or {}) - allowed:
             raise ApiError(400, 'Cyberware action содержит неподдерживаемые поля')
         current_revision = _row_value(row, 'revision', 0) or 0
@@ -10891,8 +11013,11 @@ class Handler(BaseHTTPRequestHandler):
         if not catalog_item or catalog_item.get('cat') != 'cyberware':
             raise ApiError(409, 'Cyberware instance не связан с Data Pool')
         action = str((body or {}).get('action') or '').lower()
-        if action not in ('install', 'uninstall', 'rebind'):
-            raise ApiError(400, 'Cyberware action: install/uninstall/rebind')
+        if action not in ('install', 'uninstall', 'rebind', 'configure',
+                          'quick_detach', 'quick_attach'):
+            raise ApiError(
+                400, 'Cyberware action: install/uninstall/rebind/configure/'
+                     'quick_detach/quick_attach')
         raw_host_ids = (body or {}).get('host_instance_ids') or []
         if not isinstance(raw_host_ids, list) or len(raw_host_ids) > 4:
             raise ApiError(400, 'host_instance_ids должен быть коротким списком')
@@ -10909,6 +11034,67 @@ class Handler(BaseHTTPRequestHandler):
         humanity_before = derive(data)
         before_current = humanity_before.get('humanity_cur')
         before_maximum = humanity_before.get('humanity_max')
+        now = time.time()
+        installation_side = str((body or {}).get('installation_side') or '').lower()
+        installation_site = str((body or {}).get('installation_site') or '').title() \
+            if action in ('install', 'uninstall') else ''
+        technician = str((body or {}).get('technician') or '').strip()[:120] \
+            if action in ('install', 'uninstall') else ''
+        profile = cyberware_installation_profile(chrome)
+        runtime_states = data.setdefault('cyberware_state', {})
+        if not isinstance(runtime_states, dict):
+            runtime_states = {}
+            data['cyberware_state'] = runtime_states
+        runtime = runtime_states.get(instance_id)
+        if not isinstance(runtime, dict):
+            runtime = {'installation_count': 0, 'humanity_loss_events': 0,
+                       'history': []}
+            runtime_states[instance_id] = runtime
+        if not isinstance(runtime.get('history'), list):
+            runtime['history'] = []
+
+        def append_history(event_action, *, affected_ids=None, humanity_loss=0):
+            runtime['history'].append({
+                'action': event_action, 'created': now,
+                'installation_side': chrome.get('installation_side') or
+                    runtime.get('installation_side'),
+                'installation_site': installation_site or None,
+                'technician': technician or None,
+                'affected_instance_ids': affected_ids or [instance_id],
+                'humanity_loss': humanity_loss,
+                'reason': reason_detail,
+                'manual_resolution_confirmed': bool(
+                    event_action in ('install', 'uninstall') and
+                    (body or {}).get('manual_resolution_confirmed') is True),
+            })
+            runtime['history'] = runtime['history'][-30:]
+            runtime['last_action'] = event_action
+            runtime['last_action_at'] = now
+
+        def validate_installation_context():
+            if (body or {}).get('manual_resolution_confirmed') is not True:
+                raise ApiError(400, 'Подтвердите manual surgery/service resolution')
+            if installation_site != profile['required_site']:
+                raise ApiError(
+                    400, f'{chrome.get("name")}: требуется installation site '
+                         f'{profile["required_site"]}')
+            if len(technician) < 2:
+                raise ApiError(400, 'Укажите clinic, surgeon или technician')
+            if profile['biosystem_required'] and \
+                    (body or {}).get('biosystem_confirmed') is not True:
+                raise ApiError(400, 'Подтвердите required Biosystem')
+
+        def assign_side(required=True):
+            if cyberware_is_paired_leg_foundation(chrome):
+                chrome['installation_side'] = 'paired'
+            elif cyberware_side_required(chrome):
+                if installation_side not in ('left', 'right'):
+                    if required:
+                        raise ApiError(400, 'Выберите installation side: left/right')
+                else:
+                    chrome['installation_side'] = installation_side
+            elif installation_side:
+                raise ApiError(400, 'Эта Cyberware не использует left/right side')
 
         def assign_hosts():
             compatibility = cyberware_option_compatibility(
@@ -10920,11 +11106,14 @@ class Handler(BaseHTTPRequestHandler):
             return compatibility
 
         compatibility = None
+        affected_ids = [instance_id]
         if action == 'install':
             if installed_before:
                 raise ApiError(409, 'Cyberware уже установлена')
             if chrome.get('state') == 'broken':
                 raise ApiError(409, 'Сломанную Cyberware нельзя установить')
+            validate_installation_context()
+            assign_side()
             if expected_host:
                 compatibility = assign_hosts()
             elif host_ids:
@@ -10949,27 +11138,96 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(409, 'Одновременно допустим только один Cyberaudio Suite')
             chrome['state'] = 'installed'
             validate_cyberware_requirements(data)
+            validate_cyberware_sides(data, allow_unassigned=True)
             if expected_host:
-                # Re-evaluate after state transition so slot usage includes this option.
                 compatibility = cyberware_option_compatibility(data, instance_id, host_ids)
                 if not compatibility['allowed']:
                     raise ApiError(400, '; '.join(compatibility['reasons']))
+            loss = max(0, int(_num(chrome.get('hl')) or 0))
             if before_current is not None:
-                loss = max(0, int(_num(chrome.get('hl')) or 0))
                 if before_current - loss < 0:
                     raise ApiError(409, 'Недостаточно Humanity для установки Cyberware')
                 data['humanity_cur'] = before_current - loss
+            runtime['installation_count'] = max(
+                0, int(_num(runtime.get('installation_count')) or 0)) + 1
+            runtime['humanity_loss_events'] = max(
+                0, int(_num(runtime.get('humanity_loss_events')) or 0)) + 1
+            runtime['first_installed_at'] = runtime.get('first_installed_at') or now
+            runtime['installation_side'] = chrome.get('installation_side')
+            runtime['last_installation_site'] = installation_site
+            runtime['last_technician'] = technician
+            runtime['quick_change_detached'] = False
+            append_history('install', humanity_loss=loss)
             reason = f'Install Cyberware {chrome.get("name")}: {reason_detail}'
         elif action == 'rebind':
             if not installed_before or not expected_host:
                 raise ApiError(409, 'Rebind требует установленную Cyberware Option')
             compatibility = assign_hosts()
+            append_history('rebind')
             reason = f'Rebind Cyberware Option {chrome.get("name")}: {reason_detail}'
+        elif action == 'configure':
+            if not installed_before or not cyberware_side_required(chrome):
+                raise ApiError(409, 'Configure side требует установленный sided foundation')
+            assign_side()
+            validate_cyberware_sides(data, allow_unassigned=True)
+            runtime['installation_side'] = chrome.get('installation_side')
+            append_history('configure')
+            reason = f'Configure Cyberware side {chrome.get("name")}: {reason_detail}'
+        elif action == 'quick_detach':
+            if not installed_before or cyberware_host_kind(chrome) != 'Cyberarm':
+                raise ApiError(409, 'Quick Detach требует установленный Cyberarm')
+            loadout = effective_cyberware_loadout(data)
+            foundation_host_ids = {
+                host['instance_id'] for host in loadout['hosts']
+                if host.get('foundation_instance_id') == instance_id}
+            dependents = [
+                item for item in data.get('cyberware') or []
+                if isinstance(item, dict) and cyberware_is_installed(item) and
+                foundation_host_ids.intersection(cyberware_host_assignments(item))]
+            if not any(item.get('name') == 'Quick Change Mount' for item in dependents):
+                raise ApiError(409, 'Cyberarm не имеет установленный Quick Change Mount')
+            affected_ids = [instance_id] + [item['instance_id'] for item in dependents]
+            for item in [chrome, *dependents]:
+                item['state'] = 'carried'
+            runtime['quick_change_detached'] = True
+            runtime['quick_change_bundle_instance_ids'] = affected_ids[1:]
+            runtime['installation_side'] = chrome.get('installation_side')
+            if before_current is not None:
+                data['humanity_cur'] = before_current
+            append_history('quick_detach', affected_ids=affected_ids)
+            reason = f'Quick Detach Cyberarm {chrome.get("name")}: {reason_detail}'
+        elif action == 'quick_attach':
+            if installed_before or cyberware_host_kind(chrome) != 'Cyberarm' or \
+                    not runtime.get('quick_change_detached'):
+                raise ApiError(409, 'Quick Attach требует detached Quick Change Cyberarm')
+            bundle_ids = [str(value) for value in
+                          runtime.get('quick_change_bundle_instance_ids') or []]
+            bundle = [
+                item for item in data.get('cyberware') or []
+                if isinstance(item, dict) and item.get('instance_id') in bundle_ids]
+            if len(bundle) != len(set(bundle_ids)) or not any(
+                    item.get('name') == 'Quick Change Mount' for item in bundle):
+                raise ApiError(409, 'Quick Change Cyberarm bundle повреждён')
+            assign_side()
+            chrome['state'] = 'installed'
+            for item in bundle:
+                item['state'] = 'installed'
+            validate_cyberware_requirements(data)
+            validate_cyberware_sides(data, allow_unassigned=True)
+            validate_cyberware_slots(data, allow_unbound=True)
+            affected_ids = [instance_id, *bundle_ids]
+            runtime['quick_change_detached'] = False
+            runtime['installation_side'] = chrome.get('installation_side')
+            if before_current is not None:
+                data['humanity_cur'] = before_current
+            append_history('quick_attach', affected_ids=affected_ids, humanity_loss=0)
+            reason = f'Quick Attach Cyberarm {chrome.get("name")}: {reason_detail}'
         else:
             if not installed_before:
                 raise ApiError(409, 'Cyberware уже не установлена')
             if chrome.get('creation_free') and chrome.get('key') == 'creation-neuroport':
                 raise ApiError(409, 'Стартовый Neuroport нельзя извлечь этим действием')
+            validate_installation_context()
             foundation_host_ids = {
                 host['instance_id'] for host in
                 effective_cyberware_loadout(data)['hosts']
@@ -10982,13 +11240,15 @@ class Handler(BaseHTTPRequestHandler):
             if dependents:
                 names = ', '.join(str(item.get('name') or 'Option') for item in dependents[:5])
                 raise ApiError(409, f'Сначала извлеките зависимые Cyberware Options: {names}')
+            runtime['installation_side'] = chrome.get('installation_side')
             chrome['state'] = 'carried'
             chrome.pop('host_instance', None)
             chrome.pop('host_instances', None)
+            chrome.pop('installation_side', None)
             validate_cyberware_requirements(data)
             if before_current is not None:
-                # Removal restores Maximum Humanity capacity, never spent Humanity.
                 data['humanity_cur'] = before_current
+            append_history('uninstall')
             reason = f'Uninstall Cyberware {chrome.get("name")}: {reason_detail}'
 
         humanity_after = derive(data)
@@ -11004,12 +11264,21 @@ class Handler(BaseHTTPRequestHandler):
         delta = parse_json_object(ledger_row['delta_json'])
         delta['cyberware_lifecycle'] = {
             'action': action, 'instance_id': instance_id,
+            'affected_instance_ids': affected_ids,
             'host_instance_ids': host_ids,
+            'installation_side': chrome.get('installation_side') or
+                runtime.get('installation_side'),
+            'installation_site': installation_site or None,
+            'technician': technician or None,
+            'manual_resolution_confirmed': bool(
+                action in ('install', 'uninstall') and
+                (body or {}).get('manual_resolution_confirmed') is True),
             'humanity_current_before': before_current,
             'humanity_current_after': humanity_after.get('humanity_cur'),
             'humanity_maximum_before': before_maximum,
             'humanity_maximum_after': humanity_after.get('humanity_max'),
             'humanity_restored_on_uninstall': 0,
+            'quick_change_no_humanity_loss': action == 'quick_attach',
         }
         conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
                      (json.dumps(delta, ensure_ascii=False), ledger_id))

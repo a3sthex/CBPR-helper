@@ -1407,6 +1407,31 @@ class CreationValidationTests(unittest.TestCase):
             legs['instance_id'], server.cyberware_secondary_host_id(legs['instance_id'])])
         server.validate_cyberware_slots(paired)
 
+    def test_cyberware_runtime_audit_state_is_server_owned(self):
+        char = valid_character()
+        char['cyberware_state'] = {'forged': {'humanity_loss_events': 0}}
+        cleaned = server.clean_character(char)
+        self.assertNotIn('cyberware_state', cleaned)
+
+    def test_cyberware_installation_profiles_and_sides_are_declarative(self):
+        arm = copy.deepcopy(server.item_by_id('cyberware-109'))
+        self.assertEqual(server.cyberware_installation_profile(arm)['required_site'],
+                         'Hospital')
+        biosystem = copy.deepcopy(server.item_by_id('cyberware-222'))
+        profile = server.cyberware_installation_profile(biosystem)
+        self.assertEqual(profile['required_site'], 'Hospital')
+        self.assertTrue(profile['biosystem_required'])
+        left = copy.deepcopy(arm)
+        left.update({'instance_id': 'e' * 32, 'state': 'installed',
+                     'installation_side': 'left'})
+        right = copy.deepcopy(arm)
+        right.update({'instance_id': 'f' * 32, 'state': 'installed',
+                      'installation_side': 'right'})
+        server.validate_cyberware_sides({'cyberware': [left, right]})
+        right['installation_side'] = 'left'
+        with self.assertRaisesRegex(server.ApiError, 'сторона left уже занята'):
+            server.validate_cyberware_sides({'cyberware': [left, right]})
+
     def test_staged_cyberware_does_not_apply_humanity_loss(self):
         arm = copy.deepcopy(server.item_by_id('cyberware-109'))
         arm.update({'key': 'cyberware-109', 'catalog_item_id': 'cyberware-109',

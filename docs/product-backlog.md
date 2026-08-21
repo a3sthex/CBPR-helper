@@ -3097,7 +3097,20 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - создание персонажа теперь remap-ит временные client foundation IDs в server-owned stable IDs вместе со всеми option links, не оставляя orphan host references;
 - Night Market помещает купленную Cyberware в staged Cyberware bucket, а не в обычный Inventory; staged/uninstalled экземпляр можно перепродать, installed — только после audited Uninstall;
 - lifecycle, Humanity before/after, concrete host IDs, Character revision и item instance projection записываются атомарно и поддерживают обычный безопасный Ledger revert;
-- специальные surgery/therapy costs, Quick Change Mount swaps, cyberlimb side labels и механические payloads отдельных options остаются следующими Cyberware подэтапами.
+- специальные therapy costs и механические payloads отдельных options остаются следующими Cyberware подэтапами.
+
+**Статус B.9.2 — реализованы Cyberware Sides, Clinic Audit и Quick Change:**
+
+- отдельные Cyberarm/Cyberleg/Cybereye foundations получают authoritative `left/right` side; два host одного типа нельзя установить на одну сторону, а paired Cyberlegs занимают обе стороны;
+- Character Creation предлагает сторону для новых sided foundations; legacy Dossier с неизвестной стороной получает явный `UNASSIGNED` и audited `Set Side`, без выдумывания миграционного значения;
+- каждый catalog implant получает declarative installation profile из Data Pool: `Mall`, `Clinic`, `Hospital`, `Zoo`, `Tech` или `Manual`; `Hospital (Requires Biosystem)` отдельно требует явное подтверждение Biosystem;
+- обычные Install/Uninstall требуют site, clinic/surgeon/technician и explicit `MANUAL SURGERY / SERVICE` confirmation; платформа не симулирует неизвестные service costs или Surgery Check;
+- `cyberware_state` хранит first install, installation count, Humanity Loss event count, последнюю site/technician, side и bounded lifecycle history;
+- Quick Change Mount разрешает отсоединить Cyberarm вместе со всеми concrete bound options за специальный lifecycle action, сохранив bundle bindings;
+- повторный `Quick Attach` проверяет bundle, свободную сторону, requirements и Option Slots, но не применяет новый Humanity Loss; Maximum Humanity снова ограничивается установленным bundle по обычным правилам;
+- normal Uninstall Cyberarm с options по-прежнему блокируется: Quick Detach доступен только при реально установленном Quick Change Mount;
+- side/site/technician, affected bundle IDs, manual confirmation и флаг `quick_change_no_humanity_loss` попадают в readable Trust + Audit Ledger и поддерживают snapshot revert;
+- стоимость clinic/surgery, Therapy workflow, Quick Change Faceplate inventory и mechanical payloads Popup/Integrated/weapon cyberware остаются следующими подэтапами.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -3120,8 +3133,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, action budget, cross-character REZ, safe curated effects и concrete Cyberware foundation/option lifecycle;
-    - дальше: Cyberware side/surgery payloads, Armor/Shield hosts и Tech Maker modifications.
+    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, action budget, cross-character REZ, safe curated effects, concrete Cyberware hosts, sides, clinic audit и Quick Change Mount lifecycle;
+    - дальше: Cyberware option payloads/Therapy, Armor/Shield hosts и Tech Maker modifications.
 14. JSON import.
 
 ### Пакет C — Publishing Preview

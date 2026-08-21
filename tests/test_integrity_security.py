@@ -739,6 +739,10 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
                 re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{item["instance_id"]}'), {
                     'revision': revision, 'action': 'install',
                     'host_instance_ids': hosts,
+                    'installation_site': server.cyberware_installation_profile(item)[
+                        'required_site'],
+                    'technician': 'Clinic Test Tech',
+                    'manual_resolution_confirmed': True,
                     'reason': f'Install {item["name"]} for Smart Rebuild test',
                 })
         host, rebuild = by_name['Assault Rifle'], by_name['Smart Rebuild']
@@ -992,20 +996,34 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         anti = next(item for item in updated['data']['cyberware']
                     if item['catalog_item_id'] == 'cyberware-66')
 
-        def action(item, revision, name, hosts=None):
+        def action(item, revision, name, hosts=None, side=None, confirmed=True):
             match = re.match(r'^(\d+)/([a-f0-9]{32})$',
                              f'1/{item["instance_id"]}')
+            profile = server.cyberware_installation_profile(item)
             return self.call(server.Handler.api_character_cyberware_action, match, {
                 'revision': revision, 'action': name,
                 'host_instance_ids': hosts or [],
+                'installation_side': side,
+                'installation_site': profile['required_site'],
+                'technician': 'Clinic Test Tech',
+                'manual_resolution_confirmed': confirmed,
+                'biosystem_confirmed': profile['biosystem_required'],
                 'reason': f'Clinic {name} integration test',
             })
 
-        first = action(eyes[0], 1, 'install')
+        with self.assertRaisesRegex(server.ApiError, 'manual surgery/service'):
+            action(eyes[0], 1, 'install', side='left', confirmed=False)
+        first = action(eyes[0], 1, 'install', side='left')
         self.assertEqual((first['humanity']['humanity_current_before'],
                           first['humanity']['humanity_current_after']), (50, 43))
-        second = action(eyes[1], 2, 'install')
+        with self.assertRaisesRegex(server.ApiError, 'сторона left уже занята'):
+            action(eyes[1], 2, 'install', side='left')
+        second = action(eyes[1], 2, 'install', side='right')
         self.assertEqual(second['humanity']['humanity_current_after'], 36)
+        eye_state = second['character']['data']['cyberware_state'][eyes[0]['instance_id']]
+        self.assertEqual((eye_state['installation_side'],
+                          eye_state['last_installation_site']), ('left', 'Clinic'))
+        self.assertEqual(eye_state['history'][0]['technician'], 'Clinic Test Tech')
         with self.assertRaisesRegex(server.ApiError, '2 different concrete hosts'):
             action(anti, 3, 'install', [eyes[0]['instance_id']])
         paired = action(anti, 3, 'install',
@@ -1048,6 +1066,65 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertEqual(restored_eye['state'], 'installed')
         self.assertEqual((reverted['derived']['humanity_cur'],
                           reverted['derived']['humanity_max']), (34, 46))
+
+    def test_quick_change_mount_detaches_bundle_and_reattaches_without_humanity_loss(self):
+        edited = copy.deepcopy(self.character_data)
+        edited['cyberware'] = [{
+            'key': item_id, 'catalog_item_id': item_id, 'cat': 'cyberware',
+            'name': server.item_by_id(item_id)['name'],
+            'hl': server.item_by_id(item_id).get('hl') or 0,
+            'type': server.item_by_id(item_id)['fields']['Type'],
+            'qty': 1, 'state': 'carried', 'acquisition_source': 'loot',
+        } for item_id in ('cyberware-109', 'cyberware-115')]
+        staged = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Stage Quick Change Cyberarm bundle',
+            'data': edited,
+        })
+        by_name = {item['name']: item for item in staged['data']['cyberware']}
+        arm, mount = by_name['Cyberarm'], by_name['Quick Change Mount']
+
+        def run(item, revision, action, hosts=None, side=None):
+            profile = server.cyberware_installation_profile(item)
+            return self.call(
+                server.Handler.api_character_cyberware_action,
+                re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{item["instance_id"]}'), {
+                    'revision': revision, 'action': action,
+                    'host_instance_ids': hosts or [],
+                    'installation_side': side,
+                    'installation_site': profile['required_site'],
+                    'technician': 'Quick Change Clinic',
+                    'manual_resolution_confirmed': True,
+                    'biosystem_confirmed': profile['biosystem_required'],
+                    'reason': f'Quick Change test {action}',
+                })
+
+        run(arm, 1, 'install', side='left')
+        mounted = run(mount, 2, 'install', hosts=[arm['instance_id']])
+        self.assertEqual(mounted['character']['derived']['humanity_cur'], 36)
+        detached = run(arm, 3, 'quick_detach')
+        detached_by_name = {item['name']: item
+                            for item in detached['character']['data']['cyberware']}
+        self.assertEqual(detached_by_name['Cyberarm']['state'], 'carried')
+        self.assertEqual(detached_by_name['Quick Change Mount']['state'], 'carried')
+        self.assertEqual(detached['character']['derived']['humanity_cur'], 36)
+        self.assertEqual(detached['character']['derived']['humanity_max'], 50)
+        staged_arm = next(item for item in
+                          detached['character']['derived']['effective_cyberware']['staged']
+                          if item['instance_id'] == arm['instance_id'])
+        self.assertTrue(staged_arm['quick_change_detached'])
+        attached = run(arm, 4, 'quick_attach', side='left')
+        attached_by_name = {item['name']: item
+                            for item in attached['character']['data']['cyberware']}
+        self.assertEqual(attached_by_name['Cyberarm']['state'], 'installed')
+        self.assertEqual(attached_by_name['Quick Change Mount']['state'], 'installed')
+        self.assertEqual((attached['humanity']['humanity_current_before'],
+                          attached['humanity']['humanity_current_after']), (36, 36))
+        arm_state = attached['character']['data']['cyberware_state'][arm['instance_id']]
+        self.assertEqual(arm_state['humanity_loss_events'], 1)
+        self.assertFalse(arm_state['quick_change_detached'])
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertTrue(ledger['entries'][0]['delta']['cyberware_lifecycle'][
+            'quick_change_no_humanity_loss'])
 
     def test_generic_sheet_edit_cannot_remove_installed_cyberware(self):
         installed = copy.deepcopy(self.character_data)
