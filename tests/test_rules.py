@@ -1424,6 +1424,18 @@ class CreationValidationTests(unittest.TestCase):
         mantis = copy.deepcopy(server.item_by_id('cyberware-42'))
         mantis.update({'key': 'cyberware-42', 'catalog_item_id': 'cyberware-42'})
         self.assertEqual(server.cyberware_capacity(mantis)['slots_used'], 2)
+        popup = copy.deepcopy(server.item_by_id('cyberware-118'))
+        popup.update({'key': 'cyberware-118', 'catalog_item_id': 'cyberware-118'})
+        medium = copy.deepcopy(server.item_by_id('melee-1'))
+        medium.update({'key': 'melee-1', 'catalog_item_id': 'melee-1',
+                       'instance_id': '9' * 32, 'state': 'carried'})
+        self.assertTrue(server.popup_weapon_binding_compatibility(
+            popup, medium)['allowed'])
+        very_heavy = copy.deepcopy(server.item_by_id('melee-3'))
+        very_heavy.update({'key': 'melee-3', 'catalog_item_id': 'melee-3',
+                           'instance_id': '8' * 32, 'state': 'carried'})
+        self.assertFalse(server.popup_weapon_binding_compatibility(
+            popup, very_heavy)['allowed'])
 
     def test_curated_cyberware_payloads_and_sensor_array_slots(self):
         neural = copy.deepcopy(server.item_by_id('cyberware-58'))

@@ -6106,6 +6106,78 @@ def cyberware_weapon_profile(entry):
     return copy.deepcopy(CYBERWARE_WEAPON_PROFILES.get(catalog_item_id_for_entry(entry)))
 
 
+def popup_weapon_binding_kind(entry):
+    catalog_id = catalog_item_id_for_entry(entry)
+    if catalog_id == 'cyberware-118':
+        return 'melee'
+    if catalog_id == 'cyberware-119':
+        return 'ranged'
+    return None
+
+
+def popup_weapon_binding_compatibility(option, weapon):
+    kind = popup_weapon_binding_kind(option)
+    reasons = []
+    catalog_weapon = item_by_id(catalog_item_id_for_entry(weapon)) or {}
+    mechanics = (weapon or {}).get('mechanics') or catalog_weapon.get('mechanics') or {}
+    weapon_type = str(mechanics.get('type') or '')
+    if not kind:
+        reasons.append('Cyberware is not a generic Popup Weapon option')
+    if not weapon or weapon.get('state') != 'carried':
+        reasons.append('Weapon must be a free carried instance')
+    if (weapon or {}).get('mounted_modification_id') or \
+            (weapon or {}).get('installed_cyberware_instance_id'):
+        reasons.append('Weapon is already bound to another host')
+    if kind == 'ranged' and _num(mechanics.get('hands')) != 1:
+        reasons.append('Popup Ranged Weapon requires a one-handed weapon')
+    if kind == 'ranged' and (weapon or {}).get('cat') != 'guns':
+        reasons.append('Popup Ranged Weapon requires a ranged weapon')
+    if kind == 'melee':
+        if (weapon or {}).get('cat') != 'melee':
+            reasons.append('Popup Melee Weapon requires a melee weapon')
+        if not any(label in weapon_type for label in
+                   ('Light Melee Weapon', 'Medium Melee Weapon', 'Heavy Melee Weapon')) or \
+                'Very Heavy' in weapon_type:
+            reasons.append('Popup Melee Weapon accepts Light, Medium, or Heavy Melee Weapon')
+    return {'allowed': not reasons, 'reasons': reasons, 'kind': kind}
+
+
+def bound_popup_weapon_profile(data, option):
+    kind = popup_weapon_binding_kind(option)
+    if not kind:
+        return None
+    state = (data.get('cyberware_state') or {}).get(option.get('instance_id')) or {}
+    weapon_id = str(state.get('bound_weapon_instance_id') or '')
+    weapon = next((item for item in data.get('inventory') or []
+                   if isinstance(item, dict) and item.get('instance_id') == weapon_id), None)
+    if not weapon:
+        return None
+    catalog_weapon = item_by_id(catalog_item_id_for_entry(weapon)) or {}
+    mechanics = weapon.get('mechanics') or catalog_weapon.get('mechanics') or {}
+    damage = mechanics.get('damage')
+    if isinstance(damage, dict):
+        damage = damage.get('notation')
+    profile = {
+        'id': f'bound-popup-{kind}:{weapon_id}',
+        'kind': kind, 'weapon_type': mechanics.get('type'),
+        'skill': mechanics.get('skill') or ('Melee Weapon' if kind == 'melee' else None),
+        'damage': damage, 'rof': mechanics.get('rof'),
+        'quality': mechanics.get('quality'),
+        'hands_required': 1, 'deployable': True, 'concealable': True,
+        'bound_weapon_instance_id': weapon_id,
+        'bound_weapon_name': weapon.get('custom_name') or weapon.get('name'),
+        'attachments_preserved': True,
+        'source': (item_by_id(catalog_item_id_for_entry(option)) or option).get('source'),
+        'manual_effect': 'Bound weapon attachments remain installed; contextual attachment effects use the weapon Dossier.',
+    }
+    if kind == 'ranged':
+        profile.update({
+            'magazine': int(_num(mechanics.get('magazine')) or 0),
+            'range_table': weapon_range_table_info(weapon).get('base'),
+        })
+    return profile
+
+
 def cyberware_curated_payload(entry):
     return copy.deepcopy(CYBERWARE_CURATED_PAYLOADS.get(
         catalog_item_id_for_entry(entry)))
@@ -6335,7 +6407,12 @@ def effective_cyberware_loadout(data):
             'compatible_host_ids': [],
             'installation_profile': cyberware_installation_profile(entry),
             'curated_payload': payload,
-            'weapon_profile': cyberware_weapon_profile(entry),
+            'weapon_profile': cyberware_weapon_profile(entry) or
+                bound_popup_weapon_profile(data, entry),
+            'popup_binding_kind': popup_weapon_binding_kind(entry),
+            'bound_weapon_instance_id': str(
+                ((data.get('cyberware_state') or {}).get(entry['instance_id']) or {}).get(
+                    'bound_weapon_instance_id') or '') or None,
             'status': 'staged' if not installed else ('installed' if not reasons else 'unbound'),
             'reasons': reasons,
             'unique': bool(capacity.get('unique')),
@@ -6381,6 +6458,8 @@ def effective_cyberware_loadout(data):
                 'paired': option['hosts_required'] > 1,
                 'curated_payload': copy.deepcopy(option.get('curated_payload')),
                 'weapon_profile': copy.deepcopy(option.get('weapon_profile')),
+                'popup_binding_kind': option.get('popup_binding_kind'),
+                'bound_weapon_instance_id': option.get('bound_weapon_instance_id'),
             })
             if option['name'] == 'Quick Change Mount':
                 host['quick_change_mount'] = True
@@ -6439,7 +6518,11 @@ def effective_cyberware_loadout(data):
         if option['state'] != 'installed' or option['status'] != 'installed' or not profile:
             continue
         stored = runtime_states.get(option['instance_id']) or {}
-        weapon_state = stored.get('weapon') if isinstance(stored.get('weapon'), dict) else {}
+        if profile.get('bound_weapon_instance_id'):
+            weapon_state = (data.get('weapon_state') or {}).get(
+                profile['bound_weapon_instance_id']) or {}
+        else:
+            weapon_state = stored.get('weapon') if isinstance(stored.get('weapon'), dict) else {}
         maximum = max(0, int(_num(profile.get('magazine')) or 0))
         profile['instance_id'] = option['instance_id']
         profile['name'] = option['name']
@@ -6458,8 +6541,15 @@ def effective_cyberware_loadout(data):
                 profile['state']['loaded_ammo_kind'], profile.get('damage'))
         ammo_kinds = profile.get('ammo_kinds') or ([profile.get('ammo_kind')]
                                                    if profile.get('ammo_kind') else [])
-        profile['shared_ammo_available'] = sum(
-            shared_ammo_available(data, ammo_kind=kind) for kind in ammo_kinds)
+        if profile.get('bound_weapon_instance_id'):
+            bound_weapon = next((item for item in data.get('inventory') or []
+                                 if isinstance(item, dict) and item.get('instance_id') ==
+                                 profile['bound_weapon_instance_id']), None)
+            profile['shared_ammo_available'] = shared_ammo_available(
+                data, weapon=bound_weapon)
+        else:
+            profile['shared_ammo_available'] = sum(
+                shared_ammo_available(data, ammo_kind=kind) for kind in ammo_kinds)
         weapon_profiles.append(profile)
     return {
         'hosts': sorted(hosts.values(), key=lambda item: (item['host_kind'], item['name'],
@@ -6519,6 +6609,30 @@ def cyberware_option_compatibility(data, option_instance_id, requested_host_ids)
         'allowed': not reasons, 'reasons': reasons,
         'option': option, 'host_instance_ids': host_ids,
     }
+
+
+def validate_bound_popup_weapon_references(data):
+    chrome_by_id = {item.get('instance_id'): item for item in data.get('cyberware') or []
+                    if isinstance(item, dict) and item.get('instance_id')}
+    weapon_by_id = {item.get('instance_id'): item for item in data.get('inventory') or []
+                    if isinstance(item, dict) and item.get('instance_id')}
+    claimed = set()
+    states = data.get('cyberware_state') if isinstance(data.get('cyberware_state'), dict) else {}
+    for option_id, state in states.items():
+        if not isinstance(state, dict) or not state.get('bound_weapon_instance_id'):
+            continue
+        option = chrome_by_id.get(option_id)
+        weapon_id = str(state.get('bound_weapon_instance_id') or '')
+        weapon = weapon_by_id.get(weapon_id)
+        if (not option or not popup_weapon_binding_kind(option) or not weapon or
+                weapon_id in claimed or weapon.get('state') != 'installed' or
+                weapon.get('installed_cyberware_instance_id') != option_id):
+            raise ApiError(409, 'Повреждена связь Popup Cyberweapon')
+        claimed.add(weapon_id)
+    for weapon in weapon_by_id.values():
+        option_id = str(weapon.get('installed_cyberware_instance_id') or '')
+        if option_id and weapon.get('instance_id') not in claimed:
+            raise ApiError(409, 'Повреждена связь Popup Cyberweapon')
 
 
 def validate_cyberware_trust_lifecycle(before, after):
@@ -7273,6 +7387,14 @@ SERVER_ERROR_EN = {
     'Cyberweapon magazine пуст': 'Cyberweapon magazine is empty',
     'Cyberweapon не использует tracked ammo': 'Cyberweapon does not use tracked ammunition',
     'Ammo stack несовместим с Cyberweapon': 'Ammo stack is incompatible with the Cyberweapon',
+    'Повреждена связь Popup Cyberweapon': 'Popup Cyberweapon binding is corrupted',
+    'Permanent Popup Weapon attachments нельзя изменять': 'Permanent Popup Weapon attachments cannot be changed',
+    'Popup Weapon binding содержит неподдерживаемые поля': 'Popup Weapon binding contains unsupported fields',
+    'Подтвердите permanent Popup Weapon binding': 'Confirm permanent Popup Weapon binding',
+    'Укажите причину Popup Weapon binding': 'Provide a reason for Popup Weapon binding',
+    'Installed generic Popup Weapon option не найден': 'Installed generic Popup Weapon option not found',
+    'Popup Weapon уже имеет permanent bound weapon': 'Popup Weapon already has a permanent bound weapon',
+    'Permanent Popup Weapon binding нельзя продать отдельно': 'Permanent Popup Weapon binding cannot be sold separately',
     'Run доступен только Attacker Program': 'Run is available only for an Attacker Program',
     'Saved Program instance недоступен для восстановления': 'Saved Program instance is unavailable for restore',
     'Недостаточно Cyberdeck slots для Backup restore': 'Not enough Cyberdeck slots for Backup restore',
@@ -9509,6 +9631,7 @@ class Handler(BaseHTTPRequestHandler):
         if before == after:
             raise ApiError(400, 'В Character Sheet нет изменений')
         validate_cyberware_trust_lifecycle(before, after)
+        validate_bound_popup_weapon_references(after)
         validate_active_modification_references(conn, row['id'], after)
         sync_weapon_states_with_modifications(conn, row['id'], after)
         sync_vehicle_states_with_modifications(conn, row['id'], after)
@@ -9986,6 +10109,8 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(404, 'Host или upgrade не найден в Inventory')
         if host.get('state') in ('stored', 'broken', 'consumed'):
             raise ApiError(409, 'Host должен быть исправен и находиться при персонаже')
+        if host.get('installed_cyberware_instance_id'):
+            raise ApiError(409, 'Permanent Popup Weapon attachments нельзя изменять')
         if upgrade.get('state') != 'carried':
             raise ApiError(409, 'Upgrade должен находиться в состоянии carried')
         host_type = str(upgrade.get('host_type') or '')
@@ -10287,6 +10412,8 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(409, 'Upgrade instance отсутствует в Inventory')
         host = next((entry for entry in data.get('inventory') or []
                      if isinstance(entry, dict) and entry.get('instance_id') == modification['host_instance_id']), None)
+        if host and host.get('installed_cyberware_instance_id'):
+            raise ApiError(409, 'Permanent Popup Weapon attachments нельзя изменять')
         remaining_modifications = [item for item in character_modifications(conn, row['id'])
                                    if item['modification_id'] != modification_id]
         owned = {entry.get('instance_id'): entry for entry in data.get('inventory') or []
@@ -11450,7 +11577,17 @@ class Handler(BaseHTTPRequestHandler):
             append_history('uninstall')
             reason = f'Uninstall Cyberware {chrome.get("name")}: {reason_detail}'
 
+        bound_weapon_id = str(runtime.get('bound_weapon_instance_id') or '')
+        if bound_weapon_id:
+            bound_weapon = next((item for item in data.get('inventory') or []
+                                 if isinstance(item, dict) and
+                                 item.get('instance_id') == bound_weapon_id), None)
+            if bound_weapon:
+                current_hosts = cyberware_host_assignments(chrome)
+                bound_weapon['installed_cyberarm_host_id'] = (
+                    current_hosts[0] if current_hosts else None)
         humanity_after = derive(data)
+        validate_bound_popup_weapon_references(data)
         validate_active_modification_references(conn, row['id'], data)
         persist_character_item_instances(
             conn, row['id'], data, 'cyberware_lifecycle', source_ref=reason, prune=True)
@@ -11620,6 +11757,76 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     @atomic_endpoint
+    def api_character_popup_weapon_bind(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'weapon_instance_id', 'permanent_confirmed', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Popup Weapon binding содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        if (body or {}).get('permanent_confirmed') is not True:
+            raise ApiError(400, 'Подтвердите permanent Popup Weapon binding')
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Popup Weapon binding')
+        option_id = str(m.group(2)).lower()
+        weapon_id = str((body or {}).get('weapon_instance_id') or '').lower()
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        option = next((item for item in data.get('cyberware') or []
+                       if isinstance(item, dict) and item.get('instance_id') == option_id), None)
+        if not option or not cyberware_is_installed(option) or not popup_weapon_binding_kind(option):
+            raise ApiError(404, 'Installed generic Popup Weapon option не найден')
+        runtime_states = data.setdefault('cyberware_state', {})
+        runtime = runtime_states.setdefault(option_id, {})
+        if runtime.get('bound_weapon_instance_id'):
+            raise ApiError(409, 'Popup Weapon уже имеет permanent bound weapon')
+        weapon = next((item for item in data.get('inventory') or []
+                       if isinstance(item, dict) and item.get('instance_id') == weapon_id), None)
+        compatibility = popup_weapon_binding_compatibility(option, weapon)
+        if not compatibility['allowed']:
+            raise ApiError(400, '; '.join(compatibility['reasons']))
+        weapon['state'] = 'installed'
+        weapon['installed_cyberware_instance_id'] = option_id
+        host_ids = cyberware_host_assignments(option)
+        weapon['installed_cyberarm_host_id'] = host_ids[0] if host_ids else None
+        runtime['bound_weapon_instance_id'] = weapon_id
+        runtime['bound_weapon_permanent'] = True
+        runtime['bound_at'] = time.time()
+        runtime['binding_reason'] = reason_detail
+        validate_bound_popup_weapon_references(data)
+        validate_active_modification_references(conn, row['id'], data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'popup_weapon_binding',
+            source_ref=reason_detail, prune=True)
+        revision_after = current_revision + 1
+        reason = (f'Permanently bind {weapon.get("name")} to '
+                  f'{option.get("name")}: {reason_detail}')
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='modification')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['popup_weapon_binding'] = {
+            'option_instance_id': option_id, 'weapon_instance_id': weapon_id,
+            'permanent': True, 'attachments_preserved': True,
+        }
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        now = time.time()
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'compatibility': compatibility,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
     def api_character_cyberware_weapon_action(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
         allowed = {'revision', 'action', 'ammo_instance_id', 'reason'}
@@ -11636,15 +11843,27 @@ class Handler(BaseHTTPRequestHandler):
         data = copy.deepcopy(before)
         chrome = next((item for item in data.get('cyberware') or []
                        if isinstance(item, dict) and item.get('instance_id') == instance_id), None)
-        profile = cyberware_weapon_profile(chrome)
+        profile = cyberware_weapon_profile(chrome) or bound_popup_weapon_profile(data, chrome)
         if not chrome or not cyberware_is_installed(chrome) or not profile:
             raise ApiError(404, 'Installed curated Cyberweapon не найден')
         runtime_states = data.setdefault('cyberware_state', {})
         runtime = runtime_states.setdefault(instance_id, {})
-        weapon_state = runtime.setdefault('weapon', {
-            'deployed': not profile.get('deployable'), 'revved': False,
-            'magazine': 0, 'magazine_max': int(profile.get('magazine') or 0),
-        })
+        bound_weapon = next((item for item in data.get('inventory') or []
+                             if isinstance(item, dict) and item.get('instance_id') ==
+                             profile.get('bound_weapon_instance_id')), None)
+        if bound_weapon:
+            weapon_state = data.setdefault('weapon_state', {}).setdefault(
+                bound_weapon['instance_id'], {
+                    'magazine': int(profile.get('magazine') or 0),
+                    'magazine_max': int(profile.get('magazine') or 0), 'reserve': 0,
+                })
+            weapon_state.setdefault('deployed', False)
+            weapon_state.setdefault('revved', False)
+        else:
+            weapon_state = runtime.setdefault('weapon', {
+                'deployed': not profile.get('deployable'), 'revved': False,
+                'magazine': 0, 'magazine_max': int(profile.get('magazine') or 0),
+            })
         maximum = max(0, int(_num(profile.get('magazine')) or 0))
         weapon_state['magazine_max'] = maximum
         weapon_state['magazine'] = max(
@@ -11686,19 +11905,29 @@ class Handler(BaseHTTPRequestHandler):
                          if isinstance(item, dict) and item.get('instance_id') == ammo_id), None)
             ammo_kinds = profile.get('ammo_kinds') or ([profile.get('ammo_kind')]
                                                        if profile.get('ammo_kind') else [])
-            ammo_kind = next((kind for kind in ammo_kinds
-                              if ammo_matches_requirement(ammo, kind)), None)
-            if not ammo_kind:
-                raise ApiError(400, 'Ammo stack несовместим с Cyberweapon')
-            transfer = consume_shared_ammo(
-                data, weapon_state, ammo_id, ammo_kind=ammo_kind)
-            weapon_state['loaded_ammo_kind'] = ammo_kind
+            if bound_weapon:
+                if not ammo_matches_requirement(ammo, weapon=bound_weapon):
+                    raise ApiError(400, 'Ammo stack несовместим с Cyberweapon')
+                transfer = consume_shared_ammo(
+                    data, weapon_state, ammo_id, weapon=bound_weapon)
+                ammo_kind = None
+            else:
+                ammo_kind = next((kind for kind in ammo_kinds
+                                  if ammo_matches_requirement(ammo, kind)), None)
+                if not ammo_kind:
+                    raise ApiError(400, 'Ammo stack несовместим с Cyberweapon')
+                transfer = consume_shared_ammo(
+                    data, weapon_state, ammo_id, ammo_kind=ammo_kind)
+            if ammo_kind:
+                weapon_state['loaded_ammo_kind'] = ammo_kind
             result['transfer'] = transfer
             reason = (f'Reload Cyberweapon {chrome.get("name")} with '
                       f'{transfer["ammo_name"]} ×{transfer["moved"]}: {reason_detail}')
         else:
             raise ApiError(400, 'Cyberweapon action: deploy/stow/rev/rev_down/fire/reload')
-        runtime['weapon'] = weapon_state
+        if not bound_weapon:
+            runtime['weapon'] = weapon_state
+        validate_bound_popup_weapon_references(data)
         validate_active_modification_references(conn, row['id'], data)
         persist_character_item_instances(
             conn, row['id'], data, 'cyberweapon_action', source_ref=reason, prune=True)
@@ -12321,6 +12550,12 @@ class Handler(BaseHTTPRequestHandler):
             (row['id'], ent.get('instance_id'), ent.get('instance_id'))).fetchone()
         if linked:
             raise ApiError(409, 'Сначала снимите установленные модификации')
+        cyber_states = data.get('cyberware_state') if isinstance(
+            data.get('cyberware_state'), dict) else {}
+        if (ent.get('installed_cyberware_instance_id') or
+                (isinstance(cyber_states.get(ent.get('instance_id')), dict) and
+                 cyber_states[ent.get('instance_id')].get('bound_weapon_instance_id'))):
+            raise ApiError(409, 'Permanent Popup Weapon binding нельзя продать отдельно')
         if str(ent.get('state') or 'carried') in ('equipped', 'installed'):
             raise ApiError(409, 'Сначала снимите или извлеките предмет')
         ammo_units_before = ammo_rounds(ent) if ent.get('cat') == 'ammo' else None
@@ -14799,6 +15034,7 @@ ROUTES = [
     ('POST', rx(r'/api/characters/(\d+)/items/([a-f0-9]{32})/action'), Handler.api_character_item_action),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/action'), Handler.api_character_cyberware_action),
     ('POST', rx(r'/api/characters/(\d+)/therapy/action'), Handler.api_character_therapy_action),
+    ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/popup-weapon/bind'), Handler.api_character_popup_weapon_bind),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/weapon/action'), Handler.api_character_cyberware_weapon_action),
     ('GET', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modifications),
     ('POST', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modification_install),

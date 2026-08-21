@@ -158,6 +158,9 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('Integrated Cyberweapons', source)
         self.assertIn('data-cyberweapon-action', source)
         self.assertIn('/weapon/action', source)
+        self.assertIn('data-popup-weapon-bind', source)
+        self.assertIn('/popup-weapon/bind', source)
+        self.assertIn('permanent bound weapon', source)
 
     def test_live_session_has_validated_net_context_and_queue_controls(self):
         ncnet = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')

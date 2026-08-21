@@ -3135,7 +3135,20 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - deploy/stow, ChainRipp rev/rev-down, Reload и Fire revision-protected, атомарны и записываются в Character Ledger вместе с runtime snapshot;
 - Ledger revert восстанавливает magazine/deployed/revved и shared ammo state;
 - Data Pool parser исправлен для `Cyberarm/Cybereye/Cyberleg/Cyberaudio Option Slots`, поэтому Mantis Blade, Gorilla Arm, Projectile Launch System и другие options занимают source-правильное число слотов;
-- generic Popup Melee/Popup Ranged concrete weapon binding, Dartgun/Net Launcher/Gas Jet special ammo и Smartgun/Smart Rebuild attachments остаются следующими расширениями.
+- Dartgun/Net Launcher/Gas Jet special ammo и расширенное применение Smartgun/Smart Rebuild effects остаются следующими расширениями.
+
+**Статус B.9.5 — реализован Generic Popup Weapon Binding:**
+
+- installed Popup Melee Weapon принимает concrete carried Light/Medium/Heavy Melee Weapon, Popup Ranged Weapon — concrete one-handed ranged weapon;
+- binding требует explicit permanent confirmation и сохраняет stable option/weapon instance IDs в server-owned Cyberware state;
+- bound weapon переходит в `installed`, получает обратную ссылку на Popup option/Cyberarm host и больше не может быть продан, удалён generic editor или привязан к другому mount;
+- все уже установленные weapon attachments остаются на concrete weapon; после permanent binding их установка/снятие блокируется, исключая скрытую смену snapshot;
+- effective Popup profile использует реальный Damage/ROF/Skill/Quality/Magazine/Range Table и общий `weapon_state` связанного экземпляра;
+- bound Popup Ranged Reload/Fire используют тот же shared ammo transfer, что обычное оружие, а deploy/stow управляется через Cyberweapon panel;
+- Uninstall/Reinstall/Quick Change сохраняют permanent weapon binding; Rebind Popup option обновляет concrete Cyberarm host reference;
+- binding, weapon state, ammo transfer и reverse references атомарны, Ledger-audited и поддерживают snapshot revert;
+- generic Very Heavy/two-handed/incompatible weapon binding блокируется сервером;
+- Dartgun, Popup Net Launcher, Gas Jet, generic Popup attachment effect projection и destructive unbinding остаются отдельными source-specific расширениями.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -3158,8 +3171,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, action budget, cross-character REZ, safe curated effects, concrete Cyberware hosts, sides, clinic audit, Quick Change, curated option payloads, Therapy и fixed Integrated Cyberweapons;
-    - дальше: generic Popup weapon binding, Armor/Shield hosts и Tech Maker modifications.
+    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, action budget, cross-character REZ, safe curated effects, concrete Cyberware hosts, sides, clinic audit, Quick Change, curated option payloads, Therapy, fixed Integrated Cyberweapons и generic Popup concrete binding;
+    - дальше: special cyberweapon ammo, Armor/Shield hosts и Tech Maker modifications.
 14. JSON import.
 
 ### Пакет C — Publishing Preview

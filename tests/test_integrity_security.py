@@ -1126,6 +1126,56 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertTrue(ledger['entries'][0]['delta']['cyberware_lifecycle'][
             'quick_change_no_humanity_loss'])
 
+    def test_generic_popup_ranged_binds_concrete_weapon_permanently(self):
+        data = copy.deepcopy(self.character_data)
+        arm = copy.deepcopy(server.item_by_id('cyberware-109'))
+        arm.update({'key': 'cyberware-109', 'catalog_item_id': 'cyberware-109',
+                    'instance_id': '1' * 32, 'state': 'installed',
+                    'installation_side': 'left', 'type': arm['fields']['Type']})
+        popup = copy.deepcopy(server.item_by_id('cyberware-119'))
+        popup.update({'key': 'cyberware-119', 'catalog_item_id': 'cyberware-119',
+                      'instance_id': '2' * 32, 'state': 'installed',
+                      'host_instance': arm['instance_id'],
+                      'host_instances': [arm['instance_id']],
+                      'type': popup['fields']['Type']})
+        pistol = copy.deepcopy(server.item_by_id('guns-1'))
+        pistol.update({'key': 'guns-1', 'catalog_item_id': 'guns-1',
+                       'instance_id': '3' * 32, 'state': 'carried', 'qty': 1})
+        data['cyberware'] = [arm, popup]
+        data['inventory'] = [pistol]
+        data['weapon_state'] = {pistol['instance_id']: {
+            'magazine': 0, 'magazine_max': 8, 'reserve': 0}}
+        self.conn.execute('UPDATE characters SET data=? WHERE id=1',
+                          (json.dumps(data),))
+        self.conn.commit()
+        match = re.match(r'^(\d+)/([a-f0-9]{32})$',
+                         f'1/{popup["instance_id"]}')
+        bound = self.call(server.Handler.api_character_popup_weapon_bind, match, {
+            'revision': 0, 'weapon_instance_id': pistol['instance_id'],
+            'permanent_confirmed': True,
+            'reason': 'Permanently install Heavy Pistol with its attachments',
+        })
+        stored_pistol = next(item for item in bound['character']['data']['inventory']
+                             if item['instance_id'] == pistol['instance_id'])
+        self.assertEqual(stored_pistol['state'], 'installed')
+        self.assertEqual(stored_pistol['installed_cyberware_instance_id'],
+                         popup['instance_id'])
+        profile = bound['character']['derived']['effective_cyberware'][
+            'weapon_profiles'][0]
+        self.assertEqual(profile['bound_weapon_instance_id'], pistol['instance_id'])
+        self.assertEqual((profile['damage'], profile['magazine']), ('3d6', 8))
+        with self.assertRaisesRegex(server.ApiError, 'Permanent Popup Weapon'):
+            self.call(server.Handler.api_sell, body={
+                'char_id': 1, 'instance_id': pistol['instance_id'], 'qty': 1,
+            })
+        edited = copy.deepcopy(bound['character']['data'])
+        edited['inventory'] = []
+        with self.assertRaisesRegex(server.ApiError, 'Popup Cyberweapon'):
+            self.call(server.Handler.api_character_sheet_update, self.match(1), {
+                'revision': 1, 'reason': 'Try deleting permanently bound weapon',
+                'data': edited,
+            })
+
     def test_curated_popup_cyberweapon_uses_shared_ammo_and_reverts(self):
         data = copy.deepcopy(self.character_data)
         arm = copy.deepcopy(server.item_by_id('cyberware-109'))
