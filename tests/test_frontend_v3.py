@@ -111,6 +111,18 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('ammo_rounds', source)
         self.assertIn('shared_ammo_available', source)
 
+    def test_character_sheet_has_cyberdeck_host_loadout_management(self):
+        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        self.assertIn('Cyberdeck Loadout', source)
+        self.assertIn('function openCyberdeckManager', source)
+        self.assertIn('cyberdeck_hosts', source)
+        self.assertIn('cyberdeck_items', source)
+        self.assertIn('effective_cyberdecks', source)
+        self.assertIn('data-manage-cyberdeck', source)
+        self.assertIn('data-install-deck-item', source)
+        self.assertIn('data-remove-deck-item', source)
+        self.assertIn('PROGRAM RUNTIME IS MANUAL', source)
+
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
         self.assertIn('created_effects', source)

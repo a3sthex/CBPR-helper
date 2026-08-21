@@ -203,6 +203,37 @@ def vehicle_modification_metadata(cat, name, row, desc):
     }
 
 
+def cyberdeck_modification_metadata(cat, name, row, desc):
+    item_type = str(row.get('Type') or '').strip()
+    description = str(desc or '')
+    source = (row.get('Source') or '').strip() or None
+    if cat == 'net_stuff' and item_type == 'Cyberdeck Hardware':
+        slots = re.search(r'Takes?\s+(\d+)\s+Hardware Option Slots?',
+                          description, re.I)
+        return {
+            'host_type': 'cyberdeck', 'modification_kind': 'cyberdeck_hardware',
+            'modification_group': None, 'slot_type': 'hardware',
+            'grants_slots': {}, 'slots_used': int(slots.group(1)) if slots else 1,
+            'compatibility_text': 'Cyberdeck Hardware',
+            'permanent_installation': False,
+            'unique_per_host': bool(re.search(
+                r'Multiple installations do nothing', description, re.I)),
+            'compatibility_manual': False, 'installation_source': source,
+        }
+    if cat == 'programs':
+        program_class = str(row.get('Class') or '').strip()
+        return {
+            'host_type': 'cyberdeck', 'modification_kind': 'cyberdeck_program',
+            'modification_group': None, 'slot_type': 'program',
+            'grants_slots': {},
+            'slots_used': 2 if 'Black ICE' in program_class else 1,
+            'compatibility_text': program_class,
+            'permanent_installation': False, 'unique_per_host': False,
+            'compatibility_manual': False, 'installation_source': source,
+        }
+    return {}
+
+
 def normalize_display_value(value):
     text = str(value).strip()
     if re.fullmatch(r'-?\d+\.0', text):
@@ -505,6 +536,7 @@ def main():
             it.update(item_interaction_metadata(cat, name, r, desc))
             it.update(item_modification_metadata(cat, name, r, desc))
             it.update(vehicle_modification_metadata(cat, name, r, desc))
+            it.update(cyberdeck_modification_metadata(cat, name, r, desc))
             requirements, capacity = structured_requirements(cat, r, desc)
             it['requirements'] = requirements
             if any(capacity.values()):

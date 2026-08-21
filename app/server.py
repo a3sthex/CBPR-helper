@@ -46,6 +46,41 @@ PBKDF_ITERS = 120_000
 _catalog = None
 
 
+def cyberdeck_item_metadata(item):
+    """Return declarative host metadata for Cyberdecks, Hardware, and Programs."""
+    if not isinstance(item, dict):
+        return {}
+    item_type = str((item.get('mechanics') or {}).get('type') or '')
+    description = str(item.get('desc') or '')
+    if item.get('cat') == 'net_stuff' and item_type == 'Cyberdeck Hardware':
+        slots = re.search(r'Takes?\s+(\d+)\s+Hardware Option Slots?',
+                          description, re.I)
+        return {
+            'host_type': 'cyberdeck', 'modification_kind': 'cyberdeck_hardware',
+            'modification_group': None, 'slot_type': 'hardware',
+            'grants_slots': {}, 'slots_used': int(slots.group(1)) if slots else 1,
+            'compatibility_text': 'Cyberdeck Hardware',
+            'permanent_installation': False,
+            'unique_per_host': bool(re.search(
+                r'Multiple installations do nothing', description, re.I)),
+            'compatibility_manual': False,
+            'installation_source': item.get('source'),
+        }
+    if item.get('cat') == 'programs':
+        program_class = str((item.get('mechanics') or {}).get('program_class') or '')
+        return {
+            'host_type': 'cyberdeck', 'modification_kind': 'cyberdeck_program',
+            'modification_group': None, 'slot_type': 'program',
+            'grants_slots': {},
+            'slots_used': 2 if 'Black ICE' in program_class else 1,
+            'compatibility_text': program_class,
+            'permanent_installation': False, 'unique_per_host': False,
+            'compatibility_manual': False,
+            'installation_source': item.get('source'),
+        }
+    return {}
+
+
 def load_catalog():
     global _catalog
     if _catalog is not None:
@@ -56,6 +91,8 @@ def load_catalog():
         import_data.main()
     with open(ITEMS_PATH, encoding='utf-8') as f:
         _catalog = json.load(f)
+    for item in _catalog.get('items') or []:
+        item.update(cyberdeck_item_metadata(item))
     _catalog['_by_id'] = {it['id']: it for it in _catalog['items']}
     return _catalog
 
@@ -609,6 +646,28 @@ def vehicle_modification_rules_for_catalog(catalog_id):
     return [copy.deepcopy(rule) for rule in
             load_effect_rules().get('vehicle_modification_rules') or []
             if rule.get('catalog_id') == catalog_id]
+
+
+CYBERDECK_PROFILES = {
+    'net_stuff-0': {'mixed': 5},
+    'net_stuff-1': {'mixed': 7},
+    'net_stuff-2': {'mixed': 9},
+    'net_stuff-3': {'mixed': 5},
+    'net_stuff-4': {'program': 5},
+    'net_stuff-5': {'program': 5},
+    'net_stuff-6': {'program': 4, 'hardware': 5},
+    'net_stuff-7': {'mixed': 5},
+    'net_stuff-8': {'program': 7},
+    'net_stuff-9': {'hardware': 2},
+    'net_stuff-10': {'program': 7},
+    'net_stuff-11': {'mixed': 6},
+    'net_stuff-12': {'program': 6, 'hardware': 5},
+    'net_stuff-13': {'program': 9},
+    'net_stuff-14': {'mixed': 9},
+    'net_stuff-15': {'flak': 3, 'mixed': 6},
+    'net_stuff-16': {'mixed': 9},
+    'net_stuff-17': {'program': 3, 'hardware': 6},
+}
 
 
 WEAPON_RANGE_FAMILIES = {
@@ -3115,6 +3174,188 @@ def weapon_upgrade_compatibility(host, upgrade, active_modifications=None,
         'grants_slots': copy.deepcopy(upgrade.get('grants_slots') or {}),
         'compatibility_text': upgrade.get('compatibility_text') or '',
     }
+
+
+def cyberdeck_profile_for_host(host):
+    catalog_id = catalog_item_id_for_entry(host)
+    return copy.deepcopy(CYBERDECK_PROFILES.get(catalog_id) or {})
+
+
+def cyberdeck_program_category(item):
+    program_class = str((item.get('mechanics') or {}).get('program_class') or '')
+    if 'Black ICE' in program_class:
+        return 'black_ice'
+    if 'Attacker' in program_class:
+        return 'attacker'
+    if 'Defender' in program_class:
+        return 'defender'
+    if 'Booster' in program_class:
+        return 'booster'
+    return 'program'
+
+
+def cyberdeck_slot_usage(host, active_modifications=None, owned_by_id=None):
+    active_modifications = active_modifications or []
+    owned_by_id = owned_by_id or {}
+    capacities = cyberdeck_profile_for_host(host)
+    installed = [owned_by_id.get(mod.get('upgrade_instance_id')) or {}
+                 for mod in active_modifications if mod.get('active', True)]
+    hardware = [item for item in installed
+                if item.get('modification_kind') == 'cyberdeck_hardware']
+    programs = [item for item in installed
+                if item.get('modification_kind') == 'cyberdeck_program']
+    perfume_shoppe = any(item.get('name') == 'Perfume Shoppe' for item in hardware)
+    hardware_units = sum(max(1, int(item.get('slots_used') or 1)) for item in hardware)
+    program_units = 0
+    flak_units = 0
+    program_weights = []
+    for item in programs:
+        weight = max(1, int(item.get('slots_used') or 1))
+        if perfume_shoppe and item.get('name') == 'Skunk':
+            weight = 1
+        program_weights.append({'instance_id': item.get('instance_id'),
+                                'name': item.get('name'), 'slots': weight})
+        program_units += weight
+        if item.get('name') == 'Flak':
+            flak_units += weight
+    flak_used = min(capacities.get('flak', 0), flak_units)
+    remaining_program = max(0, program_units - flak_used)
+    program_used = min(capacities.get('program', 0), remaining_program)
+    remaining_program -= program_used
+    hardware_used = min(capacities.get('hardware', 0), hardware_units)
+    remaining_hardware = max(0, hardware_units - hardware_used)
+    mixed_used = remaining_program + remaining_hardware
+    pools = {
+        'program': {'total': capacities.get('program', 0), 'used': program_used},
+        'hardware': {'total': capacities.get('hardware', 0), 'used': hardware_used},
+        'mixed': {'total': capacities.get('mixed', 0), 'used': mixed_used},
+        'flak': {'total': capacities.get('flak', 0), 'used': flak_used},
+    }
+    pools = {key: value for key, value in pools.items()
+             if value['total'] or value['used']}
+    overloaded = any(pool['used'] > pool['total'] for pool in pools.values())
+    return {
+        'pools': pools, 'overloaded': overloaded,
+        'slots_total': sum(capacities.values()),
+        'slots_used': hardware_units + program_units,
+        'hardware_units': hardware_units, 'program_units': program_units,
+        'program_weights': program_weights,
+    }
+
+
+def cyberdeck_item_compatibility(host, upgrade, active_modifications=None,
+                                 owned_by_id=None):
+    active_modifications = active_modifications or []
+    owned_by_id = owned_by_id or {}
+    reasons = []
+    host_catalog = item_by_id(catalog_item_id_for_entry(host)) or {}
+    if (host.get('cat') != 'net_stuff' or
+            (host_catalog.get('mechanics') or {}).get('type') != 'Cyberdeck'):
+        reasons.append('Host is not a Cyberdeck')
+    if upgrade.get('host_type') != 'cyberdeck':
+        reasons.append('Item is not Cyberdeck Hardware or a Program')
+    installed = [owned_by_id.get(mod.get('upgrade_instance_id')) or {}
+                 for mod in active_modifications]
+    if upgrade.get('unique_per_host') and any(
+            catalog_item_id_for_entry(item) == catalog_item_id_for_entry(upgrade)
+            for item in installed):
+        reasons.append('Only one effective copy may be installed on this Cyberdeck')
+    deck_id = catalog_item_id_for_entry(host)
+    name = str(upgrade.get('name') or '')
+    kind = upgrade.get('modification_kind')
+    category = cyberdeck_program_category(upgrade)
+    if kind == 'cyberdeck_program':
+        if deck_id == 'net_stuff-4':
+            if sum(cyberdeck_program_category(item) == category for item in installed) >= 1:
+                reasons.append('Kirama Entry Deck allows only one Program of each Class')
+        elif deck_id == 'net_stuff-6' and category != 'black_ice':
+            reasons.append('Microtech Assault Program slots accept only Black ICE')
+        elif deck_id == 'net_stuff-12' and name != 'Hellhound':
+            reasons.append('Kerberos Program slots accept only Hellhound')
+        elif deck_id == 'net_stuff-13' and name not in ('Sword', 'Shield'):
+            reasons.append('Verdant Knight accepts only Sword and Shield Programs')
+        elif deck_id == 'net_stuff-14' and category in ('attacker', 'black_ice'):
+            reasons.append("Warlock's Book cannot install Attacker or Black ICE Programs")
+        elif deck_id == 'net_stuff-15':
+            if category == 'defender' and name != 'Flak':
+                reasons.append('Zetatech Kaliya accepts no Defender other than Flak')
+            if category == 'black_ice' and name != 'Asp':
+                reasons.append('Zetatech Kaliya accepts no Black ICE other than Asp')
+        elif deck_id == 'net_stuff-16' and category == 'defender':
+            reasons.append('Zetatech MicroMate cannot install Defender Programs')
+        if (category == 'black_ice' and name != 'Wisp' and
+                any(item.get('name') == 'Swamp Mist' for item in installed)):
+            reasons.append('Swamp Mist permits only Wisp Black ICE')
+    elif kind == 'cyberdeck_hardware':
+        if name == 'Swamp Mist' and any(
+                cyberdeck_program_category(item) == 'black_ice' and
+                item.get('name') != 'Wisp' for item in installed):
+            reasons.append('Remove non-Wisp Black ICE before installing Swamp Mist')
+    candidate_id = str(upgrade.get('instance_id') or 'candidate')
+    candidate_mod = {
+        'modification_id': f'candidate:{candidate_id}', 'active': True,
+        'host_instance_id': host.get('instance_id'),
+        'upgrade_instance_id': upgrade.get('instance_id'),
+    }
+    candidate_owned = dict(owned_by_id)
+    if upgrade.get('instance_id'):
+        candidate_owned[upgrade['instance_id']] = upgrade
+    usage = cyberdeck_slot_usage(
+        host, [*active_modifications, candidate_mod], candidate_owned)
+    if usage['overloaded']:
+        reasons.append('Not enough compatible Cyberdeck slots')
+    return {
+        'allowed': not reasons, 'reasons': reasons,
+        'manual_resolution_required': False,
+        'slot_pools': usage['pools'], 'slots_total': usage['slots_total'],
+        'slots_used_after': usage['slots_used'],
+        'slots_required': max(1, int(upgrade.get('slots_used') or 1)),
+        'item_kind': kind,
+    }
+
+
+def evaluate_effective_cyberdeck(host, modifications, owned_by_id):
+    usage = cyberdeck_slot_usage(host, modifications, owned_by_id)
+    hardware = []
+    programs = []
+    for modification in modifications:
+        item = owned_by_id.get(modification.get('upgrade_instance_id')) or {}
+        payload = {
+            'modification_id': modification.get('modification_id'),
+            'instance_id': item.get('instance_id'),
+            'catalog_item_id': catalog_item_id_for_entry(item),
+            'name': item.get('custom_name') or item.get('name'),
+            'slots': next((row['slots'] for row in usage['program_weights']
+                           if row['instance_id'] == item.get('instance_id')),
+                          max(1, int(item.get('slots_used') or 1))),
+            'source': item.get('source'),
+            'manual_resolution_required': True,
+        }
+        if item.get('modification_kind') == 'cyberdeck_hardware':
+            hardware.append(payload)
+        elif item.get('modification_kind') == 'cyberdeck_program':
+            payload['program_class'] = (item.get('mechanics') or {}).get('program_class')
+            payload['mechanics'] = copy.deepcopy(item.get('mechanics') or {})
+            programs.append(payload)
+    return {
+        'instance_id': host.get('instance_id'),
+        'profile': cyberdeck_profile_for_host(host),
+        **usage, 'hardware': hardware, 'programs': programs,
+    }
+
+
+def character_effective_cyberdecks(character, modifications):
+    owned = {item.get('instance_id'): item for item in character.get('inventory') or []
+             if isinstance(item, dict) and item.get('instance_id')}
+    result = {}
+    for host in (item for item in character.get('inventory') or []
+                 if isinstance(item, dict) and item.get('cat') == 'net_stuff' and
+                 (item.get('mechanics') or {}).get('type') == 'Cyberdeck'):
+        host_modifications = [mod for mod in modifications
+                              if mod.get('host_instance_id') == host.get('instance_id')]
+        result[host['instance_id']] = evaluate_effective_cyberdeck(
+            host, host_modifications, owned)
+    return result
 
 
 def vehicle_classification(host):
@@ -5842,6 +6083,8 @@ SERVER_ERROR_EN = {
     'Выберите обязательную конфигурацию modification': 'Choose the required modification configuration',
     'Некорректный вариант configuration': 'Invalid configuration choice',
     'Vehicle configuration пока не поддерживается': 'Vehicle configuration is not supported yet',
+    'Cyberdeck configuration пока не поддерживается': 'Cyberdeck configuration is not supported yet',
+    'Сначала освободите зависимые Cyberdeck slots': 'Free dependent Cyberdeck slots first',
     'Неподдерживаемый тип modification host': 'Unsupported modification host type',
     'Сначала снимите зависимые vehicle upgrades': 'Remove dependent vehicle upgrades first',
     'Vehicle instance не найден': 'Vehicle instance not found',
@@ -7817,12 +8060,14 @@ class Handler(BaseHTTPRequestHandler):
                 full_data, modifications)
             derived['effective_vehicles'] = character_effective_vehicles(
                 full_data, modifications)
+            derived['effective_cyberdecks'] = character_effective_cyberdecks(
+                full_data, modifications)
         if public_view and not visibility['combat']:
             derived = {}
         elif public_view:
             if not visibility['equipment']:
                 for private_key in ('modifications', 'effective_weapons',
-                                    'effective_vehicles'):
+                                    'effective_vehicles', 'effective_cyberdecks'):
                     derived.pop(private_key, None)
             for effect in (derived.get('effects') or {}).get('instances') or []:
                 for private_key in ('reason', 'actor', 'source_item_instance_id'):
@@ -8324,6 +8569,48 @@ class Handler(BaseHTTPRequestHandler):
                     catalog_item_id_for_entry(upgrade)),
                 'compatibility': matrix,
             })
+        effective_deck_map = character_effective_cyberdecks(data, modifications)
+        cyberdeck_hosts = []
+        deck_entries = [
+            entry for entry in data.get('inventory') or []
+            if isinstance(entry, dict) and entry.get('cat') == 'net_stuff' and
+            (entry.get('mechanics') or {}).get('type') == 'Cyberdeck']
+        for host in deck_entries:
+            effective = effective_deck_map.get(host.get('instance_id')) or {}
+            cyberdeck_hosts.append({
+                'instance_id': host.get('instance_id'),
+                'catalog_item_id': catalog_item_id_for_entry(host),
+                'name': host.get('custom_name') or host.get('name'),
+                'state': host.get('state'),
+                'slot_pools': effective.get('pools') or {},
+                'slots_total': effective.get('slots_total') or 0,
+                'slots_used': effective.get('slots_used') or 0,
+                'hardware': effective.get('hardware') or [],
+                'programs': effective.get('programs') or [],
+                'modification_ids': [
+                    mod['modification_id'] for mod in modifications
+                    if mod.get('host_instance_id') == host.get('instance_id')],
+            })
+        cyberdeck_items = []
+        for upgrade in (entry for entry in data.get('inventory') or []
+                        if isinstance(entry, dict) and
+                        entry.get('host_type') == 'cyberdeck'):
+            matrix = {}
+            for host in deck_entries:
+                active = [mod for mod in modifications
+                          if mod.get('host_instance_id') == host.get('instance_id')]
+                matrix[host['instance_id']] = cyberdeck_item_compatibility(
+                    host, upgrade, active, owned)
+            cyberdeck_items.append({
+                'instance_id': upgrade.get('instance_id'),
+                'catalog_item_id': catalog_item_id_for_entry(upgrade),
+                'name': upgrade.get('custom_name') or upgrade.get('name'),
+                'state': upgrade.get('state'),
+                'item_kind': upgrade.get('modification_kind'),
+                'program_class': (upgrade.get('mechanics') or {}).get('program_class'),
+                'slots_used': upgrade.get('slots_used') or 1,
+                'compatibility': matrix,
+            })
         for modification in modifications:
             config = modification.get('configuration') or {}
             modification['host_name'] = (owned.get(modification['host_instance_id']) or {}).get('custom_name') or (owned.get(modification['host_instance_id']) or {}).get('name') or config.get('host_name')
@@ -8332,6 +8619,7 @@ class Handler(BaseHTTPRequestHandler):
             'character_id': row['id'], 'revision': _row_value(row, 'revision', 0) or 0,
             'hosts': hosts, 'upgrades': upgrades,
             'vehicle_hosts': vehicle_hosts, 'vehicle_upgrades': vehicle_upgrades,
+            'cyberdeck_hosts': cyberdeck_hosts, 'cyberdeck_items': cyberdeck_items,
             'modifications': modifications,
         }
 
@@ -8382,6 +8670,13 @@ class Handler(BaseHTTPRequestHandler):
                 host, upgrade, active, owned, data)
             effect_rules = vehicle_modification_rules_for_catalog(
                 catalog_item_id_for_entry(upgrade))
+        elif host_type == 'cyberdeck':
+            if (body or {}).get('configuration') not in (None, {}):
+                raise ApiError(400, 'Cyberdeck configuration пока не поддерживается')
+            choices = {}
+            compatibility = cyberdeck_item_compatibility(
+                host, upgrade, active, owned)
+            effect_rules = []
         else:
             raise ApiError(400, 'Неподдерживаемый тип modification host')
         if not compatibility['allowed']:
@@ -8659,6 +8954,14 @@ class Handler(BaseHTTPRequestHandler):
                           if pool['used'] > pool['total']]
             if overloaded:
                 raise ApiError(409, 'Сначала снимите modifications, зависящие от granted slots')
+        elif host and modification.get('host_type') == 'cyberdeck':
+            remaining_deck_modifications = [
+                item for item in remaining_modifications
+                if item.get('host_instance_id') == host.get('instance_id')]
+            remaining_usage = cyberdeck_slot_usage(
+                host, remaining_deck_modifications, owned)
+            if remaining_usage['overloaded']:
+                raise ApiError(409, 'Сначала освободите зависимые Cyberdeck slots')
         elif host and modification.get('host_type') == 'vehicle':
             removed_name = str(upgrade.get('name') or '')
             removed_state = (data.get('modification_state') or {}).get(modification_id) or {}

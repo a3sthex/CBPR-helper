@@ -2965,6 +2965,18 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - все start/resolve/cancel events revision-guarded, Ledger-audited, revertible и сохраняются в ограниченной repair history;
 - paid NPC repair pricing, Campaign Clock completion, выгрузка заряженных патронов и общий Crew ammo/cargo stash остаются будущими интеграциями.
 
+**Статус B.8.1 — реализованы Cyberdeck Hosts и Loadout Foundation:**
+
+- конкретные Cyberdeck instances стали третьим полноценным host type общей `item_modifications` model;
+- каталог runtime-нормализует Cyberdeck Hardware и Programs: Hardware занимает 1–3 slots по source text, обычная Program — 1 slot, Black ICE — 2 slots;
+- поддерживаются отдельные `program`, `hardware`, `mixed` и Kaliya `Flak-only` slot pools для всех 18 Cyberdeck models из Database;
+- Install/Uninstall привязывает конкретный stable Hardware/Program instance к выбранной деке, переводит item в `installed`, блокирует продажу и проходит revision/Ledger/revert lifecycle;
+- server проверяет model-specific restrictions: Kirama Entry classes, Microtech Assault Black ICE-only, Kerberos Hellhound-only, Verdant Knight Sword/Shield, Warlock’s Book, Kaliya и MicroMate;
+- Swamp Mist не допускает non-Wisp Black ICE, а Perfume Shoppe динамически уменьшает Skunk до 1 slot; Perfume Shoppe нельзя снять, если после этого loadout станет перегружен;
+- Character Sheet получил Netrunning/Cyberdeck Loadout panel, раздельные Hardware/Programs, slot breakdown и Manage Loadout;
+- все Hardware effects пока отображаются как source-backed `MANUAL RESOLUTION`: произвольный исполняемый код в Hardware/Program data не добавлен;
+- Program runtime, REZ current/max, Rez/Derez, destroyed copies и Black ICE NET entities вынесены в B.8.2.
+
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
@@ -2985,7 +2997,9 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 12. ◐ Vehicle Upgrades и Garage integration.
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
-13. Cyberdeck/Cyberware/Armor/Tech modification hosts.
+13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
+    - готово: Cyberdeck host instances, Program/Hardware slot pools, model restrictions и atomic loadout lifecycle;
+    - дальше: Program runtime/REZ, затем Cyberware/Armor/Tech hosts.
 14. JSON import.
 
 ### Пакет C — Publishing Preview

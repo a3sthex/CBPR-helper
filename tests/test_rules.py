@@ -910,6 +910,85 @@ class VehicleModificationTests(unittest.TestCase):
         self.assertTrue(any('rooms already' in reason for reason in room_full['reasons']))
 
 
+class CyberdeckModificationTests(unittest.TestCase):
+    def owned(self, catalog_id, instance_id):
+        item = copy.deepcopy(server.item_by_id(catalog_id))
+        item.update({'key': catalog_id, 'catalog_item_id': catalog_id,
+                     'instance_id': instance_id, 'qty': 1, 'state': 'carried'})
+        return item
+
+    def modification(self, host, item, index):
+        return {
+            'modification_id': f'{index:032x}', 'active': True,
+            'host_instance_id': host['instance_id'],
+            'upgrade_instance_id': item['instance_id'],
+            'host_type': 'cyberdeck', 'slots_used': item.get('slots_used') or 1,
+            'configuration': {},
+        }
+
+    def test_cyberdeck_slots_count_hardware_programs_and_black_ice(self):
+        self.assertEqual(server.item_by_id('net_stuff-19')['host_type'], 'cyberdeck')
+        self.assertEqual(server.item_by_id('net_stuff-19')['slots_used'], 2)
+        self.assertEqual(server.item_by_id('net_stuff-20')['slots_used'], 3)
+        self.assertEqual(server.item_by_id('programs-25')['slots_used'], 2)
+        deck = self.owned('net_stuff-1', '1' * 32)
+        backup = self.owned('net_stuff-19', '2' * 32)
+        armor = self.owned('programs-12', '3' * 32)
+        killer = self.owned('programs-25', '4' * 32)
+        bushido = self.owned('net_stuff-20', '5' * 32)
+        installed = (backup, armor, killer)
+        for item in installed:
+            item['state'] = 'installed'
+        owned = {item['instance_id']: item for item in
+                 (deck, backup, armor, killer, bushido)}
+        modifications = [self.modification(deck, item, index)
+                         for index, item in enumerate(installed, start=1)]
+        usage = server.cyberdeck_slot_usage(deck, modifications, owned)
+        self.assertEqual(usage['pools']['mixed'], {'total': 7, 'used': 5})
+        self.assertEqual(usage['hardware_units'], 2)
+        self.assertEqual(usage['program_units'], 3)
+        self.assertEqual(next(row for row in usage['program_weights']
+                              if row['name'] == 'Killer')['slots'], 2)
+        allowed = server.cyberdeck_item_compatibility(
+            deck, bushido, modifications, owned)
+        self.assertFalse(allowed['allowed'])
+        self.assertTrue(any('slots' in reason for reason in allowed['reasons']))
+
+    def test_cyberdeck_model_specific_restrictions_and_perfume_shoppe(self):
+        assault = self.owned('net_stuff-6', '6' * 32)
+        armor = self.owned('programs-12', '7' * 32)
+        killer = self.owned('programs-25', '8' * 32)
+        owned = {item['instance_id']: item for item in (assault, armor, killer)}
+        self.assertFalse(server.cyberdeck_item_compatibility(
+            assault, armor, [], owned)['allowed'])
+        self.assertTrue(server.cyberdeck_item_compatibility(
+            assault, killer, [], owned)['allowed'])
+
+        kerberos = self.owned('net_stuff-12', '9' * 32)
+        hellhound = self.owned('programs-17', 'a' * 32)
+        self.assertTrue(server.cyberdeck_item_compatibility(
+            kerberos, hellhound, [], {hellhound['instance_id']: hellhound})['allowed'])
+        self.assertFalse(server.cyberdeck_item_compatibility(
+            kerberos, killer, [], {killer['instance_id']: killer})['allowed'])
+
+        phoenix = self.owned('net_stuff-11', 'b' * 32)
+        perfume = self.owned('net_stuff-30', 'c' * 32)
+        skunks = [self.owned('programs-22', f'{index + 13:032x}') for index in range(4)]
+        for item in (perfume, *skunks):
+            item['state'] = 'installed'
+        loadout = (perfume, *skunks)
+        perfume_owned = {item['instance_id']: item for item in (phoenix, *loadout)}
+        modifications = [self.modification(phoenix, item, index)
+                         for index, item in enumerate(loadout, start=1)]
+        with_perfume = server.cyberdeck_slot_usage(phoenix, modifications, perfume_owned)
+        without_perfume = server.cyberdeck_slot_usage(
+            phoenix, modifications[1:], perfume_owned)
+        self.assertEqual(with_perfume['slots_used'], 6)
+        self.assertFalse(with_perfume['overloaded'])
+        self.assertEqual(without_perfume['slots_used'], 8)
+        self.assertTrue(without_perfume['overloaded'])
+
+
 class CreationValidationTests(unittest.TestCase):
     def test_valid_complete_package(self):
         char = valid_character()

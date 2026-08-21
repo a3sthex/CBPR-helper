@@ -961,6 +961,86 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         })
         self.assertEqual(removed_rail['character']['revision'], 5)
 
+    def test_cyberdeck_loadout_binds_hardware_programs_and_enforces_slots(self):
+        edited = copy.deepcopy(self.character_data)
+        item_ids = (
+            'net_stuff-1', 'net_stuff-19', 'net_stuff-20',
+            'programs-12', 'programs-25',
+        )
+        edited['inventory'] = [
+            {
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': server.item_by_id(item_id)['cat'],
+                'name': server.item_by_id(item_id)['name'], 'qty': 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            }
+            for item_id in item_ids
+        ]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add Cyberdeck loadout test items', 'data': edited,
+        })
+        by_name = {item['name']: item for item in updated['data']['inventory']}
+        deck = by_name['Cyberdeck (Standard Quality)']
+        backup = by_name['Backup Drive']
+        bushido = by_name['Bushido Accelerator']
+        armor = by_name['Armor']
+        killer = by_name['Killer']
+        management = self.call(server.Handler.api_character_modifications, self.match(1))
+        deck_payload = next(item for item in management['cyberdeck_hosts']
+                            if item['instance_id'] == deck['instance_id'])
+        self.assertEqual(deck_payload['slot_pools']['mixed'], {'total': 7, 'used': 0})
+        backup_payload = next(item for item in management['cyberdeck_items']
+                              if item['instance_id'] == backup['instance_id'])
+        self.assertTrue(backup_payload['compatibility'][deck['instance_id']]['allowed'])
+
+        installed_backup = self.call(
+            server.Handler.api_character_modification_install, self.match(1), {
+                'revision': 1, 'host_instance_id': deck['instance_id'],
+                'upgrade_instance_id': backup['instance_id'],
+                'manual_confirm': False, 'reason': 'Install Backup Drive in selected deck',
+            })
+        backup_mod_id = installed_backup['modification_id']
+        installed_killer = self.call(
+            server.Handler.api_character_modification_install, self.match(1), {
+                'revision': 2, 'host_instance_id': deck['instance_id'],
+                'upgrade_instance_id': killer['instance_id'],
+                'manual_confirm': False, 'reason': 'Install Killer Black ICE',
+            })
+        self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 3, 'host_instance_id': deck['instance_id'],
+            'upgrade_instance_id': armor['instance_id'],
+            'manual_confirm': False, 'reason': 'Install Armor Defender Program',
+        })
+        effective = installed_killer['character']['derived']['effective_cyberdecks'][
+            deck['instance_id']]
+        self.assertEqual(effective['slots_used'], 4)
+        final_management = self.call(server.Handler.api_character_modifications, self.match(1))
+        deck_payload = next(item for item in final_management['cyberdeck_hosts']
+                            if item['instance_id'] == deck['instance_id'])
+        self.assertEqual(deck_payload['slot_pools']['mixed'], {'total': 7, 'used': 5})
+        with self.assertRaises(server.ApiError) as overflow:
+            self.call(server.Handler.api_character_modification_install, self.match(1), {
+                'revision': 4, 'host_instance_id': deck['instance_id'],
+                'upgrade_instance_id': bushido['instance_id'],
+                'manual_confirm': False, 'reason': 'Try overflowing Cyberdeck slots',
+            })
+        self.assertEqual(overflow.exception.status, 400)
+        backup_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$', f'1/{backup_mod_id}')
+        removed = self.call(server.Handler.api_character_modification_action,
+                            backup_match, {
+            'revision': 4, 'action': 'remove',
+            'reason': 'Uninstall Backup Drive from Cyberdeck',
+        })
+        backup_after = next(item for item in removed['character']['data']['inventory']
+                            if item['instance_id'] == backup['instance_id'])
+        self.assertEqual(backup_after['state'], 'carried')
+        self.assertEqual(removed['character']['derived']['effective_cyberdecks'][
+            deck['instance_id']]['slots_used'], 3)
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertTrue(any('Backup Drive' in entry['reason']
+                            for entry in ledger['entries']))
+
     def test_vehicle_garage_installs_prerequisites_and_preserves_nomad_access_semantics(self):
         edited = copy.deepcopy(self.character_data)
         edited['inventory'] = [
@@ -1740,6 +1820,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertNotIn('inventory', combat_visible['data'])
         self.assertNotIn('effective_weapons', combat_visible['derived'])
         self.assertNotIn('effective_vehicles', combat_visible['derived'])
+        self.assertNotIn('effective_cyberdecks', combat_visible['derived'])
         self.assertNotIn('modifications', combat_visible['derived'])
 
         self.current = self.user('runner')
