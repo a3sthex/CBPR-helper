@@ -493,6 +493,116 @@
           "source": "IR5 115"
         }
       ]
+    },
+    {
+      "id": "power-rebuild-effective",
+      "catalog_id": "gun_upgrades-0",
+      "label_en": "Power Rebuild",
+      "label_ru": "Power Rebuild",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "power-rebuild-tag",
+          "target": "weapon.tag",
+          "operation": "grant",
+          "value": "Power Weapon",
+          "source": "CEMK 30"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "power-critical-bonus-damage",
+          "text_en": "When this weapon causes a Critical Injury, increase that Critical Injury's Bonus Damage by 5.",
+          "text_ru": "Когда это оружие наносит Critical Injury, увеличьте Bonus Damage этой травмы на 5.",
+          "condition": "critical_injury_caused_by_host",
+          "source": "CEMK 30"
+        },
+        {
+          "id": "power-ricochet-shot",
+          "text_en": "Ricochet shots use the source-specific path/range rules and normally take -4; Aimed Shots use only their Aimed Shot penalty.",
+          "text_ru": "Ricochet shots используют правила траектории/дистанции из источника и обычно получают -4; Aimed Shot применяет только свой штраф.",
+          "condition": "manual_ricochet_attack",
+          "source": "CEMK 30"
+        }
+      ]
+    },
+    {
+      "id": "smart-rebuild-tag",
+      "catalog_id": "gun_upgrades-1",
+      "label_en": "Smart Rebuild",
+      "label_ru": "Smart Rebuild",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "smart-rebuild-weapon-tag",
+          "target": "weapon.tag",
+          "operation": "grant",
+          "value": "Smart Weapon",
+          "source": "CEMK 31"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "smart-rebuild-improved-ammunition",
+          "text_en": "The weapon may load compatible Improved Smart Ammunition; resolve the ammunition's own advantages separately.",
+          "text_ru": "Оружие может использовать совместимые Improved Smart Ammunition; преимущества самих боеприпасов применяются отдельно.",
+          "condition": "improved_smart_ammunition_loaded",
+          "source": "CEMK 31"
+        }
+      ]
+    },
+    {
+      "id": "smart-rebuild-attack-bonus",
+      "catalog_id": "gun_upgrades-1",
+      "label_en": "Smart Rebuild Connection",
+      "label_ru": "Подключение Smart Rebuild",
+      "requirements": {
+        "installed_any": ["cyberware-61", "cyberware-125"],
+        "label_en": "Interface Plugs or Subdermal Grip installed",
+        "label_ru": "Установлены Interface Plugs или Subdermal Grip"
+      },
+      "effects": [
+        {
+          "id": "smart-rebuild-connected-attack-bonus",
+          "target": "weapon.attack_check",
+          "operation": "add",
+          "value": 1,
+          "source": "CEMK 31"
+        }
+      ],
+      "manual_rules": []
+    },
+    {
+      "id": "tech-rebuild-effective",
+      "catalog_id": "gun_upgrades-2",
+      "label_en": "Tech Rebuild",
+      "label_ru": "Tech Rebuild",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "tech-rebuild-weapon-tag",
+          "target": "weapon.tag",
+          "operation": "grant",
+          "value": "Tech Weapon",
+          "source": "CEMK 31"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "tech-rebuild-charge-action",
+          "text_en": "Spend the Move Action to charge this weapon. The charge lasts until fired or 60 seconds / 20 rounds.",
+          "text_ru": "Потратьте Move Action, чтобы зарядить оружие. Заряд сохраняется до выстрела или 60 секунд / 20 раундов.",
+          "condition": "manual_charge_state",
+          "source": "CEMK 31"
+        },
+        {
+          "id": "tech-rebuild-charged-shot",
+          "text_en": "The next charged non-explosive attack is ROF1, can pass through Thin Cover, and ignores half target SP rounded up; Cover does not lose HP.",
+          "text_ru": "Следующая заряженная non-explosive атака становится ROF1, проходит через Thin Cover и игнорирует половину SP цели с округлением вверх; Cover не теряет HP.",
+          "condition": "next_charged_non_explosive_attack",
+          "source": "CEMK 31"
+        }
+      ]
     }
   ]
 }

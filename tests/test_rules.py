@@ -454,6 +454,67 @@ class WeaponModificationEffectTests(unittest.TestCase):
         self.assertEqual({choice['value'] for choice in schema['choices']},
                          {'smg4', 'machine_pistol4'})
 
+    def test_rebuilds_grant_tags_requirements_and_manual_combat_rules(self):
+        host = self.owned('guns-6', '3' * 32)
+        power = self.owned('gun_upgrades-0', '4' * 32)
+        smart = self.owned('gun_upgrades-1', '5' * 32)
+        tech = self.owned('gun_upgrades-2', '6' * 32)
+        for item in (power, smart, tech):
+            item['state'] = 'installed'
+        owned = {item['instance_id']: item for item in (host, power, smart, tech)}
+
+        def modification(upgrade, marker):
+            return {
+                'modification_id': marker * 32,
+                'host_instance_id': host['instance_id'],
+                'upgrade_instance_id': upgrade['instance_id'],
+                'slots_used': 2, 'active': True,
+                'configuration': {
+                    'effect_rules': server.weapon_modification_rules_for_catalog(
+                        upgrade['catalog_item_id'])},
+            }
+
+        power_result = server.evaluate_effective_weapon(
+            host, [modification(power, '7')], owned,
+            {'inventory': [host, power], 'cyberware': []})
+        self.assertIn('Power Weapon', power_result['tags'])
+        power_source = next(source for source in power_result['sources']
+                            if source['id'] == 'power-rebuild-effective')
+        self.assertEqual(len(power_source['manual_rules']), 2)
+        self.assertTrue(all(rule['manual_resolution_required']
+                            for rule in power_source['manual_rules']))
+
+        smart_mod = modification(smart, '8')
+        smart_missing = server.evaluate_effective_weapon(
+            host, [smart_mod], owned, {'inventory': [host, smart], 'cyberware': []})
+        self.assertIn('Smart Weapon', smart_missing['tags'])
+        self.assertEqual(smart_missing['attack_modifier'], 0)
+        connected_character = {
+            'inventory': [host, smart],
+            'cyberware': [{
+                'instance_id': '9' * 32, 'key': 'cyberware-61',
+                'catalog_item_id': 'cyberware-61', 'name': 'Interface Plugs',
+                'state': 'installed',
+            }],
+        }
+        smart_connected = server.evaluate_effective_weapon(
+            host, [smart_mod], owned, connected_character)
+        self.assertEqual(smart_connected['attack_modifier'], 1)
+
+        tech_result = server.evaluate_effective_weapon(
+            host, [modification(tech, 'a')], owned,
+            {'inventory': [host, tech], 'cyberware': []})
+        self.assertIn('Tech Weapon', tech_result['tags'])
+        tech_source = next(source for source in tech_result['sources']
+                           if source['id'] == 'tech-rebuild-effective')
+        self.assertEqual(len(tech_source['manual_rules']), 2)
+        self.assertEqual(host['mechanics']['rof'], 1)
+
+        conflict = server.weapon_upgrade_compatibility(
+            host, smart, [modification(power, 'b')], owned)
+        self.assertFalse(conflict['allowed'])
+        self.assertTrue(any('Conflicts' in reason for reason in conflict['reasons']))
+
     def test_bayonet_concealability_has_manual_alternate_attack_rule(self):
         host = self.owned('guns-5', '5' * 32)  # Shotgun / Shoulder Arms
         bayonet = self.owned('gun_upgrades-3', '6' * 32)

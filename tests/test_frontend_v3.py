@@ -78,6 +78,8 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('data-upgrade-config', source)
         self.assertIn('autofire_profiles', source)
         self.assertIn('Autofire Check', source)
+        self.assertIn('weaponEffective.tags', source)
+        self.assertIn('effect-manual-text', source)
 
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')

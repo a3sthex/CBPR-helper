@@ -666,6 +666,46 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         modification = installed['management']['modifications'][0]
         self.assertEqual(modification['configuration']['choices']['autofire_mode'], 'smg4')
 
+    def test_smart_rebuild_applies_connected_attack_bonus_and_removes_cleanly(self):
+        edited = copy.deepcopy(self.character_data)
+        edited['inventory'] = [
+            {
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': server.item_by_id(item_id)['cat'],
+                'name': server.item_by_id(item_id)['name'], 'qty': 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            }
+            for item_id in ('guns-6', 'gun_upgrades-1')
+        ]
+        edited['cyberware'] = [{
+            'key': 'cyberware-61', 'catalog_item_id': 'cyberware-61',
+            'cat': 'cyberware', 'name': 'Interface Plugs', 'qty': 1,
+            'state': 'installed', 'acquisition_source': 'loot',
+        }]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Prepare Smart Rebuild test loadout', 'data': edited,
+        })
+        by_name = {item['name']: item for item in updated['data']['inventory']}
+        host, rebuild = by_name['Assault Rifle'], by_name['Smart Rebuild']
+        installed = self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 1, 'host_instance_id': host['instance_id'],
+            'upgrade_instance_id': rebuild['instance_id'], 'manual_confirm': False,
+            'reason': 'Install Smart Rebuild',
+        })
+        modification_id = installed['modification_id']
+        effective = installed['character']['derived']['effective_weapons'][host['instance_id']]
+        self.assertIn('Smart Weapon', effective['tags'])
+        self.assertEqual(effective['attack_modifier'], 1)
+        self.assertTrue(any(source['manual_rules'] for source in effective['sources']
+                            if source['id'] == 'smart-rebuild-tag'))
+        mod_match = re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{modification_id}')
+        removed = self.call(server.Handler.api_character_modification_action, mod_match, {
+            'revision': 2, 'action': 'remove', 'reason': 'Return weapon to base rebuild',
+        })
+        effective_after = removed['character']['derived']['effective_weapons'][host['instance_id']]
+        self.assertNotIn('Smart Weapon', effective_after['tags'])
+        self.assertEqual(effective_after['attack_modifier'], 0)
+
     def test_underbarrel_profile_has_independent_unloaded_magazine_and_revert(self):
         edited = copy.deepcopy(self.character_data)
         catalog_ids = ('guns-6', 'gun_upgrades-6', 'ammo-3')

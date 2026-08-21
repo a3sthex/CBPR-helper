@@ -2877,6 +2877,17 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Shotgun Auto Control Group пока показывает `MANUAL RULE`, поскольку результат зависит от реально загруженных slugs/shells, расхода 4 rounds, другого Skill и dodge penalty;
 - Autofire damage по margin/DV и фактическое списание 10 rounds остаются будущей combat action integration, а не симулируются простой кнопкой.
 
+**Статус B.6.6 — реализованы Weapon Rebuild identities и requirements:**
+
+- Power/Smart/Tech Rebuild остаются взаимоисключающими через `weapon_rebuild` group и занимают по 2 attachment slots;
+- каждый rebuild декларативно выдаёт effective tag `Power Weapon`, `Smart Weapon` или `Tech Weapon`, не переписывая base item;
+- Smart Rebuild автоматически даёт `+1 Ranged Attack Check` только при Interface Plugs/Subdermal Grip, аналогично проверенному Smartgun requirement;
+- Improved Smart Ammunition остаётся manual ammo rule до единого loaded-ammo state;
+- Power Critical Injury +5 и ricochet trajectory/penalties показываются source-specific `MANUAL RULE`, поскольку требуют результата damage/critical и геометрии атаки;
+- Tech charge, 20-round/60-second duration, Thin Cover и half-SP charged shot показываются как manual state/action rules, а не как постоянное игнорирование SP;
+- Character Sheet показывает rebuild tag, active/inactive requirement, automated Attack bonus и все ручные действия с source/page;
+- base ROF/Damage/SP не изменяются до выполнения контекстного attack flow.
+
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
@@ -2892,8 +2903,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
    - дальше: только подтверждённые source-specific overrides и presets с доступными engine targets.
 10. ✅ Общая relational host/modification model и atomic lifecycle.
 11. ◐ Weapon Upgrades прямо в Character Sheet.
-    - готово: instance binding, compatibility/slot pools, Rail, lifecycle, Magazines/Smartgun/Bayonet/scopes, Underbarrels и configurable Autofire profiles;
-    - дальше: rebuilds, Range Table choices, full Autofire action/ammo и Tech overrides.
+    - готово: instance binding, slot pools, lifecycle, Magazines/Smartgun/Bayonet/scopes, Underbarrels, Autofire profiles и Power/Smart/Tech Rebuild tags/rules;
+    - дальше: Range Table choices, contextual ricochet/charge, full Autofire action/ammo и Tech overrides.
 12. Vehicle Upgrades и Garage integration.
 13. Cyberdeck/Cyberware/Armor/Tech modification hosts.
 14. JSON import.

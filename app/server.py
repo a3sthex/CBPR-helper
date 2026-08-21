@@ -315,7 +315,8 @@ def load_effect_rules():
                     effect.get('target') not in {'weapon.magazine', 'weapon.concealable',
                                                  'weapon.attack_check',
                                                  'weapon.alternate_profile',
-                                                 'weapon.autofire_profile'}):
+                                                 'weapon.autofire_profile',
+                                                 'weapon.tag'}):
                 raise RuntimeError(f'Invalid weapon effect in rule {rule_id}')
             if effect['target'] == 'weapon.magazine':
                 values = effect.get('values')
@@ -371,6 +372,10 @@ def load_effect_rules():
                         ('enhanced_multiplier' in effect and
                          effect.get('enhanced_multiplier') not in (1, 2, 3, 4))):
                     raise RuntimeError(f'Invalid Autofire enhancement in rule {rule_id}')
+            elif effect['target'] == 'weapon.tag':
+                if (effect.get('operation') != 'grant' or
+                        effect.get('value') not in ('Power Weapon', 'Smart Weapon', 'Tech Weapon')):
+                    raise RuntimeError(f'Invalid weapon tag in rule {rule_id}')
             elif (effect.get('operation') != 'add' or
                   not isinstance(effect.get('value'), (int, float)) or
                   abs(effect['value']) > 10):
@@ -504,6 +509,7 @@ def evaluate_effective_weapon(host, modifications, owned_by_id, character):
     attack_modifier = 0
     alternate_attacks = []
     autofire_profiles = []
+    weapon_tags = []
     applied = []
     sources = []
     installed_cyberware = {
@@ -586,6 +592,9 @@ def evaluate_effective_weapon(host, modifications, owned_by_id, character):
                             'source': effect.get('source'),
                         })
                         autofire_profiles.append(profile)
+                elif effect['target'] == 'weapon.tag' and requirements_met:
+                    if effect.get('value') not in weapon_tags:
+                        weapon_tags.append(effect.get('value'))
                 elif effect['target'] == 'weapon.attack_check' and requirements_met:
                     effect['before'] = attack_modifier
                     attack_modifier += effect['value']
@@ -621,6 +630,7 @@ def evaluate_effective_weapon(host, modifications, owned_by_id, character):
         'attack_modifier': attack_modifier,
         'alternate_attacks': alternate_attacks,
         'autofire_profiles': autofire_profiles,
+        'tags': weapon_tags,
         'slot_pools': slot_pools,
         'slots_total': sum(pool['total'] for pool in slot_pools.values()),
         'slots_used': sum(pool['used'] for pool in slot_pools.values()),
