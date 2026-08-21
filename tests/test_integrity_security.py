@@ -409,6 +409,79 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
                              if item['name'] == 'Stim')
         self.assertEqual(restored_stim['qty'], 1)
 
+    def test_use_preset_creates_replaces_and_reverts_active_effect(self):
+        edited = copy.deepcopy(self.character_data)
+        edited['inventory'] = [{
+            'key': 'gear-161', 'catalog_item_id': 'gear-161', 'cat': 'gear',
+            'name': 'Boost', 'qty': 2, 'state': 'carried',
+            'acquisition_source': 'loot',
+        }]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add recovered Boost doses', 'data': edited,
+        })
+        boost = updated['data']['inventory'][0]
+        item_match = re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{boost["instance_id"]}')
+        first = self.call(server.Handler.api_character_item_action, item_match, {
+            'revision': 1, 'action': 'use', 'amount': 1,
+        })
+        self.assertEqual(first['character']['revision'], 2)
+        self.assertEqual(len(first['created_effects']), 1)
+        self.assertEqual(first['created_effects'][0]['definition']['target'], 'character.stat.INT')
+        self.assertEqual(first['created_effects'][0]['preset_id'], 'boost-primary-effect')
+        self.assertEqual(first['created_effects'][0]['source_item_instance_id'], boost['instance_id'])
+        self.assertTrue(first['created_effects'][0]['context']['manual_rules'])
+        self.assertEqual(first['created_effects'][0]['duration_type'], 'campaign_time')
+        self.assertEqual(first['created_effects'][0]['context']['campaign_minutes'], 1440)
+        self.assertTrue(first['created_effects'][0]['context']['campaign_clock_manual'])
+        self.assertIsNone(first['created_effects'][0]['expires_at'])
+        self.assertEqual(first['character']['derived']['effects']['stats']['INT']['effective'], 8)
+        self.assertTrue(first['manual_rules'])
+        first_effect_id = first['created_effects'][0]['effect_id']
+        remaining = first['character']['data']['inventory'][0]
+        self.assertEqual(remaining['qty'], 1)
+
+        second_match = re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{remaining["instance_id"]}')
+        second = self.call(server.Handler.api_character_item_action, second_match, {
+            'revision': 2, 'action': 'use', 'amount': 1,
+        })
+        self.assertEqual(second['character']['revision'], 3)
+        self.assertFalse(second['character']['data']['inventory'])
+        self.assertEqual(second['character']['derived']['effects']['stats']['INT']['effective'], 8)
+        second_effect_id = second['created_effects'][0]['effect_id']
+        old_effect = self.conn.execute(
+            'SELECT active FROM active_effect_instances WHERE effect_id=?',
+            (first_effect_id,)).fetchone()
+        self.assertEqual(old_effect['active'], 0)
+
+        history = self.call(server.Handler.api_character_ledger, self.match(1))
+        latest = history['entries'][0]
+        self.assertTrue(latest['can_revert'])
+        delta = self.conn.execute(
+            'SELECT delta_json FROM character_ledger WHERE id=?',
+            (latest['id'],)).fetchone()['delta_json']
+        delta = json.loads(delta)
+        self.assertEqual(delta['created_effect_ids'], [second_effect_id])
+        self.assertIn(first_effect_id, delta['replaced_effect_ids'])
+        reverted = self.call(
+            server.Handler.api_character_ledger_revert, self.match(1, latest['id']),
+            {'revision': 3, 'reason': 'Undo accidental second dose'},
+        )
+        self.assertEqual(reverted['revision'], 4)
+        self.assertEqual(reverted['data']['inventory'][0]['qty'], 1)
+        self.assertEqual(reverted['derived']['effects']['stats']['INT']['effective'], 8)
+        restored_old = self.conn.execute(
+            'SELECT active FROM active_effect_instances WHERE effect_id=?',
+            (first_effect_id,)).fetchone()
+        archived_new = self.conn.execute(
+            'SELECT active,archived_at FROM active_effect_instances WHERE effect_id=?',
+            (second_effect_id,)).fetchone()
+        self.assertEqual(restored_old['active'], 1)
+        self.assertEqual(archived_new['active'], 0)
+        self.assertIsNotNone(archived_new['archived_at'])
+        after_revert_ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertFalse(after_revert_ledger['entries'][0]['can_revert'])
+        self.assertTrue(after_revert_ledger['entries'][0]['delta']['effect_linked_revert'])
+
     def test_active_effect_instances_apply_expire_tick_and_audit(self):
         character = copy.deepcopy(self.character_data)
         character['skills']['Handgun'] = 3

@@ -2789,7 +2789,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Character Sheet показывает status, target, operation/value, duration, actor/reason и кнопки Disable/Enable/Tick/Archive;
 - активные экземпляры меняют effective STAT/Skill checks и реальные rolls, не меняя base values;
 - public Dossier не получает private reason/actor/source instance details;
-- автоматическая связь `Use → active effect`, Session-authoritative round ticking и source item/condition presets остаются следующими интеграциями.
+- автоматическая связь `Use → active effect` вынесена в следующий curated подэтап; Session-authoritative round ticking и campaign clock остаются будущими интеграциями.
 
 **Статус B.5.3 — запущены Curated Item Effect Overrides:**
 
@@ -2801,7 +2801,20 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Character Sheet показывает Curated Item Effects, requirement state, source и manual condition; реальные rolls используют автоматический modifier;
 - Equip/Activate/Deactivate меняют состояние item effect и создают отдельную readable строку активации в Ledger;
 - custom item не может подделать себе effect coverage;
-- расширение curated overrides и безопасные `Use → effect` presets продолжаются постепенно с source-specific regression tests.
+- расширение curated overrides продолжается постепенно с source-specific regression tests.
+
+**Статус B.5.4 — реализована первая связь `Use → Active Effect`:**
+
+- `effects.json` поддерживает строго валидируемые `use_effect_rules` с catalog item, duration, automated definitions, manual secondary rules и source/page;
+- migration 9 добавляет `preset_id/context_json`, поэтому manual secondary rules и source snapshot остаются рядом с Active Effect даже после исчезновения использованной дозы;
+- первые безопасные presets: `Boost → INT +2 на 24 часа игрового времени` и `Synthcoke → REF +1 на 4 часа игрового времени`;
+- in-world часы хранятся как `campaign_time` metadata и пока завершаются вручную: они намеренно не приравнены к реальным часам сервера до появления Campaign Clock;
+- использование дозы атомарно уменьшает Inventory и создаёт связанный `active_effect_instance` с `source_item_instance_id`;
+- повторная доза с `replace` не складывает бонус: новый primary effect заменяет прежний;
+- Secondary Effect, addiction, Humanity Loss и roleplay-условия не симулируются без проверок и показываются отдельным `MANUAL RULE`;
+- Use Resolution явно разделяет автоматический modifier, ручные последствия и полное описание предмета;
+- item-action Ledger хранит created/replaced effect IDs; безопасный revert возвращает дозу, архивирует созданный эффект и восстанавливает предыдущий ещё не истёкший effect;
+- Pharma/Drug правила без однозначного allowlisted numeric effect остаются ручными до появления нужных targets/resources/conditions.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -2812,10 +2825,10 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 6. ✅ Structured Effects & Modifiers declarative schema/evaluator и первые curated synergies.
 7. ✅ Base/modifiers/effective breakdown для STAT/Skill checks в Character Sheet и Rolls.
 8. ✅ Temporary/custom active effect instances; manual/real-time duration и explicit round ticking.
-   - остаётся: Session-authoritative rounds, `Use → effect` presets и campaign clock.
+   - остаётся: Session-authoritative rounds и campaign clock.
 9. ◐ Curated effect overrides для Data Pool с source metadata.
-   - готово: item-effect schema, coverage markers и Agent (Standard);
-   - дальше: подтверждённые source-specific overrides и `Use → effect` presets.
+   - готово: item-effect/use-effect schemas, coverage markers, Agent (Standard), Boost и Synthcoke;
+   - дальше: только подтверждённые source-specific overrides и presets с доступными engine targets.
 10. Общая host/modification model.
 11. Weapon Upgrades прямо в Character Sheet.
 12. Vehicle Upgrades и Garage integration.

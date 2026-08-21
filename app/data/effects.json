@@ -88,5 +88,65 @@
         }
       ]
     }
+  ],
+  "use_effect_rules": [
+    {
+      "id": "boost-primary-effect",
+      "catalog_id": "gear-161",
+      "label_en": "Boost Primary Effect",
+      "label_ru": "Основной эффект Boost",
+      "duration_type": "campaign_time",
+      "duration_value": 1440,
+      "effects": [
+        {
+          "id": "boost-primary-int-bonus",
+          "target": "character.stat.INT",
+          "operation": "add",
+          "value": 2,
+          "stack_group": "boost_primary_int",
+          "stack_policy": "replace",
+          "priority": 300,
+          "source": "CP:R 357"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "boost-secondary-addiction",
+          "text_en": "Resolve the DV17 Secondary Effect and addiction separately. While addicted and not under Boost's Primary Effect, INT is reduced by 2.",
+          "text_ru": "Отдельно примените Secondary Effect DV17 и зависимость. При зависимости вне Primary Effect Boost значение INT уменьшается на 2.",
+          "condition": "secondary_effect_and_addiction",
+          "source": "CP:R 357"
+        }
+      ]
+    },
+    {
+      "id": "synthcoke-primary-effect",
+      "catalog_id": "gear-173",
+      "label_en": "Synthcoke Primary Effect",
+      "label_ru": "Основной эффект Synthcoke",
+      "duration_type": "campaign_time",
+      "duration_value": 240,
+      "effects": [
+        {
+          "id": "synthcoke-primary-ref-bonus",
+          "target": "character.stat.REF",
+          "operation": "add",
+          "value": 1,
+          "stack_group": "synthcoke_primary_ref",
+          "stack_policy": "replace",
+          "priority": 300,
+          "source": "CP:R 358"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "synthcoke-paranoia-and-addiction",
+          "text_en": "Roleplay the Primary Effect paranoia and resolve the DV15 Secondary Effect/addiction separately. Addiction penalties are not created automatically.",
+          "text_ru": "Отыгрывайте паранойю Primary Effect и отдельно применяйте Secondary Effect DV15/зависимость. Штрафы зависимости не создаются автоматически.",
+          "condition": "roleplay_and_secondary_effect",
+          "source": "CP:R 358"
+        }
+      ]
+    }
   ]
 }

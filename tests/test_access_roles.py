@@ -52,7 +52,7 @@ class AccessRoleMigrationTests(unittest.TestCase):
             self.assertEqual(roles, {'alice': 'gm', 'bob': 'player'})
             self.assertEqual(
                 conn.execute('SELECT COUNT(*) n FROM schema_migrations').fetchone()['n'],
-                server.MIGRATION_ACTIVE_EFFECTS)
+                server.MIGRATION_EFFECT_PRESETS)
             self.assertEqual(len(list(Path(directory).glob('campaign.db.backup-*'))), 1)
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(users)')}
             self.assertTrue({'account_role', 'show_display_name', 'vk_user_id',
@@ -78,6 +78,9 @@ class AccessRoleMigrationTests(unittest.TestCase):
                 self.assertTrue(conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
                 ).fetchone())
+            effect_columns = {row['name'] for row in conn.execute(
+                'PRAGMA table_info(active_effect_instances)')}
+            self.assertTrue({'preset_id', 'context_json'} <= effect_columns)
             legacy_npc = conn.execute("SELECT * FROM session_combatants WHERE name='Legacy NPC'").fetchone()
             self.assertEqual((legacy_npc['sp_head_max'], legacy_npc['sp_body_max'],
                               legacy_npc['shield_max'], legacy_npc['ammo_max']),

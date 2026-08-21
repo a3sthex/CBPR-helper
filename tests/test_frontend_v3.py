@@ -57,6 +57,13 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('item_sources', source)
         self.assertIn('effect_coverage', source)
 
+    def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
+        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        self.assertIn('created_effects', source)
+        self.assertIn('manual_rules', source)
+        self.assertIn('Use Resolution', source)
+        self.assertIn('Full item description', source)
+
     def test_character_sheet_manages_temporary_custom_effects(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
         self.assertIn('function openCustomEffectModal', source)

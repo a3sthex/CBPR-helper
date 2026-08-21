@@ -148,10 +148,13 @@ def load_effect_rules():
         payload = json.load(handle)
     rules = payload.get('synergy_rules')
     item_rules = payload.get('item_effect_rules') or []
+    use_rules = payload.get('use_effect_rules') or []
     if (payload.get('version') != 1 or
-            set(payload) - {'version', 'rules_version', 'synergy_rules', 'item_effect_rules'} or
+            set(payload) - {'version', 'rules_version', 'synergy_rules',
+                            'item_effect_rules', 'use_effect_rules'} or
             not isinstance(rules, list) or len(rules) > 500 or
-            not isinstance(item_rules, list) or len(item_rules) > 500):
+            not isinstance(item_rules, list) or len(item_rules) > 500 or
+            not isinstance(use_rules, list) or len(use_rules) > 500):
         raise RuntimeError('Unsupported effects data format')
     seen = set()
     for rule in rules:
@@ -216,26 +219,65 @@ def load_effect_rules():
                     not str(manual.get('text_en') or '').strip() or
                     not str(manual.get('text_ru') or '').strip()):
                 raise RuntimeError(f'Invalid manual rule in item effect rule {rule_id}')
+    for rule in use_rules:
+        if not isinstance(rule, dict) or set(rule) - {
+                'id', 'catalog_id', 'label_en', 'label_ru', 'duration_type',
+                'duration_value', 'effects', 'manual_rules'}:
+            raise RuntimeError('Use effect rule contains non-allowlisted fields')
+        rule_id = str(rule.get('id') or '')
+        if not re.fullmatch(r'[a-z0-9_.-]{3,100}', rule_id) or rule_id in seen:
+            raise RuntimeError('Invalid or duplicate use effect rule id')
+        seen.add(rule_id)
+        item = item_by_id(rule.get('catalog_id'))
+        if not item or not item.get('consumable'):
+            raise RuntimeError(f'Unknown or non-consumable item in use effect rule {rule_id}')
+        duration_type = rule.get('duration_type')
+        duration_value = rule.get('duration_value')
+        if (duration_type not in ACTIVE_EFFECT_DURATIONS or duration_type == 'manual' or
+                not isinstance(duration_value, int) or duration_value < 1 or
+                (duration_type == 'real_time' and duration_value > 10080) or
+                (duration_type == 'rounds' and duration_value > 100) or
+                (duration_type == 'campaign_time' and duration_value > 525600)):
+            raise RuntimeError(f'Invalid duration in use effect rule {rule_id}')
+        effects = rule.get('effects') or []
+        manual_rules = rule.get('manual_rules') or []
+        if not isinstance(effects, list) or not effects or not isinstance(manual_rules, list):
+            raise RuntimeError(f'Use effect rule {rule_id} has no automated effect')
+        for effect in effects:
+            validate_effect_definition(effect)
+        for manual in manual_rules:
+            if (not isinstance(manual, dict) or
+                    set(manual) - {'id', 'text_en', 'text_ru', 'condition', 'source'} or
+                    not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(manual.get('id') or '')) or
+                    not str(manual.get('text_en') or '').strip() or
+                    not str(manual.get('text_ru') or '').strip()):
+                raise RuntimeError(f'Invalid manual rule in use effect rule {rule_id}')
     _effect_rules = payload
     return payload
 
 
 def item_effect_coverage(catalog_id):
-    rules = [rule for rule in load_effect_rules().get('item_effect_rules') or []
-             if rule.get('catalog_id') == catalog_id]
+    payload = load_effect_rules()
+    rules = [
+        ('state', rule) for rule in payload.get('item_effect_rules') or []
+        if rule.get('catalog_id') == catalog_id]
+    rules += [
+        ('use', rule) for rule in payload.get('use_effect_rules') or []
+        if rule.get('catalog_id') == catalog_id]
     if not rules:
         return None
     return {
-        'automated': any(rule.get('effects') for rule in rules),
-        'manual': any(rule.get('manual_rules') for rule in rules),
+        'automated': any(rule.get('effects') for _, rule in rules),
+        'manual': any(rule.get('manual_rules') for _, rule in rules),
         'rules': [{
-            'id': rule['id'], 'label_en': rule.get('label_en') or rule['id'],
+            'id': rule['id'], 'kind': kind,
+            'label_en': rule.get('label_en') or rule['id'],
             'label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
             'source': next((effect.get('source') for effect in rule.get('effects') or []
                             if effect.get('source')), None) or
                       next((manual.get('source') for manual in rule.get('manual_rules') or []
                             if manual.get('source')), None),
-        } for rule in rules],
+        } for kind, rule in rules],
     }
 
 
@@ -541,7 +583,8 @@ def apply_modifier_pipeline(base_value, modifiers):
     return value, resolve_modifier_stack(modifiers)
 
 
-ACTIVE_EFFECT_DURATIONS = {'manual', 'real_time', 'rounds'}
+ACTIVE_EFFECT_DURATIONS = {'manual', 'real_time', 'rounds', 'campaign_time'}
+CUSTOM_EFFECT_DURATIONS = {'manual', 'real_time', 'rounds'}
 ACTIVE_EFFECT_ACTIONS = {'enable', 'disable', 'tick'}
 
 
@@ -567,7 +610,14 @@ def effect_instance_payload(row, now=None):
         valid = True
     except (TypeError, ValueError, json.JSONDecodeError, RuntimeError):
         definition, valid = {}, False
+    try:
+        context = json.loads(item.pop('context_json', '{}') or '{}')
+        if not isinstance(context, dict):
+            context = {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        context = {}
     item['definition'] = definition
+    item['context'] = context
     item['active'] = bool(item.get('active'))
     item['valid'] = valid
     item['status'] = effect_runtime_status(item, now) if valid else 'invalid'
@@ -585,6 +635,70 @@ def character_effect_instances(conn, character_id, include_archived=False):
         ' ORDER BY e.created DESC,e.effect_id', (int(character_id),)).fetchall()
     now = time.time()
     return [effect_instance_payload(row, now) for row in rows]
+
+
+def instantiate_consumable_effects(conn, character_id, actor_user_id, item_entry, now=None):
+    """Create allowlisted effect snapshots for one consumed catalog item."""
+    now = time.time() if now is None else now
+    catalog_id = catalog_item_id_for_entry(item_entry)
+    rules = [rule for rule in load_effect_rules().get('use_effect_rules') or []
+             if rule.get('catalog_id') == catalog_id]
+    created = []
+    replaced = []
+    for rule in rules:
+        duration_type = rule['duration_type']
+        duration_value = int(rule['duration_value'])
+        expires_at = now + duration_value * 60 if duration_type == 'real_time' else None
+        remaining_rounds = duration_value if duration_type == 'rounds' else None
+        for definition in rule.get('effects') or []:
+            stack_group = definition.get('stack_group') or definition['id']
+            if definition.get('stack_policy') in ('replace', 'unique'):
+                old_rows = conn.execute(
+                    "SELECT * FROM active_effect_instances WHERE character_id=? "
+                    "AND source_type='consumable' AND active=1 AND archived_at IS NULL",
+                    (int(character_id),)).fetchall()
+                for old_row in old_rows:
+                    try:
+                        old_definition = json.loads(old_row['definition_json'])
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                    if (old_definition.get('stack_group') or old_definition.get('id')) == stack_group:
+                        conn.execute(
+                            'UPDATE active_effect_instances SET active=0,updated=? WHERE effect_id=?',
+                            (now, old_row['effect_id']))
+                        replaced.append(old_row['effect_id'])
+            effect_id = secrets.token_hex(16)
+            label = str(rule.get('label_en') or rule['id'])[:120]
+            if len(rule.get('effects') or []) > 1:
+                label = f'{label}: {definition["target"]}'[:120]
+            reason = f'Use {item_entry.get("custom_name") or item_entry.get("name") or catalog_id}'
+            context = {
+                'rules_version': load_effect_rules().get('rules_version'),
+                'label_en': rule.get('label_en') or rule['id'],
+                'label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
+                'manual_rules': copy.deepcopy(rule.get('manual_rules') or []),
+                'campaign_minutes': duration_value if duration_type == 'campaign_time' else None,
+                'campaign_clock_manual': duration_type == 'campaign_time',
+            }
+            conn.execute(
+                'INSERT INTO active_effect_instances(effect_id,character_id,source_type,'
+                'source_item_instance_id,preset_id,label,definition_json,context_json,'
+                'duration_type,started_at,expires_at,remaining_rounds,active,created_by,'
+                'reason,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)',
+                (effect_id, int(character_id), 'consumable', item_entry.get('instance_id'),
+                 rule['id'], label, json.dumps(definition, ensure_ascii=False),
+                 json.dumps(context, ensure_ascii=False), duration_type, now,
+                 expires_at, remaining_rounds, int(actor_user_id), reason, now, now))
+            row = conn.execute(
+                'SELECT e.*,u.display_name actor FROM active_effect_instances e '
+                'JOIN users u ON u.id=e.created_by WHERE e.effect_id=?',
+                (effect_id,)).fetchone()
+            created.append(effect_instance_payload(row, now))
+    manual_rules = [
+        copy.deepcopy(manual)
+        for rule in rules for manual in rule.get('manual_rules') or []]
+    return {'created': created, 'replaced_effect_ids': sorted(set(replaced)),
+            'manual_rules': manual_rules}
 
 
 def evaluate_character_effects(char, derived, active_effects=None):
@@ -694,7 +808,7 @@ def evaluate_character_effects(char, derived, active_effects=None):
         public_instance = {
             key: copy.deepcopy(instance.get(key)) for key in (
                 'effect_id', 'label', 'source_type', 'source_item_instance_id',
-                'duration_type', 'started_at', 'expires_at', 'remaining_rounds',
+                'preset_id', 'context', 'duration_type', 'started_at', 'expires_at', 'remaining_rounds',
                 'session_id', 'active', 'archived_at', 'actor', 'reason')
         }
         public_instance.update({
@@ -1301,8 +1415,10 @@ CREATE TABLE IF NOT EXISTS active_effect_instances(
   character_id INTEGER NOT NULL,
   source_type TEXT NOT NULL DEFAULT 'custom',
   source_item_instance_id TEXT,
+  preset_id TEXT,
   label TEXT NOT NULL,
   definition_json TEXT NOT NULL,
+  context_json TEXT NOT NULL DEFAULT '{}',
   duration_type TEXT NOT NULL DEFAULT 'manual',
   started_at REAL NOT NULL,
   expires_at REAL,
@@ -1363,6 +1479,7 @@ MIGRATION_NOTIFICATIONS = 5
 MIGRATION_TACTICAL_PROFILES = 6
 MIGRATION_ITEM_INSTANCES = 7
 MIGRATION_ACTIVE_EFFECTS = 8
+MIGRATION_EFFECT_PRESETS = 9
 DB_BACKUP_LIMIT = 5
 _RATE_LIMIT_BUCKETS = {}
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -1727,6 +1844,7 @@ def apply_schema_migrations(conn, make_backup=True):
         (MIGRATION_TACTICAL_PROFILES, 'profile media and tactical session resources'),
         (MIGRATION_ITEM_INSTANCES, 'stable character item instances'),
         (MIGRATION_ACTIVE_EFFECTS, 'active character effect instances'),
+        (MIGRATION_EFFECT_PRESETS, 'effect preset snapshots'),
     ]
     pending = [version for version, _ in migrations if version not in applied]
     if make_backup and pending:
@@ -1770,6 +1888,9 @@ def apply_schema_migrations(conn, make_backup=True):
         backfill_character_item_instances(conn)
     if MIGRATION_ACTIVE_EFFECTS not in applied:
         conn.executescript(ACTIVE_EFFECT_SCHEMA)
+    if MIGRATION_EFFECT_PRESETS not in applied:
+        ensure_column(conn, 'active_effect_instances', 'preset_id', 'TEXT')
+        ensure_column(conn, 'active_effect_instances', 'context_json', "TEXT NOT NULL DEFAULT '{}'")
     # Re-run additive CREATE IF NOT EXISTS blocks so patch-level tables added to an
     # already-applied migration remain safe during development and rolling deploys.
     conn.executescript(NETWORK_SCHEMA)
@@ -1798,6 +1919,8 @@ def apply_schema_migrations(conn, make_backup=True):
     ensure_column(conn, 'session_combatants', 'ammo_max', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'session_combatants', 'luck_current', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'session_combatants', 'luck_max', 'INTEGER NOT NULL DEFAULT 0')
+    ensure_column(conn, 'active_effect_instances', 'preset_id', 'TEXT')
+    ensure_column(conn, 'active_effect_instances', 'context_json', "TEXT NOT NULL DEFAULT '{}'")
     conn.execute('UPDATE session_combatants SET sp_head_max=sp_head '
                  'WHERE sp_head_max=0 AND sp_head>0')
     conn.execute('UPDATE session_combatants SET sp_body_max=sp_body '
@@ -3049,7 +3172,7 @@ def clean_custom_effect(body, effect_id):
     except RuntimeError as error:
         raise ApiError(400, str(error))
     duration_type = str(body.get('duration_type') or 'manual').strip().lower()
-    if duration_type not in ACTIVE_EFFECT_DURATIONS:
+    if duration_type not in CUSTOM_EFFECT_DURATIONS:
         raise ApiError(400, 'Некорректный тип длительности эффекта')
     expires_at = None
     remaining_rounds = None
@@ -6282,6 +6405,24 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(target, dict):
             raise ApiError(409, 'Snapshot для отката повреждён')
         before = json.loads(row['data'])
+        now = time.time()
+        for effect_id in delta.get('created_effect_ids') or []:
+            conn.execute(
+                'UPDATE active_effect_instances SET active=0,archived_at=?,updated=? '
+                'WHERE effect_id=? AND character_id=?',
+                (now, now, str(effect_id), row['id']))
+        for effect_id in delta.get('replaced_effect_ids') or []:
+            replaced = conn.execute(
+                'SELECT * FROM active_effect_instances WHERE effect_id=? AND character_id=?',
+                (str(effect_id), row['id'])).fetchone()
+            if not replaced or replaced['archived_at']:
+                continue
+            if replaced['duration_type'] == 'real_time' and replaced['expires_at'] is not None and replaced['expires_at'] <= now:
+                continue
+            if replaced['duration_type'] == 'rounds' and (_num(replaced['remaining_rounds']) or 0) <= 0:
+                continue
+            conn.execute('UPDATE active_effect_instances SET active=1,updated=? WHERE effect_id=?',
+                         (now, str(effect_id)))
         ensure_character_item_instances(target)
         ensure_progression(target)
         persist_character_item_instances(
@@ -6290,10 +6431,19 @@ class Handler(BaseHTTPRequestHandler):
         revision_after = current_revision + 1
         reason = str((body or {}).get('reason') or '').strip()
         reason = reason[:500] or f'Revert ledger entry #{entry["id"]}'
-        record_character_change_set(
+        revert_ledger_id = record_character_change_set(
             conn, row['id'], user['id'], before, target, reason,
             current_revision, revision_after, category='sheet_revert',
             reverts_ledger_id=entry['id'])
+        if delta.get('created_effect_ids') or delta.get('replaced_effect_ids'):
+            revert_delta_row = conn.execute(
+                'SELECT delta_json FROM character_ledger WHERE id=?',
+                (revert_ledger_id,)).fetchone()
+            revert_delta = parse_json_object(revert_delta_row['delta_json'])
+            revert_delta['revertible'] = False
+            revert_delta['effect_linked_revert'] = True
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(revert_delta, ensure_ascii=False), revert_ledger_id))
         conn.execute(
             'UPDATE characters SET data=?,public=?,updated=?,revision=? WHERE id=?',
             (json.dumps(target, ensure_ascii=False), 1 if target.get('public') else 0,
@@ -6449,6 +6599,7 @@ class Handler(BaseHTTPRequestHandler):
         action = str((body or {}).get('action') or '').strip().lower()
         display_name = str(entry.get('custom_name') or entry.get('name') or 'Item')
         effect = None
+        use_effect_result = {'created': [], 'replaced_effect_ids': [], 'manual_rules': []}
 
         if action == 'use':
             if not interaction.get('consumable'):
@@ -6471,6 +6622,8 @@ class Handler(BaseHTTPRequestHandler):
                 data['inventory'].pop(index)
             effect = copy.deepcopy(interaction.get('use_effect'))
             reason = f'Use {display_name} ×{spent}'
+            use_effect_result = instantiate_consumable_effects(
+                conn, row['id'], user['id'], entry)
         elif action == 'equip':
             if not interaction.get('equippable'):
                 raise ApiError(400, 'Этот предмет нельзя экипировать')
@@ -6537,9 +6690,33 @@ class Handler(BaseHTTPRequestHandler):
         revision_after = current_revision + 1
         persist_character_item_instances(
             conn, row['id'], data, 'item_action', source_ref=reason, prune=True)
-        record_character_change_set(
+        ledger_id = record_character_change_set(
             conn, row['id'], user['id'], before, data, reason,
             current_revision, revision_after, category='item_action')
+        if use_effect_result['created']:
+            ledger_row = conn.execute(
+                'SELECT delta_json FROM character_ledger WHERE id=?', (ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            delta['created_effect_ids'] = [item['effect_id'] for item in use_effect_result['created']]
+            delta['replaced_effect_ids'] = use_effect_result['replaced_effect_ids']
+            delta['manual_rules'] = use_effect_result['manual_rules']
+            for created_effect in use_effect_result['created']:
+                definition = created_effect.get('definition') or {}
+                delta.setdefault('changes', []).append({
+                    'path': f'effects.instances.{created_effect["effect_id"]}',
+                    'label': f'Effect: {created_effect["label"]}', 'kind': 'added',
+                    'before': '—',
+                    'after': readable_change_value({
+                        'status': created_effect.get('status'),
+                        'target': definition.get('target'),
+                        'operation': definition.get('operation'),
+                        'value': definition.get('value'),
+                        'duration': created_effect.get('duration_type'),
+                    }),
+                })
+            delta['change_count'] = len(delta.get('changes') or [])
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(delta, ensure_ascii=False), ledger_id))
         conn.execute(
             'UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
             (json.dumps(data, ensure_ascii=False), time.time(), revision_after, row['id']))
@@ -6547,6 +6724,8 @@ class Handler(BaseHTTPRequestHandler):
         fresh = self.get_char(conn, row['id'])
         self.send_json({
             'ok': True, 'action': action, 'message': reason, 'effect': effect,
+            'created_effects': use_effect_result['created'],
+            'manual_rules': use_effect_result['manual_rules'],
             'character': self.char_payload(fresh, fresh['owner'], conn=conn),
         })
 

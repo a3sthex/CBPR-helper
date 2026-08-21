@@ -260,6 +260,21 @@ class StructuredEffectsTests(unittest.TestCase):
         self.assertEqual(coverage['rules'][0]['source'], 'CP:R 352')
         self.assertIsNone(server.item_effect_coverage('gear-10'))
 
+    def test_curated_use_presets_have_safe_duration_source_and_coverage(self):
+        payload = server.load_effect_rules()
+        by_id = {rule['id']: rule for rule in payload['use_effect_rules']}
+        boost = by_id['boost-primary-effect']
+        synthcoke = by_id['synthcoke-primary-effect']
+        self.assertEqual((boost['duration_type'], boost['duration_value']), ('campaign_time', 1440))
+        self.assertEqual(boost['effects'][0]['target'], 'character.stat.INT')
+        self.assertEqual(boost['effects'][0]['source'], 'CP:R 357')
+        self.assertEqual(synthcoke['effects'][0]['target'], 'character.stat.REF')
+        self.assertEqual(synthcoke['effects'][0]['value'], 1)
+        coverage = server.item_effect_coverage('gear-161')
+        self.assertTrue(coverage['automated'])
+        self.assertTrue(coverage['manual'])
+        self.assertEqual(coverage['rules'][0]['kind'], 'use')
+
     def test_modifier_pipeline_is_deterministic_and_respects_stacking(self):
         modifiers = [
             {'id': 'unique-a', 'target': 'skill.Handgun.check', 'operation': 'add',
