@@ -1160,6 +1160,255 @@ First published investigation
 
 Это крупная самостоятельная система. Её лучше проектировать после стабилизации Dossiers, Sessions и предметной модели, а не добавлять маленькими несвязанными фрагментами.
 
+### 16.12 NPC Manager и полноценные statblocks
+
+Текущий NPC Template хранит в основном HP, SP, Shield, Ammo, LUCK, MOVE, Initiative, Conditions и Injuries. Этого хватает для счётчика ресурсов, но не для ведения боя: GM не видит характеристики, навыки, оружие, атаки, cyberware и специальные способности.
+
+Нужны два режима шаблона:
+
+#### Quick NPC
+
+Для массовки и случайных противников:
+
+```text
+Name / Type / Threat Tier
+Initiative
+HP
+SP Head / Body
+MOVE
+Primary Attack Base
+Weapon / Damage / ROF / Mag
+Secondary Attack
+Key Skills
+Morale / Tactics
+```
+
+Создаётся за несколько секунд из presets `Mook`, `Security`, `Booster`, `Drone`, `Lieutenant`.
+
+#### Full NPC
+
+Для важных NPC и боссов:
+
+```text
+10 STATs
+Derived HP / Death Save / Seriously Wounded
+Skills and calculated Bases
+Roles / Role Abilities (optional)
+Weapons and Attacks
+Armor / Shield
+Ammo / Reload state
+Cyberware and Humanity (если важно)
+Gear / Consumables
+Special Abilities
+Critical Injuries / Conditions
+Tactics / Morale / Escape trigger
+Portrait / Token
+Persona / Organization / Location links
+Public description / GM secret
+```
+
+### Weapons and Attacks
+
+Оружие выбирается из Database или создаётся как custom attack. Для каждого attack:
+
+```text
+name
+catalog_item_id / custom
+skill + stat
+attack_base override
+mode: ranged | melee | autofire | suppressive | explosive | net
+Damage / ROF / Hands
+Mag current / max / reserve
+Range DV profile
+armor interaction
+special effect
+```
+
+В Session Dashboard GM получает кнопки:
+
+```text
+Attack
+Damage
+Fire
+Reload
+Autofire
+Apply Damage
+Roll Critical Injury
+```
+
+Не нужно заставлять GM каждый раз собирать формулу вручную.
+
+### Skills
+
+Показывать не все навыки подряд, а:
+
+- key skills на компактной карточке;
+- полный список в раскрывающемся блоке;
+- автоматически рассчитанный Base;
+- custom skill для необычных NPC;
+- Perception, Evasion, Resist Torture/Drugs, Concentration и основные боевые навыки как быстрые поля.
+
+### Threat tiers и presets
+
+```text
+Mook
+Standard
+Elite
+Lieutenant
+Boss
+Cyberpsycho
+Netrunner
+Drone / Robot
+Vehicle
+```
+
+Tier не должен автоматически «балансировать» Cyberpunk как D&D CR, но может задавать стартовые диапазоны и предупреждать GM о явно слабых/сильных параметрах.
+
+### Template и Session snapshot
+
+При добавлении NPC в Session создаётся snapshot. Последующее редактирование исходного Template не должно неожиданно менять уже идущую сессию. Нужна отдельная кнопка `Refresh from Template` с preview diff.
+
+### Player View
+
+Для каждого NPC GM отдельно выбирает, что видно игрокам:
+
+- Name/Portrait;
+- примерное состояние HP вместо точного числа;
+- Armor;
+- Conditions/Injuries;
+- Initiative;
+- видимое оружие;
+- публичное описание.
+
+Skills, exact attack bases, tactics и secrets остаются GM-only.
+
+### Import и библиотека
+
+В перспективе:
+
+- импорт NPC из структурированного JSON;
+- готовые campaign archetypes;
+- clone/variant (`Guard`, `Guard Elite`, `Guard Wounded`);
+- связь важного NPC Template с Persona;
+- usage history: в каких Sessions участвовал NPC.
+
+### 16.13 Netrunner Program Manager
+
+В каталоге уже есть Programs и Black ICE с ATK/DEF/REZ/PER/SPD, но после покупки они остаются обычными предметами. Нужен отдельный Netrunner loadout вместо общего Inventory list.
+
+#### Cyberdeck model
+
+```text
+Cyberdeck instance
+- name / catalog item
+- hardware slots
+- program slots
+- installed Hardware
+- installed Programs
+- carried Programs
+- active/rezzed Programs
+- backup copies
+- notes / custom icon
+```
+
+Server должен проверять вместимость, несовместимость и количество копий.
+
+#### Program lifecycle
+
+Программа не является обычным consumable. Её состояния:
+
+```text
+carried
+installed
+rezzed
+derezzed
+destroyed
+```
+
+Для программ с REZ:
+
+```text
+REZ current / max
+Activate / Deactivate
+Take REZ damage
+Repair/Restore
+Destroy
+Load backup copy
+```
+
+Rezzing не уменьшает количество программы. Количество теряется только при уничтожении конкретной копии согласно правилам/эффекту.
+
+#### Program categories
+
+UI группирует программы по фактическому Class:
+
+- Booster;
+- Defender;
+- Anti-Personnel Attacker;
+- Anti-Program Attacker;
+- Anti-Personnel Black ICE;
+- Anti-Program Black ICE;
+- Hardware;
+- custom.
+
+Числа из Data Pool нормализуются (`ATK 1`, а не `1.0`) и получают понятные tooltips.
+
+#### Netrunner combat panel
+
+На Dossier/Session:
+
+```text
+Interface Rank
+NET Actions this Turn
+Cyberdeck slots
+Active Programs
+Program modifiers
+Current Floor / Node
+Enemy Black ICE
+REZ trackers
+```
+
+Быстрые действия:
+
+```text
+Interface Check
+Pathfinder
+Backdoor
+Scanner
+Control
+Eye-Dee
+Slide
+Virus
+Zap
+Program Attack
+```
+
+Panel рассчитывает текущие modifiers активных Booster/Defender Programs, но показывает формулу GM/Player, а не скрывает её за одной цифрой.
+
+#### Enemy Netrunner NPC
+
+Threat tier `Netrunner` использует тот же Program Manager:
+
+- Interface;
+- cyberdeck;
+- Programs;
+- NET Initiative;
+- preferred actions/tactics;
+- Black ICE support;
+- Meatspace weapons and armor.
+
+Так не потребуется отдельная несовместимая модель программ для NPC.
+
+#### Связь с NET Architecture
+
+Program Manager лучше реализовать до полноценного Architecture Builder. Последовательность:
+
+1. нормализовать Programs/Hardware в каталоге;
+2. добавить Cyberdeck loadout;
+3. добавить Program states и REZ;
+4. сделать Netrunner Session panel;
+5. затем добавить NET Architecture floors/nodes и live run.
+
 ### Рекомендуемые дополнения с максимальной отдачей
 
 Если выбирать только пять следующих идей вне уже утверждённого backlog:
@@ -1191,9 +1440,11 @@ First published investigation
 3. Market vendors + Database без универсальной покупки.
 4. Database tags/i18n/armor locations.
 5. Feed/Contract preview перед публикацией.
-6. Crew Registry portraits.
-7. Dedicated landscape print sheet.
-8. JSON import.
+6. NPC Manager: stats, skills, weapons, attacks и full templates.
+7. Netrunner Cyberdeck/Program Manager.
+8. Crew Registry portraits.
+9. Dedicated landscape print sheet.
+10. JSON import.
 
 ### P2 — расширение мира
 
@@ -1211,6 +1462,7 @@ First published investigation
 12. Downtime Planner.
 13. Organization Reputation / Favor / Heat.
 14. Intel / Case Board.
+15. NET Architecture Builder после Program Manager.
 
 ### P3 — технический долг
 
@@ -1285,6 +1537,17 @@ First published investigation
 5. Intel Fragments и Case Board.
 6. Medical Record и Vehicle Garage после стабилизации базовых модулей.
 
+### Пакет H — GM Combat & NET
+
+1. Расширить NPC Template до Quick/Full statblock.
+2. Добавить STATs, Skills, calculated Bases, Weapons и Attacks.
+3. Реализовать Session snapshot, one-click attacks и ammo/reload.
+4. Добавить NPC threat presets и Player View visibility.
+5. Нормализовать Programs/Black ICE/Hardware в каталоге.
+6. Добавить Cyberdeck loadout, slots, Program states и REZ.
+7. Реализовать Netrunner Session panel и Enemy Netrunner profile.
+8. После стабилизации добавить NET Architecture Builder/live run.
+
 ---
 
 ## 19. Открытые вопросы для следующего просмотра
@@ -1314,3 +1577,10 @@ First published investigation
 23. Downtime длится фиксированную неделю или произвольный отрезок календаря?
 24. Reputation/Favor/Heat индивидуальны для Character или могут принадлежать Crew?
 25. Intel Board общий для Crew или каждый Character имеет собственную картину расследования?
+26. Какие поля обязательны в Quick NPC, а какие скрываются в Full mode?
+27. Нужны ли системные NPC presets из источников или только пользовательские templates?
+28. Важный NPC связан с Persona один-к-одному или один Persona может иметь несколько combat profiles?
+29. Показывать игрокам точные HP NPC или только состояния Healthy/Wounded/Mortally Wounded?
+30. Program Manager должен одновременно поддерживать CP:R и CEMK/2070 ruleset profiles?
+31. Нужны ли отдельные backup copies Programs и история уничтоженных копий?
+32. Может ли GM вручную переопределять calculated Skill/Attack Base NPC без изменения STAT/Skill?
