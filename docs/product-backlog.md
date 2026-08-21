@@ -145,6 +145,174 @@ broken
 
 Не стоит автоматически считать расходником всё в категориях Ammo/Grenades/Gear. Лучше импортировать структурированный флаг и иметь ручные исключения: некоторые предметы имеют заряды, некоторые являются контейнерами, некоторые не исчезают после применения.
 
+### Upgrades и Attachments прямо в Character Sheet
+
+Сейчас Gun Upgrades и Vehicle Upgrades можно купить как обычный предмет, но нельзя установить на конкретное оружие или машину. Они остаются отдельной строкой Inventory и не меняют характеристики host item.
+
+#### Обязательное изменение Inventory model
+
+Для модификаций недостаточно `catalog key + qty`. Два одинаковых Medium Pistol могут иметь разные attachments, состояние и имя. Нужны отдельные экземпляры:
+
+```text
+item_instances
+- instance_id
+- character_id / stash_id
+- catalog_item_id
+- custom_name
+- state: carried | equipped | installed | stored | broken
+- quantity (только для stackable)
+- condition
+- notes
+- acquired_at / source
+```
+
+Модификации связываются с конкретным экземпляром:
+
+```text
+item_modifications
+- id
+- host_instance_id
+- upgrade_instance_id / catalog_upgrade_id
+- slot_type
+- installed_at
+- installed_by Character/Persona
+- source: purchased | nomad_access | tech_upgrade | loot | custom
+- active
+- configuration_json
+- notes
+```
+
+Нельзя привязывать upgrade только по имени или catalog key: при передаче, продаже и наличии двух одинаковых предметов связь станет неоднозначной.
+
+#### Weapon Upgrade UI
+
+В разделе Weapons каждая карточка показывает:
+
+```text
+Militech Assault Rifle
+Damage 5d6 · ROF 1 · Mag 25 · Hands 2
+Upgrade Slots 2/3
+- Smartgun Link
+- Infrared Nightvision Scope
+
+Manage Upgrades
+```
+
+`Manage Upgrades` открывает:
+
+- установленные attachments;
+- свободные slots;
+- совместимые upgrades в Inventory;
+- поиск по Database/Market;
+- Install / Remove / Replace;
+- preview итоговых mechanics до подтверждения;
+- причины несовместимости;
+- source/page rules.
+
+Server проверяет:
+
+- допустимый weapon type/skill;
+- Exotic/Non-Exotic ограничения;
+- запрещённые комбинации;
+- количество slots;
+- unique upgrades;
+- наличие реального upgrade instance у Character;
+- эффекты Extended/Drum Magazine, Underbarrel и rebuilds;
+- custom/Tech override отдельно от catalog rule.
+
+Карточка должна показывать base и modified значение, например:
+
+```text
+Magazine: 25 → 50 (Drum Magazine)
+Attack checks: +1 (Smartgun Link, requirements satisfied)
+```
+
+#### Vehicle Upgrade UI
+
+В Dossier/Garage:
+
+```text
+Compact Groundcar
+SDP · Seats · Speed
+Installed Upgrades
+Available Upgrade Capacity / Access
+Cargo
+Mounted Weapons
+```
+
+Действия:
+
+- Install Vehicle Upgrade;
+- Remove/Replace;
+- выбрать mounted weapon и его ammo;
+- применить Armored Chassis/Bulletproof Glass/Seating/NOS и другие эффекты;
+- отметить источник `Nomad Access` или купленный upgrade;
+- Repair/Disable;
+- перенести vehicle между Character/Crew Garage.
+
+`Nomad Access` в Data Pool нельзя трактовать просто как цену или обычный slot: это отдельное правило доступа, которое нужно хранить структурированно и проверять по активной Role/Moto setup.
+
+#### Другие host types
+
+Та же система должна поддерживать:
+
+- Cyberdeck Hardware и Programs;
+- Cyberware Options → foundation/host slots;
+- Armor/Shield Tech upgrades;
+- Vehicle mounted weapons;
+- Tool/Agent/gear modifications;
+- Tech Maker Upgrade как custom modification.
+
+Для каждого host type задаются собственные slot/compatibility rules, но UI и ledger используют общую модель `host instance → modifications`.
+
+#### Trust + Audit flow
+
+В выбранном режиме кампании игрок устанавливает upgrade сам, без GM approval:
+
+```text
+Manage Upgrades
+→ choose compatible item
+→ preview mechanics
+→ Install
+→ Character Ledger event
+```
+
+Ledger:
+
+```text
+Installed Smartgun Link on Militech Assault Rifle #2
+Slots: 1/3 → 2/3
+Attack modifier: 0 → +1
+Source: Character Inventory
+Actor: V
+```
+
+GM/Admin видит историю и может откатить change set.
+
+#### Market и Loot integration
+
+После покупки upgrade:
+
+```text
+Keep in Inventory
+Install Now…
+Move to Stash
+```
+
+`Install Now` предлагает только совместимые host instances. Найденный на сессии/custom upgrade использует тот же flow.
+
+#### Transfer, sale и deletion
+
+Если host item передаётся или продаётся, UI обязательно спрашивает:
+
+```text
+Transfer/Sell with installed upgrades
+Detach upgrades first
+Cancel
+```
+
+Нельзя тихо удалить host и оставить orphan modifications. Передача комплектом сохраняет историю и все instance links; отсоединение создаёт отдельные inventory instances.
+
 ---
 
 ## 4. Свободное редактирование Character Sheet
@@ -1531,7 +1699,7 @@ Program Manager лучше реализовать до полноценного 
 ### P1 — основной продуктовый пакет
 
 1. Trust + Audit character editor, включая Admin edit чужих Dossiers.
-2. Предметные состояния и consumables.
+2. Item instances, состояния, consumables и host-based Upgrades/Attachments.
 3. Market vendors + Database без универсальной покупки.
 4. Database tags/i18n/armor locations.
 5. Feed/Contract preview перед публикацией.
@@ -1584,9 +1752,14 @@ Program Manager лучше реализовать до полноценного 
 
 1. Вернуть безопасное свободное редактирование.
 2. Расширить ledger до понятных diff events и revert.
-3. Добавить custom/found items.
-4. Consumable/use/equip/install.
-5. JSON import.
+3. Мигрировать stack inventory к стабильным item instances.
+4. Добавить custom/found items.
+5. Consumable/use/equip/install.
+6. Общая host/modification model.
+7. Weapon Upgrades прямо в Character Sheet.
+8. Vehicle Upgrades и Garage integration.
+9. Cyberdeck/Cyberware/Armor/Tech modification hosts.
+10. JSON import.
 
 ### Пакет C — Publishing Preview
 
@@ -1684,3 +1857,8 @@ Program Manager лучше реализовать до полноценного 
 33. Следуем ли правилу, что Turns даже player-owned Black ICE ведёт GM, или даём кампании опцию player control?
 34. Выбор цели Anti-Program Black ICE всегда случайный среди Rezzed Programs или GM получает rules-aware randomize button с возможностью override?
 35. Нужен ли отдельный визуальный token/icon editor для внешнего вида призванной Black ICE?
+36. Сколько upgrade slots у разных weapon/vehicle host types и где нужны source-specific exceptions?
+37. Nomad Access создаёт виртуальный upgrade или физический item instance, который можно снять/передать?
+38. Как Tech Maker Upgrade сочетается и складывается с catalog attachments?
+39. Vehicle принадлежит одному Character, Family/Crew или Organization, и кто может управлять upgrades?
+40. Разрешено ли передавать/продавать host вместе со всеми upgrades одной операцией по умолчанию?
