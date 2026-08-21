@@ -1248,19 +1248,39 @@ deploy/install.sh --lan
 
 которая безопасно настраивает `0.0.0.0`, non-Secure cookie для домашнего HTTP и ограничение firewall локальной подсетью. Сейчас это делается ручным systemd override.
 
-### Ruleset Profiles и House Rules
+### Ruleset Profiles и House Rules — ОТЛОЖЕНО
 
-Проект смешивает CP:R, CEMK/2070-е и campaign-specific решения. Нужна явная настройка кампании:
+**Решение от 2026-08-21:** не реализовывать полноценные Ruleset Profiles и редактор House Rules до выхода ожидаемого обновления системы Cyberpunk и решения кампании о переходе/адаптации. Сейчас есть высокий риск построить дорогой слой конфигурации вокруг правил, которые вскоре изменятся.
+
+До появления новой системы делаем только технически дешёвую подготовку:
+
+- source/page metadata у автоматизированного правила;
+- `rules_version` в Session/Character snapshots;
+- декларативные item/effect definitions вместо разбросанных `if`;
+- отделение base data от calculated/effective values;
+- migration-friendly stable IDs;
+- честная пометка `manual_resolution_required`, если правило не автоматизировано.
+
+Пока **не делаем**:
 
 ```text
-Ruleset: Cyberpunk RED | CEMK 2070 | Hybrid
-House Rules Profile
-Source Priority
+Ruleset switcher CP:R/CEMK/New System
+House Rules UI
+несколько параллельных rule engines
+автоматическую конвертацию персонажей
+сложные per-Session overrides
 ```
 
-Каждая автоматизация (Character creation, Programs, Humanity, Vehicles, Range DV, Effects) знает, из какого ruleset/source она взята. House Rule не переписывает core rule молча, а создаёт versioned override с автором и пояснением.
+После официального релиза нужен отдельный этап Rules Review:
 
-Это особенно важно до реализации Effects Engine, NPC automation и Netrunner Tabletop: один и тот же item/action может работать по-разному в разных профилях.
+1. получить и изучить финальный текст новой системы;
+2. составить таблицу отличий от текущего Hybrid;
+3. решить, переходит ли кампания полностью или частично;
+4. определить, нужен один новый ruleset или несколько profiles;
+5. спроектировать миграцию Character/NPC/Items/Programs;
+6. только после этого возвращать Ruleset Profiles в активный backlog.
+
+Таким образом, текущие продуктовые функции можно разрабатывать дальше, но новые глубокие автоматизации правил не должны намертво привязываться к сегодняшним формулам.
 
 ### Storyline / Faction Clocks
 
@@ -2529,17 +2549,18 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 
 ### P1 — основной продуктовый пакет
 
-1. Ruleset Profiles и versioned House Rules.
-2. Trust + Audit character editor, включая Admin edit чужих Dossiers.
-3. Item instances, Structured Effects Engine, consumables и host-based Upgrades/Attachments.
-4. Market vendors + Database без универсальной покупки.
-5. Database tags/i18n/armor locations.
-6. Feed/Contract preview перед публикацией.
-7. NPC Manager: stats, skills, weapons, attacks и full templates.
-8. Netrunner Cyberdeck/Program Manager.
-9. Crew Registry portraits.
-10. Dedicated landscape print sheet.
-11. JSON import.
+1. Trust + Audit character editor, включая Admin edit чужих Dossiers.
+2. Item instances, Structured Effects Engine, consumables и host-based Upgrades/Attachments.
+3. Market vendors + Database без универсальной покупки.
+4. Database tags/i18n/armor locations.
+5. Feed/Contract preview перед публикацией.
+6. NPC Manager: stats, skills, weapons, attacks и full templates.
+7. Netrunner Cyberdeck/Program Manager.
+8. Crew Registry portraits.
+9. Dedicated landscape print sheet.
+10. JSON import.
+
+Полный Ruleset/Profile layer временно исключён из P1 до выхода и изучения обновлённой системы Cyberpunk.
 
 ### P2 — расширение мира
 
@@ -2582,20 +2603,34 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 7. Online presence/reconnect и optional hybrid relay.
 8. Walls/vision/lighting только после полезного MVP.
 
+### DEFERRED / WATCHLIST — обновлённая система Cyberpunk
+
+До официального релиза не оценивать и не реализовывать:
+
+- Ruleset Profiles UI;
+- House Rules constructor;
+- массовую конвертацию Character Sheets;
+- новый rules automation layer;
+- совместимость старых/новых statblocks;
+- migration Programs/Vehicles/Items под неподтверждённые правила.
+
+Триггер возврата задачи: доступен финальный официальный текст, выполнен Rules Review и принято решение кампании.
+
 ---
 
 ## 18. Предлагаемый порядок ближайшей реализации
 
-### Пакет 0 — Foundation, Privacy & Rules
+### Пакет 0 — Foundation, Privacy & Data Safety
 
 1. Privacy payload для Dossiers/Roster/Folio.
 2. Invite registration, password/session controls.
 3. Атомарные транзакции и регулярные backups.
 4. Full Campaign Export/Import bundle.
-5. Ruleset Profiles CP:R/CEMK/Hybrid.
-6. Versioned House Rules и source metadata.
-7. Session-scoped Co-GM/Observer permissions.
-8. Базовые Safety Tools.
+5. Source metadata, `rules_version` snapshots и migration-friendly IDs без Ruleset UI.
+6. Session-scoped Co-GM/Observer permissions.
+7. Базовые Safety Tools.
+
+Ruleset Profiles, House Rules UI и конвертация под новую систему остаются в deferred/watchlist до официального релиза.
 
 ### Пакет A — Catalog & Market Rework
 
@@ -2756,8 +2791,8 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 53. Насколько рано нужны Fog/Walls/Vision и стоит ли полностью отказаться от dynamic lighting в пользу простоты?
 54. Set bonuses и active effect breakdown видны всем или только owner/GM?
 55. Должен ли Live/Offline flow позволять полностью провести встречу без запуска сервера после печати Session Pack?
-56. Ruleset Profile задаётся для всей кампании или может переопределяться для конкретной Session/Character?
-57. Кто может создавать и менять House Rules, и как поступать с уже сыгранными Session после изменения версии?
+56. DEFERRED: после выхода новой системы — переходит ли кампания полностью, частично или остаётся на текущем Hybrid?
+57. DEFERRED: после Rules Review — нужен один новый ruleset или параллельные profiles для старых и новых персонажей?
 58. Storyline/Faction Clock обновляется только GM или поддерживает автоматические triggers от Recap/Downtime?
 59. Entity Links вставляются только через picker или также распознаются из `@/#/⌖` синтаксиса?
 60. Как обеспечить анонимность Safety signal даже от остальных Admin/Co-GM, кроме назначенного получателя?
