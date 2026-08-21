@@ -446,6 +446,7 @@ color: #041018;
 
 ```text
 Contracts
+Key Locations / POI
 Housing
 Storylines
 Vendors
@@ -453,9 +454,101 @@ Personas / Factions
 Session locations
 ```
 
-При большом количестве точек понадобится clustering.
+### Key Locations / Points of Interest
 
----
+Добавить постоянные маркеры известных мест Night City, например:
+
+```text
+Afterlife
+Arasaka Tower
+Konpeki Plaza
+Totentanz
+Trauma Team / Hospitals
+NCPD precincts
+Megabuildings
+Major corporate offices
+Fixer bars and clubs
+Transit hubs
+Gang headquarters
+Campaign-specific landmarks
+```
+
+Список и состояние мест должны соответствовать выбранной эпохе 2070-х. Перед добавлением системного POI нужно сверять название, статус и положение с CEMK/картой/официальным источником; места другой эпохи помечаются как historical/ruined/rebuilt, а не молча смешиваются.
+
+Предлагаемая модель:
+
+```text
+locations
+- id / slug
+- name_en / name_ru
+- kind
+- district_id / subdistrict_id
+- map_x / map_y (normalized coordinates)
+- address_text
+- status: active | closed | ruined | rebuilt | secret
+- visibility: public | crew | gm
+- era_from / era_to
+- public_description
+- gm_description
+- source / source_page
+- image_media_id
+- owner_persona_id / organization_persona_id
+- parent_location_id
+- created_by / created / updated
+```
+
+Категории POI:
+
+- Bars & Clubs;
+- Corporate;
+- Medical;
+- Government/NCPD;
+- Gang Territory;
+- Shops & Vendors;
+- Housing/Megabuildings;
+- Transit;
+- Landmarks;
+- Mission Sites;
+- Memorials.
+
+Поведение карты:
+
+- отдельная форма и цвет marker для каждого kind;
+- фильтры по категориям;
+- поиск по имени;
+- marker clustering при отдалении;
+- tooltip с названием, категорией и районом;
+- click открывает Location card;
+- deep link `#/locations/:id`;
+- кнопки `Build Contract Here`, `Open Vendor`, `Show Residents`, `Related Feed` согласно правам;
+- Public/GM/Classified layers;
+- связь с Contracts, Storylines, Feed posts, Personas, Organizations, Vendors, Housing и Sessions.
+
+Location card может показывать:
+
+- изображение;
+- публичное описание;
+- владельца/контролирующую организацию;
+- связанных Personas;
+- текущего Vendor;
+- персонажей-резидентов согласно privacy;
+- активные и исторические Contracts;
+- связанные City Feed публикации;
+- историю смены статуса/владельца.
+
+GM/Admin нужен визуальный редактор координат: открыть карту, перетащить marker в нужную точку, сохранить normalized `x/y`. Системные каноничные POI загружаются seed-данными, пользовательские места кампании хранятся отдельно и могут редактироваться без изменения seed.
+
+Afterlife связывается сразу с несколькими будущими механиками:
+
+- постоянный POI на карте;
+- Persona/Organization;
+- Location page;
+- Afterlife Menu и Legacy Drinks;
+- Memorial Wall;
+- место встречи Contract;
+- Feed и Storyline events.
+
+При большом количестве точек понадобится clustering.
 
 ## 10. Housing map
 
@@ -891,13 +984,14 @@ Mark Character as Deceased
 ### P2 — расширение мира
 
 1. Map zoom/pan/layers.
-2. Housing map.
-3. Persona organization memberships.
-4. Fallen Edgerunners / Memorial Wall / Afterlife Menu.
-5. Contract Crew Chat.
-6. Calendar.
-7. Notifications badge.
-8. Fillable PDF import.
+2. Key Locations / POI и Location pages.
+3. Housing map.
+4. Persona organization memberships.
+5. Fallen Edgerunners / Memorial Wall / Afterlife Menu.
+6. Contract Crew Chat.
+7. Calendar.
+8. Notifications badge.
+9. Fillable PDF import.
 
 ### P3 — технический долг
 
@@ -947,9 +1041,12 @@ Mark Character as Deceased
 ### Пакет E — World Layer
 
 1. Zoomable layered map.
-2. Housing.
-3. Vendor locations.
-4. Contract Crew Channel.
+2. Key Locations / POI data model, filters and Location pages.
+3. Seed основных мест 2070-х с source metadata.
+4. GM coordinate editor и custom campaign locations.
+5. Housing.
+6. Vendor locations.
+7. Contract Crew Channel.
 
 ### Пакет F — Organizations & Legacy
 
@@ -981,3 +1078,6 @@ Mark Character as Deceased
 15. Должен ли deceased Dossier полностью блокировать механику или разрешать посмертные исправления владельцу?
 16. Кто утверждает Afterlife drink: любой GM, владелец Storyline или только Admin?
 17. Может ли Persona иметь несколько публичных и секретных memberships одновременно?
+18. Какие POI входят в обязательный seed первой версии и по какому источнику сверяются координаты?
+19. Могут ли игроки создавать свои Location markers или только предлагать их GM?
+20. Нужна ли история контроля территории/владельца Location по датам?
