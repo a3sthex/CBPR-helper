@@ -992,7 +992,9 @@ def catalog_item_id_for_entry(entry):
 
 
 def item_entry_stackable(entry):
-    """Use an explicit catalog flag when present; only ammunition stacks by default."""
+    """Use explicit instance/catalog metadata; only ammunition stacks by default."""
+    if isinstance(entry, dict) and isinstance(entry.get('stackable'), bool):
+        return entry['stackable']
     item = item_by_id(catalog_item_id_for_entry(entry)) if isinstance(entry, dict) else None
     explicit = (item or {}).get('stackable')
     if isinstance(explicit, bool):
@@ -1038,6 +1040,11 @@ def ensure_character_item_instances(data, regenerate=False):
                     changed = True
                 owned['instance_id'] = candidate
                 owned['qty'] = per_copy_quantity
+                if owned.get('is_custom'):
+                    custom_key = f'custom-{candidate}'
+                    if owned.get('key') != custom_key:
+                        owned['key'] = custom_key
+                        changed = True
                 owned.pop('quantity', None)
                 state = str(owned.get('state') or
                             ('installed' if bucket == 'cyberware' else 'carried'))
@@ -1145,6 +1152,10 @@ def persist_character_item_instances(conn, character_id, data, source_type,
                 quantity = 1
             condition_current = _num(entry.get('condition_current'))
             condition_max = _num(entry.get('condition_max'))
+            acquisition_source = str(entry.get('acquisition_source') or '').strip()[:40]
+            acquisition_note = str(entry.get('acquisition_note') or '').strip()[:160]
+            stored_source = acquisition_source or str(source_type or 'unknown')[:40]
+            stored_ref = acquisition_note or str(source_ref or '')[:160] or None
             conn.execute(
                 'INSERT INTO item_instances(instance_id,character_id,catalog_item_id,bucket,'
                 'custom_name,state,quantity,condition_current,condition_max,notes,acquired_at,'
@@ -1158,9 +1169,12 @@ def persist_character_item_instances(conn, character_id, data, source_type,
                 (instance_id, int(character_id), catalog_id, bucket,
                  str(entry.get('custom_name') or '')[:120] or None, state, quantity,
                  condition_current, condition_max, str(entry.get('notes') or '')[:2000],
-                 acquired_at, str(source_type or 'unknown')[:40],
-                 str(source_ref or '')[:160] or None,
+                 acquired_at, stored_source, stored_ref,
                  json.dumps(entry, ensure_ascii=False), acquired_at, now))
+            if acquisition_source:
+                conn.execute(
+                    'UPDATE item_instances SET source_type=?,source_ref=? WHERE instance_id=?',
+                    (acquisition_source, acquisition_note or None, instance_id))
     if prune:
         if present:
             marks = ','.join('?' for _ in present)
@@ -1824,10 +1838,16 @@ def character_change_summary(before, after, limit=250):
                 old_view = {
                     'name': old.get('custom_name') or old.get('name'),
                     'qty': old.get('qty') or 1, 'state': old.get('state') or 'carried',
+                    'category': old.get('cat'), 'value': old.get('price'),
+                    'source': old.get('acquisition_source'),
+                    'description': old.get('desc') if old.get('is_custom') else None,
                 }
                 new_view = {
                     'name': new.get('custom_name') or new.get('name'),
                     'qty': new.get('qty') or 1, 'state': new.get('state') or 'carried',
+                    'category': new.get('cat'), 'value': new.get('price'),
+                    'source': new.get('acquisition_source'),
+                    'description': new.get('desc') if new.get('is_custom') else None,
                 }
                 add(f'{bucket}.{identity}', f'{label}: {new_view["name"]}',
                     old_view, new_view)
@@ -2241,6 +2261,12 @@ def public_character_data(data):
     if visibility['player_name']:
         allowed.add('player')
     public = {key: source[key] for key in allowed if key in source}
+    for bucket in ('inventory', 'cyberware'):
+        if isinstance(public.get(bucket), list):
+            for entry in public[bucket]:
+                if isinstance(entry, dict):
+                    entry.pop('notes', None)
+                    entry.pop('acquisition_note', None)
     if isinstance(public.get('roles'), list):
         public['roles'] = [{
             key: role[key] for key in ('name', 'rank', 'primary') if key in role
@@ -2382,6 +2408,25 @@ TRUST_EDIT_TEXT_LIMITS = {
     'appearance': 4000, 'background': 4000, 'languages': 500,
     'lifestyle': 200, 'housing': 200, 'notes': 20000,
 }
+ITEM_ACQUISITION_SOURCES = {
+    'loot', 'gift', 'crafted', 'role_access', 'gm_award', 'custom', 'other',
+}
+
+
+def clean_item_acquisition(entry, owned, require_source=False):
+    source = str(entry.get('acquisition_source') or owned.get('acquisition_source') or '').strip().lower()
+    if require_source and not source:
+        source = 'loot'
+    if source and source not in ITEM_ACQUISITION_SOURCES:
+        raise ApiError(400, 'Некорректный источник получения предмета')
+    if source:
+        owned['acquisition_source'] = source
+    note_value = entry.get('acquisition_note') if 'acquisition_note' in entry else owned.get('acquisition_note')
+    note = str(note_value or '').strip()[:500]
+    if note:
+        owned['acquisition_note'] = note
+    else:
+        owned.pop('acquisition_note', None)
 
 
 def trust_number(value, label, minimum, maximum, integer=False):
@@ -2400,11 +2445,40 @@ def canonical_owned_entry(entry, bucket, old_entries):
     instance_id = str(entry.get('instance_id') or '').lower()
     existing = old_entries.get(instance_id) if INSTANCE_ID_RE.fullmatch(instance_id) else None
     catalog_id = catalog_item_id_for_entry(entry) or catalog_item_id_for_entry(existing)
-    if not catalog_id:
+    custom = not catalog_id and bool(entry.get('is_custom') or (existing or {}).get('is_custom'))
+    if not catalog_id and custom:
+        if bucket != 'inventory':
+            raise ApiError(400, 'Custom Cyberware требует отдельной механики установки')
+        name = str(entry.get('custom_name') or entry.get('name') or
+                   (existing or {}).get('custom_name') or (existing or {}).get('name') or '').strip()[:120]
+        if not name:
+            raise ApiError(400, 'Custom item требует название')
+        category = str(entry.get('cat') or (existing or {}).get('cat') or 'custom').strip().lower()
+        allowed_categories = {row['id'] for row in catalog().get('cats') or []} | {'custom'}
+        if category not in allowed_categories:
+            raise ApiError(400, 'Некорректная категория custom item')
+        price = trust_number(entry.get('price', (existing or {}).get('price') or 0),
+                             'Custom item value', 0, 9_999_999)
+        stackable = entry.get('stackable', (existing or {}).get('stackable', False))
+        if not isinstance(stackable, bool):
+            raise ApiError(400, 'stackable должен быть логическим значением')
+        owned = copy.deepcopy(existing or {})
+        owned.update({
+            'is_custom': True, 'key': str(owned.get('key') or 'custom'),
+            'cat': category, 'name': name, 'custom_name': name,
+            'desc': str(entry.get('desc') if 'desc' in entry else owned.get('desc') or '')[:4000],
+            'price': price, 'stackable': stackable, 'state': str(entry.get('state') or owned.get('state') or 'carried'),
+            'source': 'Custom / Trust + Audit', 'manual_resolution_required': True,
+        })
+        for unsafe in ('catalog_item_id', 'source_key', 'damage', 'sp', 'hl', 'fields',
+                       'mechanics', 'requirements', 'capacity', 'type'):
+            owned.pop(unsafe, None)
+    elif not catalog_id:
         if not existing:
-            raise ApiError(400, 'Custom items будут добавлены отдельным этапом; выберите предмет из Database')
+            raise ApiError(400, 'Неизвестный предмет: выберите Database item или создайте Custom item')
         owned = copy.deepcopy(existing)
-        for key in ('custom_name', 'notes', 'state', 'qty'):
+        for key in ('custom_name', 'notes', 'state', 'qty',
+                    'acquisition_source', 'acquisition_note'):
             if key in entry:
                 owned[key] = entry[key]
     else:
@@ -2426,6 +2500,7 @@ def canonical_owned_entry(entry, bucket, old_entries):
             'source': item.get('source'),
             'price': (existing or {}).get('price', item.get('price') or 0),
         })
+        owned.pop('is_custom', None)
     try:
         owned['qty'] = max(1, min(999, int(entry.get('qty') or owned.get('qty') or 1)))
     except (TypeError, ValueError):
@@ -2434,13 +2509,17 @@ def canonical_owned_entry(entry, bucket, old_entries):
         owned['instance_id'] = instance_id
     else:
         owned.pop('instance_id', None)
-    owned['custom_name'] = str(entry.get('custom_name') or owned.get('custom_name') or '')[:120]
-    owned['notes'] = str(entry.get('notes') or owned.get('notes') or '')[:2000]
+    if not custom:
+        custom_name_value = entry.get('custom_name') if 'custom_name' in entry else owned.get('custom_name')
+        owned['custom_name'] = str(custom_name_value or '')[:120]
+    notes_value = entry.get('notes') if 'notes' in entry else owned.get('notes')
+    owned['notes'] = str(notes_value or '')[:2000]
     state = str(entry.get('state') or owned.get('state') or
                 ('installed' if bucket == 'cyberware' else 'carried'))
     if state not in ITEM_INSTANCE_STATES:
         raise ApiError(400, 'Некорректное состояние предмета')
     owned['state'] = 'installed' if bucket == 'cyberware' else state
+    clean_item_acquisition(entry, owned, require_source=existing is None)
     return owned
 
 
@@ -3227,6 +3306,12 @@ SERVER_ERROR_EN = {
     'Изменение Character Sheet не найдено': 'Character Sheet change not found',
     'Откат доступен только до следующего изменения Dossier': 'Revert is only available before the next Dossier change',
     'Snapshot для отката повреждён': 'The revert snapshot is corrupted',
+    'Некорректный источник получения предмета': 'Invalid item acquisition source',
+    'Custom Cyberware требует отдельной механики установки': 'Custom Cyberware requires a dedicated installation system',
+    'Custom item требует название': 'Custom item name is required',
+    'Некорректная категория custom item': 'Invalid custom item category',
+    'stackable должен быть логическим значением': 'stackable must be boolean',
+    'Неизвестный предмет: выберите Database item или создайте Custom item': 'Unknown item: choose a Database item or create a Custom item',
     'Все слоты заняты': 'All slots are filled',
     'Вы уже записаны': 'You are already signed up',
     'Для специализированного навыка повышайте parent-pool': 'Increase the parent pool for a specialized Skill',

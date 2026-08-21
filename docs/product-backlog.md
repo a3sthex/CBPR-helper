@@ -2743,12 +2743,23 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - полный before/after snapshot остаётся на сервере и не перегружает обычный Ledger response;
 - последний change set можно безопасно откатить целиком; после следующего изменения старый snapshot блокируется от опасного отката;
 - generic Profile PUT остаётся ограниченным и не превращается обратно в неаудируемую замену JSON;
-- Admin editing чужих Dossiers, custom items и более детальный field-by-field editor остаются следующими подэтапами.
+- Admin editing чужих Dossiers и более детальный field-by-field editor остаются следующими подэтапами.
+
+**Статус B.3 — реализованы Custom / Found Items:**
+
+- Database item можно добавить как найденный/полученный без Market purchase с источником `Loot`, `Gift`, `Crafted`, `Role Access`, `GM Award`, `Custom` или `Other`;
+- полностью custom item получает собственные name, description, category, reference value, quantity, `stackable`, acquisition details и private notes;
+- custom item заметно помечается `CUSTOM · MANUAL` и `manual_resolution_required`, пока Structured Effects не опишет его механику;
+- custom data не может внедрить поддельные Damage, SP, HL, mechanics, requirements или Cyberware installation rules;
+- durable custom quantity разделяется на стабильные экземпляры, explicit stackable остаётся одним stack;
+- конкретный экземпляр можно переименовать, исправить описание/value/source и удалить независимо от одноимённых вещей;
+- acquisition source сохраняется в `item_instances`, а private item/acquisition notes вырезаются из public Dossier на сервере;
+- добавление, изменение и удаление входят в обычный Trust + Audit change set и безопасный revert.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
-4. Добавить custom/found items.
+4. ✅ Добавить custom/found items и acquisition provenance.
 5. Consumable/use и Equippable Active Gear: equip modes, hands/slots, Activate/Deactivate, mounted host links.
 6. Structured Effects & Modifiers schema/evaluator.
 7. Base/effective/current breakdown в Character Sheet и Rolls.

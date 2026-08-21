@@ -205,6 +205,94 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
                       {'revision': 2})
         self.assertEqual(old_revert.exception.status, 409)
 
+    def test_custom_and_found_items_are_safe_stable_and_audited(self):
+        edited = copy.deepcopy(self.character_data)
+        edited['inventory'] = [
+            {
+                'is_custom': True, 'key': 'client-custom', 'cat': 'gear',
+                'name': 'Signal Scrambler Prototype', 'custom_name': 'Signal Scrambler Prototype',
+                'desc': 'A hand-built story device with unknown internals.',
+                'price': 750, 'qty': 4, 'stackable': True, 'state': 'carried',
+                'acquisition_source': 'crafted', 'acquisition_note': 'Built during downtime',
+                'notes': 'Private calibration phrase',
+                # Custom narrative items cannot inject executable/derived mechanics.
+                'damage': '99d6', 'sp': 99, 'hl': -100,
+                'mechanics': {'attack_bonus': 999}, 'fields': {'evil': True},
+            },
+            {
+                'is_custom': True, 'key': 'duplicate-prop', 'cat': 'custom',
+                'name': 'Unmarked Access Card', 'price': 0, 'qty': 2,
+                'stackable': False, 'state': 'carried',
+                'acquisition_source': 'loot', 'acquisition_note': 'Warehouse run',
+            },
+        ]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add crafted and recovered story items', 'data': edited,
+        })
+        inventory = updated['data']['inventory']
+        prototype = next(item for item in inventory if item['name'] == 'Signal Scrambler Prototype')
+        cards = [item for item in inventory if item['name'] == 'Unmarked Access Card']
+        self.assertEqual(prototype['qty'], 4)
+        self.assertEqual(len(cards), 2)
+        self.assertTrue(all(item['qty'] == 1 for item in cards))
+        self.assertEqual(len({item['instance_id'] for item in inventory}), 3)
+        self.assertTrue(all(item['key'] == f"custom-{item['instance_id']}" for item in inventory))
+        for forbidden in ('damage', 'sp', 'hl', 'mechanics', 'fields'):
+            self.assertNotIn(forbidden, prototype)
+        self.assertTrue(prototype['manual_resolution_required'])
+        row = self.conn.execute(
+            'SELECT * FROM item_instances WHERE instance_id=?',
+            (prototype['instance_id'],)).fetchone()
+        self.assertIsNone(row['catalog_item_id'])
+        self.assertEqual(row['source_type'], 'crafted')
+        self.assertEqual(row['source_ref'], 'Built during downtime')
+
+        public_data = copy.deepcopy(updated['data'])
+        public_data['visibility'] = {**server.CHARACTER_VISIBILITY_DEFAULTS, 'equipment': True}
+        public = server.public_character_data(public_data)
+        public_prototype = next(item for item in public['inventory']
+                                if item['name'] == 'Signal Scrambler Prototype')
+        self.assertNotIn('notes', public_prototype)
+        self.assertNotIn('acquisition_note', public_prototype)
+        self.assertEqual(public_prototype['desc'], prototype['desc'])
+
+        edited_again = copy.deepcopy(updated['data'])
+        target = next(item for item in edited_again['inventory']
+                      if item['instance_id'] == prototype['instance_id'])
+        target.update({
+            'custom_name': 'Scrambler Mk II', 'name': 'Scrambler Mk II',
+            'desc': 'Rebuilt after field testing.', 'price': 900,
+            'acquisition_source': 'gift', 'acquisition_note': 'Reworked by an allied Tech',
+        })
+        changed = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 1, 'reason': 'Tech rebuilt the prototype', 'data': edited_again,
+        })
+        changed_item = next(item for item in changed['data']['inventory']
+                            if item['instance_id'] == prototype['instance_id'])
+        self.assertEqual(changed_item['name'], 'Scrambler Mk II')
+        self.assertEqual(changed_item['price'], 900)
+        source_row = self.conn.execute(
+            'SELECT source_type,source_ref FROM item_instances WHERE instance_id=?',
+            (prototype['instance_id'],)).fetchone()
+        self.assertEqual(tuple(source_row), ('gift', 'Reworked by an allied Tech'))
+        history = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertTrue(any('Scrambler Mk II' in change['label']
+                            for change in history['entries'][0]['changes']))
+
+    def test_unknown_item_requires_database_or_explicit_custom_marker(self):
+        edited = copy.deepcopy(self.character_data)
+        edited['inventory'] = [{
+            'key': 'made-up-item', 'cat': 'gear', 'name': 'Made Up', 'qty': 1,
+            'acquisition_source': 'loot',
+        }]
+        with self.assertRaises(server.ApiError) as denied:
+            self.call(server.Handler.api_character_sheet_update, self.match(1), {
+                'revision': 0, 'reason': 'try unknown item', 'data': edited,
+            })
+        self.assertEqual(denied.exception.status, 400)
+        self.assertEqual(json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])['inventory'], [])
+
     def test_trust_audit_sheet_edit_is_owner_only_and_revision_guarded(self):
         edited = copy.deepcopy(self.character_data)
         edited['cash'] = 200

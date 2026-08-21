@@ -1857,7 +1857,7 @@ function showCreationItemInfo(item) {
     .map(([key, value]) => `<b>${esc(key.replace(/_/g, ' '))}</b><span>${esc(value && typeof value === 'object' ? (value.notation || JSON.stringify(value)) : value)}</span>`).join('');
   const requirements = (item.requirements || []).map(req => req.kind === 'stat' ? `${req.stat} ${req.minimum}+` : req.value);
   openModal(`<h2>${esc(item.variant_name || item.display_name || item.name)}</h2>
-    <div class="chips mb"><span class="chip">${esc(itemVisibleType(item, T('Item','Предмет')))}</span>${item.source ? `<span class="tag source">${esc(item.source)}</span>` : ''}${item.price != null ? `<span class="price">${money(item.price)}</span>` : ''}</div>
+    <div class="chips mb"><span class="chip">${esc(itemVisibleType(item, T('Item','Предмет')))}</span>${item.is_custom?'<span class="tag">CUSTOM · MANUAL</span>':''}${item.source ? `<span class="tag source">${esc(item.source)}</span>` : ''}${item.acquisition_source?`<span class="chip">${esc(acquisitionSourceLabel(item.acquisition_source))}</span>`:''}${item.price != null ? `<span class="price">${money(item.price)}</span>` : ''}</div>
     <div class="mechanic-chips mb">${itemMechanicChips(item)}</div>
     ${requirements.length ? `<div class="panel accent mb"><b>${T('Requirements','Требования')}</b><p>${requirements.map(esc).join(' · ')}</p></div>` : ''}
     ${item.desc ? `<p class="preserve-lines">${esc(item.desc)}</p>` : `<p class="muted">${T('No description is available in Data Pool.','Описание в Data Pool не указано.')}</p>`}
@@ -2618,10 +2618,10 @@ async function viewSheet(id) {
       <div class="panel mb" id="sheet-gear">
         <h2>🎒 Inventory (${inv.length})</h2>
         ${inv.length ? groupedItemsHtml(inv.map((item, index) => ({ ...item, _sheetIndex: index })), i => `
-          <div class="inv-row"><span class="iname">${esc(i.custom_name || i.display_name || i.name)} ×${i.qty || 1}</span>
-            ${itemMechanicChips(i)}<span class="chip">${esc(i.state||'carried')}</span>
+          <div class="inv-row"><span class="iname">${esc(i.custom_name || i.display_name || i.name)} ×${i.qty || 1}</span>${i.is_custom?'<span class="tag">CUSTOM · MANUAL</span>':''}
+            ${itemMechanicChips(i)}<span class="chip">${esc(i.state||'carried')}</span>${i.acquisition_source?`<span class="chip">${esc(acquisitionSourceLabel(i.acquisition_source))}</span>`:''}
             ${i.sp != null && !(i.mechanics || {}).sp ? `<span class="chip">SP ${i.sp}</span>` : ''}
-            <span class="muted small">${money((i.price || 0) * (i.qty || 1))}</span><button class="info-btn" data-owned-item="${i._sheetIndex}">i</button>
+            ${i.is_custom&&i.desc?`<span class="small muted user-content">${esc(i.desc)}</span>`:''}<span class="muted small">${money((i.price || 0) * (i.qty || 1))}</span><button class="info-btn" data-owned-item="${i._sheetIndex}">i</button>
           </div>`, T('Gear','Снаряжение')) : `<div class="muted small">${T('Empty.','Пусто. Совсем.')}</div>`}
         ${armorSlots.length ? `<h3 class="mt">🛡️ ${T('Equipped Armor','Надетая броня')}</h3>${armorSlots.map(([piece, ru]) => `
           <div class="inv-row"><span class="iname">${ru}: ${esc(piece.name)}</span>
@@ -3032,18 +3032,16 @@ function renderEditorTab() {
     box.innerHTML = `
     <div class="panel">
       <div class="row mb">
-        <button class="btn-primary" id="add-weapon">＋ ${T('Weapons','Оружие')}</button>
-        <button id="add-gear">＋ ${T('Gear','Снаряжение')}</button>
-        <span class="muted small grow">Всё купленное на рынке тоже попадает сюда.</span>
+        <button class="btn-primary" id="add-weapon">＋ ${T('Weapon from Database','Оружие из Database')}</button>
+        <button id="add-gear">＋ ${T('Item from Database','Предмет из Database')}</button>
+        <button id="add-custom-item">＋ ${T('Custom / Found Item','Custom / найденный предмет')}</button>
+        <span class="muted small grow">${T('Items added here require an acquisition source and are recorded by Trust + Audit.','Добавленные здесь предметы требуют источник получения и записываются через Trust + Audit.')}</span>
       </div>
       <div id="inv-list"></div>
     </div>`;
-    $('#add-weapon').onclick = () => pickItem(['guns', 'melee', 'grenades', 'ammo'], 'Оружие', (it) => {
-      addInvItem(it); renderEditorTab();
-    });
-    $('#add-gear').onclick = () => pickItem(null, 'Снаряжение (все категории)', (it) => {
-      addInvItem(it); renderEditorTab();
-    });
+    $('#add-weapon').onclick = () => pickItem(['guns', 'melee', 'grenades', 'ammo'], T('Weapon from Database','Оружие из Database'), it => openCatalogAcquisitionModal(it,meta=>{addInvItem(it,meta);renderEditorTab();}));
+    $('#add-gear').onclick = () => pickItem(null, T('Item from Database','Предмет из Database'), it => openCatalogAcquisitionModal(it,meta=>{addInvItem(it,meta);renderEditorTab();}),it=>it.cat!=='cyberware');
+    $('#add-custom-item').onclick=()=>openOwnedItemEditor(null,item=>{c.inventory=c.inventory||[];c.inventory.push(item);renderEditorTab();edChanged();});
     renderInventoryList();
   }
   if (ed.tab === 'chrome') {
@@ -3056,12 +3054,11 @@ function renderEditorTab() {
       <p class="small muted">${T('Guide rule: each piece of Cyberware except Fashionware also reduces','Правило гайда: каждый хром (кроме Fashionware) дополнительно режет')} <b>${T('maximum','максимум')}</b> ${T('Humanity by 2, or by 4 for Borgware.','человечности на 2, Borgware — на 4.')}</p>
       <div id="chrome-list"></div>
     </div>`;
-    $('#add-chrome').onclick = () => pickItem(['cyberware'], 'Кибернетика', (it) => {
-      const c2 = state.editor.char;
-      c2.cyberware = c2.cyberware || [];
-      c2.cyberware.push({key:it.id,catalog_item_id:it.id,cat:'cyberware',name:it.name,hl:it.hl||0,price:it.price,type:(it.fields&&it.fields.Type)||'',qty:1,state:'installed',fields:{...(it.fields||{})},mechanics:{...(it.mechanics||{})},requirements:[...(it.requirements||[])],capacity:it.capacity?{...it.capacity}:null,source:it.source||''});
-      renderEditorTab(); edChanged();
-    });
+    $('#add-chrome').onclick = () => pickItem(['cyberware'], T('Cyberware from Database','Кибернетика из Database'), it => openCatalogAcquisitionModal(it,meta=>{
+      const c2 = state.editor.char;c2.cyberware=c2.cyberware||[];
+      c2.cyberware.push({key:it.id,catalog_item_id:it.id,cat:'cyberware',name:it.name,custom_name:meta.custom_name||'',hl:it.hl||0,price:it.price,type:(it.fields&&it.fields.Type)||'',qty:1,state:'installed',fields:{...(it.fields||{})},mechanics:{...(it.mechanics||{})},requirements:[...(it.requirements||[])],capacity:it.capacity?{...it.capacity}:null,source:it.source||'',acquisition_source:meta.acquisition_source,acquisition_note:meta.acquisition_note||''});
+      renderEditorTab();edChanged();
+    },{quantity:false}));
     renderChromeList();
   }
   if (ed.tab === 'armor') {
@@ -3085,16 +3082,34 @@ function renderEditorTab() {
   }
 }
 
-function addInvItem(it) {
-  const c = state.editor.char;
-  c.inventory = c.inventory || [];
-  const ex = it.cat==='ammo' ? c.inventory.find(x => x.key === it.id && !x.custom_name && (x.state||'carried')==='carried') : null;
-  if (ex) ex.qty = (ex.qty || 1) + 1;
-  else c.inventory.push({
-    key: it.id, catalog_item_id:it.id, cat: it.cat, name: it.name, price: it.price, qty: 1,
-    state:'carried', damage: it.damage || null, sp: it.sp != null ? it.sp : null,hl:it.hl||0,
-    fields:{...(it.fields||{})},mechanics:{...(it.mechanics||{})},source:it.source||'',
-  });
+const ACQUISITION_SOURCES=[
+  ['loot','Loot','Добыча'],['gift','Gift','Подарок'],['crafted','Crafted','Создано'],
+  ['role_access','Role Access','Доступ роли'],['gm_award','GM Award','Награда GM'],
+  ['custom','Custom','Custom'],['other','Other','Другое'],
+];
+function acquisitionSourceOptions(selected,allowEmpty=false){return `${allowEmpty?`<option value="">${T('Keep recorded source','Сохранить текущий источник')}</option>`:''}${ACQUISITION_SOURCES.map(([id,en,ru])=>`<option value="${id}" ${selected===id?'selected':''}>${T(en,ru)}</option>`).join('')}`;}
+function acquisitionSourceLabel(source){const row=ACQUISITION_SOURCES.find(([id])=>id===source);return row?T(row[1],row[2]):source||'';}
+
+function openCatalogAcquisitionModal(item,onConfirm,options={}){
+  const modal=openModal(`<h2>${T('Add found item','Добавить найденный предмет')}</h2><div class="panel accent mb"><b>${esc(item.name)}</b><div class="small muted">${esc(item.source||'Database')} · ${item.price!=null?money(item.price):'—'}</div></div><div class="grid cols-2"><label class="f"><span>${T('Acquisition source *','Источник получения *')}</span><select id="acq-source">${acquisitionSourceOptions('loot')}</select></label>${options.quantity===false?'':`<label class="f"><span>${T('Quantity','Количество')}</span><input id="acq-qty" type="number" min="1" max="99" value="1"></label>`}<label class="f"><span>${T('Personal name (optional)','Собственное имя (необязательно)')}</span><input id="acq-name" maxlength="120" placeholder="${esc(item.name)}"></label></div><label class="f"><span>${T('Where did it come from?','Откуда предмет?')}</span><textarea id="acq-note" maxlength="500" rows="3" placeholder="${T('Found during the warehouse run…','Найден во время дела на складе…')}"></textarea></label><div class="row"><button id="acq-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="acq-add">${T('Add to Inventory','Добавить в Inventory')}</button></div>`);
+  $('#acq-cancel',modal).onclick=closeModal;
+  $('#acq-add',modal).onclick=()=>{const source=$('#acq-source',modal).value;if(!source)return;const qty=options.quantity===false?1:Math.max(1,Math.min(99,Number($('#acq-qty',modal).value)||1));const result={acquisition_source:source,acquisition_note:$('#acq-note',modal).value.trim(),custom_name:$('#acq-name',modal).value.trim(),qty};closeModal();onConfirm(result);};
+}
+
+function openOwnedItemEditor(item,onSave){
+  const isNew=!item,isCustom=isNew||!!item.is_custom,draft=JSON.parse(JSON.stringify(item||{}));
+  const categories=[['custom',T('Custom / Story Item','Custom / сюжетный предмет')],...(state.meta.cats||[]).filter(cat=>cat.id!=='cyberware').map(cat=>[cat.id,`${cat.emoji} ${catalogCategoryName(cat)}`])];
+  const selectedSource=draft.acquisition_source||(isNew?'loot':'');
+  const modal=openModal(`<h2>${isNew?T('Create Custom / Found Item','Создать Custom / найденный предмет'):T('Edit Item Instance','Редактировать экземпляр')}</h2>${isCustom?'<span class="tag">CUSTOM · MANUAL</span>':'<span class="tag">DATABASE ITEM</span>'}<div class="grid cols-2 mt"><label class="f"><span>${isCustom?T('Name *','Название *'):T('Personal name (optional)','Собственное имя (необязательно)')}</span><input id="owned-name" maxlength="120" value="${esc(isCustom?(draft.custom_name||draft.name||''):(draft.custom_name||''))}" placeholder="${esc(draft.name||'')}"></label>${isCustom?`<label class="f"><span>${T('Category','Категория')}</span><select id="owned-cat">${categories.map(([id,label])=>`<option value="${id}" ${(draft.cat||'custom')===id?'selected':''}>${esc(label)}</option>`).join('')}</select></label><label class="f"><span>${T('Reference value','Оценочная стоимость')}</span><input id="owned-price" type="number" min="0" max="9999999" step="1" value="${draft.price||0}"></label><label class="checkbox"><input id="owned-stackable" type="checkbox" ${draft.stackable?'checked':''}> ${T('Stackable quantity','Складывается в stack')}</label>`:`<div class="f"><span>${T('Database item','Предмет Database')}</span><b>${esc(draft.name||'')}</b></div>`}<label class="f"><span>${T('Quantity','Количество')}</span><input id="owned-qty" type="number" min="1" max="999" value="${draft.qty||1}" ${!isCustom&&draft.cat!=='ammo'?'disabled':''}></label><label class="f"><span>${T('Acquisition source','Источник получения')}</span><select id="owned-source">${acquisitionSourceOptions(selectedSource,!isNew)}</select></label></div>${isCustom?`<label class="f"><span>${T('Public description','Описание')}</span><textarea id="owned-desc" maxlength="4000" rows="4">${esc(draft.desc||'')}</textarea></label>`:''}<label class="f"><span>${T('Acquisition details','Обстоятельства получения')}</span><textarea id="owned-acq-note" maxlength="500" rows="2">${esc(draft.acquisition_note||'')}</textarea></label><label class="f"><span>${T('Private item notes','Личные заметки предмета')}</span><textarea id="owned-notes" maxlength="2000" rows="3">${esc(draft.notes||'')}</textarea></label><p class="small muted">${isCustom?T('Custom items are narrative/manual until Structured Effects are added. They cannot inject weapon, armor, or Cyberware mechanics.','Custom items остаются narrative/manual до Structured Effects и не могут подменять механику оружия, брони или Cyberware.'):T('Database mechanics are server-controlled; only this owned instance metadata can change.','Механика Database контролируется сервером; меняются только данные этого экземпляра.')}</p><div class="row"><button id="owned-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="owned-save">${T('Save Item','Сохранить предмет')}</button></div>`,true);
+  $('#owned-cancel',modal).onclick=closeModal;
+  $('#owned-save',modal).onclick=()=>{const name=$('#owned-name',modal).value.trim();if(isCustom&&!name){toast(T('Item name is required.','Укажите название предмета.'),true);return;}const source=$('#owned-source',modal).value;if(isNew&&!source){toast(T('Choose an acquisition source.','Выберите источник получения.'),true);return;}const result={...draft,custom_name:name,qty:Math.max(1,Math.min(999,Number($('#owned-qty',modal).value)||1)),notes:$('#owned-notes',modal).value.trim(),acquisition_source:source,acquisition_note:$('#owned-acq-note',modal).value.trim()};if(isCustom)Object.assign(result,{is_custom:true,key:draft.key||'custom',name,cat:$('#owned-cat',modal).value,price:Math.max(0,Number($('#owned-price',modal).value)||0),stackable:$('#owned-stackable',modal).checked,desc:$('#owned-desc',modal).value.trim(),state:draft.state||'carried',manual_resolution_required:true});closeModal();onSave(result);};
+}
+
+function addInvItem(it,meta={}) {
+  const c = state.editor.char;c.inventory=c.inventory||[];
+  const qty=Math.max(1,Math.min(99,Number(meta.qty)||1)),stackable=it.stackable===true||it.cat==='ammo';
+  const base={key:it.id,catalog_item_id:it.id,cat:it.cat,name:it.name,custom_name:meta.custom_name||'',price:it.price,qty:stackable?qty:1,state:'carried',damage:it.damage||null,sp:it.sp!=null?it.sp:null,hl:it.hl||0,fields:{...(it.fields||{})},mechanics:{...(it.mechanics||{})},source:it.source||'',acquisition_source:meta.acquisition_source||'loot',acquisition_note:meta.acquisition_note||''};
+  if(stackable){const ex=c.inventory.find(x=>x.key===it.id&&(x.custom_name||'')===base.custom_name&&(x.state||'carried')==='carried'&&x.acquisition_source===base.acquisition_source&&String(x.acquisition_note||'')===String(base.acquisition_note||''));if(ex)ex.qty=(ex.qty||1)+qty;else c.inventory.push(base);}else for(let index=0;index<qty;index++)c.inventory.push({...base});
   edChanged();
 }
 
@@ -3106,17 +3121,18 @@ function renderInventoryList() {
   if (!inv.length) { box.innerHTML = '<div class="empty">Пусто. Совсем. Даже пушки нет.</div>'; return; }
   box.innerHTML = inv.map((i,index) => `
     <div class="inv-row" data-index="${index}">
-      <span class="iname">${esc(i.custom_name||i.name)}</span><span class="chip">${esc(i.state||'carried')}</span>
+      <span class="iname">${esc(i.custom_name||i.name)}</span>${i.is_custom?'<span class="tag">CUSTOM · MANUAL</span>':''}<span class="chip">${esc(i.state||'carried')}</span>
       ${i.damage ? `<span class="weap-dmg">${esc(i.damage)}</span>` : ''}
       ${i.sp != null ? `<span class="chip">SP ${i.sp}</span>` : ''}
-      <span class="muted small">${money(i.price || 0)}</span>
-      ${i.cat==='ammo'?`<button class="btn-sm" data-act="minus">−</button><b>${i.qty || 1}</b><button class="btn-sm" data-act="plus">＋</button>`:'<b>×1</b>'}
-      <button class="btn-sm btn-danger" data-act="del">✕</button>
+      ${i.acquisition_source?`<span class="chip">${esc(acquisitionSourceLabel(i.acquisition_source))}</span>`:''}<span class="muted small">${money(i.price || 0)}</span>
+      ${(i.stackable||i.cat==='ammo')?`<button class="btn-sm" data-act="minus">−</button><b>${i.qty || 1}</b><button class="btn-sm" data-act="plus">＋</button>`:'<b>×1</b>'}
+      <button class="btn-sm" data-act="edit">✎</button><button class="btn-sm btn-danger" data-act="del">✕</button>
     </div>`).join('');
   $$('.inv-row', box).forEach(row => {
     $$('button', row).forEach(b => b.onclick = () => {
       const index=Number(row.dataset.index),item=c.inventory[index];
       if (!item) return;
+      if(b.dataset.act==='edit'){openOwnedItemEditor(item,updated=>{c.inventory[index]=updated;renderInventoryList();edChanged();});return;}
       if (b.dataset.act === 'plus') item.qty = (item.qty || 1) + 1;
       if (b.dataset.act === 'minus') item.qty = Math.max(1,(item.qty || 1) - 1);
       if (b.dataset.act === 'del') {
@@ -3136,15 +3152,11 @@ function renderChromeList() {
   if (!cw.length) { box.innerHTML = '<div class="empty">Ты ещё чист от хрома. Пока что.</div>'; return; }
   box.innerHTML = cw.map((i, idx) => `
     <div class="inv-row">
-      <span class="iname">${esc(i.name)}</span>
-      <span class="hl-badge">HL ${i.hl || 0}</span>
-      <span class="chip">${esc(i.type || 'хром')}</span>
-      <button class="btn-sm btn-danger" data-idx="${idx}">✕ вырезать</button>
+      <span class="iname">${esc(i.custom_name||i.name)}</span><span class="hl-badge">HL ${i.hl || 0}</span><span class="chip">${esc(i.type || 'Cyberware')}</span>${i.acquisition_source?`<span class="chip">${esc(acquisitionSourceLabel(i.acquisition_source))}</span>`:''}
+      <button class="btn-sm" data-chrome-edit="${idx}">✎</button><button class="btn-sm btn-danger" data-chrome-del="${idx}">✕ ${T('remove','извлечь')}</button>
     </div>`).join('');
-  $$('[data-idx]', box).forEach(b => b.onclick = () => {
-    c.cyberware.splice(Number(b.dataset.idx), 1);
-    renderChromeList(); edChanged();
-  });
+  $$('[data-chrome-edit]',box).forEach(button=>button.onclick=()=>{const index=Number(button.dataset.chromeEdit);openOwnedItemEditor(c.cyberware[index],updated=>{c.cyberware[index]=updated;renderChromeList();edChanged();});});
+  $$('[data-chrome-del]', box).forEach(b => b.onclick = () => {c.cyberware.splice(Number(b.dataset.chromeDel), 1);renderChromeList();edChanged();});
 }
 
 function renderArmorSlots() {
@@ -3171,16 +3183,11 @@ function renderArmorSlots() {
   }).join('');
   $$('[data-pick]', box).forEach(b => {
     const slot = b.dataset.pick;
-    b.onclick = () => pickItem(['armor'], `Броня: ${slot === 'body' ? 'тело' : 'голова'}`, (it) => {
+    b.onclick = () => pickItem(['armor'], `Броня: ${slot === 'body' ? 'тело' : 'голова'}`, it => {
       c.inventory=c.inventory||[];
       let owned=c.inventory.find(entry=>entry.cat==='armor'&&(entry.catalog_item_id||String(entry.key||'').split('@')[0])===it.id&&!['equipped','installed'].includes(entry.state));
-      if(!owned){addInvItem(it);owned=c.inventory[c.inventory.length-1];}
-      owned.state='equipped';
-      const piece = { key: it.id + (it.armor_bundled ? '@set' : '@' + slot), source_key: it.id,catalog_item_id:it.id,instance_id:owned.instance_id,
-        name: it.name, sp: it.sp || 0, penalties: { ...(it.penalties || {}) }, bundled: !!it.armor_bundled };
-      if (it.armor_bundled) { c.armor.body = { ...piece }; c.armor.head = { ...piece }; }
-      else c.armor[slot] = piece;
-      renderArmorSlots(); edChanged();
+      const equip=meta=>{if(!owned){addInvItem(it,meta);owned=c.inventory[c.inventory.length-1];}owned.state='equipped';const piece={key:it.id+(it.armor_bundled?'@set':'@'+slot),source_key:it.id,catalog_item_id:it.id,instance_id:owned.instance_id,name:it.name,sp:it.sp||0,penalties:{...(it.penalties||{})},bundled:!!it.armor_bundled};if(it.armor_bundled){c.armor.body={...piece};c.armor.head={...piece};}else c.armor[slot]=piece;renderArmorSlots();edChanged();};
+      if(owned)equip({});else openCatalogAcquisitionModal(it,equip,{quantity:false});
     }, it => !(it.armor_locations || []).includes('shield') && (it.armor_locations || ['body','head']).includes(slot));
   });
   $$('[data-clear]', box).forEach(b => b.onclick = () => {
@@ -3217,7 +3224,7 @@ async function pickItem(cats, title, onPick, predicate) {
       </div>`).join('') : '<div class="empty">Ничего не нашлось.</div>';
     $$('.inv-row', m).forEach(row => row.onclick = () => {
       const it = items.find(x => x.id === row.dataset.id);
-      if (it) { onPick(it); closeModal(); }
+      if (it) { closeModal(); onPick(it); }
     });
   };
   $('#pk-go', m).onclick = load;

@@ -23,6 +23,15 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('view.innerHTML = `', view_characters)
         self.assertNotIn("view.insertAdjacentHTML('afterbegin'", view_characters)
 
+    def test_trust_editor_supports_custom_and_found_item_provenance(self):
+        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        self.assertIn('id="add-custom-item"', source)
+        self.assertIn('function openCatalogAcquisitionModal', source)
+        self.assertIn('function openOwnedItemEditor', source)
+        self.assertIn('acquisition_source', source)
+        self.assertIn('CUSTOM · MANUAL', source)
+        self.assertIn("it.cat!=='cyberware'", source)
+
     def test_wizard_v3_runtime_contract(self):
         meta = {
             'stats': server.STATS,
