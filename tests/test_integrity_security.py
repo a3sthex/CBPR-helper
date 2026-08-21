@@ -1041,6 +1041,202 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertTrue(any('Backup Drive' in entry['reason']
                             for entry in ledger['entries']))
 
+    def test_curated_black_ice_stat_effects_are_allowlisted_and_campaign_timed(self):
+        liche = copy.deepcopy(server.item_by_id('programs-19'))
+        liche.update({
+            'instance_id': 'a' * 32, 'catalog_item_id': 'programs-19',
+            'state': 'installed',
+        })
+        result = server.instantiate_black_ice_stat_effects(
+            self.conn, 1, self.current['id'], liche, 77,
+            now=100, penalty_roll=6)
+        self.assertEqual(result['targets'], ['INT', 'REF', 'DEX'])
+        self.assertEqual(result['penalty_roll'], 6)
+        self.assertEqual(len(result['created']), 3)
+        effects = server.character_effect_instances(self.conn, 1)
+        self.assertEqual(len(effects), 3)
+        self.assertTrue(all(item['source_type'] == 'black_ice' for item in effects))
+        self.assertTrue(all(item['duration_type'] == 'campaign_time' for item in effects))
+        self.assertTrue(all(item['context']['campaign_minutes'] == 60 for item in effects))
+        self.assertTrue(all(item['context']['manual_expiry'] for item in effects))
+        derived = server.derive(self.character_data, effects)
+        self.assertEqual(derived['effects']['stats']['INT']['effective'], 1)
+        self.assertEqual(derived['effects']['stats']['REF']['effective'], 2)
+        self.assertEqual(derived['effects']['stats']['DEX']['effective'], 2)
+        with self.assertRaisesRegex(server.ApiError, 'от 1 до 6'):
+            server.instantiate_black_ice_stat_effects(
+                self.conn, 1, self.current['id'], liche, 77,
+                penalty_roll=7)
+
+    def test_liche_attack_atomically_creates_and_reverts_stat_effects(self):
+        source_data = copy.deepcopy(self.character_data)
+        liche = copy.deepcopy(server.item_by_id('programs-19'))
+        liche.update({
+            'instance_id': 'a' * 32, 'catalog_item_id': 'programs-19',
+            'key': 'programs-19', 'qty': 1, 'state': 'installed',
+        })
+        entity = server.initial_black_ice_entity(
+            liche, 'b' * 32, 1, 'deploy_combat', 'Penalty Floor',
+            'Target Netrunner')
+        entity['session_id'] = 1
+        entity['session_floor_id'] = 'c' * 32
+        entity['session_node_id'] = 'd' * 32
+        source_data['inventory'] = [liche]
+        source_data['net_entities'] = {entity['net_entity_id']: entity}
+        self.conn.execute('UPDATE characters SET data=? WHERE id=1',
+                          (json.dumps(source_data),))
+        target_data = copy.deepcopy(self.character_data)
+        target_data.update({
+            'handle': 'Target Netrunner', 'role': 'Netrunner', 'role_rank': 4,
+            'roles': [{'name': 'Netrunner', 'rank': 4, 'primary': True}],
+            'active_role': 'Netrunner',
+        })
+        self.conn.execute(
+            'INSERT INTO characters(owner_id,public,data,created,updated) VALUES(3,1,?,1,1)',
+            (json.dumps(target_data),))
+        self.current = self.user('gm')
+        session = self.call(server.Handler.api_session_create, body={
+            'title': 'Liche Effect Integration',
+        })
+        self.conn.execute(
+            "INSERT INTO session_combatants(session_id,kind,character_id,name,initiative,visible,sort_order) "
+            "VALUES(?,'character',1,'ICE Controller',12,1,0)", (session['id'],))
+        self.conn.execute(
+            "INSERT INTO session_combatants(session_id,kind,character_id,name,initiative,visible,sort_order) "
+            "VALUES(?,'character',2,'Target Netrunner',10,1,1)", (session['id'],))
+        source_combatant = self.conn.execute(
+            'SELECT id FROM session_combatants WHERE session_id=? AND character_id=1',
+            (session['id'],)).fetchone()['id']
+        target_combatant = self.conn.execute(
+            'SELECT id FROM session_combatants WHERE session_id=? AND character_id=2',
+            (session['id'],)).fetchone()['id']
+        floor_id, node_id = 'c' * 32, 'd' * 32
+        net_state = {
+            'round': 1, 'active_turn': 0,
+            'floors': [{'floor_id': floor_id, 'label': 'Penalty Floor'}],
+            'nodes': [{'node_id': node_id, 'floor_id': floor_id,
+                       'type': 'black_ice', 'label': 'Liche Node',
+                       'visible': True}],
+            'paths': [],
+            'links': [{
+                'net_entity_id': entity['net_entity_id'], 'character_id': 1,
+                'floor_id': floor_id, 'node_id': node_id,
+                'target_combatant_id': target_combatant,
+                'initiative': entity['initiative'], 'active': True,
+                'visible': True, 'linked_at': 1,
+            }],
+            'runners': [{
+                'combatant_id': target_combatant, 'character_id': 2,
+                'node_id': node_id, 'jacked_in': True, 'interface_rank': 4,
+                'action_round': 1, 'actions_used': 0,
+            }],
+            'action_log': [],
+        }
+        self.conn.execute(
+            'UPDATE nc_sessions SET net_state_json=? WHERE id=?',
+            (json.dumps(net_state), session['id']))
+        self.conn.commit()
+        attack_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$',
+            f'{session["id"]}/{entity["net_entity_id"]}')
+        with mock.patch.object(server.secrets, 'randbelow', side_effect=[9, 0, 5]):
+            attacked = self.call(
+                server.Handler.api_session_black_ice_attack, attack_match, {
+                    'target_character_revision': 0,
+                    'reason': 'Resolve trusted Liche stat penalty',
+                })
+        result = attacked['result']
+        self.assertTrue(result['success'])
+        self.assertEqual(result['effect_application'], 'automated')
+        self.assertEqual(result['stat_penalty_roll'], 6)
+        self.assertEqual(result['stat_penalty_targets'], ['INT', 'REF', 'DEX'])
+        self.assertEqual(len(result['created_effects']), 3)
+        target_row = self.conn.execute('SELECT revision,data FROM characters WHERE id=2').fetchone()
+        self.assertEqual(target_row['revision'], 1)
+        effects = server.character_effect_instances(self.conn, 2)
+        derived = server.derive(json.loads(target_row['data']), effects)
+        self.assertEqual(derived['effects']['stats']['INT']['effective'], 1)
+        ledger = self.call(server.Handler.api_character_ledger, self.match(2))
+        self.assertEqual(len(ledger['entries'][0]['delta']['created_effect_ids']), 3)
+        self.assertTrue(ledger['entries'][0]['can_revert'])
+        reverted = self.call(
+            server.Handler.api_character_ledger_revert,
+            re.match(r'^(\d+)/(\d+)$', f'2/{ledger["entries"][0]["id"]}'), {
+                'revision': 1, 'reason': 'Revert linked Liche attack resolution',
+            })
+        self.assertEqual(reverted['revision'], 2)
+        self.assertFalse(server.character_effect_instances(self.conn, 2))
+
+    def test_defense_sequencer_requires_explicit_eligibility_confirmation(self):
+        edited = copy.deepcopy(self.character_data)
+        item_ids = ('net_stuff-1', 'net_stuff-23', 'programs-12', 'programs-12')
+        edited['inventory'] = [{
+            'key': item_id, 'catalog_item_id': item_id,
+            'cat': server.item_by_id(item_id)['cat'],
+            'name': server.item_by_id(item_id)['name'], 'qty': 1,
+            'state': 'carried', 'acquisition_source': 'loot',
+        } for item_id in item_ids]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add Defense Sequencer test loadout',
+            'data': edited,
+        })
+        deck = next(item for item in updated['data']['inventory']
+                    if item['catalog_item_id'] == 'net_stuff-1')
+        sequencer = next(item for item in updated['data']['inventory']
+                         if item['catalog_item_id'] == 'net_stuff-23')
+        armors = [item for item in updated['data']['inventory']
+                  if item['catalog_item_id'] == 'programs-12']
+        revision = 1
+        for item in (sequencer, *armors):
+            self.call(server.Handler.api_character_modification_install, self.match(1), {
+                'revision': revision, 'host_instance_id': deck['instance_id'],
+                'upgrade_instance_id': item['instance_id'],
+                'manual_confirm': False, 'reason': f'Install {item["name"]}',
+            })
+            revision += 1
+        trigger_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})/([a-f0-9]{32})$',
+            f'1/{deck["instance_id"]}/{armors[0]["instance_id"]}')
+        self.call(server.Handler.api_character_program_action, trigger_match, {
+            'revision': revision, 'action': 'rez', 'reason': 'Rez trigger Armor',
+        })
+        revision += 1
+        derezzed = self.call(
+            server.Handler.api_character_program_action, trigger_match, {
+                'revision': revision, 'action': 'derez',
+                'reason': 'Derez trigger Armor and queue sequencer',
+            })
+        revision += 1
+        hardware = derezzed['character']['derived']['effective_cyberdecks'][
+            deck['instance_id']]['hardware'][0]
+        self.assertTrue(hardware['runtime_state']['pending_armor_rez'])
+        self.assertEqual(hardware['eligible_armor_programs'][0]['instance_id'],
+                         armors[1]['instance_id'])
+        resolve_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})/([a-f0-9]{32})$',
+            f'1/{deck["instance_id"]}/{sequencer["instance_id"]}')
+        with self.assertRaisesRegex(server.ApiError, 'Подтвердите'):
+            self.call(server.Handler.api_character_defense_sequencer_resolve,
+                      resolve_match, {
+                'revision': revision,
+                'armor_instance_id': armors[1]['instance_id'],
+                'not_used_in_netrun_confirmed': False,
+                'reason': 'Attempt without table eligibility confirmation',
+            })
+        resolved = self.call(
+            server.Handler.api_character_defense_sequencer_resolve,
+            resolve_match, {
+                'revision': revision,
+                'armor_instance_id': armors[1]['instance_id'],
+                'not_used_in_netrun_confirmed': True,
+                'reason': 'Start of next Turn and Armor was not used this Netrun',
+            })
+        self.assertEqual(resolved['character']['revision'], revision + 1)
+        runtime = resolved['character']['data']['program_state'][armors[1]['instance_id']]
+        self.assertEqual((runtime['status'], runtime['rez_current']), ('rezzed', 7))
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertTrue(ledger['entries'][0]['delta']['manual_eligibility_confirmed'])
+
     def test_program_runtime_rez_damage_destroy_and_backup_restore(self):
         edited = copy.deepcopy(self.character_data)
         item_ids = (

@@ -121,9 +121,11 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('data-manage-cyberdeck', source)
         self.assertIn('data-install-deck-item', source)
         self.assertIn('data-remove-deck-item', source)
-        self.assertIn('PROGRAM EFFECTS AND BLACK ICE ATTACKS ARE MANUAL', source)
+        self.assertIn('CURATED NET EFFECTS AUTOMATED', source)
         self.assertIn('data-program-action', source)
         self.assertIn('data-backup-restore', source)
+        self.assertIn('data-defense-sequencer', source)
+        self.assertIn('not_used_in_netrun_confirmed', source)
         self.assertIn('REZ damage', source)
         self.assertIn('data-black-ice-deploy', source)
         self.assertIn('data-net-entity-action', source)
@@ -158,6 +160,8 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('data-session-ice-attack', ncnet)
         self.assertIn('/net/entities/', ncnet)
         self.assertIn('Black ICE Attack', ncnet)
+        self.assertIn('AUTOMATED EFFECT', ncnet)
+        self.assertIn('SKUNK SLIDE', ncnet)
 
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')

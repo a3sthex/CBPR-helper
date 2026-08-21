@@ -166,7 +166,7 @@ def effect_target_allowed(target):
 def validate_effect_definition(effect):
     allowed_keys = {
         'id', 'target', 'operation', 'value', 'stack_group', 'stack_policy',
-        'priority', 'source',
+        'priority', 'source', 'minimum_value',
     }
     if not isinstance(effect, dict) or set(effect) - allowed_keys:
         raise RuntimeError('Effect contains non-allowlisted fields')
@@ -179,6 +179,12 @@ def validate_effect_definition(effect):
     value = effect.get('value')
     if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or abs(value) > 1000:
         raise RuntimeError('Effect value must be a finite bounded number')
+    minimum_value = effect.get('minimum_value')
+    if (minimum_value is not None and
+            (not isinstance(minimum_value, (int, float)) or
+             isinstance(minimum_value, bool) or not math.isfinite(minimum_value) or
+             abs(minimum_value) > 1000)):
+        raise RuntimeError('Effect minimum_value must be a finite bounded number')
     if effect.get('stack_policy', 'stack') not in EFFECT_STACK_POLICIES:
         raise RuntimeError('Invalid effect stack policy')
     if not isinstance(effect.get('priority', 100), int):
@@ -1798,6 +1804,13 @@ def apply_modifier_pipeline(base_value, modifiers):
             value += amount
         elif operation == 'multiply':
             value *= amount
+    # Some source effects define a floor for their complete modifier rather than
+    # a separate operation. Apply the strictest declared floor after the whole
+    # numeric pipeline so stacked penalties cannot push a protected STAT below it.
+    floors = [item.get('minimum_value') for item in applied
+              if item.get('minimum_value') is not None]
+    if floors:
+        value = max(value, max(floors))
     if isinstance(value, float) and value.is_integer():
         value = int(value)
     return value, resolve_modifier_stack(modifiers)
@@ -3323,6 +3336,9 @@ def queue_defense_sequencer_trigger(data, modifications, deck_instance_id,
                                      source_program_instance_id):
     owned = {item.get('instance_id'): item for item in data.get('inventory') or []
              if isinstance(item, dict) and item.get('instance_id')}
+    source_program = owned.get(source_program_instance_id) or {}
+    if source_program.get('name') != 'Armor':
+        return 0
     sequencers = [mod for mod in modifications
                   if mod.get('host_instance_id') == deck_instance_id and
                   (owned.get(mod.get('upgrade_instance_id')) or {}).get('name') ==
@@ -3346,6 +3362,70 @@ def queue_defense_sequencer_trigger(data, modifications, deck_instance_id,
             'source': 'DL:Up 5 / IR3 41',
         }
     return len(eligible)
+
+
+def resolve_defense_sequencer_trigger(data, modifications, deck_instance_id,
+                                      hardware_instance_id, armor_instance_id,
+                                      now=None):
+    """Resolve a pending Defense Sequencer after explicit table eligibility proof."""
+    now = time.time() if now is None else now
+    owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+             if isinstance(item, dict) and item.get('instance_id')}
+    sequencer_modification = next((
+        mod for mod in modifications
+        if mod.get('host_instance_id') == deck_instance_id and
+        mod.get('upgrade_instance_id') == hardware_instance_id and
+        (owned.get(hardware_instance_id) or {}).get('name') == 'Defense Sequencer'), None)
+    if not sequencer_modification:
+        raise ApiError(404, 'Installed Defense Sequencer не найден')
+    sequencer_state = (data.get('modification_state') or {}).get(
+        sequencer_modification['modification_id']) or {}
+    if (sequencer_state.get('resource_type') != 'defense_sequencer' or
+            not sequencer_state.get('pending_armor_rez')):
+        raise ApiError(409, 'Defense Sequencer не имеет pending Armor trigger')
+    eligible_ids = [str(item) for item in
+                    sequencer_state.get('eligible_armor_instance_ids') or []]
+    if armor_instance_id not in eligible_ids:
+        raise ApiError(409, 'Выбранная Armor не входит в pending eligibility snapshot')
+    armor = owned.get(armor_instance_id)
+    armor_modification = next((
+        mod for mod in modifications
+        if mod.get('host_instance_id') == deck_instance_id and
+        mod.get('upgrade_instance_id') == armor_instance_id and
+        (armor or {}).get('name') == 'Armor'), None)
+    if not armor or not armor_modification:
+        raise ApiError(409, 'Eligible Armor больше не установлена в этом Cyberdeck')
+    runtime = initial_program_runtime_state(
+        armor, deck_instance_id, armor_modification['modification_id'],
+        (data.get('program_state') or {}).get(armor_instance_id))
+    if runtime['status'] != 'inactive':
+        raise ApiError(409, 'Defense Sequencer может Rez только inactive Armor')
+    for program_id, existing in (data.get('program_state') or {}).items():
+        if program_id == armor_instance_id or not isinstance(existing, dict):
+            continue
+        other = owned.get(program_id) or {}
+        if other.get('name') == 'Armor' and existing.get('status') == 'rezzed':
+            raise ApiError(409, 'Другая копия Armor уже Rezzed')
+    runtime['status'] = 'rezzed'
+    runtime['rez_current'] = runtime['rez_max']
+    data.setdefault('program_state', {})[armor_instance_id] = runtime
+    data.setdefault('modification_state', {})[
+        sequencer_modification['modification_id']] = {
+            'resource_type': 'defense_sequencer',
+            'pending_armor_rez': False,
+            'resolved_armor_instance_id': armor_instance_id,
+            'trigger_program_instance_id': sequencer_state.get(
+                'trigger_program_instance_id'),
+            'manual_eligibility_confirmed': True,
+            'resolved_at': now,
+            'source': sequencer_state.get('source') or 'DL:Up 5 / IR3 41',
+        }
+    return {
+        'armor_instance_id': armor_instance_id,
+        'armor_name': armor.get('custom_name') or armor.get('name') or 'Armor',
+        'rez_current': runtime['rez_current'], 'rez_max': runtime['rez_max'],
+        'manual_eligibility_confirmed': True,
+    }
 
 
 def initial_program_runtime_state(item, deck_instance_id, modification_id, existing=None):
@@ -3382,6 +3462,10 @@ BLACK_ICE_ANTI_PROGRAM_DAMAGE = {
     'Dragon': 6, 'Killer': 4, 'Sabertooth': 6,
 }
 ATTACKER_PROGRAM_BLACK_ICE_DAMAGE = {'Sword': 3, 'Banhammer': 2}
+BLACK_ICE_STAT_EFFECT_TARGETS = {
+    'Liche': ('INT', 'REF', 'DEX'),
+    'Scorpion': ('MOVE',),
+}
 
 
 def black_ice_effect_profile(item):
@@ -3392,6 +3476,8 @@ def black_ice_effect_profile(item):
         resolution = 'automated_random_destroy'
     elif name == 'Raven':
         resolution = 'automated_random_derez_plus_manual'
+    elif name in BLACK_ICE_STAT_EFFECT_TARGETS:
+        resolution = 'automated_stat_penalty'
     else:
         resolution = 'automated_rez_damage' if dice else 'manual_effect'
     return {
@@ -3399,7 +3485,79 @@ def black_ice_effect_profile(item):
         'damage_dice': dice, 'damage_sides': 6 if dice else None,
         'destroy_on_derez': bool(dice),
         'source': catalog_item.get('source'),
-        'manual_effect': str(catalog_item.get('desc') or '')[:2000],
+        'manual_effect': '' if resolution == 'automated_stat_penalty' else
+            str(catalog_item.get('desc') or '')[:2000],
+    }
+
+
+def instantiate_black_ice_stat_effects(conn, character_id, actor_user_id,
+                                       source_program, session_id, now=None,
+                                       penalty_roll=None):
+    """Create allowlisted one-hour STAT penalties for Liche or Scorpion.
+
+    The duration uses the existing campaign-time/manual-clock lifecycle: the
+    numerical penalty is authoritative immediately, while advancing the one-hour
+    campaign clock remains an explicit table action.
+    """
+    now = time.time() if now is None else now
+    catalog_item = item_by_id(catalog_item_id_for_entry(source_program)) or source_program or {}
+    name = str(catalog_item.get('name') or '')
+    targets = BLACK_ICE_STAT_EFFECT_TARGETS.get(name)
+    if not targets:
+        raise ApiError(409, 'Black ICE не имеет curated STAT effect')
+    if penalty_roll is None:
+        penalty_roll = secrets.randbelow(6) + 1
+    if (not isinstance(penalty_roll, int) or isinstance(penalty_roll, bool) or
+            not 1 <= penalty_roll <= 6):
+        raise ApiError(400, 'Black ICE STAT penalty roll должен быть от 1 до 6')
+    effect_group_id = secrets.token_hex(16)
+    created = []
+    for stat in targets:
+        effect_id = secrets.token_hex(16)
+        definition = {
+            'id': f'black-ice-{name.lower()}-{effect_id}',
+            'target': f'character.stat.{stat}',
+            'operation': 'add', 'value': -penalty_roll,
+            'minimum_value': 1,
+            'stack_group': f'black_ice_{name.lower()}_{effect_group_id}_{stat.lower()}',
+            'stack_policy': 'stack', 'priority': 400,
+            'source': str(catalog_item.get('source') or 'CP:R 371')[:120],
+        }
+        validate_effect_definition(definition)
+        label = f'{name}: {stat} −{penalty_roll}'
+        context = {
+            'effect_group_id': effect_group_id,
+            'automated_effect': True,
+            'manual_expiry': True,
+            'campaign_minutes': 60,
+            'campaign_clock_manual': True,
+            'penalty_roll': penalty_roll,
+            'minimum_stat': 1,
+            'source_program_instance_id': source_program.get('instance_id'),
+            'source_catalog_item_id': catalog_item_id_for_entry(source_program),
+            'source': catalog_item.get('source') or 'CP:R 371',
+        }
+        conn.execute(
+            'INSERT INTO active_effect_instances(effect_id,character_id,source_type,'
+            'source_item_instance_id,preset_id,label,definition_json,context_json,'
+            'duration_type,started_at,session_id,active,created_by,reason,created,updated) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)',
+            (effect_id, int(character_id), 'black_ice',
+             source_program.get('instance_id'),
+             f'black-ice-{name.lower()}-stat-penalty', label,
+             json.dumps(definition, ensure_ascii=False),
+             json.dumps(context, ensure_ascii=False), 'campaign_time', now,
+             int(session_id), int(actor_user_id),
+             f'Automated {name} effect · manual 1-hour campaign expiry', now, now))
+        row = conn.execute(
+            'SELECT e.*,u.display_name actor FROM active_effect_instances e '
+            'JOIN users u ON u.id=e.created_by WHERE e.effect_id=?',
+            (effect_id,)).fetchone()
+        created.append(effect_instance_payload(row, now))
+    return {
+        'name': name, 'penalty_roll': penalty_roll,
+        'targets': list(targets), 'created': created,
+        'effect_group_id': effect_group_id,
     }
 
 
@@ -3476,6 +3634,18 @@ def evaluate_effective_cyberdeck(host, modifications, owned_by_id, character=Non
                 modification.get('modification_id')) or {})
             if hardware_state:
                 payload['runtime_state'] = hardware_state
+                if (item.get('name') == 'Defense Sequencer' and
+                        hardware_state.get('pending_armor_rez')):
+                    payload['eligible_armor_programs'] = [
+                        {
+                            'instance_id': program_id,
+                            'name': (owned_by_id.get(program_id) or {}).get(
+                                'custom_name') or (owned_by_id.get(program_id) or {}).get(
+                                'name') or 'Armor',
+                        }
+                        for program_id in
+                        hardware_state.get('eligible_armor_instance_ids') or []
+                        if program_id in owned_by_id]
             if item.get('name') == 'Backup Drive':
                 payload['backup_state'] = hardware_state or {
                     'resource_type': 'backup_drive', 'saved_programs': []}
@@ -6462,6 +6632,18 @@ SERVER_ERROR_EN = {
     'Installed Backup Drive не найден': 'Installed Backup Drive not found',
     'Backup Drive не содержит Programs': 'Backup Drive contains no Programs',
     'Укажите причину Backup restore': 'Provide a reason for Backup restore',
+    'Installed Defense Sequencer не найден': 'Installed Defense Sequencer not found',
+    'Defense Sequencer не имеет pending Armor trigger': 'Defense Sequencer has no pending Armor trigger',
+    'Выбранная Armor не входит в pending eligibility snapshot': 'The selected Armor is not in the pending eligibility snapshot',
+    'Eligible Armor больше не установлена в этом Cyberdeck': 'The eligible Armor is no longer installed in this Cyberdeck',
+    'Defense Sequencer может Rez только inactive Armor': 'Defense Sequencer can Rez only inactive Armor',
+    'Другая копия Armor уже Rezzed': 'Another Armor copy is already Rezzed',
+    'Defense Sequencer resolution содержит неподдерживаемые поля': 'Defense Sequencer resolution contains unsupported fields',
+    'Подтвердите, что выбранная Armor не использовалась в этом Netrun': 'Confirm that the selected Armor was not used during this Netrun',
+    'Выберите concrete Armor Program instance': 'Choose a concrete Armor Program instance',
+    'Укажите причину Defense Sequencer resolution': 'Provide a reason for the Defense Sequencer resolution',
+    'Black ICE не имеет curated STAT effect': 'Black ICE has no curated STAT effect',
+    'Black ICE STAT penalty roll должен быть от 1 до 6': 'Black ICE STAT penalty roll must be from 1 to 6',
     'Run доступен только Attacker Program': 'Run is available only for an Attacker Program',
     'Saved Program instance недоступен для восстановления': 'Saved Program instance is unavailable for restore',
     'Недостаточно Cyberdeck slots для Backup restore': 'Not enough Cyberdeck slots for Backup restore',
@@ -10190,6 +10372,62 @@ class Handler(BaseHTTPRequestHandler):
             'character': self.char_payload(fresh, fresh['owner'], conn=conn),
         })
 
+    @atomic_endpoint
+    def api_character_defense_sequencer_resolve(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'armor_instance_id', 'not_used_in_netrun_confirmed',
+                   'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Defense Sequencer resolution содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        if (body or {}).get('not_used_in_netrun_confirmed') is not True:
+            raise ApiError(
+                400, 'Подтвердите, что выбранная Armor не использовалась в этом Netrun')
+        deck_id, hardware_id = str(m.group(2)).lower(), str(m.group(3)).lower()
+        armor_id = str((body or {}).get('armor_instance_id') or '').lower()
+        if not INSTANCE_ID_RE.fullmatch(armor_id):
+            raise ApiError(400, 'Выберите concrete Armor Program instance')
+        detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(detail) < 3:
+            raise ApiError(400, 'Укажите причину Defense Sequencer resolution')
+        modifications = character_modifications(conn, row['id'])
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        now = time.time()
+        resolved = resolve_defense_sequencer_trigger(
+            data, modifications, deck_id, hardware_id, armor_id, now=now)
+        validate_active_modification_references(conn, row['id'], data)
+        reason = (f'Defense Sequencer Rez {resolved["armor_name"]} at REZ '
+                  f'{resolved["rez_current"]}: {detail}; '
+                  'not-used-in-this-Netrun eligibility confirmed manually')
+        persist_character_item_instances(
+            conn, row['id'], data, 'defense_sequencer', source_ref=reason, prune=True)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='item_action')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta.update({
+            'defense_sequencer_resolution': True,
+            'manual_eligibility_confirmed': True,
+            'resolved_armor_instance_id': armor_id,
+        })
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'resolved': resolved,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
     def api_character_effects(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
         self.send_json({
@@ -11000,6 +11238,7 @@ class Handler(BaseHTTPRequestHandler):
         combatants = {item['id']: item for item in self.ordered_session_combatants(
             conn, row['id'])}
         entities = []
+        skunk_sources_by_target = {}
         for link in state['links']:
             if not link['active'] or (player_view and not link['visible']):
                 continue
@@ -11044,6 +11283,11 @@ class Handler(BaseHTTPRequestHandler):
                                    item.get('instance_id') == entity.get('source_program_instance_id')), {})
             effect_profile = black_ice_effect_profile(source_program)
             payload['effect_resolution'] = effect_profile['resolution']
+            if (payload.get('name') == 'Skunk' and
+                    payload.get('status') == 'hunting' and
+                    link.get('target_combatant_id')):
+                skunk_sources_by_target.setdefault(
+                    link['target_combatant_id'], []).append(link['net_entity_id'])
             if not player_view:
                 payload['character_revision'] = character['revision']
                 payload['initiative_roll'] = entity.get('initiative_roll')
@@ -11126,6 +11370,7 @@ class Handler(BaseHTTPRequestHandler):
             action_penalty = (runner.get('action_penalty', 0) if same_action_round else
                               runner.get('next_action_penalty', 0))
             actions_max = max(2, net_actions_for_interface(interface_rank) - action_penalty)
+            skunk_sources = skunk_sources_by_target.get(combatant['id'], [])
             runner_payload = {
                 'combatant_id': combatant['id'],
                 'character_id': character['id'],
@@ -11137,6 +11382,9 @@ class Handler(BaseHTTPRequestHandler):
                 'actions_used': current_actions_used,
                 'actions_max': actions_max,
                 'actions_remaining': max(0, actions_max - current_actions_used),
+                'action_penalty': action_penalty,
+                'skunk_slide_penalty': -2 * len(skunk_sources),
+                'skunk_source_count': len(skunk_sources),
             }
             can_act = bool(user and character['owner_id'] == user['id'])
             if not player_view or can_act:
@@ -12392,6 +12640,7 @@ class Handler(BaseHTTPRequestHandler):
         target_before = None
         target_ledger_id = None
         removed_modification_ids = []
+        created_effects = []
         now = time.time()
         result = {
             'action': 'black_ice_attack', 'actor_entity_id': entity_id,
@@ -12524,6 +12773,29 @@ class Handler(BaseHTTPRequestHandler):
                     1, target_runner.get('next_action_penalty', 0))
                 result['next_action_penalty'] = 1
                 result['action_penalty_minimum'] = 2
+            if result['success'] and effect['resolution'] == 'automated_stat_penalty':
+                expected_revision = _num((body or {}).get('target_character_revision'))
+                if expected_revision != (_row_value(target_character, 'revision', 0) or 0):
+                    raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+                target_before = copy.deepcopy(target_data)
+                stat_effect = instantiate_black_ice_stat_effects(
+                    conn, target_character['id'], user['id'], source_program,
+                    session['id'], now=now)
+                created_effects = stat_effect['created']
+                result.update({
+                    'effect_application': 'automated',
+                    'stat_penalty_roll': stat_effect['penalty_roll'],
+                    'stat_penalty_targets': stat_effect['targets'],
+                    'created_effects': [{
+                        'effect_id': item['effect_id'], 'label': item['label'],
+                        'target': (item.get('definition') or {}).get('target'),
+                        'value': (item.get('definition') or {}).get('value'),
+                        'minimum_value': (item.get('definition') or {}).get(
+                            'minimum_value'),
+                        'duration_type': item.get('duration_type'),
+                    } for item in created_effects],
+                    'manual_expiry': True, 'campaign_minutes': 60,
+                })
             if result['success'] and effect['resolution'] in (
                     'automated_random_destroy', 'automated_random_derez_plus_manual'):
                 target_modifications = character_modifications(conn, target_character['id'])
@@ -12657,6 +12929,27 @@ class Handler(BaseHTTPRequestHandler):
             delta = parse_json_object(ledger_row['delta_json'])
             if removed_modification_ids:
                 delta['removed_modification_ids'] = removed_modification_ids
+            if created_effects:
+                delta['created_effect_ids'] = [
+                    item['effect_id'] for item in created_effects]
+                delta['automated_black_ice_effect'] = entity.get('name')
+                delta['manual_campaign_expiry'] = True
+                for created_effect in created_effects:
+                    definition = created_effect.get('definition') or {}
+                    delta.setdefault('changes', []).append({
+                        'path': f'effects.instances.{created_effect["effect_id"]}',
+                        'label': f'Effect: {created_effect["label"]}',
+                        'kind': 'added', 'before': '—',
+                        'after': readable_change_value({
+                            'status': created_effect.get('status'),
+                            'target': definition.get('target'),
+                            'operation': definition.get('operation'),
+                            'value': definition.get('value'),
+                            'minimum_value': definition.get('minimum_value'),
+                            'duration': created_effect.get('duration_type'),
+                        }),
+                    })
+                delta['change_count'] = len(delta.get('changes') or [])
             delta['session_net_change'] = {
                 'session_id': session['id'], 'before': state_before,
                 'after': copy.deepcopy(state),
@@ -13325,6 +13618,7 @@ ROUTES = [
     ('POST', rx(r'/api/characters/(\d+)/net-entities/([a-f0-9]{32})/action'), Handler.api_character_net_entity_action),
     ('POST', rx(r'/api/characters/(\d+)/cyberdecks/([a-f0-9]{32})/programs/([a-f0-9]{32})/action'), Handler.api_character_program_action),
     ('POST', rx(r'/api/characters/(\d+)/cyberdecks/([a-f0-9]{32})/hardware/([a-f0-9]{32})/restore'), Handler.api_character_backup_restore),
+    ('POST', rx(r'/api/characters/(\d+)/cyberdecks/([a-f0-9]{32})/hardware/([a-f0-9]{32})/defense-sequencer/resolve'), Handler.api_character_defense_sequencer_resolve),
     ('GET', rx(r'/api/characters/(\d+)/net-contexts'), Handler.api_character_net_contexts),
     ('GET', rx(r'/api/characters/(\d+)/effects'), Handler.api_character_effects),
     ('POST', rx(r'/api/characters/(\d+)/effects'), Handler.api_character_effect_create),

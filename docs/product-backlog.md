@@ -3073,6 +3073,17 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Hardware panel показывает `PENDING ARMOR REZ · MANUAL ELIGIBILITY`, не выдавая eligibility за доказанный автоматический факт;
 - Anti-Personnel HP/STAT/status effects, Defense Sequencer automatic next-Turn execution и Cloak/Scanner/Virus остаются следующими точечными интеграциями.
 
+**Статус B.8.10 — реализованы Remaining Safe NET Effects:**
+
+- successful Liche attack создаёт allowlisted Active Effects `INT/REF/DEX −1d6`, а successful Scorpion — `MOVE −1d6`; один trusted server roll применяется ко всем source targets, итоговый STAT не может упасть ниже 1;
+- penalty snapshots имеют `campaign_time=60`, отображаются в Dossier как `AUTOMATED EFFECT`, связываются с Session/source Program и требуют явного ручного завершения по campaign clock;
+- создание эффектов, Character revision, Ledger и Session NET action записываются одной atomic transaction; linked Ledger revert архивирует созданные effect instances только при неизменившемся Session NET snapshot;
+- generic declarative effect schema получила безопасный numeric `minimum_value`, который применяется после полного modifier pipeline и не допускает executable expressions;
+- active Skunk targets теперь показывают authoritative stacking `SLIDE −2` на source Netrunner card; сами Slide check/movement остаются manual до полноценного topology-safe Slide action;
+- pending Defense Sequencer больше не является тупиковым статусом: владелец выбирает concrete eligible inactive Armor, явно подтверждает `not used during this Netrun`, после чего сервер выполняет Rez без NET Action, очищает pending trigger и записывает Trust + Audit Ledger;
+- автоматическое доказательство Defense Sequencer eligibility намеренно не симулируется без полного Netrun usage lifecycle; ручное подтверждение остаётся честно маркированным;
+- brain damage, Hellhound fire, Kraken unsafe Jack Out/progression restriction, Cloak/Scanner/Virus и сложные Control payloads остаются `MANUAL EFFECT / MANUAL RESOLUTION` до появления достаточного Session/meatspace контекста.
+
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.

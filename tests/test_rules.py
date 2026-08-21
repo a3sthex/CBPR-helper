@@ -984,6 +984,8 @@ class CyberdeckModificationTests(unittest.TestCase):
         hellhound = self.owned('programs-17', 'f' * 32)
         asp = self.owned('programs-15', '1' * 31 + '0')
         raven = self.owned('programs-20', '2' * 31 + '0')
+        liche = self.owned('programs-19', '7' * 32)
+        scorpion = self.owned('programs-21', '8' * 32)
         killer_effect = server.black_ice_effect_profile(killer)
         hellhound_effect = server.black_ice_effect_profile(hellhound)
         self.assertEqual((killer_effect['resolution'], killer_effect['damage_dice']),
@@ -995,6 +997,10 @@ class CyberdeckModificationTests(unittest.TestCase):
                          'automated_random_destroy')
         self.assertEqual(server.black_ice_effect_profile(raven)['resolution'],
                          'automated_random_derez_plus_manual')
+        for program in (liche, scorpion):
+            profile = server.black_ice_effect_profile(program)
+            self.assertEqual(profile['resolution'], 'automated_stat_penalty')
+            self.assertEqual(profile['manual_effect'], '')
         rolled = server.roll_dice(4, 6)
         self.assertEqual(len(rolled['rolls']), 4)
         self.assertEqual(rolled['total'], sum(rolled['rolls']))
@@ -1005,7 +1011,8 @@ class CyberdeckModificationTests(unittest.TestCase):
         sequencer = self.owned('net_stuff-23', '4' * 32)
         armor_trigger = self.owned('programs-12', '5' * 32)
         armor_ready = self.owned('programs-12', '6' * 32)
-        for item in (sequencer, armor_trigger, armor_ready):
+        non_armor = self.owned('programs-0', '7' * 32)
+        for item in (sequencer, armor_trigger, armor_ready, non_armor):
             item['state'] = 'installed'
         modifications = [
             self.modification(deck, sequencer, 1),
@@ -1013,12 +1020,15 @@ class CyberdeckModificationTests(unittest.TestCase):
             self.modification(deck, armor_ready, 3),
         ]
         data = {
-            'inventory': [deck, sequencer, armor_trigger, armor_ready],
+            'inventory': [deck, sequencer, armor_trigger, armor_ready, non_armor],
             'program_state': {
                 armor_trigger['instance_id']: {'status': 'derezzed'},
                 armor_ready['instance_id']: {'status': 'inactive'},
             },
         }
+        self.assertEqual(server.queue_defense_sequencer_trigger(
+            data, modifications, deck['instance_id'], non_armor['instance_id']), 0)
+        self.assertNotIn('modification_state', data)
         count = server.queue_defense_sequencer_trigger(
             data, modifications, deck['instance_id'], armor_trigger['instance_id'])
         self.assertEqual(count, 1)
@@ -1027,6 +1037,36 @@ class CyberdeckModificationTests(unittest.TestCase):
         self.assertTrue(pending['manual_eligibility_required'])
         self.assertEqual(pending['eligible_armor_instance_ids'],
                          [armor_ready['instance_id']])
+        resolved = server.resolve_defense_sequencer_trigger(
+            data, modifications, deck['instance_id'], sequencer['instance_id'],
+            armor_ready['instance_id'], now=100)
+        self.assertTrue(resolved['manual_eligibility_confirmed'])
+        self.assertEqual((resolved['rez_current'], resolved['rez_max']), (7, 7))
+        ready_runtime = data['program_state'][armor_ready['instance_id']]
+        self.assertEqual(ready_runtime['status'], 'rezzed')
+        sequencer_state = data['modification_state'][modifications[0]['modification_id']]
+        self.assertFalse(sequencer_state['pending_armor_rez'])
+        self.assertEqual(sequencer_state['resolved_at'], 100)
+        with self.assertRaisesRegex(server.ApiError, 'pending Armor trigger'):
+            server.resolve_defense_sequencer_trigger(
+                data, modifications, deck['instance_id'], sequencer['instance_id'],
+                armor_ready['instance_id'])
+
+    def test_black_ice_stat_penalty_floor_applies_after_stacked_modifiers(self):
+        modifiers = [
+            {'id': 'liche-a', 'target': 'character.stat.INT', 'operation': 'add',
+             'value': -4, 'minimum_value': 1, 'stack_group': 'liche-a',
+             'stack_policy': 'stack', 'priority': 400},
+            {'id': 'liche-b', 'target': 'character.stat.INT', 'operation': 'add',
+             'value': -5, 'minimum_value': 1, 'stack_group': 'liche-b',
+             'stack_policy': 'stack', 'priority': 400},
+        ]
+        value, breakdown = server.apply_modifier_pipeline(6, modifiers)
+        self.assertEqual(value, 1)
+        self.assertEqual(len([item for item in breakdown if item['applied']]), 2)
+        server.validate_effect_definition(modifiers[0])
+        with self.assertRaisesRegex(RuntimeError, 'minimum_value'):
+            server.validate_effect_definition({**modifiers[0], 'minimum_value': '1'})
 
     def test_black_ice_entity_snapshots_stats_mode_and_target_type(self):
         killer = self.owned('programs-25', 'f' * 32)
