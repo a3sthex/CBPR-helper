@@ -2037,47 +2037,102 @@ Program Manager лучше реализовать до полноценного 
 4. сделать Netrunner Session panel;
 5. затем добавить NET Architecture floors/nodes и live run.
 
-### 16.14 Cyberpunk Tabletop / VTT и hybrid play
+### 16.14 Online VTT и поддержка живых встреч
 
 На далёкую перспективу NC//NET может получить собственный tabletop, но не стоит пытаться сразу копировать весь Foundry/Roll20. Сильнее будет специализированный Cyberpunk tabletop, напрямую связанный с Dossiers, NPC, Items, Effects, Sessions, NET и Locations.
 
-#### Что означают Online, Offline и Hybrid
+#### Терминология: формат игры отдельно от типа подключения
+
+Предыдущее описание ошибочно смешивало «offline» с отсутствием интернета. Здесь используются две независимые оси:
 
 ```text
-Online
-Все подключаются к серверу через интернет.
+ФОРМАТ ИГРЫ
+- Online/VTT: игра проходит на цифровом tabletop
+- Live/Offline: живая встреча за физическим столом
+- Hybrid: часть участников за столом, часть удалённо
 
-In-person / LAN
-GM, общий экран и телефоны игроков находятся в одной локальной сети.
-Интернет не обязателен; локальный NC//NET server остаётся источником состояния.
-
-Hybrid
-Часть игроков сидит за одним столом, часть подключается удалённо.
-Все видят одну Session и один event stream.
+ПОДКЛЮЧЕНИЕ ONLINE/VTT
+- Internet: игроки подключаются удалённо через интернет
+- LAN: игроки подключаются к тому же VTT по локальной сети
 ```
 
-Важно: PWA-кэш сам по себе не даёт многопользовательскую игру без интернета. Для truly offline table play нужен работающий локальный server в LAN. Для remote players нужен VPS/relay или публично доступный server.
+То есть **online mode может работать и через интернет, и по локалке**. Слово online означает цифровую синхронизированную игровую среду, а не обязательный выход в интернет.
+
+**Offline mode означает живую встречу**: люди находятся за одним физическим столом, используют живое общение, бумажные/печатные материалы, физические кубики и при желании миниатюры. NC//NET в этом режиме выступает помощником, а не обязательной виртуальной доской.
+
+#### Режим Online/VTT через интернет
+
+- один общий цифровой tabletop;
+- GM и игроки находятся удалённо;
+- сервер обычно размещён на VPS;
+- Scenes, Tokens, Dice, Initiative и Dossiers синхронизируются;
+- нужны presence/reconnect/permissions;
+- голос и видео остаются внешнему сервису.
+
+#### Режим Online/VTT по LAN
+
+- тот же функциональный tabletop;
+- все устройства подключены к локальному серверу;
+- интернет не обязателен;
+- подходит для цифрового стола, телевизора, планшетов или компьютерного клуба;
+- правила и интерфейс не должны отличаться от internet VTT;
+- меняется только способ подключения и deployment.
+
+#### Режим Live/Offline — живая встреча
+
+В этом режиме VTT не обязателен. NC//NET помогает до, во время и после физической игры:
+
+```text
+BEFORE SESSION
+- Session Pack
+- печатные Character/NPC sheets
+- Contract briefing
+- maps/handouts
+- initiative cards
+- список Crew и equipment
+
+DURING SESSION
+- GM dashboard на одном ноутбуке (optional)
+- быстрые NPC/Rules/Resolvers
+- ручной ввод результатов физических бросков
+- Initiative/HP/SP tracker (optional)
+- показ handout/map на общем экране (optional)
+
+AFTER SESSION
+- Recap
+- Loot/Cash/IP
+- Injuries/Humanity
+- Character Ledger
+- Aftermath/Feed draft
+```
+
+Поддерживаемые варианты живой встречи:
+
+1. **Fully Analog** — сайт используется только для подготовки и печати; во время игры устройства не нужны.
+2. **GM Assisted** — один ноутбук GM ведёт Initiative/NPC/Session, игроки используют бумагу и физические кубики.
+3. **Shared Screen** — дополнительно телевизор/проектор показывает карту, handouts и текущий turn.
+4. **Companion Phones** — игроки по желанию открывают Dossiers/Inventory, но это не обязательное условие игры.
+
+#### Hybrid
+
+- физический стол остаётся центром живой встречи;
+- удалённые участники подключаются к digital scene/session;
+- общий экран стола может показывать ту же сцену;
+- физические броски можно вносить вручную в общий Dice Log;
+- digital и physical actions используют один Session event stream.
 
 #### Рекомендуемая стратегия развёртывания
 
-##### Этап 1 — один server, два режима
+Один и тот же Online/VTT server поддерживает два варианта подключения:
 
-Один и тот же NC//NET запускается:
+- LAN deployment на домашнем Ubuntu server;
+- Internet deployment на VPS/публичном server.
 
-- на домашнем Ubuntu server с `--lan` для офлайн-игры за столом;
-- на VPS для online/hybrid игры.
+Live/Offline mode не требует отдельной копии БД: это другой UX поверх той же Campaign/Session. Для полностью аналоговой встречи GM заранее экспортирует/печатает Session Pack, а после игры вносит итоговые изменения.
 
-Состояние не синхронизируется между двумя независимыми серверами автоматически. GM использует один выбранный canonical server для кампании.
+Optional relay и local-first replication остаются техническими возможностями далёкого будущего, но не определяют различие между online и offline форматом игры.
 
-##### Этап 2 — optional remote relay
-
-Домашний server остаётся canonical, а маленький VPS выступает безопасным relay для удалённых игроков. Это сложнее обычного VPS, но позволяет продолжить локальную игру при проблемах с внешним доступом.
-
-##### Этап 3 — local-first replication (очень далёкое будущее)
-
-Локальный и облачный узлы умеют временно работать независимо, а затем синхронизировать event logs. Это требует conflict resolution, entity revisions, stable IDs и сложной модели владения. Не планировать до стабилизации обычного VTT.
-
-#### Tabletop MVP
+#### Online VTT MVP
 
 Первая полезная версия:
 
@@ -2190,31 +2245,55 @@ Select attacker
 
 Cover, aimed shots, melee armor halving, Autofire и Critical Injuries используют существующий Rules/Effects Engine.
 
-#### In-person Table Mode
+#### Инструменты живой встречи (необязательные)
 
-Интерфейсы:
+##### Session Pack для полностью физической игры
+
+Одной кнопкой GM получает printable/export bundle:
 
 ```text
-GM Screen
-- полный контроль, secrets, hidden tokens, encounter tools
-
-Shared Table Screen
-- карта без GM controls
-- текущий turn
-- видимые tokens/status
-- QR/PIN для подключения
-
-Player Phone
-- свой Dossier
-- быстрые actions
-- dice
-- target/ping
-- consumables
+- Contract public/classified brief
+- список участников
+- компактные Character summaries
+- NPC statblocks и attack cards
+- Initiative cards
+- карты без/с GM annotations
+- handouts
+- loot/reward sheet
+- blank Session notes / Recap form
 ```
 
-Один телевизор/проектор может открыть специальный `#/table/:session` без служебных панелей. GM управляет с ноутбука, игроки при желании используют телефоны. Все устройства подключаются по LAN URL и короткому Session PIN.
+Так живая встреча остаётся полностью играбельной без телефонов и цифровой карты.
 
-#### Online mode
+##### GM Screen
+
+- Initiative/NPC/resources;
+- secrets и hidden notes;
+- быстрые Rules/Resolvers;
+- ручной ввод физических dice results;
+- damage/armor/critical injury helpers;
+- Session clock и notes.
+
+##### Shared Table Screen (optional)
+
+- карта или handout без GM controls;
+- текущий turn;
+- видимые tokens/status;
+- изображения/схемы/NET Architecture;
+- presentation mode для телевизора/проектора.
+
+##### Player Phone (optional)
+
+- собственный Dossier;
+- Inventory/Consumables;
+- Rules reference;
+- Session recap notes;
+- физический бросок можно внести вручную;
+- цифровые dice/actions доступны только если группа хочет их использовать.
+
+Специальный `#/table/:session` является вспомогательным presentation mode, а не обязательной основой offline/live игры.
+
+#### Online/VTT mode requirements
 
 Дополнительно нужны:
 
@@ -2294,29 +2373,36 @@ NET Architecture отображается как отдельный scene kind:
 - reveal по Pathfinder/движению;
 - Meatspace Session и NET scene идут в одном Round timeline.
 
-#### Offline resilience
+#### LAN resilience и continuity живой встречи
 
-Для LAN режима:
+Для Online/VTT по LAN:
 
 - все критические JS/CSS/fonts/assets хранятся локально;
 - никакой зависимости от Google Fonts/CDN;
-- PWA кэширует shell и справочники;
 - server продолжает работать без внешнего интернета;
 - локальный DNS/понятный адрес и QR;
-- автоматический backup перед Session и после Session;
 - browser reconnect после сна телефона;
-- кнопка `Export Session Bundle` для аварийного переноса.
+- PWA кэширует shell и справочники.
 
-#### Этапы VTT
+Для Live/Offline встречи:
+
+- Session Pack доступен заранее в печатном/PDF/JSON виде;
+- автоматический backup создаётся перед Session и после Session;
+- GM может записывать результаты на бумажной Recap form;
+- после восстановления сервера изменения вносятся одним After-Session flow;
+- `Export Session Bundle` позволяет аварийно перенести материалы на другой ноутбук.
+
+#### Этапы Tabletop
 
 ```text
-VTT-0  Подготовка: item instances, effects, NPC, Session events, permissions
-VTT-1  Scenes, tokens, shared screen, movement, initiative
-VTT-2  Cyberpunk attacks/range/damage/conditions
-VTT-3  Fog, drawings, handouts, journals
-VTT-4  NET Architecture scene
-VTT-5  Hybrid relay and stronger offline resilience
-VTT-6  Walls/vision/lighting and extension API if still needed
+TABLE-0 Подготовка: item instances, effects, NPC, Session events, permissions
+TABLE-1 Live Session Pack, GM quick screen, print/export flow
+VTT-1   Scenes, tokens, shared screen, movement, initiative
+VTT-2   Cyberpunk attacks/range/damage/conditions
+VTT-3   Fog, drawings, handouts, journals
+VTT-4   NET Architecture scene
+VTT-5   Internet/LAN deployment, hybrid reconnect/relay
+VTT-6   Walls/vision/lighting and extension API if still needed
 ```
 
 ### Рекомендуемые дополнения с максимальной отдачей
@@ -2384,13 +2470,14 @@ VTT-6  Walls/vision/lighting and extension API if still needed
 
 ### P4 — далёкое будущее / Cyberpunk Tabletop
 
-1. LAN Table Mode и Shared Player Screen.
-2. VTT Scenes/Tokens/Initiative/Event Stream.
-3. Cyberpunk attack/range/damage integration.
-4. Fog/Handouts/Journals.
-5. NET Architecture tabletop scene.
-6. Online presence/reconnect и optional hybrid relay.
-7. Walls/vision/lighting только после полезного MVP.
+1. Live/Offline Session Pack и GM companion для живой встречи.
+2. Optional Shared Screen/Player Phone для живой встречи.
+3. Online VTT через Internet или LAN: Scenes/Tokens/Initiative/Event Stream.
+4. Cyberpunk attack/range/damage integration.
+5. Fog/Handouts/Journals.
+6. NET Architecture tabletop scene.
+7. Online presence/reconnect и optional hybrid relay.
+8. Walls/vision/lighting только после полезного MVP.
 
 ---
 
@@ -2482,14 +2569,16 @@ VTT-6  Walls/vision/lighting and extension API if still needed
 ### Пакет I — Tabletop Foundations (далёкое будущее)
 
 1. Подготовить stable entity IDs, permissions и authoritative Session events.
-2. Добавить официальный LAN/Table deployment mode, local assets и Shared Screen.
-3. Реализовать Scenes, Tokens, Grid/Measurement и Initiative sync.
-4. Связать token actions с Dossiers/NPC/Weapons/Effects.
-5. Добавить server-authoritative Dice/Event Log и reconnect snapshots.
-6. Реализовать manual Fog, Drawings и Handouts.
-7. Добавить online presence и remote session access на VPS/relay.
-8. Реализовать NET Architecture как отдельный scene type.
-9. Только затем рассматривать walls/vision/lighting/plugin API.
+2. Сначала реализовать Live Session Pack, print/export и GM quick screen для живых встреч.
+3. Добавить optional Shared Screen и Player Companion, не делая их обязательными.
+4. Добавить официальный Online/LAN deployment mode и локальные assets.
+5. Реализовать Online VTT Scenes, Tokens, Grid/Measurement и Initiative sync — одинаково для Internet и LAN.
+6. Связать token actions с Dossiers/NPC/Weapons/Effects.
+7. Добавить server-authoritative Dice/Event Log и reconnect snapshots.
+8. Реализовать manual Fog, Drawings и Handouts.
+9. Добавить internet presence и remote session access на VPS/relay.
+10. Реализовать NET Architecture как отдельный scene type.
+11. Только затем рассматривать walls/vision/lighting/plugin API.
 
 ---
 
@@ -2540,10 +2629,13 @@ VTT-6  Walls/vision/lighting and extension API if still needed
 43. Может ли Player создавать custom effect свободно или только через Trust + Audit editor с обязательной причиной?
 44. Temporary effects отсчитываются по реальному времени, campaign clock или Session rounds?
 45. Нужно ли показывать base/effective breakdown публичным зрителям Dossier или только owner/GM?
-46. В VTT canonical server обычно домашний LAN или VPS, и нужен ли optional relay между ними?
-47. Требуется ли truly offline режим без интернета или достаточно in-person режима при доступном VPS?
-48. Какие карты обязательны в VTT MVP: square, hex и gridless одновременно или начать с gridless/square?
-49. Применяет ли GM урон сразу или target owner подтверждает результат в Trust mode?
-50. Нужен ли Shared Table Screen без авторизации через короткий read-only PIN?
-51. Насколько рано нужны Fog/Walls/Vision и стоит ли полностью отказаться от dynamic lighting в пользу простоты?
-52. Set bonuses и active effect breakdown видны всем или только owner/GM?
+46. Для Online/VTT canonical server обычно домашний LAN или VPS, и нужен ли optional relay между ними?
+47. Какой Live/Offline вариант основной: Fully Analog, GM Assisted, Shared Screen или Companion Phones?
+48. Какие материалы входят в обязательный Live Session Pack и нужен ли единый PDF?
+49. Должен ли ручной ввод результата физических кубиков попадать в общий Dice Log?
+50. Какие карты обязательны в Online VTT MVP: square, hex и gridless одновременно или начать с gridless/square?
+51. Применяет ли GM урон сразу или target owner подтверждает результат в Trust mode?
+52. Нужен ли Shared Table Screen без авторизации через короткий read-only PIN?
+53. Насколько рано нужны Fog/Walls/Vision и стоит ли полностью отказаться от dynamic lighting в пользу простоты?
+54. Set bonuses и active effect breakdown видны всем или только owner/GM?
+55. Должен ли Live/Offline flow позволять полностью провести встречу без запуска сервера после печати Session Pack?
