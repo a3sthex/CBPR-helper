@@ -154,12 +154,15 @@ def load_effect_rules():
     rules = payload.get('synergy_rules')
     item_rules = payload.get('item_effect_rules') or []
     use_rules = payload.get('use_effect_rules') or []
+    weapon_rules = payload.get('weapon_modification_rules') or []
     if (payload.get('version') != 1 or
             set(payload) - {'version', 'rules_version', 'synergy_rules',
-                            'item_effect_rules', 'use_effect_rules'} or
+                            'item_effect_rules', 'use_effect_rules',
+                            'weapon_modification_rules'} or
             not isinstance(rules, list) or len(rules) > 500 or
             not isinstance(item_rules, list) or len(item_rules) > 500 or
-            not isinstance(use_rules, list) or len(use_rules) > 500):
+            not isinstance(use_rules, list) or len(use_rules) > 500 or
+            not isinstance(weapon_rules, list) or len(weapon_rules) > 500):
         raise RuntimeError('Unsupported effects data format')
     seen = set()
     for rule in rules:
@@ -257,6 +260,59 @@ def load_effect_rules():
                     not str(manual.get('text_en') or '').strip() or
                     not str(manual.get('text_ru') or '').strip()):
                 raise RuntimeError(f'Invalid manual rule in use effect rule {rule_id}')
+    for rule in weapon_rules:
+        if not isinstance(rule, dict) or set(rule) - {
+                'id', 'catalog_id', 'label_en', 'label_ru', 'requirements',
+                'effects', 'manual_rules'}:
+            raise RuntimeError('Weapon modification rule contains non-allowlisted fields')
+        rule_id = str(rule.get('id') or '')
+        if not re.fullmatch(r'[a-z0-9_.-]{3,100}', rule_id) or rule_id in seen:
+            raise RuntimeError('Invalid or duplicate weapon modification rule id')
+        seen.add(rule_id)
+        item = item_by_id(rule.get('catalog_id'))
+        if not item or item.get('cat') != 'gun_upgrades':
+            raise RuntimeError(f'Unknown weapon upgrade in rule {rule_id}')
+        requirements = rule.get('requirements') or {}
+        if (not isinstance(requirements, dict) or
+                set(requirements) - {'installed_any', 'label_en', 'label_ru'}):
+            raise RuntimeError(f'Invalid requirements in weapon rule {rule_id}')
+        installed_any = requirements.get('installed_any') or []
+        if (not isinstance(installed_any, list) or
+                any(not item_by_id(item_id) or item_by_id(item_id).get('cat') != 'cyberware'
+                    for item_id in installed_any)):
+            raise RuntimeError(f'Invalid installed requirement in weapon rule {rule_id}')
+        effects = rule.get('effects') or []
+        manual_rules = rule.get('manual_rules') or []
+        if not isinstance(effects, list) or not effects or not isinstance(manual_rules, list):
+            raise RuntimeError(f'Weapon modification rule {rule_id} has no effects')
+        for effect in effects:
+            if (not isinstance(effect, dict) or
+                    set(effect) - {'id', 'target', 'operation', 'value', 'values', 'source'} or
+                    not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(effect.get('id') or '')) or
+                    effect.get('target') not in {'weapon.magazine', 'weapon.concealable',
+                                                 'weapon.attack_check'}):
+                raise RuntimeError(f'Invalid weapon effect in rule {rule_id}')
+            if effect['target'] == 'weapon.magazine':
+                values = effect.get('values')
+                if (effect.get('operation') != 'set_by_weapon_type' or
+                        not isinstance(values, dict) or not values or
+                        any(not isinstance(key, str) or not isinstance(value, int) or
+                            value < 1 or value > 999 for key, value in values.items())):
+                    raise RuntimeError(f'Invalid magazine effect in rule {rule_id}')
+            elif effect['target'] == 'weapon.concealable':
+                if effect.get('operation') != 'set' or effect.get('value') not in ('YES', 'NO'):
+                    raise RuntimeError(f'Invalid concealability effect in rule {rule_id}')
+            elif (effect.get('operation') != 'add' or
+                  not isinstance(effect.get('value'), (int, float)) or
+                  abs(effect['value']) > 10):
+                raise RuntimeError(f'Invalid attack effect in rule {rule_id}')
+        for manual in manual_rules:
+            if (not isinstance(manual, dict) or
+                    set(manual) - {'id', 'text_en', 'text_ru', 'condition', 'source'} or
+                    not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(manual.get('id') or '')) or
+                    not str(manual.get('text_en') or '').strip() or
+                    not str(manual.get('text_ru') or '').strip()):
+                raise RuntimeError(f'Invalid manual rule in weapon rule {rule_id}')
     _effect_rules = payload
     return payload
 
@@ -268,6 +324,9 @@ def item_effect_coverage(catalog_id):
         if rule.get('catalog_id') == catalog_id]
     rules += [
         ('use', rule) for rule in payload.get('use_effect_rules') or []
+        if rule.get('catalog_id') == catalog_id]
+    rules += [
+        ('modification', rule) for rule in payload.get('weapon_modification_rules') or []
         if rule.get('catalog_id') == catalog_id]
     if not rules:
         return None
@@ -292,6 +351,114 @@ def catalog_item_payload(item):
     if coverage:
         payload['effect_coverage'] = coverage
     return payload
+
+
+def weapon_modification_rules_for_catalog(catalog_id):
+    return [copy.deepcopy(rule) for rule in
+            load_effect_rules().get('weapon_modification_rules') or []
+            if rule.get('catalog_id') == catalog_id]
+
+
+def evaluate_effective_weapon(host, modifications, owned_by_id, character):
+    base = copy.deepcopy(host.get('mechanics') or {})
+    effective = copy.deepcopy(base)
+    base_magazine = _num(base.get('magazine')) or 0
+    effective_magazine = base_magazine
+    base_concealable = base.get('concealable')
+    effective_concealable = base_concealable
+    attack_modifier = 0
+    applied = []
+    sources = []
+    installed_cyberware = {
+        catalog_item_id_for_entry(item) for item in character.get('cyberware') or []
+        if isinstance(item, dict) and str(item.get('state') or 'installed') == 'installed'
+    }
+    weapon_type = str(base.get('type') or '')
+    for modification in modifications:
+        upgrade = owned_by_id.get(modification.get('upgrade_instance_id')) or {}
+        config = modification.get('configuration') or {}
+        rules = config.get('effect_rules')
+        if not isinstance(rules, list):
+            rules = weapon_modification_rules_for_catalog(catalog_item_id_for_entry(upgrade))
+        if not rules:
+            sources.append({
+                'id': f'manual:{modification.get("modification_id")}',
+                'label_en': upgrade.get('name') or config.get('upgrade_name') or 'Upgrade',
+                'label_ru': upgrade.get('name') or config.get('upgrade_name') or 'Upgrade',
+                'active': True, 'automated': False, 'manual_resolution_required': True,
+                'source': upgrade.get('installation_source') or upgrade.get('source'),
+                'effects': [], 'manual_rules': [],
+            })
+            continue
+        for rule in rules:
+            requirements = rule.get('requirements') or {}
+            required_any = requirements.get('installed_any') or []
+            requirements_met = not required_any or bool(installed_cyberware & set(required_any))
+            rule_effects = []
+            for definition in rule.get('effects') or []:
+                effect = copy.deepcopy(definition)
+                effect['active'] = requirements_met
+                effect['modification_id'] = modification.get('modification_id')
+                if effect['target'] == 'weapon.magazine':
+                    value = (effect.get('values') or {}).get(weapon_type)
+                    if value is None:
+                        effect['active'] = False
+                        effect['suppressed_reason'] = f'No magazine value for {weapon_type}'
+                    elif requirements_met:
+                        effect['before'] = effective_magazine
+                        effective_magazine = int(value)
+                        effect['after'] = effective_magazine
+                elif effect['target'] == 'weapon.concealable' and requirements_met:
+                    effect['before'] = effective_concealable
+                    effective_concealable = effect['value']
+                    effect['after'] = effective_concealable
+                elif effect['target'] == 'weapon.attack_check' and requirements_met:
+                    effect['before'] = attack_modifier
+                    attack_modifier += effect['value']
+                    effect['after'] = attack_modifier
+                if effect.get('active'):
+                    applied.append(effect)
+                rule_effects.append(effect)
+            sources.append({
+                'id': rule['id'], 'label_en': rule.get('label_en') or rule['id'],
+                'label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
+                'active': requirements_met,
+                'automated': True,
+                'requirements_met': requirements_met,
+                'requirement_label_en': requirements.get('label_en'),
+                'requirement_label_ru': requirements.get('label_ru'),
+                'source': next((effect.get('source') for effect in rule_effects
+                                if effect.get('source')), None),
+                'effects': rule_effects,
+                'manual_rules': [
+                    {**copy.deepcopy(manual), 'manual_resolution_required': True}
+                    for manual in rule.get('manual_rules') or []],
+                'modification_id': modification.get('modification_id'),
+                'upgrade_instance_id': modification.get('upgrade_instance_id'),
+            })
+    if base_magazine or effective_magazine:
+        effective['magazine'] = effective_magazine
+    if effective_concealable is not None:
+        effective['concealable'] = effective_concealable
+    return {
+        'instance_id': host.get('instance_id'),
+        'base': base, 'effective': effective,
+        'attack_modifier': attack_modifier,
+        'modifiers': applied, 'sources': sources,
+    }
+
+
+def character_effective_weapons(character, modifications):
+    owned = {item.get('instance_id'): item for item in character.get('inventory') or []
+             if isinstance(item, dict) and item.get('instance_id')}
+    result = {}
+    for host in (item for item in character.get('inventory') or []
+                 if isinstance(item, dict) and item.get('cat') == 'guns'):
+        host_modifications = [modification for modification in modifications
+                              if modification.get('host_instance_id') == host.get('instance_id')]
+        result[host['instance_id']] = evaluate_effective_weapon(
+            host, host_modifications, owned, character)
+    return result
 
 
 # ---------------------------------------------------------------- правила
@@ -1922,6 +2089,21 @@ def validate_active_modification_references(conn, character_id, data):
             raise ApiError(409, 'Сначала снимите установленные модификации')
         if upgrade.get('state') != 'installed' or upgrade.get('host_instance_id') != host.get('instance_id'):
             raise ApiError(409, 'Повреждена связь установленной модификации')
+
+
+def sync_weapon_states_with_modifications(conn, character_id, data):
+    ensure_progression(data)
+    modifications = character_modifications(conn, character_id)
+    effective_weapons = character_effective_weapons(data, modifications)
+    states = data.setdefault('weapon_state', {})
+    for instance_id, weapon in effective_weapons.items():
+        effective_max = max(0, _num((weapon.get('effective') or {}).get('magazine')) or 0)
+        state = states.setdefault(instance_id, {
+            'magazine': effective_max, 'magazine_max': effective_max, 'reserve': 0,
+        })
+        state['magazine_max'] = effective_max
+        state['magazine'] = max(0, min(effective_max, _num(state.get('magazine')) or 0))
+    return effective_weapons
 
 
 def backfill_character_item_instances(conn):
@@ -6246,7 +6428,10 @@ class Handler(BaseHTTPRequestHandler):
         active_effects = character_effect_instances(conn, row['id']) if conn is not None else []
         derived = derive(full_data, active_effects)
         if conn is not None:
-            derived['modifications'] = character_modifications(conn, row['id'])
+            modifications = character_modifications(conn, row['id'])
+            derived['modifications'] = modifications
+            derived['effective_weapons'] = character_effective_weapons(
+                full_data, modifications)
         if public_view and not visibility['combat']:
             derived = {}
         elif public_view:
@@ -6375,6 +6560,7 @@ class Handler(BaseHTTPRequestHandler):
         if before == after:
             raise ApiError(400, 'В Character Sheet нет изменений')
         validate_active_modification_references(conn, row['id'], after)
+        sync_weapon_states_with_modifications(conn, row['id'], after)
         persist_character_item_instances(
             conn, row['id'], after, 'trust_audit_edit', source_ref=reason, prune=True)
         revision_after = current_revision + 1
@@ -6599,6 +6785,7 @@ class Handler(BaseHTTPRequestHandler):
         ensure_character_item_instances(target)
         ensure_progression(target)
         validate_active_modification_references(conn, row['id'], target)
+        sync_weapon_states_with_modifications(conn, row['id'], target)
         persist_character_item_instances(
             conn, row['id'], target, 'ledger_revert',
             source_ref=f'ledger:{entry["id"]}', prune=True)
@@ -6734,6 +6921,9 @@ class Handler(BaseHTTPRequestHandler):
             'upgrade_name': upgrade.get('custom_name') or upgrade.get('name'),
             'compatibility': compatibility,
             'manual_confirmed': bool((body or {}).get('manual_confirm')),
+            'effect_rules': weapon_modification_rules_for_catalog(
+                catalog_item_id_for_entry(upgrade)),
+            'effects_rules_version': load_effect_rules().get('rules_version'),
         }
         conn.execute(
             'INSERT INTO item_modifications(modification_id,character_id,host_instance_id,'
@@ -6747,6 +6937,7 @@ class Handler(BaseHTTPRequestHandler):
              upgrade.get('acquisition_source') or 'inventory', user['id'], now, now, now))
         upgrade['state'] = 'installed'
         upgrade['host_instance_id'] = host_id
+        sync_weapon_states_with_modifications(conn, row['id'], data)
         revision_after = current_revision + 1
         persist_character_item_instances(conn, row['id'], data, 'modification_install')
         ledger_id = record_character_change_set(
@@ -6808,6 +6999,7 @@ class Handler(BaseHTTPRequestHandler):
         conn.execute(
             'UPDATE item_modifications SET active=0,removed_by=?,removed_at=?,updated=? '
             'WHERE modification_id=?', (user['id'], now, now, modification_id))
+        sync_weapon_states_with_modifications(conn, row['id'], data)
         revision_after = current_revision + 1
         persist_character_item_instances(conn, row['id'], data, 'modification_remove')
         config = modification.get('configuration') or {}
@@ -7211,6 +7403,7 @@ class Handler(BaseHTTPRequestHandler):
             maximum = _num(piece.get('maximum')) or _num(piece.get('sp')) or _num(piece.get('sdp')) or 0
             piece['current'] = maximum if action == 'reset' else max(0, min(maximum, (_num(piece.get('current')) or 0) + value))
         elif resource == 'weapon':
+            sync_weapon_states_with_modifications(conn, row['id'], data)
             key = str((body or {}).get('subject') or '')
             state = (data.get('weapon_state') or {}).get(key)
             if not state: raise ApiError(400, 'Оружие не найдено')

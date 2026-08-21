@@ -542,6 +542,20 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         host_after = next(host for host in installed_drum['management']['hosts']
                           if host['instance_id'] == pistol['instance_id'])
         self.assertEqual(host_after['slots_used'], 3)
+        effective_pistol = installed_drum['character']['derived']['effective_weapons'][pistol['instance_id']]
+        self.assertEqual(effective_pistol['base']['magazine'], 12)
+        self.assertEqual(effective_pistol['effective']['magazine'], 36)
+        self.assertEqual(effective_pistol['attack_modifier'], 0)
+        smart_source = next(source for source in effective_pistol['sources']
+                            if source['id'] == 'smartgun-link-effective')
+        self.assertFalse(smart_source['requirements_met'])
+        pistol_state = installed_drum['character']['data']['weapon_state'][pistol['instance_id']]
+        self.assertEqual(pistol_state['magazine_max'], 36)
+        self.assertEqual(pistol_state['magazine'], 12)
+        installed_config = self.conn.execute(
+            'SELECT configuration_json FROM item_modifications WHERE modification_id=?',
+            (modification_id,)).fetchone()['configuration_json']
+        self.assertTrue(json.loads(installed_config)['effect_rules'])
         extended_after = next(item for item in installed_drum['management']['upgrades']
                               if item['instance_id'] == extended['instance_id'])
         compatibility = extended_after['compatibility'][pistol['instance_id']]

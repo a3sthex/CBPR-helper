@@ -308,6 +308,68 @@ class StructuredEffectsTests(unittest.TestCase):
             })
 
 
+class WeaponModificationEffectTests(unittest.TestCase):
+    def owned(self, catalog_id, instance_id):
+        item = copy.deepcopy(server.item_by_id(catalog_id))
+        item.update({'key': catalog_id, 'catalog_item_id': catalog_id,
+                     'instance_id': instance_id, 'qty': 1, 'state': 'carried'})
+        return item
+
+    def test_magazine_concealability_and_smartgun_requirements_are_effective_only(self):
+        host = self.owned('guns-0', '1' * 32)
+        drum = self.owned('gun_upgrades-4', '2' * 32)
+        smart = self.owned('gun_upgrades-9', '3' * 32)
+        drum['state'] = smart['state'] = 'installed'
+        drum['host_instance_id'] = smart['host_instance_id'] = host['instance_id']
+        owned = {item['instance_id']: item for item in (host, drum, smart)}
+        modifications = [
+            {
+                'modification_id': 'a' * 32, 'host_instance_id': host['instance_id'],
+                'upgrade_instance_id': drum['instance_id'], 'slots_used': 1, 'active': True,
+                'configuration': {'effect_rules': server.weapon_modification_rules_for_catalog('gun_upgrades-4')},
+            },
+            {
+                'modification_id': 'b' * 32, 'host_instance_id': host['instance_id'],
+                'upgrade_instance_id': smart['instance_id'], 'slots_used': 2, 'active': True,
+                'configuration': {'effect_rules': server.weapon_modification_rules_for_catalog('gun_upgrades-9')},
+            },
+        ]
+        character = {'inventory': [host, drum, smart], 'cyberware': []}
+        missing = server.evaluate_effective_weapon(host, modifications, owned, character)
+        self.assertEqual(missing['base']['magazine'], 12)
+        self.assertEqual(missing['effective']['magazine'], 36)
+        self.assertEqual(missing['effective']['concealable'], 'NO')
+        self.assertEqual(missing['attack_modifier'], 0)
+        smart_source = next(source for source in missing['sources']
+                            if source['id'] == 'smartgun-link-effective')
+        self.assertFalse(smart_source['requirements_met'])
+
+        character['cyberware'] = [{
+            'key': 'cyberware-61', 'catalog_item_id': 'cyberware-61',
+            'instance_id': '4' * 32, 'name': 'Interface Plugs', 'state': 'installed',
+        }]
+        connected = server.evaluate_effective_weapon(host, modifications, owned, character)
+        self.assertEqual(connected['attack_modifier'], 1)
+        self.assertEqual(host['mechanics']['magazine'], 12)
+        self.assertEqual(host['mechanics']['concealable'], 'YES')
+
+    def test_bayonet_concealability_has_manual_alternate_attack_rule(self):
+        host = self.owned('guns-5', '5' * 32)  # Shotgun / Shoulder Arms
+        bayonet = self.owned('gun_upgrades-3', '6' * 32)
+        bayonet['state'] = 'installed'
+        modification = {
+            'modification_id': 'c' * 32, 'host_instance_id': host['instance_id'],
+            'upgrade_instance_id': bayonet['instance_id'], 'slots_used': 1, 'active': True,
+            'configuration': {'effect_rules': server.weapon_modification_rules_for_catalog('gun_upgrades-3')},
+        }
+        result = server.evaluate_effective_weapon(
+            host, [modification], {host['instance_id']: host, bayonet['instance_id']: bayonet},
+            {'inventory': [host, bayonet], 'cyberware': []})
+        self.assertEqual(result['effective']['concealable'], 'NO')
+        self.assertTrue(result['sources'][0]['manual_rules'][0]['manual_resolution_required'])
+        self.assertEqual(result['sources'][0]['manual_rules'][0]['source'], 'CP:R 343')
+
+
 class CreationValidationTests(unittest.TestCase):
     def test_valid_complete_package(self):
         char = valid_character()

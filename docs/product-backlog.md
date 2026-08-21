@@ -2828,7 +2828,19 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - modified host/installed upgrade нельзя тихо удалить или продать; сначала требуется снять modification;
 - linked Ledger revert восстанавливает relational link и Inventory state вместе, а небезопасный автоматический redo блокируется;
 - permanent attachments нельзя снять обычным Remove, а их installation change set не получает опасную кнопку revert;
-- effective weapon mechanics от конкретных upgrades, Compatibility Rail capacity и Tech/manual override effects остаются B.6.2.
+- effective weapon mechanics от конкретных upgrades, Compatibility Rail capacity и Tech/manual override effects вынесены в B.6.2.
+
+**Статус B.6.2 — подключены первые Effective Weapon Mechanics:**
+
+- `effects.json` поддерживает строго валидируемые `weapon_modification_rules`; installation сохраняет immutable rule snapshot и rules version в modification config;
+- `Drum Magazine` и `Extended Magazine` меняют effective magazine по официальной таблице CP:R 343 и делают оружие несрываемым под одеждой, не переписывая base mechanics;
+- `Smartgun Link` даёт `+1 Attack Check` только при установленных Interface Plugs или Subdermal Grip; при невыполненном requirement upgrade остаётся установленным, но bonus показывает INACTIVE;
+- `Bayonet` автоматически меняет effective Concealability, а alternate Light Melee Weapon action остаётся честным `MANUAL RULE`;
+- weapon card показывает base→effective Magazine/Concealability, Attack modifier, source, requirement status и manual rules;
+- magazine state синхронизируется с effective capacity при Install/Remove/Reload: увеличение не создаёт патроны, уменьшение безопасно clamp-ит current magazine;
+- upgrade effect применяется только к конкретному host instance; второй одноимённый пистолет сохраняет base mechanics;
+- config snapshot защищает уже установленный upgrade от тихого изменения будущего catalog rule;
+- остальные underbarrel/rebuild/IR effects, Compatibility Rail slot grants и Tech overrides продолжаются только через отдельные curated definitions.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -2845,8 +2857,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
    - дальше: только подтверждённые source-specific overrides и presets с доступными engine targets.
 10. ✅ Общая relational host/modification model и atomic lifecycle.
 11. ◐ Weapon Upgrades прямо в Character Sheet.
-    - готово: instance binding, compatibility/slots, Install/Remove UI и Ledger;
-    - дальше: effective weapon mechanics, config choices и Tech overrides.
+    - готово: instance binding, compatibility/slots, Install/Remove UI, Ledger и curated effective mechanics для Magazines/Smartgun/Bayonet;
+    - дальше: underbarrels/rebuilds, config choices, Compatibility Rail и Tech overrides.
 12. Vehicle Upgrades и Garage integration.
 13. Cyberdeck/Cyberware/Armor/Tech modification hosts.
 14. JSON import.

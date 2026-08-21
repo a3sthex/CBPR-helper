@@ -148,5 +148,123 @@
         }
       ]
     }
+  ],
+  "weapon_modification_rules": [
+    {
+      "id": "drum-magazine-effective",
+      "catalog_id": "gun_upgrades-4",
+      "label_en": "Drum Magazine",
+      "label_ru": "Барабанный магазин",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "drum-magazine-capacity",
+          "target": "weapon.magazine",
+          "operation": "set_by_weapon_type",
+          "values": {
+            "Medium Pistol": 36,
+            "Heavy Pistol": 28,
+            "Very Heavy Pistol": 28,
+            "SMG": 50,
+            "Heavy SMG": 60,
+            "Shotgun": 16,
+            "Assault Rifle": 45,
+            "Sniper Rifle": 12,
+            "Grenade Launcher": 6,
+            "Rocket Launcher": 3
+          },
+          "source": "CP:R 343"
+        },
+        {
+          "id": "drum-magazine-concealability",
+          "target": "weapon.concealable",
+          "operation": "set",
+          "value": "NO",
+          "source": "CP:R 343"
+        }
+      ],
+      "manual_rules": []
+    },
+    {
+      "id": "extended-magazine-effective",
+      "catalog_id": "gun_upgrades-5",
+      "label_en": "Extended Magazine",
+      "label_ru": "Увеличенный магазин",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "extended-magazine-capacity",
+          "target": "weapon.magazine",
+          "operation": "set_by_weapon_type",
+          "values": {
+            "Medium Pistol": 18,
+            "Heavy Pistol": 14,
+            "Very Heavy Pistol": 14,
+            "SMG": 40,
+            "Heavy SMG": 50,
+            "Shotgun": 8,
+            "Assault Rifle": 35,
+            "Sniper Rifle": 8,
+            "Grenade Launcher": 4,
+            "Rocket Launcher": 2
+          },
+          "source": "CP:R 343"
+        },
+        {
+          "id": "extended-magazine-concealability",
+          "target": "weapon.concealable",
+          "operation": "set",
+          "value": "NO",
+          "source": "CP:R 343"
+        }
+      ],
+      "manual_rules": []
+    },
+    {
+      "id": "smartgun-link-effective",
+      "catalog_id": "gun_upgrades-9",
+      "label_en": "Smartgun Link",
+      "label_ru": "Smartgun Link",
+      "requirements": {
+        "installed_any": ["cyberware-61", "cyberware-125"],
+        "label_en": "Interface Plugs or Subdermal Grip installed",
+        "label_ru": "Установлены Interface Plugs или Subdermal Grip"
+      },
+      "effects": [
+        {
+          "id": "smartgun-link-attack-bonus",
+          "target": "weapon.attack_check",
+          "operation": "add",
+          "value": 1,
+          "source": "CP:R 343"
+        }
+      ],
+      "manual_rules": []
+    },
+    {
+      "id": "bayonet-effective",
+      "catalog_id": "gun_upgrades-3",
+      "label_en": "Bayonet",
+      "label_ru": "Штык",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "bayonet-concealability",
+          "target": "weapon.concealable",
+          "operation": "set",
+          "value": "NO",
+          "source": "CP:R 343"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "bayonet-light-melee-mode",
+          "text_en": "The attached weapon can also be used as a Light Melee Weapon.",
+          "text_ru": "Оружие с установленным штыком также можно использовать как Light Melee Weapon.",
+          "condition": "alternate_melee_attack",
+          "source": "CP:R 343"
+        }
+      ]
+    }
   ]
 }

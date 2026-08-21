@@ -65,6 +65,10 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('upgrade_instance_id', source)
         self.assertIn('manual_confirm', source)
         self.assertIn('/modifications', source)
+        self.assertIn('effective_weapons', source)
+        self.assertIn('attack_modifier', source)
+        self.assertIn('Mag ${magBase}→${magEffective}', source)
+        self.assertIn('requirements_met', source)
 
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
