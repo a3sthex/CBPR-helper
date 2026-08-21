@@ -171,6 +171,53 @@ broken
 
 Каждое постоянное действие попадает в Character Ledger.
 
+### Equippable / Active Gear — подтверждённая идея
+
+Наличие предмета в Inventory не означает, что он автоматически готов к работе. Предметы вроде **Radio Communicator**, **Flashlight**, оптики, сканеров, инструментов и другого активного снаряжения получают явное свойство `equippable`.
+
+Каталог хранит декларативные поля:
+
+```text
+equippable            предмет можно подготовить к использованию через Equip
+equip_modes           held | worn | mounted | ready
+equip_slots           hand | belt | ear | eye | head | body | weapon | vehicle | workspace | other
+hands_required        сколько рук занимает режим held
+equip_limit           допустимое число одновременно экипированных копий
+exclusive_group       взаимоисключающие предметы/режимы
+requires_host_type    тип host для mounted mode
+active_actions        действия, доступные только когда предмет экипирован
+active_effects        structured effects: while_equipped / while_active
+```
+
+Состояние конкретного экземпляра дополняется полями:
+
+```text
+state                 carried | equipped | installed | stored | broken
+equipped_mode         held | worn | mounted | ready
+equipped_slot         выбранный slot
+host_instance_id      конкретное оружие/броня/vehicle для mounted mode
+active                включён ли уже экипированный предмет
+```
+
+`Equip` и `Activate` — разные действия. Например:
+
+- **Radio Communicator**: лежащая в Stash рация не даёт доступ к коммуникационным действиям; экипированная рация считается готовой, а включение/канал могут храниться как active/configuration state;
+- **Flashlight**: можно держать в руке либо закрепить на совместимом host; экипированный фонарь может быть отдельно включён или выключен;
+- handheld tool занимает руку только в режиме `held`, но может оставаться обычным `carried` предметом вне использования;
+- mounted gear ссылается на стабильный `host_instance_id`, а не только на название оружия или транспорта.
+
+Правила поведения:
+
+1. `carried` предмет не применяет эффекты `while_equipped` и не предоставляет equipment-only actions.
+2. `equipped`, но выключенный предмет применяет только эффекты `while_equipped`; `while_active` требует `active=true`.
+3. Нельзя экипировать сломанный, consumed или находящийся в чужом Stash экземпляр.
+4. Сервер проверяет руки, hard slots, compatible host, `exclusive_group` и лимит копий.
+5. `Equip / Unequip / Activate / Deactivate / Mount / Unmount` записываются в Character Ledger.
+6. Character Sheet и Session panel показывают отдельный **Active Gear / Loadout**, чтобы готовое снаряжение не терялось в полном Inventory.
+7. Не нужно превращать всё снаряжение в жёсткий «инвентарный тетрис»: строгие ограничения обязательны для рук, mounts и rules-defined hosts; обычный `ready` gear может использовать мягкий campaign limit.
+
+Флаг нельзя назначать автоматически всей категории Gear. Нужна курируемая разметка Data Pool и ручные исключения: часть вещей является passive equipment, часть требует `Use`, часть расходуется, а часть может работать в нескольких equip modes.
+
 ### Важное ограничение
 
 Не стоит автоматически считать расходником всё в категориях Ammo/Grenades/Gear. Лучше импортировать структурированный флаг и иметь ручные исключения: некоторые предметы имеют заряды, некоторые являются контейнерами, некоторые не исчезают после применения.
@@ -2702,7 +2749,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
 4. Добавить custom/found items.
-5. Consumable/use/equip/install.
+5. Consumable/use и Equippable Active Gear: equip modes, hands/slots, Activate/Deactivate, mounted host links.
 6. Structured Effects & Modifiers schema/evaluator.
 7. Base/effective/current breakdown в Character Sheet и Rolls.
 8. Duration, stacking и active effect instances.
