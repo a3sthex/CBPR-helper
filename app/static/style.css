@@ -642,12 +642,16 @@ body { background: radial-gradient(1200px 500px at 80% -10%, color-mix(in srgb, 
 .synergy-row>div span { color:var(--muted);font-size:12px; }
 .synergy-row.active { border-left-color:var(--green); }
 .synergy-row.active strong,.effect-bonus { color:var(--green); }
+.effect-instance { display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;padding:10px;border:1px solid var(--line);border-left:3px solid var(--muted);background:var(--bg2);margin-bottom:6px; }
+.effect-instance.active { border-left-color:var(--cyan); }
+.effect-instance>div:first-child { display:flex;flex-direction:column;gap:2px; }
+.effect-instance>div:first-child span,.effect-instance>div:first-child small { color:var(--muted);font-size:12px; }
 .stat.modified { border-color:color-mix(in srgb,var(--green) 60%,var(--line)); }
 .stat.modified small { color:var(--green);font-size:9px;line-height:1.2; }
 .skill-row.modified { background:color-mix(in srgb,var(--green) 6%,transparent); }
 .roll-result { display:flex;flex-direction:column;align-items:center;padding:24px; }
 .roll-result b { font:48px 'Orbitron';color:var(--cyan);text-shadow:var(--glow-c); }
-@media(max-width:700px){.official-sheet-head{grid-template-columns:auto 1fr}.official-sheet-head>.row{grid-column:1/-1}.sheet-portrait{width:100px}.ledger-row,.ledger-change,.synergy-row{grid-template-columns:1fr}.summary-identity{grid-template-columns:1fr}}
+@media(max-width:700px){.official-sheet-head{grid-template-columns:auto 1fr}.official-sheet-head>.row{grid-column:1/-1}.sheet-portrait{width:100px}.ledger-row,.ledger-change,.synergy-row,.effect-instance{grid-template-columns:1fr}.summary-identity{grid-template-columns:1fr}}
 .sheet-tabs { position:sticky;top:58px;z-index:20;display:flex;gap:5px;overflow:auto;padding:7px;margin-bottom:10px;background:color-mix(in srgb,var(--bg) 92%,transparent);border:1px solid var(--line);border-radius:9px;backdrop-filter:blur(8px); }
 .sheet-tabs button { white-space:nowrap; }
 .role-sheet-entry { padding:10px;border-left:3px solid var(--line);margin-bottom:9px;background:var(--bg2); }

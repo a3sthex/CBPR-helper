@@ -2777,7 +2777,19 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Armor penalties и Humanity-derived EMP включены в общий readable stat breakdown;
 - подтверждённые правила `3+ Light Tattoo → Wardrobe & Style checks +2` и `Chemskin + TechHair → Personal Grooming checks +2` работают независимо и только один раз;
 - UI показывает прогресс набора, ACTIVE/INACTIVE, источник и итоговый бонус; активация/деактивация synergy попадает в readable Ledger diff;
-- temporary/custom active effect instances, duration/round tracking и более широкий curated effects catalog остаются B.5.2.
+- temporary/custom active effect instances и duration/round tracking вынесены в следующий подэтап B.5.2.
+
+**Статус B.5.2 — реализованы Active Effect Instances и базовая duration model:**
+
+- additive migration создаёт `active_effect_instances` с immutable definition snapshot, actor, reason, source, started/expires/remaining rounds и archive state;
+- владелец в Trust + Audit может добавить allowlisted custom modifier для STAT или Skill Check; GM может включать, отключать, архивировать и вручную двигать round duration;
+- custom effect проходит тот же серверный schema validator и stacking pipeline, что curated effects; неизвестные поля и executable payload отклоняются;
+- поддерживаются `manual`, `real_time` и `rounds`: real-time истекает по серверному времени, rounds уменьшаются только явным `Tick`, а не притворяются связанными с Session clock;
+- effect creation/state changes повышают Dossier `revision`, создают readable Ledger events и защищены от stale tabs;
+- Character Sheet показывает status, target, operation/value, duration, actor/reason и кнопки Disable/Enable/Tick/Archive;
+- активные экземпляры меняют effective STAT/Skill checks и реальные rolls, не меняя base values;
+- public Dossier не получает private reason/actor/source instance details;
+- автоматическая связь `Use → active effect`, Session-authoritative round ticking и source item/condition presets остаются следующими интеграциями.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -2787,7 +2799,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
    - остаётся: mounted host links и расширение курируемой разметки предметов.
 6. ✅ Structured Effects & Modifiers declarative schema/evaluator и первые curated synergies.
 7. ✅ Base/modifiers/effective breakdown для STAT/Skill checks в Character Sheet и Rolls.
-8. Duration, temporary/custom active effect instances и Session round tracking.
+8. ✅ Temporary/custom active effect instances; manual/real-time duration и explicit round ticking.
+   - остаётся: Session-authoritative rounds, `Use → effect` presets и campaign clock.
 9. Curated effect overrides для Data Pool с source metadata.
 10. Общая host/modification model.
 11. Weapon Upgrades прямо в Character Sheet.

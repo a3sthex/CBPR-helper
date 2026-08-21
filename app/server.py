@@ -475,7 +475,53 @@ def apply_modifier_pipeline(base_value, modifiers):
     return value, resolve_modifier_stack(modifiers)
 
 
-def evaluate_character_effects(char, derived):
+ACTIVE_EFFECT_DURATIONS = {'manual', 'real_time', 'rounds'}
+ACTIVE_EFFECT_ACTIONS = {'enable', 'disable', 'tick'}
+
+
+def effect_runtime_status(effect, now=None):
+    now = time.time() if now is None else now
+    if effect.get('archived_at'):
+        return 'archived'
+    duration = effect.get('duration_type') or 'manual'
+    if duration == 'real_time' and effect.get('expires_at') is not None and effect['expires_at'] <= now:
+        return 'expired'
+    if duration == 'rounds' and (_num(effect.get('remaining_rounds')) or 0) <= 0:
+        return 'completed'
+    if not effect.get('active'):
+        return 'disabled'
+    return 'active'
+
+
+def effect_instance_payload(row, now=None):
+    item = dict(row)
+    try:
+        definition = json.loads(item.pop('definition_json'))
+        validate_effect_definition(definition)
+        valid = True
+    except (TypeError, ValueError, json.JSONDecodeError, RuntimeError):
+        definition, valid = {}, False
+    item['definition'] = definition
+    item['active'] = bool(item.get('active'))
+    item['valid'] = valid
+    item['status'] = effect_runtime_status(item, now) if valid else 'invalid'
+    item['effective_active'] = valid and item['status'] == 'active'
+    if item.get('duration_type') == 'real_time' and item.get('expires_at') is not None:
+        item['remaining_seconds'] = max(0, int(item['expires_at'] - (time.time() if now is None else now)))
+    return item
+
+
+def character_effect_instances(conn, character_id, include_archived=False):
+    where = '' if include_archived else 'AND e.archived_at IS NULL'
+    rows = conn.execute(
+        'SELECT e.*,u.display_name actor FROM active_effect_instances e '
+        'JOIN users u ON u.id=e.created_by WHERE e.character_id=? ' + where +
+        ' ORDER BY e.created DESC,e.effect_id', (int(character_id),)).fetchall()
+    now = time.time()
+    return [effect_instance_payload(row, now) for row in rows]
+
+
+def evaluate_character_effects(char, derived, active_effects=None):
     """Evaluate allowlisted declarative effects without mutating base Character data."""
     payload = load_effect_rules()
     cyberware = [item for item in char.get('cyberware') or [] if isinstance(item, dict)]
@@ -527,6 +573,43 @@ def evaluate_character_effects(char, derived):
             'active': active, 'requirements': requirements, 'effects': effects,
         })
 
+    instances = []
+    for raw_instance in active_effects or []:
+        instance = copy.deepcopy(raw_instance)
+        definition = instance.get('definition')
+        valid = bool(instance.get('valid', True))
+        if valid:
+            try:
+                validate_effect_definition(definition)
+            except RuntimeError:
+                valid = False
+        runtime_active = valid and effect_runtime_status(instance) == 'active'
+        public_instance = {
+            key: copy.deepcopy(instance.get(key)) for key in (
+                'effect_id', 'label', 'source_type', 'source_item_instance_id',
+                'duration_type', 'started_at', 'expires_at', 'remaining_rounds',
+                'session_id', 'active', 'archived_at', 'actor', 'reason')
+        }
+        public_instance.update({
+            'definition': copy.deepcopy(definition) if valid else {},
+            'valid': valid, 'status': effect_runtime_status(instance) if valid else 'invalid',
+            'effective_active': runtime_active,
+        })
+        if instance.get('remaining_seconds') is not None:
+            public_instance['remaining_seconds'] = instance['remaining_seconds']
+        instances.append(public_instance)
+        if runtime_active:
+            modifier = copy.deepcopy(definition)
+            modifier.update({
+                'effect_instance_id': instance.get('effect_id'),
+                'rule_id': f'instance:{instance.get("effect_id")}',
+                'rule_label_en': instance.get('label') or definition['id'],
+                'rule_label_ru': instance.get('label') or definition['id'],
+                'source': instance.get('label') or definition.get('source') or 'Active Effect',
+                'active': True,
+            })
+            modifiers.append(modifier)
+
     by_target = {}
     for modifier in modifiers:
         by_target.setdefault(modifier['target'], []).append(modifier)
@@ -569,12 +652,12 @@ def evaluate_character_effects(char, derived):
     return {
         'rules_version': payload.get('rules_version'),
         'stats': stats, 'skills': skills,
-        'synergies': synergies,
+        'synergies': synergies, 'instances': instances,
         'modifiers': resolve_modifier_stack(modifiers),
     }
 
 
-def derive(char):
+def derive(char, active_effects=None):
     """Производные показатели листа персонажа по правилам CP:R/CEMK."""
     st = char.get('stats') or {}
     out = {}
@@ -635,7 +718,7 @@ def derive(char):
             penalties[stat] = min(penalties[stat], value)
     out['armor_penalties'] = penalties
     out['armor_penalty'] = min(penalties.values())
-    out['effects'] = evaluate_character_effects(char, out)
+    out['effects'] = evaluate_character_effects(char, out, active_effects)
     out['effective_stats'] = {
         stat: values['effective'] for stat, values in out['effects']['stats'].items()
     }
@@ -1105,6 +1188,32 @@ CREATE INDEX IF NOT EXISTS idx_item_instances_catalog
   ON item_instances(catalog_item_id,character_id);
 """
 
+ACTIVE_EFFECT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS active_effect_instances(
+  effect_id TEXT PRIMARY KEY,
+  character_id INTEGER NOT NULL,
+  source_type TEXT NOT NULL DEFAULT 'custom',
+  source_item_instance_id TEXT,
+  label TEXT NOT NULL,
+  definition_json TEXT NOT NULL,
+  duration_type TEXT NOT NULL DEFAULT 'manual',
+  started_at REAL NOT NULL,
+  expires_at REAL,
+  remaining_rounds INTEGER,
+  session_id INTEGER,
+  active INTEGER NOT NULL DEFAULT 1,
+  archived_at REAL,
+  created_by INTEGER NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_active_effects_character
+  ON active_effect_instances(character_id,active,archived_at,expires_at);
+CREATE INDEX IF NOT EXISTS idx_active_effects_session
+  ON active_effect_instances(session_id,active,remaining_rounds);
+"""
+
 NOTIFICATION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS notifications(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1146,6 +1255,7 @@ MIGRATION_OPERATIONS = 4
 MIGRATION_NOTIFICATIONS = 5
 MIGRATION_TACTICAL_PROFILES = 6
 MIGRATION_ITEM_INSTANCES = 7
+MIGRATION_ACTIVE_EFFECTS = 8
 DB_BACKUP_LIMIT = 5
 _RATE_LIMIT_BUCKETS = {}
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -1509,6 +1619,7 @@ def apply_schema_migrations(conn, make_backup=True):
         (MIGRATION_NOTIFICATIONS, 'site notifications and VK outbox'),
         (MIGRATION_TACTICAL_PROFILES, 'profile media and tactical session resources'),
         (MIGRATION_ITEM_INSTANCES, 'stable character item instances'),
+        (MIGRATION_ACTIVE_EFFECTS, 'active character effect instances'),
     ]
     pending = [version for version, _ in migrations if version not in applied]
     if make_backup and pending:
@@ -1550,6 +1661,8 @@ def apply_schema_migrations(conn, make_backup=True):
     if MIGRATION_ITEM_INSTANCES not in applied:
         conn.executescript(ITEM_INSTANCE_SCHEMA)
         backfill_character_item_instances(conn)
+    if MIGRATION_ACTIVE_EFFECTS not in applied:
+        conn.executescript(ACTIVE_EFFECT_SCHEMA)
     # Re-run additive CREATE IF NOT EXISTS blocks so patch-level tables added to an
     # already-applied migration remain safe during development and rolling deploys.
     conn.executescript(NETWORK_SCHEMA)
@@ -1557,6 +1670,7 @@ def apply_schema_migrations(conn, make_backup=True):
     conn.executescript(OPERATIONS_SCHEMA)
     conn.executescript(NOTIFICATION_SCHEMA)
     conn.executescript(ITEM_INSTANCE_SCHEMA)
+    conn.executescript(ACTIVE_EFFECT_SCHEMA)
     # Recover safely if a rolling/patch deployment recorded the migration before
     # every additive column reached a particular database.
     ensure_column(conn, 'users', 'avatar_media_id', 'TEXT')
@@ -2176,6 +2290,41 @@ def record_character_change_set(conn, character_id, actor_user_id, before, after
     return cursor.lastrowid
 
 
+def record_effect_change(conn, character_id, actor_user_id, effect_id, label,
+                         before, after, reason, revision_before, revision_after):
+    def summary(value):
+        if not value:
+            return '—'
+        definition = value.get('definition') or {}
+        return {
+            'status': value.get('status') or ('active' if value.get('active') else 'disabled'),
+            'target': definition.get('target'),
+            'operation': definition.get('operation'),
+            'value': definition.get('value'),
+            'duration': value.get('duration_type'),
+            'remaining_rounds': value.get('remaining_rounds'),
+        }
+
+    delta = {
+        'changes': [{
+            'path': f'effects.instances.{effect_id}', 'label': f'Effect: {label}',
+            'kind': 'changed', 'before': readable_change_value(summary(before)),
+            'after': readable_change_value(summary(after)),
+        }],
+        'change_count': 1,
+        'revision_before': int(revision_before),
+        'revision_after': int(revision_after),
+        'revertible': False,
+    }
+    conn.execute(
+        'INSERT INTO character_ledger(character_id,actor_user_id,category,delta_json,'
+        'before_json,after_json,reason,created) VALUES(?,?,?,?,?,?,?,?)',
+        (character_id, actor_user_id, 'effect', json.dumps(delta, ensure_ascii=False),
+         json.dumps(before, ensure_ascii=False) if before else None,
+         json.dumps(after, ensure_ascii=False) if after else None,
+         str(reason or '')[:500], time.time()))
+
+
 def record_account_security(conn, user_id, actor_user_id, event_type, detail=''):
     conn.execute(
         'INSERT INTO account_security_audit(user_id,actor_user_id,event_type,detail,created) '
@@ -2730,6 +2879,66 @@ def trust_number(value, label, minimum, maximum, integer=False):
     if not math.isfinite(number) or number < minimum or number > maximum:
         raise ApiError(400, f'{label}: допустимо от {minimum} до {maximum}')
     return int(number) if integer else round(number, 2)
+
+
+def clean_custom_effect(body, effect_id):
+    if not isinstance(body, dict):
+        raise ApiError(400, 'Effect должен быть объектом')
+    allowed = {
+        'revision', 'label', 'target', 'operation', 'value', 'stack_policy',
+        'stack_group', 'duration_type', 'duration_value', 'reason',
+    }
+    if set(body) - allowed:
+        raise ApiError(400, 'Effect содержит неподдерживаемые поля')
+    label = str(body.get('label') or '').strip()[:120]
+    reason = str(body.get('reason') or '').strip()[:500]
+    if not label:
+        raise ApiError(400, 'Укажите название эффекта')
+    if len(reason) < 3:
+        raise ApiError(400, 'Укажите причину эффекта')
+    target = str(body.get('target') or '').strip()
+    operation = str(body.get('operation') or 'add').strip().lower()
+    try:
+        value = float(body.get('value'))
+    except (TypeError, ValueError):
+        raise ApiError(400, 'Effect value должен быть числом')
+    if not math.isfinite(value) or abs(value) > 100:
+        raise ApiError(400, 'Effect value должен быть от -100 до 100')
+    if operation == 'multiply' and not (0 <= value <= 10):
+        raise ApiError(400, 'Multiply effect должен быть от 0 до 10')
+    if value.is_integer():
+        value = int(value)
+    stack_policy = str(body.get('stack_policy') or 'stack').strip().lower()
+    stack_group = str(body.get('stack_group') or f'custom_{effect_id}').strip().lower()
+    if not re.fullmatch(r'[a-z0-9_.-]{1,80}', stack_group):
+        raise ApiError(400, 'Некорректная stacking group')
+    definition = {
+        'id': f'custom-{effect_id}', 'target': target,
+        'operation': operation, 'value': value,
+        'stack_group': stack_group, 'stack_policy': stack_policy,
+        'priority': 500, 'source': 'Custom Effect',
+    }
+    try:
+        validate_effect_definition(definition)
+    except RuntimeError as error:
+        raise ApiError(400, str(error))
+    duration_type = str(body.get('duration_type') or 'manual').strip().lower()
+    if duration_type not in ACTIVE_EFFECT_DURATIONS:
+        raise ApiError(400, 'Некорректный тип длительности эффекта')
+    expires_at = None
+    remaining_rounds = None
+    duration_value = None
+    if duration_type == 'real_time':
+        duration_value = trust_number(body.get('duration_value'), 'Duration minutes', 1, 10080, integer=True)
+        expires_at = time.time() + duration_value * 60
+    elif duration_type == 'rounds':
+        duration_value = trust_number(body.get('duration_value'), 'Duration rounds', 1, 100, integer=True)
+        remaining_rounds = duration_value
+    return {
+        'label': label, 'reason': reason, 'definition': definition,
+        'duration_type': duration_type, 'duration_value': duration_value,
+        'expires_at': expires_at, 'remaining_rounds': remaining_rounds,
+    }
 
 
 def canonical_owned_entry(entry, bucket, old_entries):
@@ -3643,6 +3852,25 @@ SERVER_ERROR_EN = {
     'Предмет не поддерживает включение и выключение': 'The item cannot be activated or deactivated',
     'Сначала экипируйте предмет': 'Equip the item first',
     'Предмет уже находится в выбранном состоянии': 'The item is already in the requested state',
+    'Effect должен быть объектом': 'Effect must be an object',
+    'Effect содержит неподдерживаемые поля': 'Effect contains unsupported fields',
+    'Укажите название эффекта': 'Effect name is required',
+    'Укажите причину эффекта': 'Effect reason is required',
+    'Effect value должен быть от -100 до 100': 'Effect value must be between -100 and 100',
+    'Multiply effect должен быть от 0 до 10': 'Multiply effect must be between 0 and 10',
+    'Некорректная stacking group': 'Invalid stacking group',
+    'Некорректный тип длительности эффекта': 'Invalid effect duration type',
+    'Effect value должен быть числом': 'Effect value must be numeric',
+    'Effect action содержит неподдерживаемые поля': 'Effect action contains unsupported fields',
+    'Effect instance не найден': 'Effect instance not found',
+    'Effect instance уже архивирован': 'Effect instance is already archived',
+    'Неизвестное действие с эффектом': 'Unknown effect action',
+    'Эффект уже отключён': 'Effect is already disabled',
+    'Истёкший real-time эффект нельзя включить повторно': 'An expired real-time effect cannot be enabled again',
+    'Завершённый round effect нельзя включить повторно': 'A completed round effect cannot be enabled again',
+    'Эффект уже включён': 'Effect is already enabled',
+    'Tick доступен только для round effect': 'Tick is only available for round effects',
+    'Round effect сейчас не активен': 'Round effect is not currently active',
     'Все слоты заняты': 'All slots are filled',
     'Вы уже записаны': 'You are already signed up',
     'Для специализированного навыка повышайте parent-pool': 'Increase the parent pool for a specialized Skill',
@@ -5601,13 +5829,18 @@ class Handler(BaseHTTPRequestHandler):
 
     CHAR_LIST_FIELDS = ('id', 'owner_id', 'public', 'created', 'updated')
 
-    def char_payload(self, row, owner_name=None, public_view=False):
+    def char_payload(self, row, owner_name=None, public_view=False, conn=None):
         full_data = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
         visibility = ensure_character_visibility(full_data)
         data = public_character_data(full_data) if public_view else full_data
-        derived = derive(full_data)
+        active_effects = character_effect_instances(conn, row['id']) if conn is not None else []
+        derived = derive(full_data, active_effects)
         if public_view and not visibility['combat']:
             derived = {}
+        elif public_view:
+            for effect in (derived.get('effects') or {}).get('instances') or []:
+                for private_key in ('reason', 'actor', 'source_item_instance_id'):
+                    effect.pop(private_key, None)
         return {
             'id': row['id'], 'revision': _row_value(row, 'revision', 0),
             'owner_id': row['owner_id'] if (not public_view or owner_name) else None,
@@ -5621,7 +5854,7 @@ class Handler(BaseHTTPRequestHandler):
         rows = conn.execute(
             'SELECT * FROM characters WHERE owner_id=? ORDER BY updated DESC',
             (u['id'],)).fetchall()
-        self.send_json({'characters': [self.char_payload(r, u['display_name']) for r in rows]})
+        self.send_json({'characters': [self.char_payload(r, u['display_name'], conn=conn) for r in rows]})
 
     @atomic_endpoint
     def api_create_character(self, conn, qs, m, body):
@@ -5650,7 +5883,7 @@ class Handler(BaseHTTPRequestHandler):
         record_character_changes(conn, cur.lastrowid, u['id'], {}, data, 'Character created')
         conn.commit()
         row = conn.execute('SELECT * FROM characters WHERE id=?', (cur.lastrowid,)).fetchone()
-        self.send_json(self.char_payload(row, u['display_name']), status=201)
+        self.send_json(self.char_payload(row, u['display_name'], conn=conn), status=201)
 
     def get_char(self, conn, cid):
         try:
@@ -5675,7 +5908,7 @@ class Handler(BaseHTTPRequestHandler):
         privileged_name = bool(owner_view or user_is_gm(user))
         owner_name = row['owner'] if (privileged_name or row['owner_show_name']) else None
         self.send_json(self.char_payload(
-            row, owner_name, public_view=not (owner_view or admin_view)))
+            row, owner_name, public_view=not (owner_view or admin_view), conn=conn))
 
     @atomic_endpoint
     def api_save_character(self, conn, qs, m, body):
@@ -5708,7 +5941,7 @@ class Handler(BaseHTTPRequestHandler):
                      (json.dumps(data, ensure_ascii=False), pub, time.time(), row['id']))
         conn.commit()
         row = self.get_char(conn, row['id'])
-        self.send_json(self.char_payload(row, row['owner']))
+        self.send_json(self.char_payload(row, row['owner'], conn=conn))
 
     @atomic_endpoint
     def api_character_sheet_update(self, conn, qs, m, body):
@@ -5738,7 +5971,7 @@ class Handler(BaseHTTPRequestHandler):
              time.time(), revision_after, row['id']))
         conn.commit()
         fresh = self.get_char(conn, row['id'])
-        self.send_json(self.char_payload(fresh, fresh['owner']))
+        self.send_json(self.char_payload(fresh, fresh['owner'], conn=conn))
 
     @atomic_endpoint
     def api_delete_character(self, conn, qs, m, body):
@@ -5791,6 +6024,7 @@ class Handler(BaseHTTPRequestHandler):
         conn.execute('DELETE FROM ip_ledger WHERE character_id=?', (row['id'],))
         conn.execute('DELETE FROM character_ledger WHERE character_id=?', (row['id'],))
         conn.execute('DELETE FROM item_instances WHERE character_id=?', (row['id'],))
+        conn.execute('DELETE FROM active_effect_instances WHERE character_id=?', (row['id'],))
         conn.execute('DELETE FROM characters WHERE id=?', (row['id'],))
         conn.commit()
         for media in media_rows:
@@ -5806,7 +6040,7 @@ class Handler(BaseHTTPRequestHandler):
                       time.time(), row['id']))
         conn.commit()
         fresh = self.get_char(conn, row['id'])
-        return self.char_payload(fresh, fresh['owner'])
+        return self.char_payload(fresh, fresh['owner'], conn=conn)
 
     def require_character_editor(self, conn, cid, allow_gm=False):
         user = self.require_user(conn)
@@ -5935,7 +6169,7 @@ class Handler(BaseHTTPRequestHandler):
              time.time(), revision_after, row['id']))
         conn.commit()
         fresh = self.get_char(conn, row['id'])
-        self.send_json(self.char_payload(fresh, fresh['owner']))
+        self.send_json(self.char_payload(fresh, fresh['owner'], conn=conn))
 
     def api_character_items(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
@@ -5948,6 +6182,121 @@ class Handler(BaseHTTPRequestHandler):
             item['item'] = parse_json_object(item.pop('data_json'))
             payload.append(item)
         self.send_json({'character_id': row['id'], 'instances': payload})
+
+    def api_character_effects(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        self.send_json({
+            'character_id': row['id'], 'revision': _row_value(row, 'revision', 0) or 0,
+            'effects': character_effect_instances(conn, row['id']),
+        })
+
+    @atomic_endpoint
+    def api_character_effect_create(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        current_revision = _row_value(row, 'revision', 0) or 0
+        expected_revision = _num((body or {}).get('revision'))
+        if expected_revision is None or expected_revision != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        effect_id = secrets.token_hex(16)
+        clean = clean_custom_effect(body or {}, effect_id)
+        now = time.time()
+        conn.execute(
+            'INSERT INTO active_effect_instances(effect_id,character_id,source_type,label,'
+            'definition_json,duration_type,started_at,expires_at,remaining_rounds,active,'
+            'created_by,reason,created,updated) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,?,?)',
+            (effect_id, row['id'], 'custom', clean['label'],
+             json.dumps(clean['definition'], ensure_ascii=False), clean['duration_type'],
+             now, clean['expires_at'], clean['remaining_rounds'], user['id'],
+             clean['reason'], now, now))
+        created_row = conn.execute(
+            'SELECT e.*,u.display_name actor FROM active_effect_instances e '
+            'JOIN users u ON u.id=e.created_by WHERE e.effect_id=?',
+            (effect_id,)).fetchone()
+        created = effect_instance_payload(created_row, now)
+        revision_after = current_revision + 1
+        record_effect_change(
+            conn, row['id'], user['id'], effect_id, clean['label'], None, created,
+            clean['reason'], current_revision, revision_after)
+        conn.execute('UPDATE characters SET updated=?,revision=? WHERE id=?',
+                     (now, revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'effect': created,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        }, status=201)
+
+    @atomic_endpoint
+    def api_character_effect_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        if set(body or {}) - {'revision', 'action'}:
+            raise ApiError(400, 'Effect action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        expected_revision = _num((body or {}).get('revision'))
+        if expected_revision is None or expected_revision != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        effect_id = str(m.group(2)).lower()
+        raw = conn.execute(
+            'SELECT e.*,u.display_name actor FROM active_effect_instances e '
+            'JOIN users u ON u.id=e.created_by WHERE e.effect_id=? AND e.character_id=?',
+            (effect_id, row['id'])).fetchone()
+        if not raw:
+            raise ApiError(404, 'Effect instance не найден')
+        before = effect_instance_payload(raw)
+        if before.get('archived_at'):
+            raise ApiError(409, 'Effect instance уже архивирован')
+        action = str((body or {}).get('action') or '').strip().lower()
+        if action not in ACTIVE_EFFECT_ACTIONS | {'archive'}:
+            raise ApiError(400, 'Неизвестное действие с эффектом')
+        now = time.time()
+        if action == 'disable':
+            if not before['active']:
+                raise ApiError(409, 'Эффект уже отключён')
+            conn.execute('UPDATE active_effect_instances SET active=0,updated=? WHERE effect_id=?',
+                         (now, effect_id))
+            reason = f'Disable effect {before["label"]}'
+        elif action == 'enable':
+            if before['duration_type'] == 'real_time' and before.get('expires_at', 0) <= now:
+                raise ApiError(409, 'Истёкший real-time эффект нельзя включить повторно')
+            if before['duration_type'] == 'rounds' and (_num(before.get('remaining_rounds')) or 0) <= 0:
+                raise ApiError(409, 'Завершённый round effect нельзя включить повторно')
+            if before['active']:
+                raise ApiError(409, 'Эффект уже включён')
+            conn.execute('UPDATE active_effect_instances SET active=1,updated=? WHERE effect_id=?',
+                         (now, effect_id))
+            reason = f'Enable effect {before["label"]}'
+        elif action == 'tick':
+            if before['duration_type'] != 'rounds':
+                raise ApiError(400, 'Tick доступен только для round effect')
+            if before['status'] != 'active':
+                raise ApiError(409, 'Round effect сейчас не активен')
+            remaining = max(0, (_num(before.get('remaining_rounds')) or 0) - 1)
+            conn.execute(
+                'UPDATE active_effect_instances SET remaining_rounds=?,active=?,updated=? '
+                'WHERE effect_id=?', (remaining, 1 if remaining else 0, now, effect_id))
+            reason = f'Advance effect round {before["label"]}: {remaining} remaining'
+        else:
+            conn.execute(
+                'UPDATE active_effect_instances SET active=0,archived_at=?,updated=? '
+                'WHERE effect_id=?', (now, now, effect_id))
+            reason = f'Archive effect {before["label"]}'
+        after_row = conn.execute(
+            'SELECT e.*,u.display_name actor FROM active_effect_instances e '
+            'JOIN users u ON u.id=e.created_by WHERE e.effect_id=?',
+            (effect_id,)).fetchone()
+        after = effect_instance_payload(after_row, now)
+        revision_after = current_revision + 1
+        record_effect_change(
+            conn, row['id'], user['id'], effect_id, before['label'], before, after,
+            reason, current_revision, revision_after)
+        conn.execute('UPDATE characters SET updated=?,revision=? WHERE id=?',
+                     (now, revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'effect': after,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
 
     @atomic_endpoint
     def api_character_item_action(self, conn, qs, m, body):
@@ -6067,7 +6416,7 @@ class Handler(BaseHTTPRequestHandler):
         fresh = self.get_char(conn, row['id'])
         self.send_json({
             'ok': True, 'action': action, 'message': reason, 'effect': effect,
-            'character': self.char_payload(fresh, fresh['owner']),
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
         })
 
     @atomic_endpoint
@@ -6210,7 +6559,7 @@ class Handler(BaseHTTPRequestHandler):
         out = []
         for row in rows:
             owner_name = row['owner'] if (privileged or row['owner_show_name']) else None
-            payload = self.char_payload(row, owner_name, public_view=not privileged)
+            payload = self.char_payload(row, owner_name, public_view=not privileged, conn=conn)
             data = payload['data']
             hay = ' '.join(filter(None, [data.get('handle'), data.get('role'),
                                          data.get('player'), owner_name])).lower()
@@ -7415,6 +7764,9 @@ ROUTES = [
     ('POST', rx(r'/api/characters/(\d+)/ledger/(\d+)/revert'), Handler.api_character_ledger_revert),
     ('GET', rx(r'/api/characters/(\d+)/items'), Handler.api_character_items),
     ('POST', rx(r'/api/characters/(\d+)/items/([a-f0-9]{32})/action'), Handler.api_character_item_action),
+    ('GET', rx(r'/api/characters/(\d+)/effects'), Handler.api_character_effects),
+    ('POST', rx(r'/api/characters/(\d+)/effects'), Handler.api_character_effect_create),
+    ('POST', rx(r'/api/characters/(\d+)/effects/([a-f0-9]{32})/action'), Handler.api_character_effect_action),
     ('GET', rx(r'/api/characters/(\d+)/network'), Handler.api_character_network),
     ('POST', rx(r'/api/characters/(\d+)/improve'), Handler.api_character_improve),
     ('POST', rx(r'/api/characters/(\d+)/specialization'), Handler.api_character_specialization),

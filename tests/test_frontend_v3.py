@@ -49,6 +49,15 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('check_modifier', source)
         self.assertIn('effect-bonus', source)
 
+    def test_character_sheet_manages_temporary_custom_effects(self):
+        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        self.assertIn('function openCustomEffectModal', source)
+        self.assertIn('Active Effect Instances', source)
+        self.assertIn('data-effect-action', source)
+        self.assertIn('Advance 1 round', source)
+        self.assertIn('duration_type', source)
+        self.assertIn('/effects', source)
+
     def test_wizard_v3_runtime_contract(self):
         meta = {
             'stats': server.STATS,

@@ -389,6 +389,115 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
                              if item['name'] == 'Stim')
         self.assertEqual(restored_stim['qty'], 1)
 
+    def test_active_effect_instances_apply_expire_tick_and_audit(self):
+        character = copy.deepcopy(self.character_data)
+        character['skills']['Handgun'] = 3
+        self.conn.execute('UPDATE characters SET data=? WHERE id=1', (json.dumps(character),))
+        self.conn.commit()
+
+        created = self.call(server.Handler.api_character_effect_create, self.match(1), {
+            'revision': 0, 'label': 'Targeting calibration',
+            'target': 'skill.Handgun.check', 'operation': 'add', 'value': 2,
+            'stack_policy': 'unique', 'stack_group': 'targeting_calibration',
+            'duration_type': 'rounds', 'duration_value': 2,
+            'reason': 'Temporary Tech calibration for this fight',
+        })
+        effect = created['effect']
+        self.assertRegex(effect['effect_id'], r'^[a-f0-9]{32}$')
+        self.assertEqual(effect['status'], 'active')
+        self.assertEqual(effect['remaining_rounds'], 2)
+        self.assertEqual(created['character']['revision'], 1)
+        self.assertEqual(
+            created['character']['derived']['effects']['skills']['Handgun']['effective_check_base'],
+            13)
+
+        def effect_match(effect_id):
+            return re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{effect_id}')
+
+        ticked = self.call(
+            server.Handler.api_character_effect_action, effect_match(effect['effect_id']),
+            {'revision': 1, 'action': 'tick'})
+        self.assertEqual(ticked['effect']['remaining_rounds'], 1)
+        self.assertEqual(ticked['character']['revision'], 2)
+        self.assertEqual(
+            ticked['character']['derived']['effects']['skills']['Handgun']['effective_check_base'],
+            13)
+        completed = self.call(
+            server.Handler.api_character_effect_action, effect_match(effect['effect_id']),
+            {'revision': 2, 'action': 'tick'})
+        self.assertEqual(completed['effect']['status'], 'completed')
+        self.assertEqual(completed['character']['revision'], 3)
+        self.assertEqual(
+            completed['character']['derived']['effects']['skills']['Handgun']['effective_check_base'],
+            11)
+        with self.assertRaises(server.ApiError) as cannot_restart:
+            self.call(
+                server.Handler.api_character_effect_action, effect_match(effect['effect_id']),
+                {'revision': 3, 'action': 'enable'})
+        self.assertEqual(cannot_restart.exception.status, 409)
+
+        timed = self.call(server.Handler.api_character_effect_create, self.match(1), {
+            'revision': 3, 'label': 'REF suppressant',
+            'target': 'character.stat.REF', 'operation': 'add', 'value': -1,
+            'stack_policy': 'stack', 'duration_type': 'real_time',
+            'duration_value': 1, 'reason': 'Short acting narrative penalty',
+        })
+        timed_id = timed['effect']['effect_id']
+        self.assertEqual(timed['character']['derived']['effects']['stats']['REF']['effective'], 7)
+        self.conn.execute(
+            'UPDATE active_effect_instances SET expires_at=? WHERE effect_id=?',
+            (server.time.time() - 1, timed_id))
+        self.conn.commit()
+        expired_character = self.call(server.Handler.api_get_character, self.match(1))
+        expired = next(item for item in expired_character['derived']['effects']['instances']
+                       if item['effect_id'] == timed_id)
+        self.assertEqual(expired['status'], 'expired')
+        self.assertEqual(expired_character['derived']['effects']['stats']['REF']['effective'], 8)
+
+        listed = self.call(server.Handler.api_character_effects, self.match(1))
+        self.assertEqual(len(listed['effects']), 2)
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertEqual(ledger['entries'][0]['category'], 'effect')
+        self.assertFalse(ledger['entries'][0]['can_revert'])
+        self.assertTrue(any(change['path'].startswith('effects.instances.')
+                            for entry in ledger['entries'] for change in entry['changes']))
+
+        public_data = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])
+        public_data['visibility'] = {
+            **server.CHARACTER_VISIBILITY_DEFAULTS, 'combat': True,
+        }
+        self.conn.execute('UPDATE characters SET data=? WHERE id=1', (json.dumps(public_data),))
+        self.conn.commit()
+        self.current = self.user('other')
+        public = self.call(server.Handler.api_get_character, self.match(1))
+        self.assertTrue(public['derived']['effects']['instances'])
+        self.assertTrue(all('reason' not in item and 'actor' not in item
+                            for item in public['derived']['effects']['instances']))
+
+    def test_custom_effects_reject_unsafe_payloads_and_foreign_writes(self):
+        base = {
+            'revision': 0, 'label': 'Unsafe', 'target': 'skill.Handgun.check',
+            'operation': 'add', 'value': 1, 'stack_policy': 'stack',
+            'duration_type': 'manual', 'reason': 'security test',
+        }
+        with self.assertRaises(server.ApiError) as script:
+            self.call(server.Handler.api_character_effect_create, self.match(1), {
+                **base, 'javascript': 'alert(1)',
+            })
+        self.assertEqual(script.exception.status, 400)
+        with self.assertRaises(server.ApiError) as target:
+            self.call(server.Handler.api_character_effect_create, self.match(1), {
+                **base, 'target': '__proto__.polluted',
+            })
+        self.assertEqual(target.exception.status, 400)
+        self.current = self.user('other')
+        with self.assertRaises(server.ApiError) as foreign:
+            self.call(server.Handler.api_character_effect_create, self.match(1), base)
+        self.assertEqual(foreign.exception.status, 403)
+        self.assertFalse(self.conn.execute(
+            'SELECT 1 FROM active_effect_instances WHERE character_id=1').fetchone())
+
     def test_unknown_item_requires_database_or_explicit_custom_marker(self):
         edited = copy.deepcopy(self.character_data)
         edited['inventory'] = [{
