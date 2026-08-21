@@ -165,6 +165,10 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('data-armor-tech-upgrade', source)
         self.assertIn('/tech-upgrade', source)
         self.assertIn('MANUAL SHIELD TECH UPGRADE', source)
+        self.assertIn('data-armor-repair', source)
+        self.assertIn('Start Armor Repair', source)
+        self.assertIn('Daily Self-Repair +1', source)
+        self.assertIn('DESTROYED AT 0 HP', source)
 
     def test_live_session_has_validated_net_context_and_queue_controls(self):
         ncnet = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')

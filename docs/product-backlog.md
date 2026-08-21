@@ -3161,7 +3161,20 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - повторный Tech Upgrade того же host блокируется; upgrade permanent и не может быть тихо удалён generic editor или продан отдельно;
 - armor/shield host projection server-side скрывается, если public Dossier запрещает equipment visibility;
 - Tech identity, mode, permanence, source, manual flag и before/after snapshot записываются в Ledger и поддерживают safe revert;
-- Armor repair workflow, paid services, Shield-specific curated Tech modes и generic Tech Maker invention/upgrade hosts остаются следующими этапами.
+- paid repair services, Shield-specific curated Tech modes и generic Tech Maker invention/upgrade hosts остаются следующими этапами.
+
+**Статус B.10.2 — реализованы Armor Repair и Shield Lifecycle:**
+
+- concrete Armor host получает tracked Repair Workflow `Start / Resolve / Cancel` с technician, method, duration label, target locations и before/after SP snapshots;
+- generic manual Tech repair не выдумывает DV/длительность: завершение требует explicit table confirmation и восстанавливает concrete equipped Armor до effective Maximum SP;
+- bundled Bodyweight Suit/Bunker Gear/Netsuit repair target хранит все equipped locations и восстанавливает их одной lifecycle operation;
+- owned Jeeves Executive Garment Bag поддержан как validated repair method с source-duration по Price Category: 1 hour / 6 hours / 1 day / 1 week / 2 weeks;
+- Jeeves не ремонтирует Luxury/Super Luxury items и требует concrete available bag instance;
+- Executive Armor получает source-specific daily self-repair `+1 SP` только после подтверждения полного дня без потери SP;
+- Scavenged Armor server-side помечена unrepairable и не может восстановить потерянный SP;
+- Bulletproof Shields используют concrete 10/15 HP, явно маркированы `DESTROYED AT 0 HP · NOT REPAIRABLE` и не допускаются в Armor Repair Workflow;
+- active workflow и bounded history хранятся в server-owned `armor_repair_state`; resolve/cancel/self-repair revision-protected, Ledger-audited и поддерживают snapshot revert;
+- paid external repair services, Campaign Clock auto-completion, Popup Shield replacement и source-specific Shield Tech modes остаются следующими расширениями.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -3184,8 +3197,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, concrete Cyberware/Popup weapon binding, Therapy и concrete Armor/Shield hosts с permanent Armor SP +1 Tech Upgrade;
-    - дальше: Shield-specific modes, Armor repair/services, special cyberweapon ammo и generic Tech Maker modifications.
+    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, concrete Cyberware/Popup weapon binding, Therapy, concrete Armor/Shield hosts, permanent Armor SP +1 Tech Upgrade и Armor Repair Workflow;
+    - дальше: Shield-specific modes/replacement, paid services, special cyberweapon ammo и generic Tech Maker modifications.
 14. JSON import.
 
 ### Пакет C — Publishing Preview

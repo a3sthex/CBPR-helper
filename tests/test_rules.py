@@ -1428,6 +1428,19 @@ class CreationValidationTests(unittest.TestCase):
         self.assertEqual((armor_host['base_sp'], armor_host['effective_sp']), (11, 12))
         self.assertEqual(shield_host['base_sdp'], 15)
         self.assertTrue(shield_host['manual_resolution_required'])
+        executive = copy.deepcopy(server.item_by_id('armor-19'))
+        executive.update({'key': 'armor-19', 'catalog_item_id': 'armor-19',
+                          'instance_id': 'a' * 32, 'state': 'equipped'})
+        scavenged = copy.deepcopy(server.item_by_id('armor-26'))
+        scavenged.update({'key': 'armor-26', 'catalog_item_id': 'armor-26',
+                          'instance_id': 'b' * 32, 'state': 'carried'})
+        extra = server.effective_armor_hosts({
+            'inventory': [executive, scavenged],
+            'armor': {'body': {'instance_id': executive['instance_id'],
+                               'current': 8, 'maximum': 11}},
+        })['hosts']
+        self.assertEqual(extra[0]['self_repair'], 'executive_armor_daily')
+        self.assertTrue(extra[1]['unrepairable'])
         derived = server.derive(data)
         self.assertEqual(derived['sp_body'], 12)
 

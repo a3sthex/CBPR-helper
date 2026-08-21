@@ -5521,6 +5521,7 @@ def clean_character(data):
     out.pop('cyberware_state', None)
     out.pop('therapy_state', None)
     out.pop('armor_tech_state', None)
+    out.pop('armor_repair_state', None)
     out['handle'] = str(out.get('handle') or '').strip()[:60]
     if not out['handle']:
         raise ApiError(400, 'Нужен псевдоним (Handle) персонажа')
@@ -6043,6 +6044,8 @@ def effective_armor_hosts(data):
     equipped = data.get('armor') if isinstance(data.get('armor'), dict) else {}
     tech_states = data.get('armor_tech_state') \
         if isinstance(data.get('armor_tech_state'), dict) else {}
+    repair_states = data.get('armor_repair_state') \
+        if isinstance(data.get('armor_repair_state'), dict) else {}
     hosts = []
     for item in inventory:
         catalog_item = item_by_id(catalog_item_id_for_entry(item)) or item
@@ -6064,6 +6067,14 @@ def effective_armor_hosts(data):
         current_by_location = {
             location: _num(equipped[location].get('current'))
             for location in equipped_locations}
+        maximum = effective_sdp if shield else effective_sp
+        damaged = any(current is not None and maximum is not None and current < maximum
+                      for current in current_by_location.values())
+        description = str(catalog_item.get('desc') or '')
+        unrepairable = catalog_item_id_for_entry(item) == 'armor-26' or \
+            'cannot be restored' in description.lower()
+        repair_state = repair_states.get(item['instance_id'])
+        repair_state = copy.deepcopy(repair_state) if isinstance(repair_state, dict) else None
         hosts.append({
             'instance_id': item['instance_id'],
             'catalog_item_id': catalog_item_id_for_entry(item),
@@ -6074,6 +6085,11 @@ def effective_armor_hosts(data):
             'base_sp': base_sp, 'effective_sp': effective_sp,
             'base_sdp': base_sdp, 'effective_sdp': effective_sdp,
             'current_by_location': current_by_location,
+            'bundled': bool(catalog_item.get('armor_bundled')),
+            'damaged': damaged, 'repairable': not shield and not unrepairable,
+            'unrepairable': unrepairable, 'repair_state': repair_state,
+            'self_repair': ('executive_armor_daily' if catalog_item_id_for_entry(item) ==
+                            'armor-19' else None),
             'tech_upgrade': copy.deepcopy(state) if upgraded else None,
             'tech_upgrade_available': not upgraded and
                 (base_sp is not None or shield),
@@ -6090,6 +6106,15 @@ def validate_armor_tech_references(data):
     if any(instance_id not in armor_ids or not isinstance(state, dict)
            for instance_id, state in states.items()):
         raise ApiError(409, 'Повреждена связь Armor/Shield Tech Upgrade')
+
+
+def validate_armor_repair_references(data):
+    states = data.get('armor_repair_state') if isinstance(data.get('armor_repair_state'), dict) else {}
+    armor_ids = {item.get('instance_id') for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('cat') == 'armor'}
+    if any(instance_id not in armor_ids or not isinstance(state, dict)
+           for instance_id, state in states.items()):
+        raise ApiError(409, 'Повреждена связь Armor Repair Workflow')
 
 
 CYBERWARE_HOST_ACCEPTED_NAMES = {
@@ -7483,6 +7508,21 @@ SERVER_ERROR_EN = {
     'Armor/Shield уже имеет Tech Upgrade': 'Armor/Shield already has a Tech Upgrade',
     'Armor instance не имеет upgradeable SP': 'Armor instance has no upgradeable SP',
     'Permanent Armor Tech Upgrade нельзя продать отдельно': 'Permanent Armor Tech Upgrade cannot be sold separately',
+    'Повреждена связь Armor Repair Workflow': 'Armor Repair Workflow binding is corrupted',
+    'Armor Repair action содержит неподдерживаемые поля': 'Armor Repair action contains unsupported fields',
+    'Укажите причину Armor Repair action': 'Provide a reason for the Armor Repair action',
+    'Concrete Armor instance не найден': 'Concrete Armor instance not found',
+    'Bulletproof Shields не подлежат ремонту': 'Bulletproof Shields cannot be repaired',
+    'Эта Armor не может восстанавливать SP': 'This Armor cannot restore SP',
+    'Armor Repair уже активен': 'Armor Repair is already active',
+    'Armor должна быть экипирована и повреждена': 'Armor must be equipped and damaged',
+    'Укажите Armor repair technician': 'Specify the Armor repair technician',
+    'Jeeves Executive Garment Bag недоступен': 'Jeeves Executive Garment Bag is unavailable',
+    'Jeeves не ремонтирует Luxury/Super Luxury Armor': 'Jeeves cannot repair Luxury or Super Luxury Armor',
+    'Нет активного Armor Repair': 'There is no active Armor Repair',
+    'Подтвердите завершение Armor Repair': 'Confirm completion of Armor Repair',
+    'Armor не имеет daily self-repair': 'Armor has no daily self-repair',
+    'Подтвердите день без потери SP': 'Confirm a day without losing SP',
     'Run доступен только Attacker Program': 'Run is available only for an Attacker Program',
     'Saved Program instance недоступен для восстановления': 'Saved Program instance is unavailable for restore',
     'Недостаточно Cyberdeck slots для Backup restore': 'Not enough Cyberdeck slots for Backup restore',
@@ -9726,6 +9766,7 @@ class Handler(BaseHTTPRequestHandler):
         validate_cyberware_trust_lifecycle(before, after)
         validate_bound_popup_weapon_references(after)
         validate_armor_tech_references(after)
+        validate_armor_repair_references(after)
         validate_active_modification_references(conn, row['id'], after)
         sync_weapon_states_with_modifications(conn, row['id'], after)
         sync_vehicle_states_with_modifications(conn, row['id'], after)
@@ -9979,6 +10020,7 @@ class Handler(BaseHTTPRequestHandler):
         ensure_character_item_instances(target)
         ensure_progression(target)
         validate_armor_tech_references(target)
+        validate_armor_repair_references(target)
         validate_bound_popup_weapon_references(target)
         validate_active_modification_references(conn, row['id'], target)
         sync_weapon_states_with_modifications(conn, row['id'], target)
@@ -11840,6 +11882,148 @@ class Handler(BaseHTTPRequestHandler):
                                   (ledger_id,)).fetchone()
         delta = parse_json_object(ledger_row['delta_json'])
         delta['therapy_lifecycle'] = copy.deepcopy(result)
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'result': result,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
+    def api_character_armor_repair_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {
+            'revision', 'action', 'method', 'technician', 'jeeves_instance_id',
+            'manual_resolution_confirmed', 'no_sp_loss_confirmed', 'reason',
+        }
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Armor Repair action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Armor Repair action')
+        instance_id = str(m.group(2)).lower()
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        host = next((item for item in effective_armor_hosts(data)['hosts']
+                     if item['instance_id'] == instance_id), None)
+        if not host:
+            raise ApiError(404, 'Concrete Armor instance не найден')
+        if host['host_kind'] == 'shield':
+            raise ApiError(409, 'Bulletproof Shields не подлежат ремонту')
+        if host['unrepairable']:
+            raise ApiError(409, 'Эта Armor не может восстанавливать SP')
+        states = data.setdefault('armor_repair_state', {})
+        workflow = states.setdefault(instance_id, {'active': None, 'history': []})
+        if not isinstance(workflow.get('history'), list):
+            workflow['history'] = []
+        active = workflow.get('active') if isinstance(workflow.get('active'), dict) else None
+        action = str((body or {}).get('action') or '').lower()
+        now = time.time()
+        result = {'action': action}
+        if action == 'start':
+            if active:
+                raise ApiError(409, 'Armor Repair уже активен')
+            if not host['damaged'] or not host['equipped_locations']:
+                raise ApiError(409, 'Armor должна быть экипирована и повреждена')
+            method = str((body or {}).get('method') or '').lower()
+            if method not in ('manual_tech', 'jeeves'):
+                raise ApiError(400, 'Armor Repair method: manual_tech/jeeves')
+            technician = str((body or {}).get('technician') or '').strip()[:120]
+            if len(technician) < 2:
+                raise ApiError(400, 'Укажите Armor repair technician')
+            duration_label = 'MANUAL TECH TIME'
+            jeeves_id = None
+            if method == 'jeeves':
+                jeeves_id = str((body or {}).get('jeeves_instance_id') or '').lower()
+                jeeves = next((item for item in data.get('inventory') or []
+                               if isinstance(item, dict) and item.get('instance_id') == jeeves_id and
+                               catalog_item_id_for_entry(item) == 'gear-39' and
+                               item.get('state') in ('carried', 'stored')), None)
+                if not jeeves:
+                    raise ApiError(409, 'Jeeves Executive Garment Bag недоступен')
+                price = float((item_by_id(host['catalog_item_id']) or {}).get('price') or 0)
+                if price > 1000:
+                    raise ApiError(409, 'Jeeves не ремонтирует Luxury/Super Luxury Armor')
+                duration_label = ('1 Hour' if price <= 20 else '6 Hours' if price <= 50 else
+                                  '1 Day' if price <= 100 else '1 Week' if price <= 500 else
+                                  '2 Weeks')
+            active = {
+                'repair_id': secrets.token_hex(16), 'method': method,
+                'technician': technician, 'jeeves_instance_id': jeeves_id,
+                'duration_label': duration_label,
+                'target_locations': host['equipped_locations'],
+                'before': copy.deepcopy(host['current_by_location']),
+                'target_maximum': host['effective_sp'], 'started_at': now,
+                'status': 'active', 'source': 'CP:R 140 / BC 43',
+                'manual_resolution_required': True,
+            }
+            workflow['active'] = active
+            result['repair'] = copy.deepcopy(active)
+            reason = f'Start Armor Repair {host["name"]}: {reason_detail}'
+        elif action in ('resolve', 'cancel'):
+            if not active:
+                raise ApiError(409, 'Нет активного Armor Repair')
+            completed = action == 'resolve'
+            if completed and (body or {}).get('manual_resolution_confirmed') is not True:
+                raise ApiError(400, 'Подтвердите завершение Armor Repair')
+            history = copy.deepcopy(active)
+            history['status'] = 'completed' if completed else 'canceled'
+            history['resolved_at'] = now
+            history['reason'] = reason_detail
+            if completed:
+                after_values = {}
+                for location in active.get('target_locations') or []:
+                    piece = (data.get('armor') or {}).get(location)
+                    if isinstance(piece, dict) and piece.get('instance_id') == instance_id:
+                        maximum = int(_num(piece.get('maximum')) or
+                                      _num(active.get('target_maximum')) or 0)
+                        piece['current'] = maximum
+                        after_values[location] = maximum
+                history['after'] = after_values
+                result['restored'] = after_values
+            workflow['history'].append(history)
+            workflow['history'] = workflow['history'][-30:]
+            workflow['active'] = None
+            result['repair'] = history
+            reason = f'{"Resolve" if completed else "Cancel"} Armor Repair {host["name"]}: {reason_detail}'
+        elif action == 'self_repair_tick':
+            if host.get('self_repair') != 'executive_armor_daily':
+                raise ApiError(409, 'Armor не имеет daily self-repair')
+            if (body or {}).get('no_sp_loss_confirmed') is not True:
+                raise ApiError(400, 'Подтвердите день без потери SP')
+            restored = {}
+            for location in host['equipped_locations']:
+                piece = (data.get('armor') or {}).get(location)
+                if isinstance(piece, dict):
+                    maximum = int(_num(piece.get('maximum')) or host['effective_sp'] or 0)
+                    current = int(_num(piece.get('current')) or 0)
+                    piece['current'] = min(maximum, current + 1)
+                    restored[location] = piece['current']
+            result['restored'] = restored
+            workflow['history'].append({
+                'action': action, 'status': 'completed', 'resolved_at': now,
+                'after': restored, 'reason': reason_detail, 'source': 'BC 34'})
+            workflow['history'] = workflow['history'][-30:]
+            reason = f'Executive Armor daily self-repair {host["name"]}: {reason_detail}'
+        else:
+            raise ApiError(400, 'Armor Repair action: start/resolve/cancel/self_repair_tick')
+        validate_armor_repair_references(data)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='item_action')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['armor_repair_lifecycle'] = copy.deepcopy(result)
         conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
                      (json.dumps(delta, ensure_ascii=False), ledger_id))
         conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
@@ -15216,6 +15400,7 @@ ROUTES = [
     ('POST', rx(r'/api/characters/(\d+)/items/([a-f0-9]{32})/action'), Handler.api_character_item_action),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/action'), Handler.api_character_cyberware_action),
     ('POST', rx(r'/api/characters/(\d+)/therapy/action'), Handler.api_character_therapy_action),
+    ('POST', rx(r'/api/characters/(\d+)/armor/([a-f0-9]{32})/repair'), Handler.api_character_armor_repair_action),
     ('POST', rx(r'/api/characters/(\d+)/armor/([a-f0-9]{32})/tech-upgrade'), Handler.api_character_armor_tech_upgrade),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/popup-weapon/bind'), Handler.api_character_popup_weapon_bind),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/weapon/action'), Handler.api_character_cyberware_weapon_action),

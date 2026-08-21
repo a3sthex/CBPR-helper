@@ -1126,6 +1126,65 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertTrue(ledger['entries'][0]['delta']['cyberware_lifecycle'][
             'quick_change_no_humanity_loss'])
 
+    def test_armor_repair_workflow_restores_full_sp_and_blocks_shields(self):
+        data = copy.deepcopy(self.character_data)
+        armor = copy.deepcopy(server.item_by_id('armor-3'))
+        armor.update({'key': 'armor-3', 'catalog_item_id': 'armor-3',
+                      'instance_id': 'e' * 32, 'state': 'equipped', 'qty': 1})
+        shield = copy.deepcopy(server.item_by_id('armor-24'))
+        shield.update({'key': 'armor-24', 'catalog_item_id': 'armor-24',
+                       'instance_id': 'f' * 32, 'state': 'equipped', 'qty': 1})
+        data['inventory'] = [armor, shield]
+        data['armor'] = {
+            'body': {'instance_id': armor['instance_id'], 'name': armor['name'],
+                     'sp': 11, 'maximum': 11, 'current': 6},
+            'shield': {'instance_id': shield['instance_id'], 'name': shield['name'],
+                       'sp': 0, 'sdp': 15, 'maximum': 15, 'current': 4},
+        }
+        self.conn.execute('UPDATE characters SET data=? WHERE id=1',
+                          (json.dumps(data),))
+        self.conn.commit()
+        armor_match = re.match(r'^(\d+)/([a-f0-9]{32})$',
+                               f'1/{armor["instance_id"]}')
+        started = self.call(server.Handler.api_character_armor_repair_action,
+                            armor_match, {
+            'revision': 0, 'action': 'start', 'method': 'manual_tech',
+            'technician': 'Armor Tech', 'reason': 'Begin Basic Tech armor repair',
+        })
+        active = started['character']['data']['armor_repair_state'][
+            armor['instance_id']]['active']
+        self.assertEqual(active['before'], {'body': 6})
+        with self.assertRaisesRegex(server.ApiError, 'Подтвердите завершение'):
+            self.call(server.Handler.api_character_armor_repair_action,
+                      armor_match, {
+                'revision': 1, 'action': 'resolve',
+                'reason': 'Try resolving without manual confirmation',
+            })
+        resolved = self.call(server.Handler.api_character_armor_repair_action,
+                             armor_match, {
+            'revision': 1, 'action': 'resolve',
+            'manual_resolution_confirmed': True,
+            'reason': 'Repair time and table check completed',
+        })
+        self.assertEqual(resolved['character']['data']['armor']['body']['current'], 11)
+        shield_match = re.match(r'^(\d+)/([a-f0-9]{32})$',
+                                f'1/{shield["instance_id"]}')
+        with self.assertRaisesRegex(server.ApiError, 'не подлежат ремонту'):
+            self.call(server.Handler.api_character_armor_repair_action,
+                      shield_match, {
+                'revision': 2, 'action': 'start', 'method': 'manual_tech',
+                'technician': 'Armor Tech', 'reason': 'Try repairing shield',
+            })
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        reverted = self.call(
+            server.Handler.api_character_ledger_revert,
+            re.match(r'^(\d+)/(\d+)$', f'1/{ledger["entries"][0]["id"]}'), {
+                'revision': 2, 'reason': 'Revert completed Armor Repair',
+            })
+        self.assertEqual(reverted['data']['armor']['body']['current'], 6)
+        self.assertTrue(reverted['data']['armor_repair_state'][
+            armor['instance_id']]['active'])
+
     def test_permanent_armor_tech_upgrade_applies_sp_and_reverts(self):
         data = copy.deepcopy(self.character_data)
         armor = copy.deepcopy(server.item_by_id('armor-3'))
