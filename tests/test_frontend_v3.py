@@ -151,6 +151,10 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('Revealed NET Architecture', ncnet)
         self.assertIn('data-net-node-toggle', ncnet)
         self.assertIn('data-net-path-toggle', ncnet)
+        self.assertIn('Netrunner Positions & Actions', ncnet)
+        self.assertIn('ss-net-action', ncnet)
+        self.assertIn('/net/actions', ncnet)
+        self.assertIn('NET Action Result', ncnet)
 
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')

@@ -3025,7 +3025,20 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Session Dashboard получил Architecture Graph builder, node reveal/resolve controls, path creation/reveal и topology cards рядом с LIVE NET queue;
 - Player View получает только revealed nodes и paths, причём path показывается лишь когда reveal-разрешены оба endpoint nodes; `gm_note`, internal Floor links и hidden topology server-side не отправляются;
 - вся topology validation выполняется по строгим типам и bounded полям; JavaScript/Python/произвольные effect payloads в nodes не поддерживаются;
-- Pathfinder/Eye-Dee/Backdoor/Control Actions, движение по paths, Password blocking и автоматические attack/effect rolls остаются B.8.6 NET Action Resolution.
+- Pathfinder/Eye-Dee/Backdoor/Control Actions, движение по paths, Password blocking и attack checks были вынесены в B.8.6.
+
+**Статус B.8.6 — реализован NET Action Resolution:**
+
+- Session NET state хранит authoritative Netrunner positions: combatant/Character link, Jacked In status, current/previous node, Interface Rank и recorded action count;
+- Interface Rank всегда берётся с конкретного Character Netrunner Role; Player может действовать только своим combatant, а Session GM/Assistant — через scoped `edit_combatants`;
+- `Jack In` разрешён только через Access Point, `Move` — только по revealed path с учётом one-way direction; unresolved Password блокирует движение вперёд, но сохраняет возможность отступить;
+- Pathfinder делает server roll `Interface + 1d10` против bounded node DV и при success reveal-ит target node и connecting path;
+- Backdoor проверяет текущий Password, Eye-Dee reveal-ит текущий node, Control делает Interface check и записывает controlling combatant;
+- Program Attack требует installed Attacker Program и Black ICE entity на текущем node; сервер бросает `Interface + Program ATK + 1d10` против `ICE DEF + 1d10`;
+- Attack result содержит totals/success и trusted source effect text как `MANUAL EFFECT`; неоднозначный damage/target consequence не применяется автоматически;
+- Program Attack увеличивает runtime run count, revision-защищён, получает Character Ledger entry с `session_id`, а topology actions записываются в Session Activity/NET Action Log;
+- GM Dashboard получил Netrunner position cards и action launcher; Player View показывает Jacked In position и только безопасный action summary;
+- Black ICE autonomous attacks, Program effect application, Cloak/Scanner/Virus и action-budget enforcement остаются следующими NET combat подэтапами.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -3048,8 +3061,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: Cyberdeck/Program runtime, Backup Drive, Black ICE entities, Live NET Queue и Architecture node/path graph;
-    - дальше: NET Action/attack resolution, затем Cyberware/Armor/Tech hosts.
+    - готово: Cyberdeck/Program runtime, Black ICE, Live NET graph/queue и Netrunner topology actions/Program Attack checks;
+    - дальше: Black ICE attacks/effect application, затем Cyberware/Armor/Tech hosts.
 14. JSON import.
 
 ### Пакет C — Publishing Preview

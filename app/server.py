@@ -4083,6 +4083,9 @@ def session_net_state(value):
             'defense': max(0, min(29, int(_num(item.get('defense')) or 0))),
             'visible': item.get('visible') is True,
             'resolved': item.get('resolved') is True,
+            'controlled_by_combatant_id': int(item['controlled_by_combatant_id'])
+                if isinstance(item.get('controlled_by_combatant_id'), int) and
+                item['controlled_by_combatant_id'] > 0 else None,
             'gm_note': str(item.get('gm_note') or '')[:2000],
             'sort_order': len(nodes),
         })
@@ -4142,11 +4145,79 @@ def session_net_state(value):
             'visible': item.get('visible') is not False,
             'linked_at': _num(item.get('linked_at')) or 0,
         })
+    runners = []
+    seen_combatants = set()
+    for item in raw.get('runners') or []:
+        if not isinstance(item, dict):
+            continue
+        combatant_id = _num(item.get('combatant_id'))
+        character_id = _num(item.get('character_id'))
+        node_id = str(item.get('node_id') or '').lower()
+        previous_node_id = str(item.get('previous_node_id') or '').lower()
+        if (not isinstance(combatant_id, int) or combatant_id < 1 or
+                combatant_id in seen_combatants or
+                not isinstance(character_id, int) or character_id < 1 or
+                (node_id and node_id not in seen_nodes) or
+                (previous_node_id and previous_node_id not in seen_nodes) or
+                len(runners) >= 100):
+            continue
+        seen_combatants.add(combatant_id)
+        runners.append({
+            'combatant_id': combatant_id, 'character_id': character_id,
+            'node_id': node_id or None,
+            'previous_node_id': previous_node_id or None,
+            'jacked_in': item.get('jacked_in') is True,
+            'interface_rank': max(0, min(10, int(_num(item.get('interface_rank')) or 0))),
+            'actions_recorded': max(0, int(_num(item.get('actions_recorded')) or 0)),
+            'last_action_at': _num(item.get('last_action_at')),
+        })
+    action_log = []
+    for item in raw.get('action_log') or []:
+        if not isinstance(item, dict):
+            continue
+        action_id = str(item.get('action_id') or '').lower()
+        if not INSTANCE_ID_RE.fullmatch(action_id):
+            continue
+        action_log.append({
+            'action_id': action_id,
+            'combatant_id': int(item['combatant_id'])
+                if isinstance(item.get('combatant_id'), int) else None,
+            'action': str(item.get('action') or '')[:40],
+            'target_node_id': str(item.get('target_node_id') or '') or None,
+            'target_entity_id': str(item.get('target_entity_id') or '') or None,
+            'success': item.get('success') if isinstance(item.get('success'), bool) else None,
+            'actor_total': _num(item.get('actor_total')),
+            'defense_total': _num(item.get('defense_total')),
+            'created': _num(item.get('created')) or 0,
+            'summary': str(item.get('summary') or '')[:500],
+        })
+        if len(action_log) >= 100:
+            break
     return {
         'round': max(0, int(_num(raw.get('round')) or 0)),
         'active_turn': max(0, int(_num(raw.get('active_turn')) or 0)),
         'floors': floors, 'nodes': nodes, 'paths': paths, 'links': links,
+        'runners': runners, 'action_log': action_log,
     }
+
+
+def character_interface_rank(data):
+    return max([int(_num(role.get('rank')) or 0)
+                for role in data.get('roles') or []
+                if isinstance(role, dict) and role.get('name') == 'Netrunner'] or [0])
+
+
+def session_net_path_between(state, from_node_id, to_node_id, *, require_visible=True):
+    for path in state.get('paths') or []:
+        if require_visible and not path.get('visible'):
+            continue
+        if path['from_node_id'] == from_node_id and path['to_node_id'] == to_node_id:
+            return path
+        if (path['direction'] == 'bidirectional' and
+                path['from_node_id'] == to_node_id and
+                path['to_node_id'] == from_node_id):
+            return path
+    return None
 
 
 def clean_npc_template_input(body, existing=None):
@@ -6371,6 +6442,28 @@ SERVER_ERROR_EN = {
     'NET path не найден': 'NET path not found',
     'Выберите validated Session NET node': 'Choose a validated Session NET node',
     'Выберите validated Session Floor, node и target': 'Choose a validated Session Floor, node, and target',
+    'Live NET Session не найдена': 'Live NET Session not found',
+    'NET action содержит неподдерживаемые поля': 'NET action contains unsupported fields',
+    'NET action требует Character combatant': 'NET action requires a Character combatant',
+    'Character для NET action не найден': 'Character for NET action not found',
+    'Нет права выполнять NET action этим Character': 'No permission to perform a NET action with this Character',
+    'NET action требует Netrunner Role': 'NET action requires the Netrunner Role',
+    'Укажите причину NET action': 'Provide a reason for the NET action',
+    'Jack In требует Access Point node': 'Jack In requires an Access Point node',
+    'Access Point node ещё не revealed': 'Access Point node is not revealed yet',
+    'Netrunner не Jacked In': 'Netrunner is not Jacked In',
+    'NET action требует Jacked In Netrunner': 'NET action requires a Jacked In Netrunner',
+    'Move требует revealed target node': 'Move requires a revealed target node',
+    'NET nodes не соединены revealed path': 'NET nodes are not connected by a revealed path',
+    'Unresolved Password блокирует движение вперёд': 'Unresolved Password blocks forward movement',
+    'Pathfinder target node не найден': 'Pathfinder target node not found',
+    'Pathfinder target должен быть adjacent node': 'Pathfinder target must be an adjacent node',
+    'Backdoor требует текущий Password node': 'Backdoor requires the current Password node',
+    'Eye-Dee доступен только для текущего node': 'Eye-Dee is available only for the current node',
+    'Control action требует текущий Control node': 'Control action requires the current Control node',
+    'Program Attack требует Black ICE на текущем node': 'Program Attack requires Black ICE on the current node',
+    'Program Attack target entity недоступна': 'Program Attack target entity is unavailable',
+    'Program Attack требует installed Attacker Program': 'Program Attack requires an installed Attacker Program',
     'Неподдерживаемый тип modification host': 'Unsupported modification host type',
     'Сначала снимите зависимые vehicle upgrades': 'Remove dependent vehicle upgrades first',
     'Vehicle instance не найден': 'Vehicle instance not found',
@@ -10795,7 +10888,7 @@ class Handler(BaseHTTPRequestHandler):
             'SELECT * FROM session_combatants WHERE session_id=? '
             'ORDER BY initiative DESC,sort_order,id', (session_id,)).fetchall()
 
-    def session_net_payload(self, conn, row, player_view=False):
+    def session_net_payload(self, conn, row, user=None, player_view=False):
         state = session_net_state(_row_value(row, 'net_state_json', '{}'))
         floor_by_id = {item['floor_id']: item for item in state['floors']}
         node_by_id = {item['node_id']: item for item in state['nodes']}
@@ -10858,14 +10951,62 @@ class Handler(BaseHTTPRequestHandler):
         entities.sort(key=lambda item: (
             0 if item['in_queue'] else 1,
             -(_num(item.get('initiative')) or 0), item['net_entity_id']))
+        runners = []
+        runner_by_combatant = {item['combatant_id']: item
+                              for item in state.get('runners') or []}
+        for combatant in combatants.values():
+            if not combatant['character_id'] or (player_view and not combatant['visible']):
+                continue
+            character = conn.execute(
+                'SELECT id,owner_id,revision,data FROM characters WHERE id=?',
+                (combatant['character_id'],)).fetchone()
+            if not character:
+                continue
+            character_data = enrich_owned_item_interactions(
+                ensure_progression(json.loads(character['data'])))
+            interface_rank = character_interface_rank(character_data)
+            if interface_rank <= 0:
+                continue
+            runner = runner_by_combatant.get(combatant['id']) or {
+                'combatant_id': combatant['id'], 'character_id': character['id'],
+                'node_id': None, 'jacked_in': False, 'actions_recorded': 0,
+            }
+            node = node_by_id.get(runner.get('node_id'))
+            runner_payload = {
+                'combatant_id': combatant['id'],
+                'character_id': character['id'],
+                'name': combatant['name'], 'jacked_in': runner.get('jacked_in', False),
+                'node_id': runner.get('node_id'),
+                'node_label': node['label'] if node else None,
+                'interface_rank': interface_rank,
+                'actions_recorded': runner.get('actions_recorded', 0),
+            }
+            can_act = bool(user and character['owner_id'] == user['id'])
+            if not player_view or can_act:
+                modifications = character_modifications(conn, character['id'])
+                decks = character_effective_cyberdecks(character_data, modifications)
+                runner_payload['character_revision'] = character['revision']
+                runner_payload['attacker_programs'] = [
+                    {'instance_id': program['instance_id'], 'name': program['name'],
+                     'atk': (program.get('mechanics') or {}).get('atk') or 0}
+                    for deck in decks.values() for program in deck.get('programs') or []
+                    if (program.get('runtime') or {}).get('category') == 'attacker']
+            if player_view:
+                runner_payload['can_act'] = can_act
+                runner_payload.pop('character_id', None)
+                runner_payload.pop('node_id', None)
+            runners.append(runner_payload)
         if player_view:
             visible_nodes = [item for item in state['nodes'] if item['visible']]
             visible_node_ids = {item['node_id'] for item in visible_nodes}
             nodes = [{
                 key: value for key, value in item.items()
-                if key not in ('gm_note', 'visible', 'sort_order', 'floor_id')
-            } | {'floor_label': (floor_by_id.get(item['floor_id']) or {}).get('label')}
-                     for item in visible_nodes]
+                if key not in ('gm_note', 'visible', 'sort_order', 'floor_id',
+                               'controlled_by_combatant_id')
+            } | {
+                'floor_label': (floor_by_id.get(item['floor_id']) or {}).get('label'),
+                'controlled': item.get('controlled_by_combatant_id') is not None,
+            } for item in visible_nodes]
             paths = [copy.deepcopy(item) for item in state['paths']
                      if item['visible'] and item['from_node_id'] in visible_node_ids and
                      item['to_node_id'] in visible_node_ids]
@@ -10879,10 +11020,16 @@ class Handler(BaseHTTPRequestHandler):
             floors = state['floors']
             nodes = state['nodes']
             paths = state['paths']
+        actions = state.get('action_log', [])[-20:]
+        if player_view:
+            actions = [{key: item.get(key) for key in (
+                'action', 'success', 'actor_total', 'defense_total',
+                'created', 'summary')} for item in actions]
         return {
             'round': state['round'], 'active_turn': active_turn,
             'floors': floors, 'nodes': nodes, 'paths': paths,
-            'entities': entities,
+            'entities': entities, 'runners': runners,
+            'action_log': actions,
         }
 
     def session_activity_payload(self, row):
@@ -10934,6 +11081,12 @@ class Handler(BaseHTTPRequestHandler):
                 'field': 'combatant', 'before': None if event_type == 'combatant_create'
                 else snapshot.get('name'),
                 'after': snapshot.get('name') if event_type == 'combatant_create' else None,
+            })
+        elif event_type == 'net_action':
+            changes.append({
+                'field': after.get('action') or 'net_action',
+                'before': None,
+                'after': after.get('summary') or 'resolved',
             })
         elif event_type.startswith('net_'):
             def net_summary(value):
@@ -11042,7 +11195,7 @@ class Handler(BaseHTTPRequestHandler):
             'active_turn': visible_active_turn if player_view else active_turn,
             'player_view_config': config, 'safety_config': safety,
             'combatants': out_combatants,
-            'net': self.session_net_payload(conn, row, player_view=player_view),
+            'net': self.session_net_payload(conn, row, user=user, player_view=player_view),
             'created': row['created'], 'updated': row['updated'], 'can_edit': can_edit,
             'access_role': access_role,
             'capabilities': {key: key in capabilities for key in (
@@ -11672,6 +11825,259 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({'ok': True})
 
     @atomic_endpoint
+    def api_session_net_action(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or session['status'] not in ('preparing', 'active', 'paused'):
+            raise ApiError(404, 'Live NET Session не найдена')
+        allowed = {'action', 'actor_combatant_id', 'target_node_id',
+                   'program_instance_id', 'target_entity_id',
+                   'character_revision', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'NET action содержит неподдерживаемые поля')
+        actor_id = _num((body or {}).get('actor_combatant_id'))
+        actor = conn.execute(
+            'SELECT * FROM session_combatants WHERE session_id=? AND id=?',
+            (session['id'], int(actor_id))).fetchone() \
+            if actor_id is not None and int(actor_id) == actor_id else None
+        if not actor or not actor['character_id']:
+            raise ApiError(400, 'NET action требует Character combatant')
+        character = conn.execute('SELECT * FROM characters WHERE id=?',
+                                 (actor['character_id'],)).fetchone()
+        if not character:
+            raise ApiError(404, 'Character для NET action не найден')
+        capabilities = self.session_capabilities(conn, user, session)[1]
+        if character['owner_id'] != user['id'] and 'edit_combatants' not in capabilities:
+            raise ApiError(403, 'Нет права выполнять NET action этим Character')
+        character_data = enrich_owned_item_interactions(
+            ensure_progression(json.loads(character['data'])))
+        interface_rank = character_interface_rank(character_data)
+        if interface_rank <= 0:
+            raise ApiError(409, 'NET action требует Netrunner Role')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину NET action')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        before_state = copy.deepcopy(state)
+        node_by_id = {item['node_id']: item for item in state['nodes']}
+        runner = next((item for item in state['runners']
+                       if item['combatant_id'] == actor['id']), None)
+        if not runner:
+            runner = {
+                'combatant_id': actor['id'], 'character_id': character['id'],
+                'node_id': None, 'previous_node_id': None, 'jacked_in': False,
+                'interface_rank': interface_rank, 'actions_recorded': 0,
+                'last_action_at': None,
+            }
+            state['runners'].append(runner)
+        runner['interface_rank'] = interface_rank
+        action = str((body or {}).get('action') or '').lower()
+        target_node_id = str((body or {}).get('target_node_id') or '').lower()
+        target_node = node_by_id.get(target_node_id)
+        now = time.time()
+        result = {'action': action, 'actor_combatant_id': actor['id'],
+                  'interface_rank': interface_rank}
+        character_before = None
+        character_ledger_id = None
+        if action == 'jack_in':
+            if not target_node or target_node['type'] != 'access_point':
+                raise ApiError(400, 'Jack In требует Access Point node')
+            if not target_node['visible'] and 'edit_combatants' not in capabilities:
+                raise ApiError(403, 'Access Point node ещё не revealed')
+            runner.update({'jacked_in': True, 'node_id': target_node_id,
+                           'previous_node_id': None})
+            target_node['visible'] = True
+            result.update({'success': True, 'summary': f'Jack In at {target_node["label"]}'})
+        elif action == 'jack_out':
+            if not runner['jacked_in']:
+                raise ApiError(409, 'Netrunner не Jacked In')
+            runner.update({'jacked_in': False, 'node_id': None,
+                           'previous_node_id': None})
+            result.update({'success': True, 'summary': 'Safe Jack Out recorded'})
+        else:
+            if not runner['jacked_in'] or runner.get('node_id') not in node_by_id:
+                raise ApiError(409, 'NET action требует Jacked In Netrunner')
+            current_node = node_by_id[runner['node_id']]
+            if action == 'move':
+                if not target_node or not target_node['visible']:
+                    raise ApiError(409, 'Move требует revealed target node')
+                path = session_net_path_between(
+                    state, current_node['node_id'], target_node_id,
+                    require_visible=True)
+                if not path:
+                    raise ApiError(409, 'NET nodes не соединены revealed path')
+                if (current_node['type'] == 'password' and
+                        not current_node['resolved'] and
+                        target_node_id != runner.get('previous_node_id')):
+                    raise ApiError(409, 'Unresolved Password блокирует движение вперёд')
+                runner['previous_node_id'] = current_node['node_id']
+                runner['node_id'] = target_node_id
+                result.update({'success': True,
+                               'summary': f'Move to {target_node["label"]}'})
+            elif action == 'pathfinder':
+                if not target_node:
+                    target_node = next((node for node in state['nodes']
+                                        if not node['visible'] and
+                                        session_net_path_between(
+                                            state, current_node['node_id'],
+                                            node['node_id'], require_visible=False)), None)
+                    target_node_id = target_node['node_id'] if target_node else ''
+                if not target_node:
+                    raise ApiError(404, 'Pathfinder target node не найден')
+                path = session_net_path_between(
+                    state, current_node['node_id'], target_node_id,
+                    require_visible=False)
+                if not path:
+                    raise ApiError(409, 'Pathfinder target должен быть adjacent node')
+                dv = max(1, target_node['dv'] or 9)
+                die = secrets.randbelow(10) + 1
+                total = interface_rank + die
+                success = total >= dv
+                if success:
+                    target_node['visible'] = True
+                    path['visible'] = True
+                result.update({'success': success, 'actor_roll': die,
+                               'actor_total': total, 'defense_total': dv,
+                               'summary': f'Pathfinder {total} vs DV{dv}'})
+            elif action == 'backdoor':
+                node = target_node or current_node
+                if node['node_id'] != current_node['node_id'] or node['type'] != 'password':
+                    raise ApiError(409, 'Backdoor требует текущий Password node')
+                dv = max(1, node['dv'] or 9)
+                die = secrets.randbelow(10) + 1
+                total = interface_rank + die
+                success = total >= dv
+                if success:
+                    node['resolved'] = True
+                    node['visible'] = True
+                result.update({'success': success, 'actor_roll': die,
+                               'actor_total': total, 'defense_total': dv,
+                               'summary': f'Backdoor {total} vs DV{dv}'})
+            elif action == 'eye_dee':
+                node = target_node or current_node
+                if node['node_id'] != current_node['node_id']:
+                    raise ApiError(409, 'Eye-Dee доступен только для текущего node')
+                node['visible'] = True
+                result.update({'success': True,
+                               'summary': f'Eye-Dee identifies {node["label"]}'})
+            elif action == 'control':
+                node = target_node or current_node
+                if node['node_id'] != current_node['node_id'] or node['type'] != 'control':
+                    raise ApiError(409, 'Control action требует текущий Control node')
+                dv = max(1, node['dv'] or node['defense'] or 9)
+                die = secrets.randbelow(10) + 1
+                total = interface_rank + die
+                success = total >= dv
+                if success:
+                    node['resolved'] = True
+                    node['visible'] = True
+                    node['controlled_by_combatant_id'] = actor['id']
+                result.update({'success': success, 'actor_roll': die,
+                               'actor_total': total, 'defense_total': dv,
+                               'summary': f'Control {total} vs DV{dv}'})
+            elif action == 'program_attack':
+                program_id = str((body or {}).get('program_instance_id') or '').lower()
+                entity_id = str((body or {}).get('target_entity_id') or '').lower()
+                link = next((item for item in state['links']
+                             if item['net_entity_id'] == entity_id and item['active']), None)
+                if not link or link.get('node_id') != current_node['node_id']:
+                    raise ApiError(409, 'Program Attack требует Black ICE на текущем node')
+                target_character = conn.execute('SELECT data FROM characters WHERE id=?',
+                                                (link['character_id'],)).fetchone()
+                target_entity = (json.loads(target_character['data']).get('net_entities') or {}).get(
+                    entity_id) if target_character else None
+                if not isinstance(target_entity, dict) or target_entity.get('status') not in (
+                        'lying_in_wait', 'hunting'):
+                    raise ApiError(409, 'Program Attack target entity недоступна')
+                owned = {item.get('instance_id'): item for item in character_data.get('inventory') or []
+                         if isinstance(item, dict) and item.get('instance_id')}
+                program = owned.get(program_id)
+                modifications = character_modifications(conn, character['id'])
+                program_modification = next((item for item in modifications
+                                             if item.get('upgrade_instance_id') == program_id and
+                                             item.get('host_type') == 'cyberdeck'), None)
+                if (not program or not program_modification or
+                        cyberdeck_program_category(program) != 'attacker'):
+                    raise ApiError(409, 'Program Attack требует installed Attacker Program')
+                expected_revision = _num((body or {}).get('character_revision'))
+                if expected_revision != (_row_value(character, 'revision', 0) or 0):
+                    raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+                attack_die = secrets.randbelow(10) + 1
+                defense_die = secrets.randbelow(10) + 1
+                attack = interface_rank + int(_num((program.get('mechanics') or {}).get('atk')) or 0) + attack_die
+                defense = int(_num(target_entity.get('def')) or 0) + defense_die
+                success = attack > defense
+                character_before = copy.deepcopy(character_data)
+                runtime = initial_program_runtime_state(
+                    program, program_modification['host_instance_id'],
+                    program_modification['modification_id'],
+                    (character_data.get('program_state') or {}).get(program_id))
+                runtime['run_count'] += 1
+                runtime['last_run_at'] = now
+                character_data.setdefault('program_state', {})[program_id] = runtime
+                catalog_program = item_by_id(catalog_item_id_for_entry(program)) or {}
+                result.update({
+                    'success': success, 'actor_roll': attack_die,
+                    'defense_roll': defense_die, 'actor_total': attack,
+                    'defense_total': defense,
+                    'manual_effect': str(catalog_program.get('desc') or '')[:2000],
+                    'summary': f'{program.get("name")} attack {attack} vs DEF {defense}',
+                })
+            else:
+                raise ApiError(400, 'NET action: jack_in/jack_out/move/pathfinder/backdoor/eye_dee/control/program_attack')
+            runner['actions_recorded'] += 1
+        runner['last_action_at'] = now
+        action_entry = {
+            'action_id': secrets.token_hex(16), 'combatant_id': actor['id'],
+            'action': action, 'target_node_id': target_node_id or None,
+            'target_entity_id': str((body or {}).get('target_entity_id') or '') or None,
+            'success': result.get('success'),
+            'actor_total': result.get('actor_total'),
+            'defense_total': result.get('defense_total'),
+            'created': now, 'summary': result.get('summary') or action,
+        }
+        state.setdefault('action_log', []).append(action_entry)
+        state['action_log'] = state['action_log'][-100:]
+        if character_before is not None:
+            revision_before = _row_value(character, 'revision', 0) or 0
+            character_ledger_id = record_character_change_set(
+                conn, character['id'], user['id'], character_before, character_data,
+                f'Live NET {result["summary"]}: {reason}',
+                revision_before, revision_before + 1, category='item_action')
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (character_ledger_id,)).fetchone()
+            ledger_delta = parse_json_object(ledger_row['delta_json'])
+            ledger_delta['session_net_change'] = {
+                'session_id': session['id'], 'before': before_state,
+                'after': copy.deepcopy(state),
+            }
+            conn.execute('UPDATE character_ledger SET session_id=?,delta_json=? WHERE id=?',
+                         (session['id'], json.dumps(ledger_delta, ensure_ascii=False),
+                          character_ledger_id))
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                         (json.dumps(character_data, ensure_ascii=False), now,
+                          revision_before + 1, character['id']))
+            result['character_revision'] = revision_before + 1
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_action',
+             json.dumps(before_state, ensure_ascii=False),
+             json.dumps(action_entry, ensure_ascii=False), reason, now))
+        conn.commit()
+        updated = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (session['id'],)).fetchone()
+        self.send_json({
+            'result': result,
+            'session': self.session_payload(
+                conn, updated, user,
+                player_view='view_gm' not in capabilities),
+        })
+
+    @atomic_endpoint
     def api_session_net_state_update(self, conn, qs, m, body):
         user = self.require_user(conn)
         session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
@@ -12275,6 +12681,7 @@ ROUTES = [
     ('POST', rx(r'/api/sessions/(\d+)/net/paths'), Handler.api_session_net_path_create),
     ('PUT', rx(r'/api/sessions/(\d+)/net/paths/([a-f0-9]{32})'), Handler.api_session_net_path_update),
     ('DELETE', rx(r'/api/sessions/(\d+)/net/paths/([a-f0-9]{32})'), Handler.api_session_net_path_delete),
+    ('POST', rx(r'/api/sessions/(\d+)/net/actions'), Handler.api_session_net_action),
     ('PUT', rx(r'/api/sessions/(\d+)/net/state'), Handler.api_session_net_state_update),
     ('GET', rx(r'/api/sessions/(\d+)/access'), Handler.api_session_access),
     ('POST', rx(r'/api/sessions/(\d+)/access'), Handler.api_session_access_grant),

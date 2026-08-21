@@ -1555,6 +1555,203 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
                          'net_entity_damage', 'net_turn_update',
                          'net_entity_revert'} <= activity_types)
 
+    def test_net_actions_resolve_graph_checks_movement_control_and_program_attack(self):
+        edited = copy.deepcopy(self.character_data)
+        edited.update({
+            'role': 'Netrunner', 'primary_role': 'Netrunner',
+            'active_role': 'Netrunner', 'role_rank': 4,
+            'roles': [{'name': 'Netrunner', 'rank': 4, 'primary': True}],
+        })
+        item_ids = ('net_stuff-1', 'programs-0', 'programs-25')
+        edited['inventory'] = [
+            {
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': server.item_by_id(item_id)['cat'],
+                'name': server.item_by_id(item_id)['name'], 'qty': 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            }
+            for item_id in item_ids
+        ]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Create Netrunner NET Action test loadout',
+            'data': edited,
+        })
+        by_name = {item['name']: item for item in updated['data']['inventory']}
+        deck, banhammer, killer = (
+            by_name['Cyberdeck (Standard Quality)'], by_name['Banhammer'],
+            by_name['Killer'])
+        self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 1, 'host_instance_id': deck['instance_id'],
+            'upgrade_instance_id': banhammer['instance_id'],
+            'manual_confirm': False, 'reason': 'Install Banhammer Attacker',
+        })
+        self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 2, 'host_instance_id': deck['instance_id'],
+            'upgrade_instance_id': killer['instance_id'],
+            'manual_confirm': False, 'reason': 'Install Killer target entity',
+        })
+
+        self.current = self.user('gm')
+        session = self.call(server.Handler.api_session_create, body={
+            'title': 'NET Action Resolution Test',
+        })
+        session_id = session['id']
+        self.conn.execute(
+            "INSERT INTO session_combatants(session_id,kind,character_id,name,initiative,visible,sort_order) "
+            "VALUES(?,'character',1,'V the Netrunner',12,1,0)", (session_id,))
+        self.conn.execute(
+            "INSERT INTO session_combatants(session_id,kind,name,initiative,visible,sort_order) "
+            "VALUES(?,'npc','Enemy Operator',10,1,1)", (session_id,))
+        self.conn.commit()
+        actor_id = self.conn.execute(
+            'SELECT id FROM session_combatants WHERE session_id=? AND character_id=1',
+            (session_id,)).fetchone()['id']
+        target_id = self.conn.execute(
+            'SELECT id FROM session_combatants WHERE session_id=? AND character_id IS NULL',
+            (session_id,)).fetchone()['id']
+        floor = self.call(server.Handler.api_session_net_floor_create,
+                          self.match(session_id), {
+            'label': 'Architecture Floor', 'reason': 'Create NET Action test Floor',
+        })
+        nodes = {}
+        for node_type, label, visible in (
+                ('access_point', 'Entry Access', True),
+                ('password', 'Security Password', False),
+                ('control', 'Door Control', True)):
+            nodes[node_type] = self.call(
+                server.Handler.api_session_net_node_create, self.match(session_id), {
+                    'floor_id': floor['floor_id'], 'type': node_type,
+                    'label': label, 'dv': 1, 'defense': 1,
+                    'visible': visible,
+                    'reason': f'Create {label} node',
+                })
+        self.call(server.Handler.api_session_net_path_create,
+                  self.match(session_id), {
+            'from_node_id': nodes['access_point']['node_id'],
+            'to_node_id': nodes['password']['node_id'],
+            'direction': 'one_way', 'visible': False,
+            'reason': 'Connect Access to Password',
+        })
+        self.call(server.Handler.api_session_net_path_create,
+                  self.match(session_id), {
+            'from_node_id': nodes['password']['node_id'],
+            'to_node_id': nodes['control']['node_id'],
+            'direction': 'one_way', 'visible': True,
+            'reason': 'Connect Password to Control',
+        })
+
+        self.current = self.user('runner')
+        deploy_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})/([a-f0-9]{32})$',
+            f'1/{deck["instance_id"]}/{killer["instance_id"]}')
+        deployed = self.call(server.Handler.api_character_black_ice_deploy,
+                             deploy_match, {
+            'revision': 3, 'mode': 'deploy_combat', 'session_id': session_id,
+            'session_floor_id': floor['floor_id'],
+            'session_node_id': nodes['control']['node_id'],
+            'target_combatant_id': target_id,
+            'reason': 'Deploy Killer at Control node as attack target',
+        })
+        entity_id = deployed['net_entity']['net_entity_id']
+        action_match = self.match(session_id)
+
+        jacked = self.call(server.Handler.api_session_net_action, action_match, {
+            'action': 'jack_in', 'actor_combatant_id': actor_id,
+            'target_node_id': nodes['access_point']['node_id'],
+            'reason': 'Jack In through Entry Access',
+        })
+        self.assertTrue(jacked['result']['success'])
+        pathfinder = self.call(server.Handler.api_session_net_action, action_match, {
+            'action': 'pathfinder', 'actor_combatant_id': actor_id,
+            'target_node_id': nodes['password']['node_id'],
+            'reason': 'Reveal adjacent Password and path',
+        })
+        self.assertTrue(pathfinder['result']['success'])
+        moved = self.call(server.Handler.api_session_net_action, action_match, {
+            'action': 'move', 'actor_combatant_id': actor_id,
+            'target_node_id': nodes['password']['node_id'],
+            'reason': 'Move to revealed Password node',
+        })
+        self.assertTrue(moved['result']['success'])
+        with self.assertRaises(server.ApiError) as blocked:
+            self.call(server.Handler.api_session_net_action, action_match, {
+                'action': 'move', 'actor_combatant_id': actor_id,
+                'target_node_id': nodes['control']['node_id'],
+                'reason': 'Try bypassing unresolved Password',
+            })
+        self.assertEqual(blocked.exception.status, 409)
+        backdoor = self.call(server.Handler.api_session_net_action, action_match, {
+            'action': 'backdoor', 'actor_combatant_id': actor_id,
+            'reason': 'Backdoor Security Password',
+        })
+        self.assertTrue(backdoor['result']['success'])
+        self.call(server.Handler.api_session_net_action, action_match, {
+            'action': 'move', 'actor_combatant_id': actor_id,
+            'target_node_id': nodes['control']['node_id'],
+            'reason': 'Move through resolved Password to Control',
+        })
+        eye_dee = self.call(server.Handler.api_session_net_action, action_match, {
+            'action': 'eye_dee', 'actor_combatant_id': actor_id,
+            'reason': 'Identify current Control node',
+        })
+        self.assertTrue(eye_dee['result']['success'])
+        controlled = self.call(server.Handler.api_session_net_action, action_match, {
+            'action': 'control', 'actor_combatant_id': actor_id,
+            'reason': 'Take control of Door Control node',
+        })
+        self.assertTrue(controlled['result']['success'])
+        control_state = next(item for item in controlled['session']['net']['nodes']
+                             if item['node_id'] == nodes['control']['node_id'])
+        self.assertTrue(control_state['controlled'])
+
+        attack = self.call(server.Handler.api_session_net_action, action_match, {
+            'action': 'program_attack', 'actor_combatant_id': actor_id,
+            'program_instance_id': banhammer['instance_id'],
+            'target_entity_id': entity_id, 'character_revision': 4,
+            'reason': 'Run Banhammer against Killer; resolve damage manually',
+        })
+        result = attack['result']
+        self.assertIn(result['success'], (True, False))
+        self.assertGreaterEqual(result['actor_total'], 6)
+        self.assertGreaterEqual(result['defense_total'], 3)
+        self.assertIn('Does 3d6 REZ', result['manual_effect'])
+        self.assertEqual(result['character_revision'], 5)
+        stored = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])
+        self.assertEqual(stored['program_state'][banhammer['instance_id']]['run_count'], 1)
+        attack_ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertTrue(attack_ledger['entries'][0]['can_revert'])
+        reverted_attack = self.call(
+            server.Handler.api_character_ledger_revert,
+            self.match(1, attack_ledger['entries'][0]['id']), {
+                'revision': 5, 'reason': 'Undo incorrectly targeted Program Attack',
+            })
+        self.assertEqual(reverted_attack['data']['program_state'][
+            banhammer['instance_id']]['run_count'], 0)
+        replayed_attack = self.call(server.Handler.api_session_net_action, action_match, {
+            'action': 'program_attack', 'actor_combatant_id': actor_id,
+            'program_instance_id': banhammer['instance_id'],
+            'target_entity_id': entity_id, 'character_revision': 6,
+            'reason': 'Run corrected Banhammer attack against Killer',
+        })
+        self.assertEqual(replayed_attack['result']['character_revision'], 7)
+        jack_out = self.call(server.Handler.api_session_net_action, action_match, {
+            'action': 'jack_out', 'actor_combatant_id': actor_id,
+            'reason': 'Record safe Jack Out after NET actions',
+        })
+        runner = next(item for item in jack_out['session']['net']['runners']
+                      if item['combatant_id'] == actor_id)
+        self.assertFalse(runner['jacked_in'])
+        self.assertTrue(runner['can_act'])
+        self.assertGreaterEqual(len(jack_out['session']['net']['action_log']), 8)
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        attack_entry = next(item for item in ledger['entries']
+                            if 'Banhammer attack' in item['reason'])
+        stored_ledger = self.conn.execute(
+            'SELECT session_id FROM character_ledger WHERE id=?',
+            (attack_entry['id'],)).fetchone()
+        self.assertEqual(stored_ledger['session_id'], session_id)
+
     def test_vehicle_garage_installs_prerequisites_and_preserves_nomad_access_semantics(self):
         edited = copy.deepcopy(self.character_data)
         edited['inventory'] = [

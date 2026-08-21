@@ -926,6 +926,25 @@ class CyberdeckModificationTests(unittest.TestCase):
             'configuration': {},
         }
 
+    def test_net_action_helpers_use_interface_and_path_direction(self):
+        self.assertEqual(server.character_interface_rank({
+            'roles': [{'name': 'Netrunner', 'rank': 4},
+                      {'name': 'Solo', 'rank': 5}]}), 4)
+        state = {'paths': [
+            {'path_id': 'a' * 32, 'from_node_id': 'b' * 32,
+             'to_node_id': 'c' * 32, 'direction': 'one_way', 'visible': True},
+            {'path_id': 'd' * 32, 'from_node_id': 'c' * 32,
+             'to_node_id': 'e' * 32, 'direction': 'bidirectional', 'visible': False},
+        ]}
+        self.assertIsNotNone(server.session_net_path_between(
+            state, 'b' * 32, 'c' * 32))
+        self.assertIsNone(server.session_net_path_between(
+            state, 'c' * 32, 'b' * 32))
+        self.assertIsNone(server.session_net_path_between(
+            state, 'c' * 32, 'e' * 32))
+        self.assertIsNotNone(server.session_net_path_between(
+            state, 'e' * 32, 'c' * 32, require_visible=False))
+
     def test_session_net_architecture_state_sanitizes_nodes_paths_and_links(self):
         floor_id, access_id, password_id, path_id = (
             'a' * 32, 'b' * 32, 'c' * 32, 'd' * 32)
