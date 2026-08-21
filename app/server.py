@@ -2531,6 +2531,7 @@ CREATE TABLE IF NOT EXISTS nc_sessions(
   active_turn INTEGER NOT NULL DEFAULT 0,
   player_view_config TEXT NOT NULL DEFAULT '{}',
   safety_config TEXT NOT NULL DEFAULT '{}',
+  net_state_json TEXT NOT NULL DEFAULT '{}',
   notes TEXT NOT NULL DEFAULT '',
   created REAL NOT NULL,
   updated REAL NOT NULL
@@ -2730,6 +2731,7 @@ MIGRATION_ITEM_INSTANCES = 7
 MIGRATION_ACTIVE_EFFECTS = 8
 MIGRATION_EFFECT_PRESETS = 9
 MIGRATION_ITEM_MODIFICATIONS = 10
+MIGRATION_SESSION_NET = 11
 DB_BACKUP_LIMIT = 5
 _RATE_LIMIT_BUCKETS = {}
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -3802,6 +3804,7 @@ def apply_schema_migrations(conn, make_backup=True):
         (MIGRATION_ACTIVE_EFFECTS, 'active character effect instances'),
         (MIGRATION_EFFECT_PRESETS, 'effect preset snapshots'),
         (MIGRATION_ITEM_MODIFICATIONS, 'host item modifications'),
+        (MIGRATION_SESSION_NET, 'live session NET context'),
     ]
     pending = [version for version, _ in migrations if version not in applied]
     if make_backup and pending:
@@ -3850,6 +3853,8 @@ def apply_schema_migrations(conn, make_backup=True):
         ensure_column(conn, 'active_effect_instances', 'context_json', "TEXT NOT NULL DEFAULT '{}'")
     if MIGRATION_ITEM_MODIFICATIONS not in applied:
         conn.executescript(ITEM_MODIFICATION_SCHEMA)
+    if MIGRATION_SESSION_NET not in applied:
+        ensure_column(conn, 'nc_sessions', 'net_state_json', "TEXT NOT NULL DEFAULT '{}'")
     # Re-run additive CREATE IF NOT EXISTS blocks so patch-level tables added to an
     # already-applied migration remain safe during development and rolling deploys.
     conn.executescript(NETWORK_SCHEMA)
@@ -3872,6 +3877,7 @@ def apply_schema_migrations(conn, make_backup=True):
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='characters'").fetchone():
         ensure_column(conn, 'characters', 'revision', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'nc_sessions', 'safety_config', "TEXT NOT NULL DEFAULT '{}'")
+    ensure_column(conn, 'nc_sessions', 'net_state_json', "TEXT NOT NULL DEFAULT '{}'")
     ensure_column(conn, 'npc_templates', 'archived', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'session_combatants', 'sp_head_max', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'session_combatants', 'sp_body_max', 'INTEGER NOT NULL DEFAULT 0')
@@ -4035,6 +4041,51 @@ def session_safety_config(value):
         'lines': [str(item).strip()[:200] for item in lines[:50] if str(item).strip()],
         'veils': [str(item).strip()[:200] for item in veils[:50] if str(item).strip()],
         'pause_enabled': raw.get('pause_enabled') is not False,
+    }
+
+
+def session_net_state(value):
+    raw = parse_json_object(value)
+    floors = []
+    seen_floors = set()
+    for item in raw.get('floors') or []:
+        if not isinstance(item, dict):
+            continue
+        floor_id = str(item.get('floor_id') or '').lower()
+        label = str(item.get('label') or '').strip()[:120]
+        if (not INSTANCE_ID_RE.fullmatch(floor_id) or floor_id in seen_floors or
+                not label or len(floors) >= 100):
+            continue
+        seen_floors.add(floor_id)
+        floors.append({'floor_id': floor_id, 'label': label,
+                       'sort_order': len(floors)})
+    links = []
+    seen_entities = set()
+    for item in raw.get('links') or []:
+        if not isinstance(item, dict):
+            continue
+        entity_id = str(item.get('net_entity_id') or '').lower()
+        floor_id = str(item.get('floor_id') or '').lower()
+        character_id = _num(item.get('character_id'))
+        target_id = _num(item.get('target_combatant_id'))
+        if (not INSTANCE_ID_RE.fullmatch(entity_id) or entity_id in seen_entities or
+                not isinstance(character_id, int) or character_id < 1 or
+                floor_id not in seen_floors or len(links) >= 200):
+            continue
+        seen_entities.add(entity_id)
+        links.append({
+            'net_entity_id': entity_id, 'character_id': character_id,
+            'floor_id': floor_id,
+            'target_combatant_id': int(target_id) if isinstance(target_id, int) and target_id > 0 else None,
+            'initiative': max(-1000, min(1000, _num(item.get('initiative')) or 0)),
+            'active': item.get('active') is not False,
+            'visible': item.get('visible') is not False,
+            'linked_at': _num(item.get('linked_at')) or 0,
+        })
+    return {
+        'round': max(0, int(_num(raw.get('round')) or 0)),
+        'active_turn': max(0, int(_num(raw.get('active_turn')) or 0)),
+        'floors': floors, 'links': links,
     }
 
 
@@ -6223,6 +6274,26 @@ SERVER_ERROR_EN = {
     'Slide требует hunting Black ICE': 'Slide requires hunting Black ICE',
     'Engage требует lying-in-wait Black ICE': 'Engage requires lying-in-wait Black ICE',
     'Укажите Floor и target для Black ICE': 'Specify a Floor and target for Black ICE',
+    'Session NET entity link отсутствует': 'Session NET entity link is missing',
+    'Нет права редактировать Session NET Floors': 'No permission to edit Session NET Floors',
+    'NET Floor требует label': 'NET Floor requires a label',
+    'Укажите причину изменения NET Floors': 'Provide a reason for changing NET Floors',
+    'NET Floor уже существует или достигнут лимит': 'NET Floor already exists or the limit was reached',
+    'Session NET Floor не найден': 'Session NET Floor not found',
+    'NET Floor используется active entity': 'NET Floor is used by an active entity',
+    'Нет права управлять Session NET Queue': 'No permission to manage the Session NET Queue',
+    'Некорректный Session NET turn state': 'Invalid Session NET turn state',
+    'Укажите причину изменения NET Queue': 'Provide a reason for changing the NET Queue',
+    'Session NET snapshot для отката повреждён': 'Session NET revert snapshot is corrupted',
+    'Session NET context изменён после Character action': 'Session NET context changed after the Character action',
+    'Некорректная Live Session': 'Invalid Live Session',
+    'Нет доступа к Live NET Session': 'No access to the Live NET Session',
+    'Character не участвует в этой Session': 'Character does not participate in this Session',
+    'Выберите validated Session NET Floor': 'Choose a validated Session NET Floor',
+    'Нет права управлять Black ICE entity': 'No permission to manage the Black ICE entity',
+    'Выберите Session target combatant': 'Choose a Session target combatant',
+    'Некорректный Session target для Black ICE': 'Invalid Session target for Black ICE',
+    'Выберите validated Session Floor и target': 'Choose a validated Session Floor and target',
     'Неподдерживаемый тип modification host': 'Unsupported modification host type',
     'Сначала снимите зависимые vehicle upgrades': 'Remove dependent vehicle upgrades first',
     'Vehicle instance не найден': 'Vehicle instance not found',
@@ -8225,7 +8296,9 @@ class Handler(BaseHTTPRequestHandler):
                     entity = program.get('net_entity')
                     if isinstance(entity, dict):
                         for private_key in ('floor_label', 'target_label',
-                                            'owner_character_id', 'initiative_roll'):
+                                            'owner_character_id', 'initiative_roll',
+                                            'session_id', 'session_floor_id',
+                                            'target_combatant_id'):
                             entity.pop(private_key, None)
         return {
             'id': row['id'], 'revision': _row_value(row, 'revision', 0),
@@ -8544,6 +8617,30 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(409, 'Snapshot для отката повреждён')
         before = json.loads(row['data'])
         now = time.time()
+        session_net_change = delta.get('session_net_change')
+        if isinstance(session_net_change, dict):
+            session_id = _num(session_net_change.get('session_id'))
+            session_before = session_net_change.get('before')
+            session_after = session_net_change.get('after')
+            session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                                   (session_id,)).fetchone() if session_id else None
+            if (not session or not isinstance(session_before, dict) or
+                    not isinstance(session_after, dict)):
+                raise ApiError(409, 'Session NET snapshot для отката повреждён')
+            clean_session_before = session_net_state(session_before)
+            clean_session_after = session_net_state(session_after)
+            current_session_net = session_net_state(
+                _row_value(session, 'net_state_json', '{}'))
+            if current_session_net != clean_session_after:
+                raise ApiError(409, 'Session NET context изменён после Character action')
+            conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                         (json.dumps(clean_session_before, ensure_ascii=False), now,
+                          session['id']))
+            conn.execute(
+                'INSERT INTO session_activity(session_id,actor_user_id,event_type,note,created) '
+                'VALUES(?,?,?,?,?)',
+                (session['id'], user['id'], 'net_entity_revert',
+                 f'Revert character ledger #{entry["id"]}', now))
         for effect_id in delta.get('created_effect_ids') or []:
             conn.execute(
                 'UPDATE active_effect_instances SET active=0,archived_at=?,updated=? '
@@ -8587,7 +8684,8 @@ class Handler(BaseHTTPRequestHandler):
             current_revision, revision_after, category='sheet_revert',
             reverts_ledger_id=entry['id'])
         if (delta.get('created_effect_ids') or delta.get('replaced_effect_ids') or
-                delta.get('created_modification_ids') or delta.get('removed_modification_ids')):
+                delta.get('created_modification_ids') or delta.get('removed_modification_ids') or
+                session_net_change):
             revert_delta_row = conn.execute(
                 'SELECT delta_json FROM character_ledger WHERE id=?',
                 (revert_ledger_id,)).fetchone()
@@ -9207,7 +9305,9 @@ class Handler(BaseHTTPRequestHandler):
     @atomic_endpoint
     def api_character_black_ice_deploy(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
-        allowed = {'revision', 'mode', 'floor_label', 'target_label', 'reason'}
+        allowed = {
+            'revision', 'mode', 'floor_label', 'target_label', 'reason',
+            'session_id', 'session_floor_id', 'target_combatant_id'}
         if set(body or {}) - allowed:
             raise ApiError(400, 'Black ICE deployment содержит неподдерживаемые поля')
         current_revision = _row_value(row, 'revision', 0) or 0
@@ -9238,8 +9338,46 @@ class Handler(BaseHTTPRequestHandler):
         mode = str((body or {}).get('mode') or '')
         if mode not in ('lie_in_wait', 'deploy_combat'):
             raise ApiError(400, 'Black ICE mode: lie_in_wait/deploy_combat')
+        session = None
+        net_state = None
+        net_state_before = None
+        session_floor_id = None
+        target_combatant_id = None
+        session_id = _num((body or {}).get('session_id'))
         floor_label = str((body or {}).get('floor_label') or '').strip()[:120]
         target_label = str((body or {}).get('target_label') or '').strip()[:120]
+        if session_id is not None:
+            if int(session_id) != session_id:
+                raise ApiError(400, 'Некорректная Live Session')
+            session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                                   (int(session_id),)).fetchone()
+            role, capabilities = self.session_capabilities(conn, user, session)
+            if (not session or not role or
+                    session['status'] not in ('preparing', 'active', 'paused')):
+                raise ApiError(403, 'Нет доступа к Live NET Session')
+            if ('view_gm' not in capabilities and not conn.execute(
+                    'SELECT 1 FROM session_combatants WHERE session_id=? AND character_id=?',
+                    (session['id'], row['id'])).fetchone()):
+                raise ApiError(403, 'Character не участвует в этой Session')
+            net_state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+            net_state_before = copy.deepcopy(net_state)
+            session_floor_id = str((body or {}).get('session_floor_id') or '').lower()
+            floor = next((item for item in net_state['floors']
+                          if item['floor_id'] == session_floor_id), None)
+            if not floor:
+                raise ApiError(400, 'Выберите validated Session NET Floor')
+            floor_label = floor['label']
+            if mode == 'deploy_combat':
+                target_combatant_id = _num((body or {}).get('target_combatant_id'))
+                if (target_combatant_id is None or int(target_combatant_id) != target_combatant_id):
+                    raise ApiError(400, 'Выберите Session target combatant')
+                target = conn.execute(
+                    'SELECT * FROM session_combatants WHERE session_id=? AND id=?',
+                    (session['id'], int(target_combatant_id))).fetchone()
+                if not target or target['character_id'] == row['id']:
+                    raise ApiError(400, 'Некорректный Session target для Black ICE')
+                target_combatant_id = target['id']
+                target_label = target['name']
         reason_detail = str((body or {}).get('reason') or '').strip()[:500]
         if len(floor_label) < 1:
             raise ApiError(400, 'Укажите Floor для Black ICE')
@@ -9249,6 +9387,11 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(400, 'Укажите причину Black ICE deployment')
         entity = initial_black_ice_entity(
             program, deck_id, row['id'], mode, floor_label, target_label)
+        if session:
+            entity.update({
+                'session_id': session['id'], 'session_floor_id': session_floor_id,
+                'target_combatant_id': target_combatant_id,
+            })
         entities = data.setdefault('net_entities', {})
         entities[entity['net_entity_id']] = entity
         if len(entities) > 200:
@@ -9269,6 +9412,31 @@ class Handler(BaseHTTPRequestHandler):
             conn, row['id'], user['id'], before, data, reason,
             current_revision, revision_after, category='item_action')
         now = time.time()
+        if session:
+            net_state['links'].append({
+                'net_entity_id': entity['net_entity_id'],
+                'character_id': row['id'], 'floor_id': session_floor_id,
+                'target_combatant_id': target_combatant_id,
+                'initiative': entity.get('initiative') or 0,
+                'active': True, 'visible': mode == 'deploy_combat',
+                'linked_at': now,
+            })
+            conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                         (json.dumps(net_state, ensure_ascii=False), now, session['id']))
+            conn.execute(
+                'INSERT INTO session_activity(session_id,actor_user_id,event_type,after_json,note,created) '
+                'VALUES(?,?,?,?,?,?)',
+                (session['id'], user['id'], 'net_entity_deploy',
+                 json.dumps(entity, ensure_ascii=False), reason_detail, now))
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            delta['session_net_change'] = {
+                'session_id': session['id'], 'before': net_state_before,
+                'after': copy.deepcopy(net_state),
+            }
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(delta, ensure_ascii=False), ledger_id))
         conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), now,
                       revision_after, row['id']))
@@ -9281,9 +9449,13 @@ class Handler(BaseHTTPRequestHandler):
 
     @atomic_endpoint
     def api_character_net_entity_action(self, conn, qs, m, body):
-        user, row = self.require_character_editor(conn, m.group(1))
+        user = self.require_user(conn)
+        row = self.get_char(conn, m.group(1))
+        if parse_json_object(row['data']).get('archived'):
+            raise ApiError(409, 'Архивное досье доступно только для чтения')
         allowed = {'revision', 'action', 'amount', 'floor_label',
-                   'target_label', 'reason'}
+                   'target_label', 'reason', 'session_floor_id',
+                   'target_combatant_id'}
         if set(body or {}) - allowed:
             raise ApiError(400, 'NET entity action содержит неподдерживаемые поля')
         current_revision = _row_value(row, 'revision', 0) or 0
@@ -9295,8 +9467,18 @@ class Handler(BaseHTTPRequestHandler):
         entity = (data.get('net_entities') or {}).get(entity_id)
         if not isinstance(entity, dict) or entity.get('type') != 'black_ice':
             raise ApiError(404, 'Black ICE NET entity не найдена')
+        linked_session = None
+        if entity.get('session_id'):
+            linked_session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                                          (int(entity['session_id']),)).fetchone()
+        if row['owner_id'] != user['id']:
+            if (not linked_session or
+                    'edit_combatants' not in self.session_capabilities(
+                        conn, user, linked_session)[1]):
+                raise ApiError(403, 'Нет права управлять Black ICE entity')
         if entity.get('status') not in ('lying_in_wait', 'hunting', 'derezzed'):
             raise ApiError(409, 'Black ICE NET entity уже завершена')
+        before_entity = copy.deepcopy(entity)
         program_id = str(entity.get('source_program_instance_id') or '')
         deck_id = str(entity.get('deck_instance_id') or '')
         modifications = character_modifications(conn, row['id'])
@@ -9311,6 +9493,15 @@ class Handler(BaseHTTPRequestHandler):
         runtime = initial_program_runtime_state(
             program, deck_id, modification['modification_id'],
             (data.get('program_state') or {}).get(program_id))
+        linked_net_state = session_net_state(
+            _row_value(linked_session, 'net_state_json', '{}')) if linked_session else None
+        linked_net_link = next((item for item in linked_net_state['links']
+                                if item['net_entity_id'] == entity_id), None) \
+            if linked_net_state else None
+        linked_net_state_before = copy.deepcopy(linked_net_state) \
+            if linked_net_state else None
+        if linked_session and not linked_net_link:
+            raise ApiError(409, 'Session NET entity link отсутствует')
         action = str((body or {}).get('action') or '').lower()
         detail = str((body or {}).get('reason') or '').strip()[:500]
         if len(detail) < 3:
@@ -9329,6 +9520,8 @@ class Handler(BaseHTTPRequestHandler):
             if entity['rez_current'] == 0:
                 entity['status'] = 'derezzed'
                 runtime['status'] = 'derezzed'
+                if linked_net_link:
+                    linked_net_link['initiative'] = 0
             reason = (f'Black ICE REZ damage {entity.get("name")}: '
                       f'{previous} → {entity["rez_current"]}; {detail}')
         elif action == 'slide':
@@ -9338,27 +9531,54 @@ class Handler(BaseHTTPRequestHandler):
             entity['target_label'] = None
             entity['initiative'] = None
             entity['initiative_roll'] = None
+            entity['target_combatant_id'] = None
+            if linked_net_link:
+                linked_net_link['target_combatant_id'] = None
+                linked_net_link['initiative'] = 0
             reason = f'Slide from Black ICE {entity.get("name")}: {detail}'
         elif action == 'engage':
             if entity.get('status') != 'lying_in_wait':
                 raise ApiError(409, 'Engage требует lying-in-wait Black ICE')
-            target_label = str((body or {}).get('target_label') or '').strip()[:120]
-            floor_label = str((body or {}).get('floor_label') or
-                              entity.get('floor_label') or '').strip()[:120]
-            if len(target_label) < 2 or not floor_label:
-                raise ApiError(400, 'Укажите Floor и target для Black ICE')
+            if linked_session:
+                floor_id = str((body or {}).get('session_floor_id') or
+                               linked_net_link.get('floor_id') or '').lower()
+                floor = next((item for item in linked_net_state['floors']
+                              if item['floor_id'] == floor_id), None)
+                target_id = _num((body or {}).get('target_combatant_id'))
+                target = conn.execute(
+                    'SELECT * FROM session_combatants WHERE session_id=? AND id=?',
+                    (linked_session['id'], int(target_id))).fetchone() \
+                    if target_id is not None and int(target_id) == target_id else None
+                if not floor or not target or target['character_id'] == row['id']:
+                    raise ApiError(400, 'Выберите validated Session Floor и target')
+                floor_label, target_label = floor['label'], target['name']
+                entity['session_floor_id'] = floor_id
+                entity['target_combatant_id'] = target['id']
+                linked_net_link['floor_id'] = floor_id
+                linked_net_link['target_combatant_id'] = target['id']
+                linked_net_link['visible'] = True
+            else:
+                target_label = str((body or {}).get('target_label') or '').strip()[:120]
+                floor_label = str((body or {}).get('floor_label') or
+                                  entity.get('floor_label') or '').strip()[:120]
+                if len(target_label) < 2 or not floor_label:
+                    raise ApiError(400, 'Укажите Floor и target для Black ICE')
             roll = secrets.randbelow(10) + 1
             entity.update({
                 'status': 'hunting', 'target_label': target_label,
                 'floor_label': floor_label, 'initiative_roll': roll,
                 'initiative': int(entity.get('spd') or 0) + roll,
             })
+            if linked_net_link:
+                linked_net_link['initiative'] = entity['initiative']
             reason = f'Engage Black ICE {entity.get("name")} vs {target_label}: {detail}'
         elif action == 'deactivate':
             entity['status'] = 'deactivated'
             entity['archived_at'] = now
             runtime['status'] = 'inactive'
             runtime['rez_current'] = runtime['rez_max']
+            if linked_net_link:
+                linked_net_link['active'] = False
             reason = f'Deactivate Black ICE {entity.get("name")}: {detail}'
         elif action == 'destroy':
             entity['status'] = 'destroyed'
@@ -9373,6 +9593,8 @@ class Handler(BaseHTTPRequestHandler):
                 'WHERE modification_id=?',
                 (user['id'], now, now, modification['modification_id']))
             removed_modification_ids.append(modification['modification_id'])
+            if linked_net_link:
+                linked_net_link['active'] = False
             reason = f'Destroy Black ICE entity {entity.get("name")}: {detail}'
         else:
             raise ApiError(400, 'NET entity action: damage/slide/engage/deactivate/destroy')
@@ -9391,6 +9613,30 @@ class Handler(BaseHTTPRequestHandler):
                                       (ledger_id,)).fetchone()
             delta = parse_json_object(ledger_row['delta_json'])
             delta['removed_modification_ids'] = removed_modification_ids
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(delta, ensure_ascii=False), ledger_id))
+        if linked_session:
+            queue_count = sum(1 for item in linked_net_state['links']
+                              if item['active'] and (_num(item.get('initiative')) or 0) > 0)
+            linked_net_state['active_turn'] = min(
+                linked_net_state['active_turn'], max(0, queue_count - 1))
+            conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                         (json.dumps(linked_net_state, ensure_ascii=False), now,
+                          linked_session['id']))
+            conn.execute(
+                'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+                'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+                (linked_session['id'], user['id'], f'net_entity_{action}',
+                 json.dumps(before_entity, ensure_ascii=False),
+                 json.dumps(entity, ensure_ascii=False), detail, now))
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            delta['session_net_change'] = {
+                'session_id': linked_session['id'],
+                'before': linked_net_state_before,
+                'after': copy.deepcopy(linked_net_state),
+            }
             conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
                          (json.dumps(delta, ensure_ascii=False), ledger_id))
         conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
@@ -10408,6 +10654,11 @@ class Handler(BaseHTTPRequestHandler):
             (session['id'], user['id'])).fetchone()
         if explicit and explicit['role'] in SESSION_ACCESS_ROLES:
             return explicit['role']
+        if conn.execute(
+                'SELECT 1 FROM session_combatants sc JOIN characters c '
+                'ON c.id=sc.character_id WHERE sc.session_id=? AND c.owner_id=?',
+                (session['id'], user['id'])).fetchone():
+            return 'crew'
         if session['contract_id']:
             contract = conn.execute('SELECT * FROM contracts WHERE id=?',
                                     (session['contract_id'],)).fetchone()
@@ -10433,6 +10684,77 @@ class Handler(BaseHTTPRequestHandler):
         return conn.execute(
             'SELECT * FROM session_combatants WHERE session_id=? '
             'ORDER BY initiative DESC,sort_order,id', (session_id,)).fetchall()
+
+    def session_net_payload(self, conn, row, player_view=False):
+        state = session_net_state(_row_value(row, 'net_state_json', '{}'))
+        floor_by_id = {item['floor_id']: item for item in state['floors']}
+        combatants = {item['id']: item for item in self.ordered_session_combatants(
+            conn, row['id'])}
+        entities = []
+        for link in state['links']:
+            if not link['active'] or (player_view and not link['visible']):
+                continue
+            character = conn.execute(
+                'SELECT id,revision,data FROM characters WHERE id=?',
+                (link['character_id'],)).fetchone()
+            if not character:
+                continue
+            character_data = ensure_progression(json.loads(character['data']))
+            entity = (character_data.get('net_entities') or {}).get(
+                link['net_entity_id'])
+            if (not isinstance(entity, dict) or
+                    entity.get('status') not in ('lying_in_wait', 'hunting', 'derezzed')):
+                continue
+            floor = floor_by_id.get(link['floor_id'])
+            target = combatants.get(link.get('target_combatant_id'))
+            payload = {
+                'net_entity_id': link['net_entity_id'],
+                'character_id': link['character_id'],
+                'name': entity.get('name') or 'Black ICE',
+                'status': entity.get('status'),
+                'initiative': link['initiative'] if entity.get('status') == 'hunting' else None,
+                'in_queue': entity.get('status') == 'hunting',
+                'floor_id': link['floor_id'],
+                'floor_label': floor['label'] if floor else entity.get('floor_label'),
+                'target_combatant_id': link.get('target_combatant_id'),
+                'target_label': target['name'] if target and
+                    (not player_view or target['visible']) else None,
+                'target_type': entity.get('target_type'),
+                'per': entity.get('per'), 'spd': entity.get('spd'),
+                'atk': entity.get('atk'), 'def': entity.get('def'),
+                'rez_current': entity.get('rez_current'),
+                'rez_max': entity.get('rez_max'),
+                'visible': link['visible'],
+            }
+            if not player_view:
+                payload['character_revision'] = character['revision']
+                payload['initiative_roll'] = entity.get('initiative_roll')
+            else:
+                for private_key in ('character_id', 'target_combatant_id', 'visible'):
+                    payload.pop(private_key, None)
+            entities.append(payload)
+        queue = sorted(
+            (item for item in entities if item['in_queue']),
+            key=lambda item: (-(_num(item.get('initiative')) or 0), item['net_entity_id']))
+        active_turn = min(state['active_turn'], max(0, len(queue) - 1))
+        active_id = queue[active_turn]['net_entity_id'] if queue else None
+        for item in entities:
+            item['active'] = item['net_entity_id'] == active_id
+        entities.sort(key=lambda item: (
+            0 if item['in_queue'] else 1,
+            -(_num(item.get('initiative')) or 0), item['net_entity_id']))
+        if player_view:
+            visible_floor_ids = {item['floor_id'] for item in entities}
+            floors = [{'label': item['label']} for item in state['floors']
+                      if item['floor_id'] in visible_floor_ids]
+            for item in entities:
+                item.pop('floor_id', None)
+        else:
+            floors = state['floors']
+        return {
+            'round': state['round'], 'active_turn': active_turn,
+            'floors': floors, 'entities': entities,
+        }
 
     def session_activity_payload(self, row):
         before = parse_json_object(row['before_json'])
@@ -10484,6 +10806,27 @@ class Handler(BaseHTTPRequestHandler):
                 else snapshot.get('name'),
                 'after': snapshot.get('name') if event_type == 'combatant_create' else None,
             })
+        elif event_type.startswith('net_'):
+            def net_summary(value):
+                if not value:
+                    return None
+                if value.get('type') == 'black_ice':
+                    return {
+                        'name': value.get('name'), 'status': value.get('status'),
+                        'floor': value.get('floor_label'),
+                        'target': value.get('target_label'),
+                        'initiative': value.get('initiative'),
+                        'rez': f"{value.get('rez_current')}/{value.get('rez_max')}",
+                    }
+                return {
+                    'round': value.get('round'),
+                    'active_turn': value.get('active_turn'),
+                    'floors': len(value.get('floors') or []),
+                    'links': len(value.get('links') or []),
+                }
+            changes.append({'field': 'net_context',
+                            'before': net_summary(before),
+                            'after': net_summary(after)})
         else:
             fields = (
                 'name', 'initiative', 'hp_current', 'hp_max',
@@ -10568,6 +10911,7 @@ class Handler(BaseHTTPRequestHandler):
             'active_turn': visible_active_turn if player_view else active_turn,
             'player_view_config': config, 'safety_config': safety,
             'combatants': out_combatants,
+            'net': self.session_net_payload(conn, row, player_view=player_view),
             'created': row['created'], 'updated': row['updated'], 'can_edit': can_edit,
             'access_role': access_role,
             'capabilities': {key: key in capabilities for key in (
@@ -10847,6 +11191,139 @@ class Handler(BaseHTTPRequestHandler):
         updated = conn.execute('SELECT * FROM session_safety_signals WHERE id=?',
                                (signal['id'],)).fetchone()
         self.send_json(self.safety_signal_payload(updated))
+
+    def api_character_net_contexts(self, conn, qs, m, body):
+        user, character = self.require_character_editor(conn, m.group(1))
+        rows = conn.execute(
+            'SELECT DISTINCT s.* FROM nc_sessions s JOIN session_combatants c '
+            'ON c.session_id=s.id WHERE c.character_id=? '
+            "AND s.status IN ('preparing','active','paused') ORDER BY s.updated DESC",
+            (character['id'],)).fetchall()
+        contexts = []
+        for session in rows:
+            role, capabilities = self.session_capabilities(conn, user, session)
+            if not role:
+                continue
+            state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+            targets = conn.execute(
+                'SELECT id,kind,character_id,name FROM session_combatants '
+                'WHERE session_id=? AND (character_id IS NULL OR character_id!=?) '
+                'ORDER BY initiative DESC,sort_order,id',
+                (session['id'], character['id'])).fetchall()
+            contexts.append({
+                'session_id': session['id'], 'title': session['title'],
+                'status': session['status'], 'access_role': role,
+                'floors': state['floors'],
+                'targets': [dict(target) for target in targets],
+                'can_manage_net': 'edit_combatants' in capabilities,
+            })
+        self.send_json({'character_id': character['id'], 'sessions': contexts})
+
+    @atomic_endpoint
+    def api_session_net_floor_create(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_session' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права редактировать Session NET Floors')
+        label = str((body or {}).get('label') or '').strip()[:120]
+        note = str((body or {}).get('reason') or '').strip()[:500]
+        if not label:
+            raise ApiError(400, 'NET Floor требует label')
+        if len(note) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Floors')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        if len(state['floors']) >= 100 or any(
+                item['label'].lower() == label.lower() for item in state['floors']):
+            raise ApiError(409, 'NET Floor уже существует или достигнут лимит')
+        before = copy.deepcopy(state)
+        floor = {'floor_id': secrets.token_hex(16), 'label': label,
+                 'sort_order': len(state['floors'])}
+        state['floors'].append(floor)
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_floor_create',
+             json.dumps(before, ensure_ascii=False),
+             json.dumps(state, ensure_ascii=False), note, now))
+        conn.commit()
+        self.send_json(floor, status=201)
+
+    @atomic_endpoint
+    def api_session_net_floor_delete(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_session' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права редактировать Session NET Floors')
+        floor_id = str(m.group(2)).lower()
+        note = str((body or {}).get('reason') or '').strip()[:500]
+        if len(note) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Floors')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        floor = next((item for item in state['floors']
+                      if item['floor_id'] == floor_id), None)
+        if not floor:
+            raise ApiError(404, 'Session NET Floor не найден')
+        if any(item['active'] and item['floor_id'] == floor_id
+               for item in state['links']):
+            raise ApiError(409, 'NET Floor используется active entity')
+        before = copy.deepcopy(state)
+        state['floors'] = [item for item in state['floors']
+                           if item['floor_id'] != floor_id]
+        for index, item in enumerate(state['floors']):
+            item['sort_order'] = index
+        state['links'] = [item for item in state['links']
+                          if item['floor_id'] != floor_id]
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_floor_delete',
+             json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             note, now))
+        conn.commit()
+        self.send_json({'ok': True})
+
+    @atomic_endpoint
+    def api_session_net_state_update(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_combatants' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права управлять Session NET Queue')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        before = copy.deepcopy(state)
+        net_payload = self.session_net_payload(conn, session, player_view=False)
+        queue_count = sum(1 for item in net_payload['entities'] if item['in_queue'])
+        round_number = _num((body or {}).get('round', state['round']))
+        active_turn = _num((body or {}).get('active_turn', state['active_turn']))
+        if (round_number is None or int(round_number) != round_number or round_number < 0 or
+                active_turn is None or int(active_turn) != active_turn or active_turn < 0):
+            raise ApiError(400, 'Некорректный Session NET turn state')
+        state['round'] = int(round_number)
+        state['active_turn'] = min(int(active_turn), max(0, queue_count - 1))
+        note = str((body or {}).get('reason') or '').strip()[:500]
+        if len(note) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Queue')
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_turn_update',
+             json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             note, now))
+        conn.commit()
+        updated = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (session['id'],)).fetchone()
+        self.send_json(self.session_payload(conn, updated, user))
 
     def api_sessions(self, conn, qs, m, body):
         user = self.require_user(conn)
@@ -11409,6 +11886,9 @@ ROUTES = [
     ('GET', rx(r'/api/sessions/(\d+)'), Handler.api_session_detail),
     ('PUT', rx(r'/api/sessions/(\d+)'), Handler.api_session_update),
     ('GET', rx(r'/api/sessions/(\d+)/player-view'), Handler.api_session_player_view),
+    ('POST', rx(r'/api/sessions/(\d+)/net/floors'), Handler.api_session_net_floor_create),
+    ('DELETE', rx(r'/api/sessions/(\d+)/net/floors/([a-f0-9]{32})'), Handler.api_session_net_floor_delete),
+    ('PUT', rx(r'/api/sessions/(\d+)/net/state'), Handler.api_session_net_state_update),
     ('GET', rx(r'/api/sessions/(\d+)/access'), Handler.api_session_access),
     ('POST', rx(r'/api/sessions/(\d+)/access'), Handler.api_session_access_grant),
     ('DELETE', rx(r'/api/sessions/(\d+)/access/(\d+)'), Handler.api_session_access_revoke),
@@ -11445,6 +11925,7 @@ ROUTES = [
     ('POST', rx(r'/api/characters/(\d+)/net-entities/([a-f0-9]{32})/action'), Handler.api_character_net_entity_action),
     ('POST', rx(r'/api/characters/(\d+)/cyberdecks/([a-f0-9]{32})/programs/([a-f0-9]{32})/action'), Handler.api_character_program_action),
     ('POST', rx(r'/api/characters/(\d+)/cyberdecks/([a-f0-9]{32})/hardware/([a-f0-9]{32})/restore'), Handler.api_character_backup_restore),
+    ('GET', rx(r'/api/characters/(\d+)/net-contexts'), Handler.api_character_net_contexts),
     ('GET', rx(r'/api/characters/(\d+)/effects'), Handler.api_character_effects),
     ('POST', rx(r'/api/characters/(\d+)/effects'), Handler.api_character_effect_create),
     ('POST', rx(r'/api/characters/(\d+)/effects/([a-f0-9]{32})/action'), Handler.api_character_effect_action),

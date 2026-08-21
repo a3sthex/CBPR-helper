@@ -3000,7 +3000,20 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Destroy архивирует entity, освобождает Cyberdeck slots и переводит source copy в `broken`; linked Ledger revert восстанавливает installation, runtime и entity context одним snapshot;
 - Character Sheet показывает отдельную Black ICE entity card со stats, status, Floor, Target и Initiative; deploy/entity controls защищены revision и требуют audit reason;
 - публичный Dossier server-side скрывает Floor, target, Character owner и raw initiative roll даже при открытом Equipment;
-- Floor/Target пока являются validated manual labels: NET Architecture IDs, Session Initiative Queue, attack rolls/effects и автоматический target legality остаются B.8.4/Live NET integration.
+- Floor/Target этого этапа начинались как validated manual labels; связь с Session NET context была вынесена в B.8.4.
+
+**Статус B.8.4 — реализована Live NET Session Integration:**
+
+- schema migration 11 добавляет additive `net_state_json` в `nc_sessions`; перед pending migration сохраняется автоматический SQLite backup, сброс базы не требуется;
+- GM/Co-GM создаёт validated Session NET Floors; active entity блокирует удаление используемого Floor;
+- Character, добавленный в Session combatants, автоматически получает scoped `crew` access и видит доступные Live NET contexts, Floors и допустимые target combatants;
+- Black ICE deployment может быть связан с конкретными `session_id`, `floor_id` и `target_combatant_id`; сервер заменяет пользовательские labels данными Session и запрещает self/foreign targets;
+- Session хранит links на canonical Character `net_entities`, а не копирует runtime stats; Character JSON остаётся authoritative source REZ/status, Session — authoritative Floor/target/visibility/queue context;
+- GM Session Dashboard получил отдельный `LIVE NET` board, validated Floors, Black ICE cards, NET Round и независимую NET Initiative Queue;
+- Session-scoped GM/Assistant с `edit_combatants` может применять REZ damage, Slide, Engage, Deactivate и Destroy через character endpoint без глобального доступа к чужому Dossier;
+- initial `Lie in Wait` скрыт из Player View; combat deployment и Engage делают entity видимой, после чего Player View показывает отдельную NET queue со stats/REZ/Floor/Target;
+- все deploy/entity/turn/floor операции пишутся в Session Activity; linked Character Ledger revert атомарно возвращает и Character runtime, и Session NET context snapshot;
+- Floor и target теперь validated внутри Session, но полноценные Architecture nodes/paths, преследование между связанными Floors и автоматические Program attacks остаются следующими Architecture/NET combat этапами.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -3023,8 +3036,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: Cyberdeck loadout, Program runtime/REZ, Backup Drive и Black ICE NET entity lifecycle;
-    - дальше: NET Architecture/Session integration, затем Cyberware/Armor/Tech hosts.
+    - готово: Cyberdeck/Program runtime, Backup Drive, Black ICE entities и Live Session NET Queue/Floors/targets;
+    - дальше: NET Architecture nodes/paths и attack resolution, затем Cyberware/Armor/Tech hosts.
 14. JSON import.
 
 ### Пакет C — Publishing Preview

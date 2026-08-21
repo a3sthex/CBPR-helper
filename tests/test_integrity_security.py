@@ -1350,6 +1350,147 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertEqual(restored_program['net_entity']['status'], 'lying_in_wait')
         self.assertEqual(restored_program['runtime']['status'], 'rezzed')
 
+    def test_live_net_session_validates_floors_targets_queue_and_gm_actions(self):
+        edited = copy.deepcopy(self.character_data)
+        item_ids = ('net_stuff-1', 'programs-25')
+        edited['inventory'] = [
+            {
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': server.item_by_id(item_id)['cat'],
+                'name': server.item_by_id(item_id)['name'], 'qty': 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            }
+            for item_id in item_ids
+        ]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add Live NET Session test loadout', 'data': edited,
+        })
+        by_name = {item['name']: item for item in updated['data']['inventory']}
+        deck, killer = by_name['Cyberdeck (Standard Quality)'], by_name['Killer']
+        self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 1, 'host_instance_id': deck['instance_id'],
+            'upgrade_instance_id': killer['instance_id'],
+            'manual_confirm': False, 'reason': 'Install Killer for Live NET test',
+        })
+
+        self.current = self.user('gm')
+        session = self.call(server.Handler.api_session_create, body={
+            'title': 'Live NET Integration Test',
+        })
+        session_id = session['id']
+        self.conn.execute(
+            "INSERT INTO session_combatants(session_id,kind,character_id,name,initiative,visible,sort_order) "
+            "VALUES(?,'character',1,'V',12,1,0)", (session_id,))
+        self.conn.execute(
+            "INSERT INTO session_combatants(session_id,kind,name,initiative,visible,sort_order) "
+            "VALUES(?,'npc','Enemy Netrunner',10,1,1)", (session_id,))
+        self.conn.commit()
+        target_id = self.conn.execute(
+            "SELECT id FROM session_combatants WHERE session_id=? AND kind='npc'",
+            (session_id,)).fetchone()['id']
+        floor = self.call(server.Handler.api_session_net_floor_create,
+                          self.match(session_id), {
+            'label': 'Lobby Node', 'reason': 'Create validated entry Floor',
+        })
+        self.assertRegex(floor['floor_id'], r'^[a-f0-9]{32}$')
+
+        self.current = self.user('runner')
+        contexts = self.call(server.Handler.api_character_net_contexts, self.match(1))
+        self.assertEqual(contexts['sessions'][0]['session_id'], session_id)
+        self.assertEqual(contexts['sessions'][0]['access_role'], 'crew')
+        self.assertEqual(contexts['sessions'][0]['floors'][0]['floor_id'], floor['floor_id'])
+        deploy_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})/([a-f0-9]{32})$',
+            f'1/{deck["instance_id"]}/{killer["instance_id"]}')
+        deployed = self.call(server.Handler.api_character_black_ice_deploy,
+                             deploy_match, {
+            'revision': 2, 'mode': 'deploy_combat', 'session_id': session_id,
+            'session_floor_id': floor['floor_id'],
+            'target_combatant_id': target_id,
+            'reason': 'Deploy Killer into validated Live NET context',
+        })
+        entity = deployed['net_entity']
+        self.assertEqual(entity['session_id'], session_id)
+        self.assertEqual(entity['floor_label'], 'Lobby Node')
+        self.assertEqual(entity['target_label'], 'Enemy Netrunner')
+
+        self.current = self.user('gm')
+        session_payload = self.call(server.Handler.api_session_detail,
+                                    self.match(session_id))
+        self.assertEqual(session_payload['net']['entities'][0]['net_entity_id'],
+                         entity['net_entity_id'])
+        self.assertTrue(session_payload['net']['entities'][0]['active'])
+        self.assertEqual(session_payload['net']['entities'][0]['target_combatant_id'],
+                         target_id)
+        player_payload = self.call(server.Handler.api_session_player_view,
+                                   self.match(session_id))
+        self.assertEqual(len(player_payload['net']['entities']), 1)
+
+        entity_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$', f'1/{entity["net_entity_id"]}')
+        damaged = self.call(server.Handler.api_character_net_entity_action,
+                            entity_match, {
+            'revision': 3, 'action': 'damage', 'amount': 5,
+            'reason': 'Session GM applies Zap damage',
+        })
+        self.assertEqual(damaged['net_entity']['rez_current'], 15)
+        queue_updated = self.call(server.Handler.api_session_net_state_update,
+                                  self.match(session_id), {
+            'round': 1, 'active_turn': 0, 'reason': 'Start NET Initiative round',
+        })
+        self.assertEqual(queue_updated['net']['round'], 1)
+        slid = self.call(server.Handler.api_character_net_entity_action,
+                         entity_match, {
+            'revision': 4, 'action': 'slide',
+            'reason': 'Enemy Netrunner Slides from Killer',
+        })
+        self.assertEqual(slid['net_entity']['status'], 'lying_in_wait')
+        session_after_slide = self.call(server.Handler.api_session_detail,
+                                        self.match(session_id))
+        self.assertFalse(session_after_slide['net']['entities'][0]['in_queue'])
+        engaged = self.call(server.Handler.api_character_net_entity_action,
+                            entity_match, {
+            'revision': 5, 'action': 'engage',
+            'session_floor_id': floor['floor_id'],
+            'target_combatant_id': target_id,
+            'reason': 'Killer reacquires validated Session target',
+        })
+        self.assertEqual(engaged['net_entity']['status'], 'hunting')
+        deactivated = self.call(server.Handler.api_character_net_entity_action,
+                                entity_match, {
+            'revision': 6, 'action': 'deactivate',
+            'reason': 'Session GM deactivates Killer entity',
+        })
+        self.assertEqual(deactivated['net_entity']['status'], 'deactivated')
+        no_entity = self.call(server.Handler.api_session_detail,
+                              self.match(session_id))
+        self.assertFalse(no_entity['net']['entities'])
+
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertTrue(ledger['entries'][0]['can_revert'])
+        reverted = self.call(server.Handler.api_character_ledger_revert,
+                             self.match(1, ledger['entries'][0]['id']), {
+            'revision': 7, 'reason': 'Undo premature Session NET deactivation',
+        })
+        self.assertEqual(reverted['data']['program_state'][killer['instance_id']]['status'],
+                         'rezzed')
+        restored_session = self.call(server.Handler.api_session_detail,
+                                     self.match(session_id))
+        self.assertEqual(restored_session['net']['entities'][0]['status'], 'hunting')
+        floor_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$', f'{session_id}/{floor["floor_id"]}')
+        with self.assertRaises(server.ApiError) as used_floor:
+            self.call(server.Handler.api_session_net_floor_delete, floor_match, {
+                'reason': 'Try deleting Floor with active entity',
+            })
+        self.assertEqual(used_floor.exception.status, 409)
+        activity_types = {item['event_type'] for item in
+                          self.call(server.Handler.api_session_detail,
+                                    self.match(session_id))['activity']}
+        self.assertTrue({'net_floor_create', 'net_entity_deploy',
+                         'net_entity_damage', 'net_turn_update',
+                         'net_entity_revert'} <= activity_types)
+
     def test_vehicle_garage_installs_prerequisites_and_preserves_nomad_access_semantics(self):
         edited = copy.deepcopy(self.character_data)
         edited['inventory'] = [

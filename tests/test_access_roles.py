@@ -52,7 +52,7 @@ class AccessRoleMigrationTests(unittest.TestCase):
             self.assertEqual(roles, {'alice': 'gm', 'bob': 'player'})
             self.assertEqual(
                 conn.execute('SELECT COUNT(*) n FROM schema_migrations').fetchone()['n'],
-                server.MIGRATION_ITEM_MODIFICATIONS)
+                server.MIGRATION_SESSION_NET)
             self.assertEqual(len(list(Path(directory).glob('campaign.db.backup-*'))), 1)
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(users)')}
             self.assertTrue({'account_role', 'show_display_name', 'vk_user_id',
@@ -61,6 +61,9 @@ class AccessRoleMigrationTests(unittest.TestCase):
             session_columns = {row['name'] for row in conn.execute(
                 'PRAGMA table_info(sessions)')}
             self.assertTrue({'last_seen', 'ip_address', 'user_agent'} <= session_columns)
+            nc_session_columns = {row['name'] for row in conn.execute(
+                'PRAGMA table_info(nc_sessions)')}
+            self.assertIn('net_state_json', nc_session_columns)
             self.assertTrue(conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_security_audit'"
             ).fetchone())

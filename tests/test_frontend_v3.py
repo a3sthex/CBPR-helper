@@ -130,6 +130,19 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('blackIceRuntimeHtml', source)
         self.assertIn('Deploy in Combat', source)
 
+    def test_live_session_has_validated_net_context_and_queue_controls(self):
+        ncnet = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')
+        app = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        self.assertIn('LIVE NET', ncnet)
+        self.assertIn('ss-net-floor-add', ncnet)
+        self.assertIn('data-session-net-action', ncnet)
+        self.assertIn('/net/state', ncnet)
+        self.assertIn('session-net-grid', ncnet)
+        self.assertIn('chooseBlackIceDeploymentContext', app)
+        self.assertIn('/net-contexts', app)
+        self.assertIn('session_floor_id', app)
+        self.assertIn('target_combatant_id', app)
+
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
         self.assertIn('created_effects', source)
