@@ -78,7 +78,9 @@ ITEM_MODIFICATION_FIELDS = (
     'host_type', 'modification_kind', 'modification_group', 'slot_type',
     'grants_slots', 'slots_used', 'compatibility_text',
     'permanent_installation', 'unique_per_host', 'compatibility_manual',
-    'installation_source',
+    'installation_source', 'availability_text', 'nomad_access_required',
+    'repeatable_max', 'prerequisite_upgrades', 'prerequisite_host_names',
+    'conflicting_upgrades',
 )
 
 
@@ -2386,6 +2388,113 @@ def weapon_upgrade_compatibility(host, upgrade, active_modifications=None,
         'slots_required': required, 'slots_after': slots_used + required,
         'grants_slots': copy.deepcopy(upgrade.get('grants_slots') or {}),
         'compatibility_text': upgrade.get('compatibility_text') or '',
+    }
+
+
+def vehicle_classification(host):
+    name = str(host.get('name') or '').lower()
+    if name == 'bicycle' or 'bicycle' in name:
+        return {'bicycle', 'bike', 'land'}
+    if 'bike' in name or 'motorcycle' in name:
+        return {'bike', 'land'}
+    if 'jetski' in name:
+        return {'jetski', 'sea'}
+    if 'gyrocopter' in name:
+        return {'gyrocopter', 'air'}
+    if any(token in name for token in ('speedboat', 'cabin cruiser', 'yacht', 'boat', 'submarine')):
+        return {'sea'}
+    if any(token in name for token in ('helicopter', 'aerodyne', 'aerozep', 'av-')):
+        return {'air'}
+    return {'land', 'groundcar'}
+
+
+def character_nomad_rank(character):
+    return max([_num(role.get('rank')) or 0 for role in character.get('roles') or []
+                if isinstance(role, dict) and role.get('name') == 'Nomad'] or [0])
+
+
+def vehicle_upgrade_compatibility(host, upgrade, active_modifications=None,
+                                  owned_by_id=None, character=None):
+    active_modifications = active_modifications or []
+    owned_by_id = owned_by_id or {}
+    character = character or {}
+    reasons = []
+    manual = bool(upgrade.get('compatibility_manual'))
+    if host.get('cat') != 'vehicles':
+        reasons.append('Host is not a vehicle')
+    if upgrade.get('cat') != 'vehicles_upgrades' or upgrade.get('host_type') != 'vehicle':
+        reasons.append('Item is not a vehicle upgrade')
+    classes = vehicle_classification(host)
+    availability = str(upgrade.get('availability_text') or '').strip()
+    low = availability.lower()
+    if 'except bikes, jetskis, gyrocopters' in low:
+        if classes & {'bike', 'jetski', 'gyrocopter'}:
+            reasons.append('Unavailable for Bikes, Jetskis, or Gyrocopters')
+    elif 'all land and sea vehicles except bikes and jetski' in low:
+        if not classes & {'land', 'sea'} or classes & {'bike', 'jetski'}:
+            reasons.append('Requires a non-Bike Land or Sea vehicle')
+    elif low == 'all land and sea vehicles' and not classes & {'land', 'sea'}:
+        reasons.append('Requires a Land or Sea vehicle')
+    elif low == 'all land vehicles' and 'land' not in classes:
+        reasons.append('Requires a Land vehicle')
+    elif low == 'all bikes' and 'bike' not in classes:
+        reasons.append('Requires a Bike')
+    elif low in ('all groundcars', 'all groundcards') and 'groundcar' not in classes:
+        reasons.append('Requires a Groundcar')
+    elif low == 'bicycle' and 'bicycle' not in classes:
+        reasons.append('Requires a Bicycle')
+    elif low not in ('', 'all vehicles') and ',' in availability and not any(
+            (token.strip().lower() in str(host.get('name') or '').lower() or
+             (token.strip().lower() == 'groundcars' and 'groundcar' in classes))
+            for token in availability.split(',')):
+        reasons.append('Vehicle is not in the named availability list')
+    elif low == 'vehicles with rooms':
+        manual = True
+    elif low not in ('', 'all vehicles') and not any(token in low for token in (
+            'except bikes', 'land and sea', 'land vehicles', 'all bikes',
+            'groundcar', 'bicycle', ',')):
+        if low not in str(host.get('name') or '').lower():
+            reasons.append('Vehicle does not match named availability')
+
+    installed_upgrades = [owned_by_id.get(mod.get('upgrade_instance_id')) or {}
+                          for mod in active_modifications]
+    installed_names = {str(item.get('name') or '') for item in installed_upgrades}
+    has_named_upgrade = lambda expected: any(
+        name == expected or name.startswith(expected + ' (') for name in installed_names)
+    prerequisite_host_names = upgrade.get('prerequisite_host_names') or {}
+    for prerequisite in upgrade.get('prerequisite_upgrades') or []:
+        host_names = prerequisite_host_names.get(prerequisite) or []
+        applies = not host_names or str(host.get('name') or '') in host_names
+        if applies and not has_named_upgrade(prerequisite):
+            reasons.append(f'Requires installed {prerequisite}')
+    for conflict in upgrade.get('conflicting_upgrades') or []:
+        if has_named_upgrade(conflict):
+            reasons.append(f'Conflicts with installed {conflict}')
+    same_count = sum(1 for item in installed_upgrades
+                     if catalog_item_id_for_entry(item) == catalog_item_id_for_entry(upgrade))
+    repeatable_max = max(1, int(upgrade.get('repeatable_max') or 1))
+    if same_count >= repeatable_max:
+        reasons.append(f'Upgrade limit reached ({same_count}/{repeatable_max})')
+
+    access_required = _num(upgrade.get('nomad_access_required'))
+    nomad_rank = character_nomad_rank(character)
+    role_access = upgrade.get('acquisition_source') == 'role_access'
+    access_met = not role_access or access_required is None or nomad_rank >= access_required
+    if not access_met:
+        reasons.append(f'Nomad Access {access_required} requires Nomad Rank {access_required}')
+    return {
+        'allowed': not reasons,
+        'manual_resolution_required': manual,
+        'reasons': reasons,
+        'availability_text': availability,
+        'nomad_access_required': access_required,
+        'nomad_rank': nomad_rank,
+        'role_access_item': role_access,
+        'nomad_access_met': access_met,
+        'repeatable_max': repeatable_max,
+        'installed_count': same_count,
+        'prerequisite_upgrades': copy.deepcopy(upgrade.get('prerequisite_upgrades') or []),
+        'conflicting_upgrades': copy.deepcopy(upgrade.get('conflicting_upgrades') or []),
     }
 
 
@@ -4785,6 +4894,9 @@ SERVER_ERROR_EN = {
     'Modification configuration содержит неизвестные поля': 'Modification configuration contains unknown fields',
     'Выберите обязательную конфигурацию modification': 'Choose the required modification configuration',
     'Некорректный вариант configuration': 'Invalid configuration choice',
+    'Vehicle configuration пока не поддерживается': 'Vehicle configuration is not supported yet',
+    'Неподдерживаемый тип modification host': 'Unsupported modification host type',
+    'Сначала снимите зависимые vehicle upgrades': 'Remove dependent vehicle upgrades first',
     'Все слоты заняты': 'All slots are filled',
     'Вы уже записаны': 'You are already signed up',
     'Для специализированного навыка повышайте parent-pool': 'Increase the parent pool for a specialized Skill',
@@ -7196,13 +7308,53 @@ class Handler(BaseHTTPRequestHandler):
                 'configuration_by_host': configuration_by_host,
                 'compatibility': matrix,
             })
+        vehicle_hosts = []
+        for host in (entry for entry in data.get('inventory') or []
+                     if isinstance(entry, dict) and entry.get('cat') == 'vehicles'):
+            active = [mod for mod in modifications if mod['host_instance_id'] == host.get('instance_id')]
+            mechanics = host.get('mechanics') or {}
+            vehicle_hosts.append({
+                'instance_id': host.get('instance_id'),
+                'catalog_item_id': catalog_item_id_for_entry(host),
+                'name': host.get('custom_name') or host.get('name'),
+                'state': host.get('state'), 'classes': sorted(vehicle_classification(host)),
+                'sdp': mechanics.get('sdp'), 'sp': mechanics.get('sp'),
+                'seats': mechanics.get('seats'),
+                'combat_speed': mechanics.get('combat_speed'),
+                'narrative_speed': mechanics.get('narrative_speed'),
+                'nomad_access': mechanics.get('nomad_access'),
+                'modification_ids': [mod['modification_id'] for mod in active],
+            })
+        vehicle_upgrades = []
+        for upgrade in (entry for entry in data.get('inventory') or []
+                        if isinstance(entry, dict) and entry.get('cat') == 'vehicles_upgrades'):
+            matrix = {}
+            for host in (entry for entry in data.get('inventory') or []
+                         if isinstance(entry, dict) and entry.get('cat') == 'vehicles'):
+                active = [mod for mod in modifications if mod['host_instance_id'] == host.get('instance_id')]
+                matrix[host['instance_id']] = vehicle_upgrade_compatibility(
+                    host, upgrade, active, owned, data)
+            vehicle_upgrades.append({
+                'instance_id': upgrade.get('instance_id'),
+                'catalog_item_id': catalog_item_id_for_entry(upgrade),
+                'name': upgrade.get('custom_name') or upgrade.get('name'),
+                'state': upgrade.get('state'),
+                'availability_text': upgrade.get('availability_text') or '',
+                'nomad_access_required': upgrade.get('nomad_access_required'),
+                'repeatable_max': upgrade.get('repeatable_max') or 1,
+                'permanent_installation': bool(upgrade.get('permanent_installation')),
+                'compatibility_manual': bool(upgrade.get('compatibility_manual')),
+                'compatibility': matrix,
+            })
         for modification in modifications:
             config = modification.get('configuration') or {}
             modification['host_name'] = (owned.get(modification['host_instance_id']) or {}).get('custom_name') or (owned.get(modification['host_instance_id']) or {}).get('name') or config.get('host_name')
             modification['upgrade_name'] = (owned.get(modification['upgrade_instance_id']) or {}).get('custom_name') or (owned.get(modification['upgrade_instance_id']) or {}).get('name') or config.get('upgrade_name')
         return {
             'character_id': row['id'], 'revision': _row_value(row, 'revision', 0) or 0,
-            'hosts': hosts, 'upgrades': upgrades, 'modifications': modifications,
+            'hosts': hosts, 'upgrades': upgrades,
+            'vehicle_hosts': vehicle_hosts, 'vehicle_upgrades': vehicle_upgrades,
+            'modifications': modifications,
         }
 
     def api_character_modifications(self, conn, qs, m, body):
@@ -7236,11 +7388,24 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(409, 'Host должен быть исправен и находиться при персонаже')
         if upgrade.get('state') != 'carried':
             raise ApiError(409, 'Upgrade должен находиться в состоянии carried')
-        choices = clean_weapon_modification_choices(
-            catalog_item_id_for_entry(upgrade), (body or {}).get('configuration'), host)
+        host_type = str(upgrade.get('host_type') or '')
         active = [mod for mod in character_modifications(conn, row['id'])
                   if mod['host_instance_id'] == host_id]
-        compatibility = weapon_upgrade_compatibility(host, upgrade, active, owned)
+        if host_type == 'weapon':
+            choices = clean_weapon_modification_choices(
+                catalog_item_id_for_entry(upgrade), (body or {}).get('configuration'), host)
+            compatibility = weapon_upgrade_compatibility(host, upgrade, active, owned)
+            effect_rules = weapon_modification_rules_for_catalog(
+                catalog_item_id_for_entry(upgrade))
+        elif host_type == 'vehicle':
+            if (body or {}).get('configuration') not in (None, {}):
+                raise ApiError(400, 'Vehicle configuration пока не поддерживается')
+            choices = {}
+            compatibility = vehicle_upgrade_compatibility(
+                host, upgrade, active, owned, data)
+            effect_rules = []
+        else:
+            raise ApiError(400, 'Неподдерживаемый тип modification host')
         if not compatibility['allowed']:
             raise ApiError(400, 'Несовместимая модификация: ' + '; '.join(compatibility['reasons']))
         if compatibility['manual_resolution_required'] and not bool((body or {}).get('manual_confirm')):
@@ -7257,8 +7422,7 @@ class Handler(BaseHTTPRequestHandler):
             'slot_pool': compatibility.get('slot_pool'),
             'grants_slots': copy.deepcopy(upgrade.get('grants_slots') or {}),
             'choices': choices,
-            'effect_rules': weapon_modification_rules_for_catalog(
-                catalog_item_id_for_entry(upgrade)),
+            'effect_rules': effect_rules,
             'effects_rules_version': load_effect_rules().get('rules_version'),
         }
         profiles = weapon_profiles_from_rules(configuration['effect_rules'])
@@ -7275,14 +7439,15 @@ class Handler(BaseHTTPRequestHandler):
             'upgrade_instance_id,host_type,slot_type,slots_used,active,permanent,'
             'configuration_json,notes,source_type,installed_by,installed_at,created,updated) '
             'VALUES(?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?)',
-            (modification_id, row['id'], host_id, upgrade_id, 'weapon',
-             compatibility.get('slot_pool') or upgrade.get('slot_type') or 'attachment',
+            (modification_id, row['id'], host_id, upgrade_id, host_type,
+             compatibility.get('slot_pool') or upgrade.get('slot_type') or f'{host_type}_upgrade',
              int(upgrade.get('slots_used') or 0), 1 if upgrade.get('permanent_installation') else 0,
              json.dumps(configuration, ensure_ascii=False), str((body or {}).get('notes') or '')[:2000],
              upgrade.get('acquisition_source') or 'inventory', user['id'], now, now, now))
         upgrade['state'] = 'installed'
         upgrade['host_instance_id'] = host_id
-        sync_weapon_states_with_modifications(conn, row['id'], data)
+        if host_type == 'weapon':
+            sync_weapon_states_with_modifications(conn, row['id'], data)
         revision_after = current_revision + 1
         persist_character_item_instances(conn, row['id'], data, 'modification_install')
         ledger_id = record_character_change_set(
@@ -7383,12 +7548,24 @@ class Handler(BaseHTTPRequestHandler):
                                    if item['modification_id'] != modification_id]
         owned = {entry.get('instance_id'): entry for entry in data.get('inventory') or []
                  if isinstance(entry, dict) and entry.get('instance_id')}
-        if host:
+        if host and modification.get('host_type') == 'weapon':
             remaining_pools = weapon_slot_capacity(host, remaining_modifications, owned)
             overloaded = [name for name, pool in remaining_pools.items()
                           if pool['used'] > pool['total']]
             if overloaded:
                 raise ApiError(409, 'Сначала снимите modifications, зависящие от granted slots')
+        elif host and modification.get('host_type') == 'vehicle':
+            removed_name = str(upgrade.get('name') or '')
+            for remaining in remaining_modifications:
+                dependent = owned.get(remaining.get('upgrade_instance_id')) or {}
+                host_names = (dependent.get('prerequisite_host_names') or {}).get(removed_name) or []
+                applies = not host_names or str(host.get('name') or '') in host_names
+                required_names = dependent.get('prerequisite_upgrades') or []
+                removes_prerequisite = any(
+                    removed_name == required or removed_name.startswith(required + ' (')
+                    for required in required_names)
+                if applies and removes_prerequisite:
+                    raise ApiError(409, 'Сначала снимите зависимые vehicle upgrades')
         upgrade['state'] = 'carried'
         upgrade.pop('host_instance_id', None)
         data.setdefault('modification_state', {}).pop(modification_id, None)
@@ -7396,7 +7573,8 @@ class Handler(BaseHTTPRequestHandler):
         conn.execute(
             'UPDATE item_modifications SET active=0,removed_by=?,removed_at=?,updated=? '
             'WHERE modification_id=?', (user['id'], now, now, modification_id))
-        sync_weapon_states_with_modifications(conn, row['id'], data)
+        if modification.get('host_type') == 'weapon':
+            sync_weapon_states_with_modifications(conn, row['id'], data)
         revision_after = current_revision + 1
         persist_character_item_instances(conn, row['id'], data, 'modification_remove')
         config = modification.get('configuration') or {}

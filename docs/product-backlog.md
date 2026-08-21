@@ -2899,6 +2899,18 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Range Table Modification остаётся manual-confirmed из-за source-specific individual eligibility, даже когда family choice валиден;
 - фактический Range DV picker/attack context будет использовать effective table в будущем combat action, но текущий этап уже создаёт единый authoritative value.
 
+**Статус B.7.1 — реализован Vehicle Garage и instance-bound upgrades:**
+
+- importer нормализует Vehicle Upgrades: availability, Nomad Access, repeatability, prerequisites, conditional host prerequisites, conflicts, permanent/manual markers и source;
+- общая `item_modifications` model теперь поддерживает второй host type `vehicle` без отдельной несовместимой таблицы;
+- Character Sheet показывает Vehicle Garage с конкретными vehicle instances, base SDP/SP/Seats/Speed/Nomad Access и установленными upgrades;
+- Manage Vehicle Upgrades показывает physical upgrades из Inventory, availability, причины блокировки, prerequisites/conflicts и repeatable limit;
+- Heavy Chassis блокируется на Bikes/Jetskis/Gyrocopters; Housing Capacity на Compact/High Performance Groundcar требует установленный Heavy Chassis;
+- prerequisite upgrade нельзя снять раньше зависимого; permanent vehicle weapons/parts нельзя удалить обычным Remove;
+- Nomad Access остаётся отдельной семантикой: купленный/найденный physical upgrade устанавливается независимо от Role, а item с source `Role Access` требует соответствующий Nomad Rank;
+- Install/Remove используют те же atomic revision, stable instance links, Ledger и safe revert, что weapon modifications;
+- effective Vehicle SDP/SP/Seats/Glass/NOS, mounted weapons и Garage resource state остаются B.7.2.
+
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
@@ -2916,7 +2928,9 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 11. ◐ Weapon Upgrades прямо в Character Sheet.
     - готово: instance binding, slot pools, lifecycle, Magazines/Smartgun/Bayonet/scopes, Underbarrels, Autofire/Rebuild profiles и host-specific Range Table choices;
     - дальше: contextual ricochet/charge, full Autofire action/ammo и Tech overrides.
-12. Vehicle Upgrades и Garage integration.
+12. ◐ Vehicle Upgrades и Garage integration.
+    - готово: vehicle instances, compatibility/access/prerequisites, Garage UI и Install/Remove lifecycle;
+    - дальше: effective SDP/SP/Seats/Glass/NOS и mounted weapon profiles.
 13. Cyberdeck/Cyberware/Armor/Tech modification hosts.
 14. JSON import.
 

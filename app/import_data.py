@@ -150,6 +150,58 @@ def item_modification_metadata(cat, name, row, desc):
     }
 
 
+def vehicle_modification_metadata(cat, name, row, desc):
+    if cat != 'vehicles_upgrades':
+        return {}
+    text = str(desc or '').replace('’', "'")
+    low = text.lower()
+    prerequisites = []
+    for candidate in ('Heavy Chassis', 'Enclosure', 'Reinforced Frame'):
+        if re.search(rf'requires? (?:(?:a|the) )?{re.escape(candidate.lower())}', low):
+            prerequisites.append(candidate)
+    conflicts = []
+    for candidate in ('Enclosure', 'Folding Frame', 'Reinforced Frame',
+                      'Smuggling Compartment'):
+        if re.search(rf'incompatible with[^.]*{re.escape(candidate.lower())}', low):
+            conflicts.append(candidate)
+    repeatable_max = 1
+    if name == 'Bulletproof Glass':
+        repeatable_max = 2
+    elif 'multiple upgrades' in low or 'additional upgrade' in low:
+        repeatable_max = 99
+    availability = normalize_display_value(row.get('Availability') or '')
+    nomad_access = row.get('Nomad Access')
+    try:
+        nomad_access = int(float(nomad_access)) if nomad_access not in (None, '') else None
+    except (TypeError, ValueError):
+        nomad_access = None
+    prerequisite_host_names = {}
+    if name == 'Housing Capacity' and 'Heavy Chassis' in prerequisites:
+        prerequisite_host_names['Heavy Chassis'] = [
+            'Compact Groundcar', 'High Performance Groundcar']
+    return {
+        'host_type': 'vehicle',
+        'modification_kind': 'vehicle_upgrade',
+        'modification_group': f'vehicle_upgrade:{name.lower().replace(" ", "_")}',
+        'slot_type': 'vehicle_upgrade',
+        'grants_slots': {},
+        'slots_used': 0,
+        'availability_text': availability,
+        'nomad_access_required': nomad_access,
+        'repeatable_max': repeatable_max,
+        'prerequisite_upgrades': prerequisites,
+        'prerequisite_host_names': prerequisite_host_names,
+        'conflicting_upgrades': sorted(set(conflicts)),
+        'permanent_installation': bool(re.search(r'cannot be removed|can not be removed', low)),
+        'unique_per_host': repeatable_max == 1,
+        'compatibility_manual': any(token in (availability + ' ' + low).lower() for token in (
+            'vehicles with rooms', 'individual eligibility', 'choose', 'mounted weapon',
+            'heavy weapon mount', 'hangar', 'complex room',
+        )),
+        'installation_source': (row.get('Source') or '').strip() or None,
+    }
+
+
 def normalize_display_value(value):
     text = str(value).strip()
     if re.fullmatch(r'-?\d+\.0', text):
@@ -451,6 +503,7 @@ def main():
             it['mechanics'] = item_mechanics(cat, r, desc)
             it.update(item_interaction_metadata(cat, name, r, desc))
             it.update(item_modification_metadata(cat, name, r, desc))
+            it.update(vehicle_modification_metadata(cat, name, r, desc))
             requirements, capacity = structured_requirements(cat, r, desc)
             it['requirements'] = requirements
             if any(capacity.values()):

@@ -871,6 +871,79 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         })
         self.assertEqual(removed_rail['character']['revision'], 5)
 
+    def test_vehicle_garage_installs_prerequisites_and_preserves_nomad_access_semantics(self):
+        edited = copy.deepcopy(self.character_data)
+        edited['inventory'] = [
+            {
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': server.item_by_id(item_id)['cat'],
+                'name': server.item_by_id(item_id)['name'], 'qty': 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            }
+            for item_id in ('vehicles-2', 'vehicles_upgrades-9', 'vehicles_upgrades-18')
+        ]
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add Compact Groundcar and garage upgrades', 'data': edited,
+        })
+        by_name = {item['name']: item for item in updated['data']['inventory']}
+        vehicle = by_name['Compact Groundcar']
+        heavy, housing = by_name['Heavy Chassis'], by_name['Housing Capacity']
+        management = self.call(server.Handler.api_character_modifications, self.match(1))
+        vehicle_payload = next(item for item in management['vehicle_hosts']
+                               if item['instance_id'] == vehicle['instance_id'])
+        self.assertEqual(vehicle_payload['sdp'], 50)
+        heavy_payload = next(item for item in management['vehicle_upgrades']
+                             if item['instance_id'] == heavy['instance_id'])
+        heavy_compatibility = heavy_payload['compatibility'][vehicle['instance_id']]
+        self.assertTrue(heavy_compatibility['allowed'])
+        self.assertFalse(heavy_compatibility['role_access_item'])
+        self.assertEqual(heavy_compatibility['nomad_access_required'], 1)
+        housing_payload = next(item for item in management['vehicle_upgrades']
+                               if item['instance_id'] == housing['instance_id'])
+        self.assertFalse(housing_payload['compatibility'][vehicle['instance_id']]['allowed'])
+
+        installed_heavy = self.call(server.Handler.api_character_modification_install,
+                                    self.match(1), {
+            'revision': 1, 'host_instance_id': vehicle['instance_id'],
+            'upgrade_instance_id': heavy['instance_id'], 'manual_confirm': False,
+            'reason': 'Install purchased Heavy Chassis',
+        })
+        heavy_mod_id = installed_heavy['modification_id']
+        self.assertEqual(installed_heavy['character']['revision'], 2)
+        heavy_after = next(item for item in installed_heavy['character']['data']['inventory']
+                           if item['instance_id'] == heavy['instance_id'])
+        self.assertEqual(heavy_after['state'], 'installed')
+        management = installed_heavy['management']
+        housing_payload = next(item for item in management['vehicle_upgrades']
+                               if item['instance_id'] == housing['instance_id'])
+        self.assertTrue(housing_payload['compatibility'][vehicle['instance_id']]['allowed'])
+        installed_housing = self.call(server.Handler.api_character_modification_install,
+                                      self.match(1), {
+            'revision': 2, 'host_instance_id': vehicle['instance_id'],
+            'upgrade_instance_id': housing['instance_id'], 'manual_confirm': False,
+            'reason': 'Install Housing Capacity after Heavy Chassis',
+        })
+        housing_mod_id = installed_housing['modification_id']
+        self.assertEqual(installed_housing['character']['revision'], 3)
+        heavy_match = re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{heavy_mod_id}')
+        with self.assertRaises(server.ApiError) as dependency:
+            self.call(server.Handler.api_character_modification_action, heavy_match, {
+                'revision': 3, 'action': 'remove', 'reason': 'try removing prerequisite',
+            })
+        self.assertEqual(dependency.exception.status, 409)
+        housing_match = re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{housing_mod_id}')
+        removed_housing = self.call(server.Handler.api_character_modification_action,
+                                    housing_match, {
+            'revision': 3, 'action': 'remove', 'reason': 'Remove dependent housing first',
+        })
+        self.assertEqual(removed_housing['character']['revision'], 4)
+        removed_heavy = self.call(server.Handler.api_character_modification_action,
+                                  heavy_match, {
+            'revision': 4, 'action': 'remove', 'reason': 'Remove Heavy Chassis after housing',
+        })
+        self.assertEqual(removed_heavy['character']['revision'], 5)
+        self.assertFalse(removed_heavy['management']['modifications'])
+
     def test_active_effect_instances_apply_expire_tick_and_audit(self):
         character = copy.deepcopy(self.character_data)
         character['skills']['Handgun'] = 3

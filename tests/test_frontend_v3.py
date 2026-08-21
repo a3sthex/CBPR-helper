@@ -83,6 +83,15 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('weaponEffective.tags', source)
         self.assertIn('effect-manual-text', source)
 
+    def test_character_sheet_has_vehicle_garage_and_access_aware_upgrades(self):
+        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        self.assertIn('Vehicle Garage', source)
+        self.assertIn('function openVehicleUpgradeManager', source)
+        self.assertIn('vehicle_hosts', source)
+        self.assertIn('vehicle_upgrades', source)
+        self.assertIn('nomad_access_met', source)
+        self.assertIn('data-manage-vehicle', source)
+
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
         self.assertIn('created_effects', source)

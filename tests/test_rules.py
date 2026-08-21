@@ -565,6 +565,70 @@ class WeaponModificationEffectTests(unittest.TestCase):
         self.assertEqual(result['sources'][0]['manual_rules'][0]['source'], 'CP:R 343')
 
 
+class VehicleModificationTests(unittest.TestCase):
+    def owned(self, catalog_id, instance_id, source='loot'):
+        item = copy.deepcopy(server.item_by_id(catalog_id))
+        item.update({'key': catalog_id, 'catalog_item_id': catalog_id,
+                     'instance_id': instance_id, 'qty': 1, 'state': 'carried',
+                     'acquisition_source': source})
+        return item
+
+    def test_vehicle_availability_prerequisites_conflicts_and_role_access(self):
+        car = self.owned('vehicles-2', '1' * 32)
+        bike = self.owned('vehicles-0', '2' * 32)
+        heavy = self.owned('vehicles_upgrades-9', '3' * 32)
+        housing = self.owned('vehicles_upgrades-18', '4' * 32)
+        owned = {item['instance_id']: item for item in (car, bike, heavy, housing)}
+        physical = server.vehicle_upgrade_compatibility(
+            car, heavy, [], owned, {'roles': [{'name': 'Solo', 'rank': 4}]})
+        self.assertTrue(physical['allowed'])
+        self.assertFalse(physical['role_access_item'])
+        self.assertFalse(server.vehicle_upgrade_compatibility(
+            bike, heavy, [], owned, {})['allowed'])
+        missing = server.vehicle_upgrade_compatibility(car, housing, [], owned, {})
+        self.assertFalse(missing['allowed'])
+        self.assertTrue(any('Heavy Chassis' in reason for reason in missing['reasons']))
+        heavy['state'] = 'installed'
+        heavy_mod = {'modification_id': 'a' * 32, 'host_instance_id': car['instance_id'],
+                     'upgrade_instance_id': heavy['instance_id'], 'active': True,
+                     'slots_used': 0, 'configuration': {}}
+        self.assertTrue(server.vehicle_upgrade_compatibility(
+            car, housing, [heavy_mod], owned, {})['allowed'])
+
+        access_heavy = self.owned('vehicles_upgrades-9', '5' * 32, 'role_access')
+        access_owned = {**owned, access_heavy['instance_id']: access_heavy}
+        denied = server.vehicle_upgrade_compatibility(
+            car, access_heavy, [], access_owned,
+            {'roles': [{'name': 'Nomad', 'rank': 0}]})
+        allowed = server.vehicle_upgrade_compatibility(
+            car, access_heavy, [], access_owned,
+            {'roles': [{'name': 'Nomad', 'rank': 1}]})
+        self.assertFalse(denied['allowed'])
+        self.assertTrue(allowed['allowed'])
+        self.assertTrue(allowed['nomad_access_met'])
+
+        aerozep = self.owned('vehicles-13', '6' * 32)
+        aerozep_upgrade = self.owned('vehicles_upgrades-19', '7' * 32)
+        self.assertTrue(server.vehicle_upgrade_compatibility(
+            aerozep, aerozep_upgrade, [], {}, {})['allowed'])
+        self.assertFalse(server.vehicle_upgrade_compatibility(
+            car, aerozep_upgrade, [], {}, {})['allowed'])
+
+        bicycle = self.owned('vehicles-61', '8' * 32)
+        enclosure = self.owned('vehicles_upgrades-31', '9' * 32)
+        folding = self.owned('vehicles_upgrades-33', 'a' * 32)
+        enclosure['state'] = 'installed'
+        bicycle_owned = {item['instance_id']: item for item in (bicycle, enclosure, folding)}
+        enclosure_mod = {'modification_id': 'b' * 32,
+                         'host_instance_id': bicycle['instance_id'],
+                         'upgrade_instance_id': enclosure['instance_id'],
+                         'active': True, 'configuration': {}}
+        conflict = server.vehicle_upgrade_compatibility(
+            bicycle, folding, [enclosure_mod], bicycle_owned, {})
+        self.assertFalse(conflict['allowed'])
+        self.assertTrue(any('Enclosure' in reason for reason in conflict['reasons']))
+
+
 class CreationValidationTests(unittest.TestCase):
     def test_valid_complete_package(self):
         char = valid_character()
@@ -871,6 +935,20 @@ class CatalogArmorTests(unittest.TestCase):
         self.assertEqual(by_name['Sniping Scope']['slot_type'], 'scope')
         self.assertEqual(by_name['Compatibility Rail']['grants_slots'], {'scope': 1})
         self.assertEqual(by_name['Compatibility Rail']['slots_used'], 0)
+
+    def test_vehicle_upgrades_have_access_prerequisite_and_conflict_metadata(self):
+        by_name = {item['name']: item for item in server.catalog()['items']
+                   if item['cat'] == 'vehicles_upgrades'}
+        self.assertEqual(by_name['Heavy Chassis']['host_type'], 'vehicle')
+        self.assertEqual(by_name['Heavy Chassis']['nomad_access_required'], 1)
+        self.assertEqual(by_name['Bulletproof Glass']['repeatable_max'], 2)
+        self.assertEqual(by_name['Onboard Rocket Pod']['prerequisite_upgrades'],
+                         ['Heavy Chassis'])
+        self.assertEqual(by_name['Housing Capacity']['prerequisite_host_names']['Heavy Chassis'],
+                         ['Compact Groundcar', 'High Performance Groundcar'])
+        self.assertTrue(by_name['Onboard Rocket Pod']['permanent_installation'])
+        self.assertIn('Folding Frame', by_name['Enclosure (Bicycle)']['conflicting_upgrades'])
+        self.assertIn('Enclosure', by_name['Folding Frame (Bicycle)']['conflicting_upgrades'])
 
     def test_night_market_is_grouped_by_deterministic_vendors(self):
         market = server.night_market()
