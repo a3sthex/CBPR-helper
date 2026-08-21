@@ -422,8 +422,9 @@ def load_effect_rules():
                     not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(effect.get('id') or '')) or
                     effect.get('target') not in {'vehicle.sdp_max', 'vehicle.body_sp',
                                                  'vehicle.glass_hp', 'vehicle.seats',
-                                                 'vehicle.nos_tank',
-                                                 'vehicle.mounted_weapon'}):
+                                                 'vehicle.nos_tank', 'vehicle.weapon_mount',
+                                                 'vehicle.mounted_weapon', 'vehicle.interior',
+                                                 'vehicle.room_upgrade', 'vehicle.cargo'}):
                 raise RuntimeError(f'Invalid vehicle effect in rule {rule_id}')
             target, operation = effect['target'], effect.get('operation')
             if target == 'vehicle.glass_hp':
@@ -444,6 +445,61 @@ def load_effect_rules():
                         not str(resource.get('label_ru') or '').strip() or
                         resource.get('uses') != 1):
                     raise RuntimeError(f'Invalid NOS resource in rule {rule_id}')
+            elif target == 'vehicle.weapon_mount':
+                resource = effect.get('resource')
+                if (operation != 'grant' or not isinstance(resource, dict) or
+                        set(resource) != {'id', 'label_en', 'label_ru'} or
+                        resource.get('id') != 'heavy_weapon_mount' or
+                        not str(resource.get('label_en') or '').strip() or
+                        not str(resource.get('label_ru') or '').strip()):
+                    raise RuntimeError(f'Invalid heavy weapon mount resource in rule {rule_id}')
+            elif target == 'vehicle.interior':
+                profile = effect.get('profile')
+                if (operation != 'grant' or not isinstance(profile, dict) or
+                        set(profile) != {'id', 'kind', 'rooms', 'beds', 'amenities'} or
+                        profile.get('id') != 'housing_capacity' or
+                        profile.get('kind') != 'housing' or profile.get('rooms') != 1 or
+                        profile.get('beds') != 1 or
+                        profile.get('amenities') != ['toilet', 'shower', 'small_kitchen']):
+                    raise RuntimeError(f'Invalid vehicle interior profile in rule {rule_id}')
+            elif target == 'vehicle.room_upgrade':
+                profile = effect.get('profile')
+                if (operation != 'grant' or not isinstance(profile, dict) or
+                        set(profile) - {'id', 'kind', 'purposes'} or
+                        profile.get('kind') not in ('luxury', 'complex') or
+                        profile.get('id') not in
+                            ('luxury_vehicle_room', 'complex_vehicle_room')):
+                    raise RuntimeError(f'Invalid vehicle room profile in rule {rule_id}')
+                if (profile['kind'] == 'luxury' and
+                        (profile['id'] != 'luxury_vehicle_room' or
+                         set(profile) != {'id', 'kind'})):
+                    raise RuntimeError(f'Invalid Luxury Room profile in rule {rule_id}')
+                if (profile['kind'] == 'complex' and
+                        profile['id'] != 'complex_vehicle_room'):
+                    raise RuntimeError(f'Invalid Complex Room profile in rule {rule_id}')
+                purposes = profile.get('purposes')
+                allowed_purposes = {
+                    'cargo_bay', 'bunkhouse', 'cafeteria', 'restaurant',
+                    'recreation_deck', 'prison', 'bowling_alley',
+                    'laser_tag_arena', 'other_complex',
+                }
+                if (profile['kind'] == 'complex' and
+                        (not isinstance(purposes, list) or not purposes or
+                         len(set(purposes)) != len(purposes) or
+                         set(purposes) - allowed_purposes)):
+                    raise RuntimeError(f'Invalid Complex Room purposes in rule {rule_id}')
+            elif target == 'vehicle.cargo':
+                profile = effect.get('profile')
+                if (operation != 'grant' or not isinstance(profile, dict) or
+                        set(profile) != {'id', 'kind', 'cargo_spaces',
+                                        'hidden_holsters', 'discovery_dv'} or
+                        (profile.get('id'), profile.get('kind'),
+                         profile.get('hidden_holsters')) not in {
+                            ('smuggling_upgrade', 'hidden', 2),
+                            ('bicycle_smuggling_compartment', 'hidden_small', 0)} or
+                        profile.get('cargo_spaces') != 1 or
+                        profile.get('discovery_dv') != 17):
+                    raise RuntimeError(f'Invalid vehicle cargo profile in rule {rule_id}')
             elif target == 'vehicle.mounted_weapon':
                 profile = effect.get('profile')
                 profile_keys = {
@@ -667,54 +723,81 @@ def ammo_reserve_for_profile(character, ammo_kind):
     return total
 
 
+VEHICLE_COMPLEX_PURPOSE_LABELS = {
+    'cargo_bay': ('Cargo Bay', 'Грузовой отсек'),
+    'bunkhouse': ('Bunkhouse', 'Казарма'),
+    'cafeteria': ('Cafeteria', 'Кафетерий'),
+    'restaurant': ('Restaurant', 'Ресторан'),
+    'recreation_deck': ('Recreation Deck', 'Зона отдыха'),
+    'prison': ('Prison', 'Тюремный блок'),
+    'bowling_alley': ('Bowling Alley', 'Боулинг'),
+    'laser_tag_arena': ('Laser Tag Arena', 'Арена лазертага'),
+    'other_complex': ('Other Complex Room', 'Другая комплексная комната'),
+}
+
+
 def vehicle_action_effects_from_rules(rules):
     return [copy.deepcopy(effect) for rule in rules or []
             for effect in rule.get('effects') or []
-            if effect.get('target') in ('vehicle.nos_tank', 'vehicle.mounted_weapon')]
+            if effect.get('target') in {
+                'vehicle.nos_tank', 'vehicle.mounted_weapon', 'vehicle.weapon_mount',
+                'vehicle.interior', 'vehicle.room_upgrade', 'vehicle.cargo'}]
 
 
 def vehicle_modification_configuration_schema(catalog_id):
     schemas = []
     for effect in vehicle_action_effects_from_rules(
             vehicle_modification_rules_for_catalog(catalog_id)):
-        if effect.get('target') != 'vehicle.mounted_weapon':
-            continue
-        orientations = (effect.get('profile') or {}).get('orientations') or []
-        if len(orientations) > 1:
+        profile = effect.get('profile') or {}
+        if effect.get('target') == 'vehicle.mounted_weapon':
+            orientations = profile.get('orientations') or []
+            if len(orientations) > 1:
+                schemas.append({
+                    'key': 'orientation',
+                    'label_en': 'Mount orientation',
+                    'label_ru': 'Направление установки',
+                    'required': True,
+                    'choices': [
+                        {'value': value, 'label_en': value.title(),
+                         'label_ru': {'front': 'Спереди', 'side': 'Сбоку',
+                                      'rear': 'Сзади'}[value]}
+                        for value in orientations],
+                })
+        elif (effect.get('target') == 'vehicle.room_upgrade' and
+              profile.get('kind') == 'complex'):
             schemas.append({
-                'key': 'orientation',
-                'label_en': 'Mount orientation',
-                'label_ru': 'Направление установки',
-                'required': True,
+                'key': 'purpose', 'label_en': 'Complex Room purpose',
+                'label_ru': 'Назначение комплексной комнаты', 'required': True,
                 'choices': [
-                    {'value': value, 'label_en': value.title(),
-                     'label_ru': {'front': 'Спереди', 'side': 'Сбоку',
-                                  'rear': 'Сзади'}[value]}
-                    for value in orientations],
+                    {'value': value,
+                     'label_en': VEHICLE_COMPLEX_PURPOSE_LABELS[value][0],
+                     'label_ru': VEHICLE_COMPLEX_PURPOSE_LABELS[value][1]}
+                    for value in profile.get('purposes') or []],
             })
     return schemas
 
 
 def clean_vehicle_modification_choices(catalog_id, raw):
-    effects = vehicle_action_effects_from_rules(
-        vehicle_modification_rules_for_catalog(catalog_id))
-    orientation_values = next((
-        (effect.get('profile') or {}).get('orientations') or []
-        for effect in effects if effect.get('target') == 'vehicle.mounted_weapon'), [])
+    schemas = vehicle_modification_configuration_schema(catalog_id)
     raw = raw or {}
     if not isinstance(raw, dict):
         raise ApiError(400, 'Vehicle configuration должна быть объектом')
-    allowed_keys = {'orientation'} if orientation_values else set()
+    allowed_keys = {schema['key'] for schema in schemas}
     if set(raw) - allowed_keys:
         raise ApiError(400, 'Vehicle configuration содержит неизвестные поля')
-    if not orientation_values:
-        return {}
-    orientation = str(raw.get('orientation') or '')
-    if len(orientation_values) == 1 and not orientation:
-        orientation = orientation_values[0]
-    if orientation not in orientation_values:
-        raise ApiError(400, 'Выберите допустимое направление mounted weapon')
-    return {'orientation': orientation}
+    clean = {}
+    for schema in schemas:
+        value = str(raw.get(schema['key']) or '')
+        choices = {choice['value'] for choice in schema.get('choices') or []}
+        if len(choices) == 1 and not value:
+            value = next(iter(choices))
+        if schema.get('required') and not value:
+            raise ApiError(400, 'Выберите обязательную конфигурацию транспорта')
+        if value and value not in choices:
+            raise ApiError(400, 'Некорректная конфигурация транспорта')
+        if value:
+            clean[schema['key']] = value
+    return clean
 
 
 def initial_vehicle_modification_state(rules, character, choices=None):
@@ -726,6 +809,13 @@ def initial_vehicle_modification_state(rules, character, choices=None):
             return {
                 'resource_type': 'nos_tank', 'profile_id': 'nos_tank',
                 'uses_remaining': maximum, 'uses_max': maximum,
+            }
+        if effect.get('target') == 'vehicle.weapon_mount':
+            resource = effect.get('resource') or {}
+            return {
+                'resource_type': 'heavy_weapon_mount',
+                'profile_id': resource.get('id') or 'heavy_weapon_mount',
+                'weapon_instance_id': None,
             }
         if effect.get('target') == 'vehicle.mounted_weapon':
             profile = effect.get('profile') or {}
@@ -752,6 +842,10 @@ def normalize_vehicle_modification_state(existing, authoritative):
         current = _num(existing.get('uses_remaining'))
         normalized['uses_remaining'] = max(
             0, min(maximum, int(current if current is not None else maximum)))
+    elif authoritative['resource_type'] == 'heavy_weapon_mount':
+        weapon_instance_id = str(existing.get('weapon_instance_id') or '').lower()
+        normalized['weapon_instance_id'] = (
+            weapon_instance_id if INSTANCE_ID_RE.fullmatch(weapon_instance_id) else None)
     else:
         maximum = authoritative['magazine_max']
         magazine = _num(existing.get('magazine'))
@@ -933,7 +1027,89 @@ def character_effective_weapons(character, modifications):
     return result
 
 
-def evaluate_effective_vehicle(host, modifications, owned_by_id):
+def vehicle_base_interior(host):
+    catalog_item = item_by_id(catalog_item_id_for_entry(host)) or {}
+    mechanics = host.get('mechanics') or catalog_item.get('mechanics') or {}
+    name = str(host.get('name') or catalog_item.get('name') or '')
+    description = str(catalog_item.get('desc') or '')
+    room_count = 0
+    total_match = re.search(r'total of\s+(\d+)\s+rooms?', description, re.I)
+    minimum_match = re.search(r'minimum\s+(\w+)\s+rooms?', description, re.I)
+    word_numbers = {'one': 1, 'two': 2, 'three': 3, 'four': 4}
+    if total_match:
+        room_count = int(total_match.group(1))
+    elif re.search(r'only one room', description, re.I):
+        room_count = 1
+    elif minimum_match:
+        token = minimum_match.group(1).lower()
+        room_count = int(token) if token.isdigit() else word_numbers.get(token, 0)
+    elif name == 'Cabin Cruiser':
+        room_count = 2
+    elif name == 'Yacht':
+        room_count = 4
+    elif name == 'Aerozep':
+        room_count = 2
+    seats_value = str(mechanics.get('seats') or '')
+    seats_match = re.search(r'(\d+)\s+per\s+room', seats_value, re.I)
+    seats_per_room = int(seats_match.group(1)) if seats_match else (
+        4 if 'yacht' in f'{name} {description}'.lower() else
+        (2 if room_count else 0))
+    return {
+        'base_rooms': room_count, 'rooms_total': room_count,
+        'normal_rooms': room_count, 'luxury_rooms': 0, 'complex_rooms': 0,
+        'seats_per_room': seats_per_room,
+        'kombi': False, 'beds': 0, 'amenities': [],
+        'complex_purposes': [],
+    }
+
+
+def bound_vehicle_weapon_profile(weapon, effective_weapon, character):
+    mechanics = effective_weapon.get('effective') or weapon.get('mechanics') or {}
+    catalog_item = item_by_id(catalog_item_id_for_entry(weapon)) or {}
+    description = str(catalog_item.get('desc') or '')
+    rule_text = ' '.join([
+        description,
+        *[str(value) for value in (catalog_item.get('fields') or {}).values()],
+    ])
+    skill = str(mechanics.get('skill') or '')
+    autofire_only = skill == 'Autofire' or 'can only autofire' in rule_text.lower()
+    ammo_cost_match = re.search(r'uses\s+(\d+)\s+rounds whenever it fires',
+                                rule_text, re.I)
+    multiplier_match = re.search(r'max autofire multiplier of\s+(\d+)',
+                                  rule_text, re.I)
+    weapon_state = copy.deepcopy((character.get('weapon_state') or {}).get(
+        weapon.get('instance_id')) or {})
+    profile = {
+        'id': f'bound:{weapon.get("instance_id")}',
+        'weapon_instance_id': weapon.get('instance_id'),
+        'label_en': weapon.get('custom_name') or weapon.get('name') or 'Mounted Weapon',
+        'label_ru': weapon.get('custom_name') or weapon.get('name') or 'Закреплённое оружие',
+        'kind': 'autofire' if autofire_only else 'standard',
+        'skill': skill, 'weapon_type': mechanics.get('type'),
+        'range_table': mechanics.get('range_table'),
+        'damage': (mechanics.get('damage') or {}).get('notation')
+            if isinstance(mechanics.get('damage'), dict) else mechanics.get('damage'),
+        'rof': mechanics.get('rof'), 'hands_required': mechanics.get('hands'),
+        'magazine': mechanics.get('magazine'),
+        'ammo_cost': int(ammo_cost_match.group(1)) if ammo_cost_match else
+            (10 if autofire_only else 1),
+        'autofire_multiplier': int(multiplier_match.group(1))
+            if multiplier_match else (4 if autofire_only else None),
+        'reload_actions': 2 if re.search(
+            r'(?:requires?|takes?)\s+2\s+(?:rounds|actions?)\s+to reload|'
+            r'2\s+actions?\s+to reload', rule_text, re.I) else 1,
+        'attack_modifier': effective_weapon.get('attack_modifier') or 0,
+        'state': weapon_state, 'operator': 'passenger',
+        'source': catalog_item.get('source') or weapon.get('source'),
+        'manual_resolution_required': True,
+    }
+    return profile
+
+
+def evaluate_effective_vehicle(host, modifications, owned_by_id,
+                               character=None, all_modifications=None):
+    character = character or {}
+    all_modifications = all_modifications or modifications
     base = copy.deepcopy(host.get('mechanics') or {})
     base_sdp = max(0, _num(base.get('sdp')) or 0)
     base_body_sp = max(0, _num(base.get('body_sp')) or 0)
@@ -942,10 +1118,16 @@ def evaluate_effective_vehicle(host, modifications, owned_by_id):
     effective_sdp = base_sdp
     effective_body_sp = base_body_sp
     effective_glass_hp = base_glass_hp
+    interior = vehicle_base_interior(host)
     effective_seats = base_seats if base_seats is not None else base.get('seats')
+    if (base_seats is None and interior['rooms_total'] and
+            interior['seats_per_room']):
+        effective_seats = interior['rooms_total'] * interior['seats_per_room']
     sources = []
     nos_tanks = []
     mounted_weapons = []
+    weapon_mounts = []
+    cargo_modules = []
     modification_states = host.get('_modification_state') or {}
     active_catalog_counts = {}
     for modification in modifications:
@@ -1011,6 +1193,74 @@ def evaluate_effective_vehicle(host, modifications, owned_by_id):
                         'source': effect.get('source'),
                     })
                     nos_tanks.append(resource)
+                elif effect['target'] == 'vehicle.weapon_mount':
+                    resource = copy.deepcopy(effect.get('resource') or {})
+                    state = copy.deepcopy(modification_states.get(
+                        modification.get('modification_id')) or {
+                            'resource_type': 'heavy_weapon_mount',
+                            'profile_id': 'heavy_weapon_mount',
+                            'weapon_instance_id': None,
+                        })
+                    weapon_instance_id = state.get('weapon_instance_id')
+                    weapon = owned_by_id.get(weapon_instance_id) if weapon_instance_id else None
+                    bound_profile = None
+                    if weapon and weapon.get('cat') == 'guns':
+                        weapon_modifications = [
+                            item for item in all_modifications
+                            if item.get('host_instance_id') == weapon_instance_id]
+                        effective_weapon = evaluate_effective_weapon(
+                            weapon, weapon_modifications, owned_by_id, character)
+                        bound_profile = bound_vehicle_weapon_profile(
+                            weapon, effective_weapon, character)
+                    resource.update({
+                        'modification_id': modification.get('modification_id'),
+                        'upgrade_instance_id': modification.get('upgrade_instance_id'),
+                        'state': state, 'bound_weapon': bound_profile,
+                        'source': effect.get('source'),
+                    })
+                    weapon_mounts.append(resource)
+                elif effect['target'] == 'vehicle.interior':
+                    profile = copy.deepcopy(effect.get('profile') or {})
+                    if interior['base_rooms']:
+                        interior['rooms_total'] += int(profile.get('rooms') or 0)
+                        if isinstance(effective_seats, int) and interior['seats_per_room']:
+                            effective_seats += interior['seats_per_room']
+                    else:
+                        interior['rooms_total'] = max(
+                            interior['rooms_total'], int(profile.get('rooms') or 1))
+                        interior['kombi'] = True
+                        interior['beds'] += int(profile.get('beds') or 0)
+                        for amenity in profile.get('amenities') or []:
+                            if amenity not in interior['amenities']:
+                                interior['amenities'].append(amenity)
+                elif effect['target'] == 'vehicle.room_upgrade':
+                    profile = copy.deepcopy(effect.get('profile') or {})
+                    if profile.get('kind') == 'luxury':
+                        interior['luxury_rooms'] += 1
+                    elif profile.get('kind') == 'complex':
+                        interior['complex_rooms'] += 1
+                        purpose = (config.get('choices') or {}).get('purpose')
+                        if purpose:
+                            interior['complex_purposes'].append(purpose)
+                            if purpose == 'cargo_bay':
+                                cargo_modules.append({
+                                    'id': f'complex-cargo:{modification.get("modification_id")}',
+                                    'kind': 'cargo_bay', 'cargo_spaces': None,
+                                    'modification_id': modification.get('modification_id'),
+                                    'source': effect.get('source'),
+                                    'manual_resolution_required': True,
+                                })
+                        if isinstance(effective_seats, int) and interior['seats_per_room']:
+                            effective_seats += interior['seats_per_room'] * 2
+                elif effect['target'] == 'vehicle.cargo':
+                    profile = copy.deepcopy(effect.get('profile') or {})
+                    profile.update({
+                        'modification_id': modification.get('modification_id'),
+                        'upgrade_instance_id': modification.get('upgrade_instance_id'),
+                        'source': effect.get('source'),
+                        'manual_resolution_required': True,
+                    })
+                    cargo_modules.append(profile)
                 elif effect['target'] == 'vehicle.mounted_weapon':
                     profile = copy.deepcopy(effect.get('profile') or {})
                     orientations = profile.get('orientations') or []
@@ -1044,6 +1294,13 @@ def evaluate_effective_vehicle(host, modifications, owned_by_id):
                                 if effect.get('source')), None),
                 'modification_id': modification.get('modification_id'),
             })
+    interior['normal_rooms'] = max(
+        0, interior['rooms_total'] - interior['luxury_rooms'] - interior['complex_rooms'])
+    interior['cargo_bays'] = sum(
+        1 for module in cargo_modules if module.get('kind') == 'cargo_bay')
+    interior['hidden_cargo_spaces'] = sum(
+        int(module.get('cargo_spaces') or 0) for module in cargo_modules
+        if str(module.get('kind') or '').startswith('hidden'))
     effective = copy.deepcopy(base)
     effective.update({'sdp': effective_sdp, 'body_sp': effective_body_sp,
                       'glass_hp': effective_glass_hp, 'seats': effective_seats})
@@ -1056,6 +1313,8 @@ def evaluate_effective_vehicle(host, modifications, owned_by_id):
                  'glass_hp': base_glass_hp, 'seats': base_seats if base_seats is not None else base.get('seats')},
         'effective': effective, 'state': state, 'sources': sources,
         'nos_tanks': nos_tanks, 'mounted_weapons': mounted_weapons,
+        'weapon_mounts': weapon_mounts, 'interior': interior,
+        'cargo_modules': cargo_modules,
     }
 
 
@@ -1073,7 +1332,7 @@ def character_effective_vehicles(character, modifications):
         host_modifications = [modification for modification in modifications
                               if modification.get('host_instance_id') == host.get('instance_id')]
         result[host['instance_id']] = evaluate_effective_vehicle(
-            copy_host, host_modifications, owned)
+            copy_host, host_modifications, owned, character, modifications)
     return result
 
 
@@ -2746,6 +3005,9 @@ def weapon_upgrade_compatibility(host, upgrade, active_modifications=None,
 
 def vehicle_classification(host):
     name = str(host.get('name') or '').lower()
+    catalog_item = item_by_id(catalog_item_id_for_entry(host)) or {}
+    description = str(catalog_item.get('desc') or '').lower()
+    combined = f'{name} {description}'
     if name == 'bicycle' or 'bicycle' in name:
         return {'bicycle', 'bike', 'land'}
     if 'bike' in name or 'motorcycle' in name:
@@ -2754,9 +3016,17 @@ def vehicle_classification(host):
         return {'jetski', 'sea'}
     if 'gyrocopter' in name:
         return {'gyrocopter', 'air'}
-    if any(token in name for token in ('speedboat', 'cabin cruiser', 'yacht', 'boat', 'submarine')):
+    if 'cabin cruiser' in combined:
+        return {'sea', 'rooms', 'cabin_cruiser'}
+    if 'yacht' in combined:
+        return {'sea', 'rooms', 'yacht'}
+    if 'aerozep' in combined:
+        return {'air', 'rooms', 'aerozep'}
+    if 'av-4' in combined:
+        return {'air', 'av4'}
+    if any(token in name for token in ('speedboat', 'boat', 'submarine')):
         return {'sea'}
-    if any(token in name for token in ('helicopter', 'aerodyne', 'aerozep', 'av-')):
+    if any(token in name for token in ('helicopter', 'aerodyne', 'av-')):
         return {'air'}
     return {'land', 'groundcar'}
 
@@ -2764,6 +3034,24 @@ def vehicle_classification(host):
 def character_nomad_rank(character):
     return max([_num(role.get('rank')) or 0 for role in character.get('roles') or []
                 if isinstance(role, dict) and role.get('name') == 'Nomad'] or [0])
+
+
+def vehicle_interior_capacity_for_compatibility(host, active_modifications, owned_by_id):
+    interior = vehicle_base_interior(host)
+    installed = [owned_by_id.get(mod.get('upgrade_instance_id')) or {}
+                 for mod in active_modifications]
+    names = [str(item.get('name') or '') for item in installed]
+    has_housing = any(name == 'Housing Capacity' for name in names)
+    if has_housing:
+        interior['rooms_total'] += 1
+        if not interior['base_rooms']:
+            interior['rooms_total'] = 1
+            interior['kombi'] = True
+    interior['luxury_rooms'] = sum(name == 'Luxury Vehicle Room' for name in names)
+    interior['complex_rooms'] = sum(name == 'Complex Vehicle Room' for name in names)
+    interior['upgraded_rooms'] = interior['luxury_rooms'] + interior['complex_rooms']
+    interior['has_housing'] = has_housing
+    return interior
 
 
 def vehicle_upgrade_compatibility(host, upgrade, active_modifications=None,
@@ -2802,7 +3090,10 @@ def vehicle_upgrade_compatibility(host, upgrade, active_modifications=None,
             for token in availability.split(',')):
         reasons.append('Vehicle is not in the named availability list')
     elif low == 'vehicles with rooms':
-        manual = True
+        interior_capacity = vehicle_interior_capacity_for_compatibility(
+            host, active_modifications, owned_by_id)
+        if interior_capacity['rooms_total'] <= 0:
+            reasons.append('Requires a vehicle with at least one room')
     elif low not in ('', 'all vehicles') and not any(token in low for token in (
             'except bikes', 'land and sea', 'land vehicles', 'all bikes',
             'groundcar', 'bicycle', ',')):
@@ -2829,6 +3120,32 @@ def vehicle_upgrade_compatibility(host, upgrade, active_modifications=None,
     if same_count >= repeatable_max:
         reasons.append(f'Upgrade limit reached ({same_count}/{repeatable_max})')
 
+    upgrade_name = str(upgrade.get('name') or '')
+    interior_capacity = vehicle_interior_capacity_for_compatibility(
+        host, active_modifications, owned_by_id)
+    if upgrade_name in ('Luxury Vehicle Room', 'Complex Vehicle Room'):
+        if interior_capacity['upgraded_rooms'] >= interior_capacity['rooms_total']:
+            reasons.append('All vehicle rooms already have a room upgrade')
+    if upgrade_name == 'Vehicle Heavy Weapon Mount':
+        if same_count >= 1:
+            multiple_allowed = bool(
+                classes & {'cabin_cruiser', 'yacht', 'aerozep'} or
+                ('groundcar' in classes and interior_capacity['has_housing']))
+            if not multiple_allowed:
+                reasons.append(
+                    'Additional Heavy Weapon Mounts require a room vehicle or a Housing Groundcar')
+        base_seats = _num((host.get('mechanics') or {}).get('seats'))
+        seating_upgrades = sum(name == 'Seating Upgrade' for name in installed_names)
+        if base_seats is not None:
+            available_seats = int(base_seats) + seating_upgrades * 2 - same_count
+        else:
+            available_seats = (
+                interior_capacity['rooms_total'] * interior_capacity['seats_per_room'] +
+                interior_capacity['complex_rooms'] *
+                interior_capacity['seats_per_room'] * 2 - same_count)
+        if available_seats <= 0:
+            reasons.append('Vehicle has no seat available for another Heavy Weapon Mount')
+
     access_required = _num(upgrade.get('nomad_access_required'))
     nomad_rank = character_nomad_rank(character)
     role_access = upgrade.get('acquisition_source') == 'role_access'
@@ -2854,13 +3171,44 @@ def vehicle_upgrade_compatibility(host, upgrade, active_modifications=None,
 def validate_active_modification_references(conn, character_id, data):
     owned = {entry.get('instance_id'): entry for bucket in ('inventory', 'cyberware')
              for entry in data.get(bucket) or [] if isinstance(entry, dict) and entry.get('instance_id')}
-    for modification in character_modifications(conn, character_id):
+    modifications = character_modifications(conn, character_id)
+    modification_by_id = {item['modification_id']: item for item in modifications}
+    bound_weapon_ids = set()
+    states = data.get('modification_state') or {}
+    for modification in modifications:
         host = owned.get(modification['host_instance_id'])
         upgrade = owned.get(modification['upgrade_instance_id'])
         if not host or not upgrade:
             raise ApiError(409, 'Сначала снимите установленные модификации')
         if upgrade.get('state') != 'installed' or upgrade.get('host_instance_id') != host.get('instance_id'):
             raise ApiError(409, 'Повреждена связь установленной модификации')
+        state = states.get(modification['modification_id']) or {}
+        if state.get('resource_type') != 'heavy_weapon_mount':
+            continue
+        weapon_instance_id = str(state.get('weapon_instance_id') or '')
+        if not weapon_instance_id:
+            continue
+        weapon = owned.get(weapon_instance_id)
+        mechanics = (item_by_id(catalog_item_id_for_entry(weapon)) or {}).get('mechanics') or {}
+        valid = bool(
+            weapon and weapon.get('cat') == 'guns' and
+            _num(mechanics.get('hands')) == 2 and
+            weapon.get('state') == 'installed' and
+            weapon.get('mounted_modification_id') == modification['modification_id'] and
+            weapon.get('mounted_vehicle_id') == modification['host_instance_id'] and
+            weapon_instance_id not in bound_weapon_ids)
+        if not valid:
+            raise ApiError(409, 'Повреждена связь Vehicle Heavy Weapon Mount')
+        bound_weapon_ids.add(weapon_instance_id)
+    for weapon in owned.values():
+        mount_id = str(weapon.get('mounted_modification_id') or '')
+        if not mount_id:
+            continue
+        modification = modification_by_id.get(mount_id)
+        state = states.get(mount_id) or {}
+        if (not modification or state.get('weapon_instance_id') != weapon.get('instance_id') or
+                weapon.get('instance_id') not in bound_weapon_ids):
+            raise ApiError(409, 'Повреждена связь Vehicle Heavy Weapon Mount')
 
 
 def sync_weapon_states_with_modifications(conn, character_id, data):
@@ -5280,6 +5628,7 @@ SERVER_ERROR_EN = {
     'Upgrade должен находиться в состоянии carried': 'Upgrade must be in the carried state',
     'Требуется ручное подтверждение сложного правила совместимости': 'Complex compatibility rule requires manual confirmation',
     'Modification action содержит неподдерживаемые поля': 'Modification action contains unsupported fields',
+    'weapon_instance_id допустим только для mount_weapon': 'weapon_instance_id is only allowed for mount_weapon',
     'Modification не найдена': 'Modification not found',
     'Modification уже снята': 'Modification is already removed',
     'Эта modification не может быть снята': 'This modification cannot be removed',
@@ -5300,6 +5649,23 @@ SERVER_ERROR_EN = {
     'Vehicle configuration должна быть объектом': 'Vehicle configuration must be an object',
     'Vehicle configuration содержит неизвестные поля': 'Vehicle configuration contains unknown fields',
     'Выберите допустимое направление mounted weapon': 'Choose an allowed mounted weapon orientation',
+    'Выберите обязательную конфигурацию транспорта': 'Choose the required vehicle configuration',
+    'Некорректная конфигурация транспорта': 'Invalid vehicle configuration',
+    'Повреждена связь Vehicle Heavy Weapon Mount': 'Vehicle Heavy Weapon Mount link is corrupted',
+    'Modification не является Vehicle Heavy Weapon Mount': 'Modification is not a Vehicle Heavy Weapon Mount',
+    'Укажите причину изменения mounted weapon': 'Provide a reason for changing the mounted weapon',
+    'Сначала снимите оружие с Vehicle Heavy Weapon Mount': 'Unmount the weapon from the Vehicle Heavy Weapon Mount first',
+    'Сначала снимите текущее mounted weapon': 'Unmount the current weapon first',
+    'Выберите конкретный экземпляр оружия': 'Choose a specific weapon instance',
+    'Крепление принимает только двуручное дальнобойное оружие': 'The mount only accepts a two-handed ranged weapon',
+    'Оружие должно быть свободным и находиться в carried': 'The weapon must be free and in the carried state',
+    'Mounted weapon instance отсутствует': 'Mounted weapon instance is missing',
+    'Сначала снимите upgrades жилых комнат': 'Remove vehicle room upgrades first',
+    'Сначала освободите места, занятые Heavy Weapon Mount': 'Free the seats occupied by Heavy Weapon Mounts first',
+    'Housing Capacity требуется для нескольких Heavy Weapon Mounts': 'Housing Capacity is required for multiple Heavy Weapon Mounts',
+    'Сначала установите оружие в Vehicle Heavy Weapon Mount': 'Mount a weapon in the Vehicle Heavy Weapon Mount first',
+    'Оружие не имеет отслеживаемого магазина': 'The weapon has no tracked magazine',
+    'Mounted weapon управляется только через Vehicle Garage': 'Mounted weapons are managed only through the Vehicle Garage',
     'Modification configuration должна быть объектом': 'Modification configuration must be an object',
     'Modification configuration содержит неизвестные поля': 'Modification configuration contains unknown fields',
     'Выберите обязательную конфигурацию modification': 'Choose the required modification configuration',
@@ -7283,6 +7649,10 @@ class Handler(BaseHTTPRequestHandler):
         if public_view and not visibility['combat']:
             derived = {}
         elif public_view:
+            if not visibility['equipment']:
+                for private_key in ('modifications', 'effective_weapons',
+                                    'effective_vehicles'):
+                    derived.pop(private_key, None)
             for effect in (derived.get('effects') or {}).get('instances') or []:
                 for private_key in ('reason', 'actor', 'source_item_instance_id'):
                     effect.pop(private_key, None)
@@ -7748,6 +8118,9 @@ class Handler(BaseHTTPRequestHandler):
                 'effect_sources': vehicle_effective.get('sources') or [],
                 'nos_tanks': vehicle_effective.get('nos_tanks') or [],
                 'mounted_weapons': vehicle_effective.get('mounted_weapons') or [],
+                'weapon_mounts': vehicle_effective.get('weapon_mounts') or [],
+                'interior': vehicle_effective.get('interior') or {},
+                'cargo_modules': vehicle_effective.get('cargo_modules') or [],
                 'modification_ids': [mod['modification_id'] for mod in active],
             })
         vehicle_upgrades = []
@@ -7910,7 +8283,7 @@ class Handler(BaseHTTPRequestHandler):
     @atomic_endpoint
     def api_character_modification_action(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
-        if set(body or {}) - {'revision', 'action', 'reason'}:
+        if set(body or {}) - {'revision', 'action', 'reason', 'weapon_instance_id'}:
             raise ApiError(400, 'Modification action содержит неподдерживаемые поля')
         current_revision = _row_value(row, 'revision', 0) or 0
         if _num((body or {}).get('revision')) != current_revision:
@@ -7925,14 +8298,17 @@ class Handler(BaseHTTPRequestHandler):
         if not modification['active']:
             raise ApiError(409, 'Modification уже снята')
         action = str((body or {}).get('action') or '').lower()
-        if action in ('fire', 'reload', 'use_nos', 'reset_nos'):
+        if 'weapon_instance_id' in (body or {}) and action != 'mount_weapon':
+            raise ApiError(400, 'weapon_instance_id допустим только для mount_weapon')
+        if action in ('fire', 'reload', 'use_nos', 'reset_nos',
+                      'mount_weapon', 'unmount_weapon'):
             before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
             data = copy.deepcopy(before)
             state = (data.get('modification_state') or {}).get(modification_id)
             config = modification.get('configuration') or {}
-            upgrade = next((entry for entry in data.get('inventory') or []
-                            if isinstance(entry, dict) and
-                            entry.get('instance_id') == modification['upgrade_instance_id']), {})
+            owned = {entry.get('instance_id'): entry for entry in data.get('inventory') or []
+                     if isinstance(entry, dict) and entry.get('instance_id')}
+            upgrade = owned.get(modification['upgrade_instance_id']) or {}
             if modification.get('host_type') == 'vehicle':
                 rules = config.get('effect_rules')
                 if not isinstance(rules, list) or not rules:
@@ -7947,7 +8323,49 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(state, dict) or not state.get('profile_id'):
                 raise ApiError(400, 'Modification не имеет action resource profile')
             profile_label = config.get('upgrade_name') or state.get('profile_id')
-            if action in ('use_nos', 'reset_nos'):
+            action_state = state
+            action_reason = str((body or {}).get('reason') or '').strip()[:500]
+
+            if action in ('mount_weapon', 'unmount_weapon'):
+                if state.get('resource_type') != 'heavy_weapon_mount':
+                    raise ApiError(400, 'Modification не является Vehicle Heavy Weapon Mount')
+                if len(action_reason) < 3:
+                    raise ApiError(400, 'Укажите причину изменения mounted weapon')
+                if action == 'mount_weapon':
+                    if state.get('weapon_instance_id'):
+                        raise ApiError(409, 'Сначала снимите текущее mounted weapon')
+                    weapon_instance_id = str(
+                        (body or {}).get('weapon_instance_id') or '').lower()
+                    if not INSTANCE_ID_RE.fullmatch(weapon_instance_id):
+                        raise ApiError(400, 'Выберите конкретный экземпляр оружия')
+                    weapon = owned.get(weapon_instance_id)
+                    catalog_weapon = item_by_id(catalog_item_id_for_entry(weapon)) or {}
+                    mechanics = catalog_weapon.get('mechanics') or {}
+                    if not weapon or weapon.get('cat') != 'guns' or _num(mechanics.get('hands')) != 2:
+                        raise ApiError(400, 'Крепление принимает только двуручное дальнобойное оружие')
+                    if weapon.get('state') != 'carried' or weapon.get('mounted_modification_id'):
+                        raise ApiError(409, 'Оружие должно быть свободным и находиться в carried')
+                    state['weapon_instance_id'] = weapon_instance_id
+                    weapon.update({
+                        'state': 'installed',
+                        'mounted_modification_id': modification_id,
+                        'mounted_vehicle_id': modification['host_instance_id'],
+                    })
+                    sync_weapon_states_with_modifications(conn, row['id'], data)
+                    profile_label = weapon.get('custom_name') or weapon.get('name') or 'Weapon'
+                    reason = f'Mount {profile_label} on Vehicle Heavy Weapon Mount: {action_reason}'
+                else:
+                    weapon_instance_id = str(state.get('weapon_instance_id') or '')
+                    weapon = owned.get(weapon_instance_id)
+                    if not weapon:
+                        raise ApiError(409, 'Mounted weapon instance отсутствует')
+                    profile_label = weapon.get('custom_name') or weapon.get('name') or 'Weapon'
+                    state['weapon_instance_id'] = None
+                    weapon['state'] = 'carried'
+                    weapon.pop('mounted_modification_id', None)
+                    weapon.pop('mounted_vehicle_id', None)
+                    reason = f'Unmount {profile_label} from Vehicle Heavy Weapon Mount: {action_reason}'
+            elif action in ('use_nos', 'reset_nos'):
                 if state.get('resource_type') != 'nos_tank':
                     raise ApiError(400, 'Modification не является баллоном NOS')
                 current = max(0, int(_num(state.get('uses_remaining')) or 0))
@@ -7958,34 +8376,57 @@ class Handler(BaseHTTPRequestHandler):
                     state['uses_remaining'] = current - 1
                     reason = f'Use {profile_label}: {current} → {state["uses_remaining"]}'
                 else:
-                    reset_reason = str((body or {}).get('reason') or '').strip()[:500]
-                    if len(reset_reason) < 3:
+                    if len(action_reason) < 3:
                         raise ApiError(400, 'Укажите причину сброса NOS')
                     if current >= maximum:
                         raise ApiError(409, 'Баллон NOS уже готов к использованию')
                     state['uses_remaining'] = maximum
-                    reason = f'Reset {profile_label}: {current} → {maximum}; {reset_reason}'
-            elif action == 'fire':
-                if state.get('resource_type') == 'nos_tank':
-                    raise ApiError(400, 'Баллон NOS не является оружием')
-                current = max(0, int(_num(state.get('magazine')) or 0))
-                ammo_cost = max(1, int(_num(state.get('ammo_cost')) or 1))
-                if current < ammo_cost:
-                    raise ApiError(409, f'Для атаки требуется {ammo_cost} патронов')
-                state['magazine'] = current - ammo_cost
-                reason = f'Fire {profile_label}: magazine {current} → {state["magazine"]}'
+                    reason = f'Reset {profile_label}: {current} → {maximum}; {action_reason}'
             else:
                 if state.get('resource_type') == 'nos_tank':
-                    raise ApiError(400, 'Баллон NOS нельзя перезарядить')
-                current = max(0, int(_num(state.get('magazine')) or 0))
-                maximum = max(0, int(_num(state.get('magazine_max')) or 0))
-                reserve = max(0, int(_num(state.get('reserve')) or 0))
-                moved = min(max(0, maximum - current), reserve)
-                if moved <= 0:
-                    raise ApiError(409, 'Нет боеприпасов для перезарядки alternate weapon')
-                state['magazine'] = current + moved
-                state['reserve'] = reserve - moved
-                reason = f'Reload {profile_label}: magazine {current} → {state["magazine"]}'
+                    raise ApiError(400, 'Баллон NOS не является оружием')
+                if state.get('resource_type') == 'heavy_weapon_mount':
+                    weapon_instance_id = str(state.get('weapon_instance_id') or '')
+                    weapon = owned.get(weapon_instance_id)
+                    if not weapon:
+                        raise ApiError(409, 'Сначала установите оружие в Vehicle Heavy Weapon Mount')
+                    sync_weapon_states_with_modifications(conn, row['id'], data)
+                    all_modifications = character_modifications(conn, row['id'])
+                    weapon_modifications = [
+                        item for item in all_modifications
+                        if item.get('host_instance_id') == weapon_instance_id]
+                    effective_weapon = evaluate_effective_weapon(
+                        weapon, weapon_modifications, owned, data)
+                    bound_profile = bound_vehicle_weapon_profile(
+                        weapon, effective_weapon, data)
+                    action_state = (data.get('weapon_state') or {}).get(weapon_instance_id) or {}
+                    profile_label = weapon.get('custom_name') or weapon.get('name') or 'Weapon'
+                    ammo_cost = max(1, int(bound_profile.get('ammo_cost') or 1))
+                else:
+                    ammo_cost = max(1, int(_num(state.get('ammo_cost')) or 1))
+                if action == 'fire':
+                    maximum = max(0, int(_num(action_state.get('magazine_max')) or 0))
+                    if maximum <= 0:
+                        raise ApiError(409, 'Оружие не имеет отслеживаемого магазина')
+                    current = max(0, int(_num(action_state.get('magazine')) or 0))
+                    if current < ammo_cost:
+                        raise ApiError(409, f'Для атаки требуется {ammo_cost} патронов')
+                    action_state['magazine'] = current - ammo_cost
+                    reason = f'Fire {profile_label}: magazine {current} → {action_state["magazine"]}'
+                else:
+                    current = max(0, int(_num(action_state.get('magazine')) or 0))
+                    maximum = max(0, int(_num(action_state.get('magazine_max')) or 0))
+                    reserve = max(0, int(_num(action_state.get('reserve')) or 0))
+                    moved = min(max(0, maximum - current), reserve)
+                    if moved <= 0:
+                        raise ApiError(409, 'Нет боеприпасов для перезарядки alternate weapon')
+                    action_state['magazine'] = current + moved
+                    action_state['reserve'] = reserve - moved
+                    reason = f'Reload {profile_label}: magazine {current} → {action_state["magazine"]}'
+
+            validate_active_modification_references(conn, row['id'], data)
+            persist_character_item_instances(
+                conn, row['id'], data, 'vehicle_action', source_ref=reason)
             now = time.time()
             revision_after = current_revision + 1
             ledger_id = record_character_change_set(
@@ -8032,6 +8473,25 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(409, 'Сначала снимите modifications, зависящие от granted slots')
         elif host and modification.get('host_type') == 'vehicle':
             removed_name = str(upgrade.get('name') or '')
+            removed_state = (data.get('modification_state') or {}).get(modification_id) or {}
+            if (removed_state.get('resource_type') == 'heavy_weapon_mount' and
+                    removed_state.get('weapon_instance_id')):
+                raise ApiError(409, 'Сначала снимите оружие с Vehicle Heavy Weapon Mount')
+            if removed_name == 'Housing Capacity':
+                remaining_upgrades = [owned.get(item.get('upgrade_instance_id')) or {}
+                                      for item in remaining_modifications]
+                remaining_names = [str(item.get('name') or '')
+                                   for item in remaining_upgrades]
+                base_room_count = vehicle_base_interior(host)['base_rooms']
+                remaining_room_upgrades = sum(
+                    name in ('Luxury Vehicle Room', 'Complex Vehicle Room')
+                    for name in remaining_names)
+                if remaining_room_upgrades > base_room_count:
+                    raise ApiError(409, 'Сначала снимите upgrades жилых комнат')
+                remaining_mounts = sum(
+                    name == 'Vehicle Heavy Weapon Mount' for name in remaining_names)
+                if 'groundcar' in vehicle_classification(host) and remaining_mounts > 1:
+                    raise ApiError(409, 'Housing Capacity требуется для нескольких Heavy Weapon Mounts')
             for remaining in remaining_modifications:
                 dependent = owned.get(remaining.get('upgrade_instance_id')) or {}
                 host_names = (dependent.get('prerequisite_host_names') or {}).get(removed_name) or []
@@ -8042,6 +8502,15 @@ class Handler(BaseHTTPRequestHandler):
                     for required in required_names)
                 if applies and removes_prerequisite:
                     raise ApiError(409, 'Сначала снимите зависимые vehicle upgrades')
+            prospective_host_modifications = [
+                item for item in remaining_modifications
+                if item.get('host_instance_id') == host.get('instance_id')]
+            prospective = evaluate_effective_vehicle(
+                host, prospective_host_modifications, owned, data,
+                remaining_modifications)
+            prospective_seats = _num((prospective.get('effective') or {}).get('seats'))
+            if prospective_seats is not None and prospective_seats < 0:
+                raise ApiError(409, 'Сначала освободите места, занятые Heavy Weapon Mount')
         upgrade['state'] = 'carried'
         upgrade.pop('host_instance_id', None)
         data.setdefault('modification_state', {}).pop(modification_id, None)
@@ -8474,6 +8943,10 @@ class Handler(BaseHTTPRequestHandler):
         elif resource == 'weapon':
             sync_weapon_states_with_modifications(conn, row['id'], data)
             key = str((body or {}).get('subject') or '')
+            weapon = next((item for item in data.get('inventory') or []
+                           if isinstance(item, dict) and item.get('instance_id') == key), None)
+            if weapon and weapon.get('mounted_modification_id'):
+                raise ApiError(409, 'Mounted weapon управляется только через Vehicle Garage')
             state = (data.get('weapon_state') or {}).get(key)
             if not state: raise ApiError(400, 'Оружие не найдено')
             if action == 'fire': state['magazine'] = max(0, (_num(state.get('magazine')) or 0) - max(1, abs(value) or 1))

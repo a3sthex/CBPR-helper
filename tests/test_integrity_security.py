@@ -1097,6 +1097,151 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertTrue(any('Fire Onboard Machinegun' in entry['reason']
                             for entry in action_entries))
 
+    def test_vehicle_heavy_weapon_mount_binds_a_concrete_two_handed_weapon(self):
+        edited = copy.deepcopy(self.character_data)
+        item_ids = (
+            'vehicles-2', 'vehicles_upgrades-9', 'vehicles_upgrades-18',
+            'vehicles_upgrades-11', 'guns-6', 'guns-1', 'ammo-0',
+        )
+        edited['inventory'] = []
+        for item_id in item_ids:
+            item = server.item_by_id(item_id)
+            edited['inventory'].append({
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': item['cat'], 'name': item['name'],
+                'qty': 3 if item_id == 'ammo-0' else 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            })
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add heavy mount test loadout', 'data': edited,
+        })
+        by_name = {item['name']: item for item in updated['data']['inventory']}
+        vehicle = by_name['Compact Groundcar']
+        heavy = by_name['Heavy Chassis']
+        housing = by_name['Housing Capacity']
+        mount = by_name['Vehicle Heavy Weapon Mount']
+        rifle = by_name['Assault Rifle']
+        pistol = by_name['Heavy Pistol']
+
+        self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 1, 'host_instance_id': vehicle['instance_id'],
+            'upgrade_instance_id': heavy['instance_id'], 'manual_confirm': False,
+            'reason': 'Install required Heavy Chassis',
+        })
+        self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 2, 'host_instance_id': vehicle['instance_id'],
+            'upgrade_instance_id': housing['instance_id'], 'manual_confirm': False,
+            'reason': 'Install Housing Capacity for future expansion',
+        })
+        installed_mount = self.call(
+            server.Handler.api_character_modification_install, self.match(1), {
+                'revision': 3, 'host_instance_id': vehicle['instance_id'],
+                'upgrade_instance_id': mount['instance_id'], 'manual_confirm': True,
+                'reason': 'Install passenger heavy weapon mount',
+            })
+        mount_id = installed_mount['modification_id']
+        mount_state = installed_mount['character']['data']['modification_state'][mount_id]
+        self.assertEqual(mount_state['resource_type'], 'heavy_weapon_mount')
+        self.assertIsNone(mount_state['weapon_instance_id'])
+        effective = installed_mount['character']['derived']['effective_vehicles'][
+            vehicle['instance_id']]
+        self.assertEqual(effective['effective']['seats'], 3)
+        self.assertIsNone(effective['weapon_mounts'][0]['bound_weapon'])
+        mount_match = re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{mount_id}')
+
+        with self.assertRaises(server.ApiError) as one_handed:
+            self.call(server.Handler.api_character_modification_action, mount_match, {
+                'revision': 4, 'action': 'mount_weapon',
+                'weapon_instance_id': pistol['instance_id'],
+                'reason': 'Try mounting a one-handed pistol',
+            })
+        self.assertEqual(one_handed.exception.status, 400)
+        mounted = self.call(server.Handler.api_character_modification_action,
+                            mount_match, {
+            'revision': 4, 'action': 'mount_weapon',
+            'weapon_instance_id': rifle['instance_id'],
+            'reason': 'Passenger secures the rifle to the swivel mount',
+        })
+        mounted_rifle = next(item for item in mounted['character']['data']['inventory']
+                             if item['instance_id'] == rifle['instance_id'])
+        self.assertEqual(mounted_rifle['state'], 'installed')
+        self.assertEqual(mounted_rifle['mounted_modification_id'], mount_id)
+        bound = mounted['character']['derived']['effective_vehicles'][
+            vehicle['instance_id']]['weapon_mounts'][0]['bound_weapon']
+        self.assertEqual(bound['weapon_instance_id'], rifle['instance_id'])
+        self.assertEqual(bound['skill'], 'Shoulder Arms')
+        self.assertEqual(bound['state']['magazine'], 25)
+        mount_ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertTrue(mount_ledger['entries'][0]['can_revert'])
+        reverted_mount = self.call(
+            server.Handler.api_character_ledger_revert,
+            self.match(1, mount_ledger['entries'][0]['id']), {
+                'revision': 5, 'reason': 'Undo accidental weapon binding',
+            })
+        reverted_rifle = next(item for item in reverted_mount['data']['inventory']
+                              if item['instance_id'] == rifle['instance_id'])
+        self.assertEqual(reverted_rifle['state'], 'carried')
+        self.assertIsNone(reverted_mount['data']['modification_state'][
+            mount_id]['weapon_instance_id'])
+        remounted = self.call(server.Handler.api_character_modification_action,
+                              mount_match, {
+            'revision': 6, 'action': 'mount_weapon',
+            'weapon_instance_id': rifle['instance_id'],
+            'reason': 'Passenger confirms the intended rifle binding',
+        })
+        remounted_rifle = next(
+            item for item in remounted['character']['data']['inventory']
+            if item['instance_id'] == rifle['instance_id'])
+        self.assertEqual(remounted_rifle['state'], 'installed')
+
+        with self.assertRaises(server.ApiError) as sell_mounted:
+            self.call(server.Handler.api_sell, body={
+                'char_id': 1, 'instance_id': rifle['instance_id'], 'qty': 1,
+            })
+        self.assertEqual(sell_mounted.exception.status, 409)
+        with self.assertRaises(server.ApiError) as bypass:
+            self.call(server.Handler.api_character_resource, self.match(1), {
+                'resource': 'weapon', 'subject': rifle['instance_id'],
+                'action': 'fire', 'value': 1,
+            })
+        self.assertEqual(bypass.exception.status, 409)
+        fired = self.call(server.Handler.api_character_modification_action,
+                          mount_match, {
+            'revision': 7, 'action': 'fire',
+        })
+        self.assertEqual(fired['character']['data']['weapon_state'][
+            rifle['instance_id']]['magazine'], 24)
+        with self.assertRaises(server.ApiError) as occupied_mount:
+            self.call(server.Handler.api_character_modification_action,
+                      mount_match, {
+                'revision': 8, 'action': 'remove',
+                'reason': 'Try removing an occupied mount',
+            })
+        self.assertEqual(occupied_mount.exception.status, 409)
+
+        unmounted = self.call(server.Handler.api_character_modification_action,
+                              mount_match, {
+            'revision': 8, 'action': 'unmount_weapon',
+            'reason': 'Passenger removes the rifle using an Action',
+        })
+        unmounted_rifle = next(item for item in unmounted['character']['data']['inventory']
+                               if item['instance_id'] == rifle['instance_id'])
+        self.assertEqual(unmounted_rifle['state'], 'carried')
+        self.assertNotIn('mounted_modification_id', unmounted_rifle)
+        self.assertEqual(unmounted['character']['data']['weapon_state'][
+            rifle['instance_id']]['magazine'], 24)
+        removed = self.call(server.Handler.api_character_modification_action,
+                            mount_match, {
+            'revision': 9, 'action': 'remove',
+            'reason': 'Remove the now-empty heavy weapon mount',
+        })
+        self.assertNotIn(mount_id, removed['character']['data']['modification_state'])
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertTrue(any('Mount Assault Rifle' in entry['reason']
+                            for entry in ledger['entries']))
+        self.assertTrue(any('Unmount Assault Rifle' in entry['reason']
+                            for entry in ledger['entries']))
+
     def test_active_effect_instances_apply_expire_tick_and_audit(self):
         character = copy.deepcopy(self.character_data)
         character['skills']['Handgun'] = 3
@@ -1403,8 +1548,20 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertEqual(public['derived'], {})
 
         self.current = self.user('runner')
+        combat_only = self.call(server.Handler.api_save_character, self.match(1), {
+            'revision': 0, 'patch': {'visibility': {'combat': True}},
+        })
+        self.current = self.user('other')
+        combat_visible = self.call(server.Handler.api_get_character, self.match(1))
+        self.assertTrue(combat_visible['derived'])
+        self.assertNotIn('inventory', combat_visible['data'])
+        self.assertNotIn('effective_weapons', combat_visible['derived'])
+        self.assertNotIn('effective_vehicles', combat_visible['derived'])
+        self.assertNotIn('modifications', combat_visible['derived'])
+
+        self.current = self.user('runner')
         updated = self.call(server.Handler.api_save_character, self.match(1), {
-            'revision': 0,
+            'revision': combat_only['revision'],
             'patch': {'visibility': {'stats': True, 'equipment': True, 'combat': True}},
         })
         self.assertTrue(updated['data']['visibility']['stats'])

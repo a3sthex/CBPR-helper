@@ -669,7 +669,7 @@ class VehicleModificationTests(unittest.TestCase):
             server.clean_vehicle_modification_choices(
                 flamethrower['catalog_item_id'], {'orientation': 'top'})
         self.assertEqual(server.clean_vehicle_modification_choices(
-            machinegun['catalog_item_id'], {}), {'orientation': 'front'})
+            machinegun['catalog_item_id'], {}), {})
         authoritative = server.initial_vehicle_modification_state(
             server.vehicle_modification_rules_for_catalog(machinegun['catalog_item_id']),
             {'inventory': []}, {'orientation': 'front'})
@@ -683,6 +683,94 @@ class VehicleModificationTests(unittest.TestCase):
         self.assertEqual(normalized['reserve'], 0)
         self.assertEqual(normalized['ammo_cost'], 10)
         self.assertEqual(normalized['orientation'], 'front')
+
+    def test_vehicle_heavy_mount_rooms_and_cargo_are_effective(self):
+        vehicle = self.owned('vehicles-7', 'b' * 32)
+        housing = self.owned('vehicles_upgrades-18', 'c' * 32)
+        luxury = self.owned('vehicles_upgrades-25', 'd' * 32)
+        complex_room = self.owned('vehicles_upgrades-26', 'e' * 32)
+        smuggling = self.owned('vehicles_upgrades-8', 'f' * 32)
+        mount = self.owned('vehicles_upgrades-11', '1' * 31 + '0')
+        weapon = self.owned('guns-6', '2' * 31 + '0')
+        upgrades = (housing, luxury, complex_room, smuggling, mount)
+        for upgrade in upgrades:
+            upgrade['state'] = 'installed'
+        weapon.update({
+            'state': 'installed', 'mounted_modification_id': '5' * 32,
+            'mounted_vehicle_id': vehicle['instance_id'],
+        })
+        owned = {item['instance_id']: item for item in (vehicle, *upgrades, weapon)}
+        modifications = []
+        for index, upgrade in enumerate(upgrades, start=1):
+            modification_id = '5' * 32 if upgrade is mount else f'{index:032x}'
+            modifications.append({
+                'modification_id': modification_id,
+                'host_instance_id': vehicle['instance_id'],
+                'upgrade_instance_id': upgrade['instance_id'],
+                'host_type': 'vehicle', 'active': True, 'slots_used': 0,
+                'configuration': {
+                    'choices': {'purpose': 'cargo_bay'}
+                        if upgrade is complex_room else {},
+                    'effect_rules': server.vehicle_modification_rules_for_catalog(
+                        upgrade['catalog_item_id']),
+                },
+            })
+        vehicle['_modification_state'] = {
+            '5' * 32: {
+                'resource_type': 'heavy_weapon_mount',
+                'profile_id': 'heavy_weapon_mount',
+                'weapon_instance_id': weapon['instance_id'],
+            },
+        }
+        character = {
+            'inventory': list(owned.values()), 'cyberware': [],
+            'weapon_state': {weapon['instance_id']: {
+                'magazine': 12, 'magazine_max': 25, 'reserve': 20,
+            }},
+        }
+        result = server.evaluate_effective_vehicle(
+            vehicle, modifications, owned, character, modifications)
+        self.assertEqual(result['base']['seats'], '2 per Room')
+        self.assertEqual(result['effective']['seats'], 9)
+        self.assertEqual(result['interior']['rooms_total'], 3)
+        self.assertEqual(result['interior']['normal_rooms'], 1)
+        self.assertEqual(result['interior']['luxury_rooms'], 1)
+        self.assertEqual(result['interior']['complex_rooms'], 1)
+        self.assertEqual(result['interior']['cargo_bays'], 1)
+        self.assertEqual(result['interior']['hidden_cargo_spaces'], 1)
+        self.assertEqual(result['cargo_modules'][0]['kind'], 'cargo_bay')
+        self.assertEqual(result['cargo_modules'][1]['discovery_dv'], 17)
+        self.assertEqual(len(result['weapon_mounts']), 1)
+        bound = result['weapon_mounts'][0]['bound_weapon']
+        self.assertEqual(bound['weapon_instance_id'], weapon['instance_id'])
+        self.assertEqual(bound['skill'], 'Shoulder Arms')
+        self.assertEqual(bound['damage'], '5d6')
+        self.assertEqual(bound['state']['magazine'], 12)
+        helix = self.owned('guns-133', '6' * 32)
+        helix_character = {
+            'inventory': [helix], 'cyberware': [],
+            'weapon_state': {helix['instance_id']: {
+                'magazine': 40, 'magazine_max': 40, 'reserve': 0,
+            }},
+        }
+        helix_effective = server.evaluate_effective_weapon(
+            helix, [], {helix['instance_id']: helix}, helix_character)
+        helix_profile = server.bound_vehicle_weapon_profile(
+            helix, helix_effective, helix_character)
+        self.assertEqual(helix_profile['kind'], 'autofire')
+        self.assertEqual(helix_profile['ammo_cost'], 20)
+        self.assertEqual(helix_profile['autofire_multiplier'], 5)
+        self.assertEqual(helix_profile['reload_actions'], 2)
+
+        schema = server.vehicle_modification_configuration_schema(
+            complex_room['catalog_item_id'])
+        self.assertEqual(schema[0]['key'], 'purpose')
+        self.assertEqual(server.clean_vehicle_modification_choices(
+            complex_room['catalog_item_id'], {'purpose': 'bunkhouse'}),
+            {'purpose': 'bunkhouse'})
+        with self.assertRaises(server.ApiError):
+            server.clean_vehicle_modification_choices(
+                complex_room['catalog_item_id'], {'purpose': 'javascript'})
 
     def test_vehicle_availability_prerequisites_conflicts_and_role_access(self):
         car = self.owned('vehicles-2', '1' * 32)
@@ -738,6 +826,54 @@ class VehicleModificationTests(unittest.TestCase):
             bicycle, folding, [enclosure_mod], bicycle_owned, {})
         self.assertFalse(conflict['allowed'])
         self.assertTrue(any('Enclosure' in reason for reason in conflict['reasons']))
+
+        mount = self.owned('vehicles_upgrades-11', 'c' * 32)
+        luxury = self.owned('vehicles_upgrades-25', 'd' * 32)
+        expanded_owned = {**owned, mount['instance_id']: mount,
+                          luxury['instance_id']: luxury}
+        first_mount = server.vehicle_upgrade_compatibility(
+            car, mount, [heavy_mod], expanded_owned, {})
+        self.assertTrue(first_mount['allowed'])
+        mount['state'] = 'installed'
+        mount_mod = {
+            'modification_id': 'e' * 32,
+            'host_instance_id': car['instance_id'],
+            'upgrade_instance_id': mount['instance_id'],
+            'host_type': 'vehicle', 'active': True, 'configuration': {},
+        }
+        second_mount = self.owned('vehicles_upgrades-11', 'f' * 32)
+        expanded_owned[second_mount['instance_id']] = second_mount
+        blocked_second = server.vehicle_upgrade_compatibility(
+            car, second_mount, [heavy_mod, mount_mod], expanded_owned, {})
+        self.assertFalse(blocked_second['allowed'])
+        self.assertTrue(any('Housing Groundcar' in reason
+                            for reason in blocked_second['reasons']))
+        housing['state'] = 'installed'
+        housing_mod = {
+            'modification_id': '1' * 30 + '22',
+            'host_instance_id': car['instance_id'],
+            'upgrade_instance_id': housing['instance_id'],
+            'host_type': 'vehicle', 'active': True, 'configuration': {},
+        }
+        self.assertTrue(server.vehicle_upgrade_compatibility(
+            car, second_mount, [heavy_mod, mount_mod, housing_mod],
+            expanded_owned, {})['allowed'])
+        self.assertTrue(server.vehicle_upgrade_compatibility(
+            car, luxury, [heavy_mod, housing_mod], expanded_owned, {})['allowed'])
+        luxury['state'] = 'installed'
+        luxury_mod = {
+            'modification_id': '2' * 32,
+            'host_instance_id': car['instance_id'],
+            'upgrade_instance_id': luxury['instance_id'],
+            'host_type': 'vehicle', 'active': True, 'configuration': {},
+        }
+        another_luxury = self.owned('vehicles_upgrades-25', '3' * 32)
+        expanded_owned[another_luxury['instance_id']] = another_luxury
+        room_full = server.vehicle_upgrade_compatibility(
+            car, another_luxury, [heavy_mod, housing_mod, luxury_mod],
+            expanded_owned, {})
+        self.assertFalse(room_full['allowed'])
+        self.assertTrue(any('rooms already' in reason for reason in room_full['reasons']))
 
 
 class CreationValidationTests(unittest.TestCase):

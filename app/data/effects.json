@@ -954,6 +954,214 @@
           "source": "CP:R 164"
         }
       ]
+    },
+    {
+      "id": "vehicle-heavy-weapon-mount-resource",
+      "catalog_id": "vehicles_upgrades-11",
+      "label_en": "Vehicle Heavy Weapon Mount",
+      "label_ru": "Транспортное крепление тяжёлого оружия",
+      "effects": [
+        {
+          "id": "heavy-weapon-mount-seat",
+          "target": "vehicle.seats",
+          "operation": "add",
+          "value": -1,
+          "source": "CP:R 164"
+        },
+        {
+          "id": "heavy-weapon-mount-binding",
+          "target": "vehicle.weapon_mount",
+          "operation": "grant",
+          "resource": {
+            "id": "heavy_weapon_mount",
+            "label_en": "Passenger Heavy Weapon Mount",
+            "label_ru": "Пассажирское крепление тяжёлого оружия"
+          },
+          "source": "CP:R 164"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "heavy-weapon-mount-passenger-action",
+          "text_en": "A passenger operates the bound two-handed ranged weapon using their Action and may reload it while the vehicle is moving.",
+          "text_ru": "Пассажир использует закреплённое двуручное дальнобойное оружие своим Action и может перезаряжать его во время движения.",
+          "condition": "passenger_operator_action",
+          "source": "CP:R 164"
+        },
+        {
+          "id": "heavy-weapon-mount-glass-bubble",
+          "text_en": "If the vehicle has Bulletproof Glass, a bubble of the same glass protects the gunner; resolve individual glass damage manually.",
+          "text_ru": "Если у транспорта есть Bulletproof Glass, стрелка защищает купол из такого же стекла; повреждения отдельного стекла применяются вручную.",
+          "condition": "bulletproof_glass_gunner_bubble",
+          "source": "CP:R 164"
+        },
+        {
+          "id": "heavy-weapon-mount-family-gift",
+          "text_en": "The first Family-provided mount may include one source-listed heavy weapon. Granting that weapon remains a Nomad/GM decision and is not automatic.",
+          "text_ru": "Первое крепление от Семьи может включать одно указанное в источнике тяжёлое оружие. Выдача оружия остаётся решением Nomad/GM и не автоматизируется.",
+          "condition": "first_family_mount_gift",
+          "source": "CP:R 164"
+        }
+      ]
+    },
+    {
+      "id": "housing-capacity-interior",
+      "catalog_id": "vehicles_upgrades-18",
+      "label_en": "Housing Capacity",
+      "label_ru": "Жилой модуль",
+      "effects": [
+        {
+          "id": "housing-capacity-module",
+          "target": "vehicle.interior",
+          "operation": "grant",
+          "profile": {
+            "id": "housing_capacity",
+            "kind": "housing",
+            "rooms": 1,
+            "beds": 1,
+            "amenities": [
+              "toilet",
+              "shower",
+              "small_kitchen"
+            ]
+          },
+          "source": "CP:R 165"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "housing-capacity-room-layout",
+          "text_en": "Groundcars and AV-4s become a one-bed Kombi. Cabin Cruisers, Yachts, and Aerozeps add one normal room; exact layout and stored contents remain narrative.",
+          "text_ru": "Groundcar и AV-4 становятся Kombi с одной кроватью. Cabin Cruiser, Yacht и Aerozep получают одну обычную комнату; точная планировка и содержимое остаются нарративными.",
+          "condition": "vehicle_interior_layout",
+          "source": "CP:R 165"
+        }
+      ]
+    },
+    {
+      "id": "luxury-vehicle-room-interior",
+      "catalog_id": "vehicles_upgrades-25",
+      "label_en": "Luxury Vehicle Room",
+      "label_ru": "Роскошная комната транспорта",
+      "effects": [
+        {
+          "id": "luxury-room-upgrade",
+          "target": "vehicle.room_upgrade",
+          "operation": "grant",
+          "profile": {
+            "id": "luxury_vehicle_room",
+            "kind": "luxury"
+          },
+          "source": "DL:12V 16"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "luxury-room-aesthetics",
+          "text_en": "A Luxury Room changes aesthetics and perceived housing quality only. Rental category and narrative benefits are decided manually.",
+          "text_ru": "Luxury Room меняет только эстетику и воспринимаемое качество жилья. Категорию аренды и нарративные преимущества определяют вручную.",
+          "condition": "luxury_room_narrative_quality",
+          "source": "DL:12V 16"
+        }
+      ]
+    },
+    {
+      "id": "complex-vehicle-room-interior",
+      "catalog_id": "vehicles_upgrades-26",
+      "label_en": "Complex Vehicle Room",
+      "label_ru": "Комплексная комната транспорта",
+      "effects": [
+        {
+          "id": "complex-room-upgrade",
+          "target": "vehicle.room_upgrade",
+          "operation": "grant",
+          "profile": {
+            "id": "complex_vehicle_room",
+            "kind": "complex",
+            "purposes": [
+              "cargo_bay",
+              "bunkhouse",
+              "cafeteria",
+              "restaurant",
+              "recreation_deck",
+              "prison",
+              "bowling_alley",
+              "laser_tag_arena",
+              "other_complex"
+            ]
+          },
+          "source": "DL:12V 16"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "complex-room-purpose-resolution",
+          "text_en": "The selected purpose labels the room. Equipment, cargo contents, prisoners, services, and other functional benefits require manual resolution.",
+          "text_ru": "Выбранное назначение обозначает комнату. Оснащение, груз, заключённые, услуги и другие функциональные преимущества применяются вручную.",
+          "condition": "complex_room_contents",
+          "source": "DL:12V 16"
+        }
+      ]
+    },
+    {
+      "id": "smuggling-upgrade-cargo",
+      "catalog_id": "vehicles_upgrades-8",
+      "label_en": "Smuggling Upgrade",
+      "label_ru": "Контрабандный модуль",
+      "effects": [
+        {
+          "id": "smuggling-hidden-cargo",
+          "target": "vehicle.cargo",
+          "operation": "grant",
+          "profile": {
+            "id": "smuggling_upgrade",
+            "kind": "hidden",
+            "cargo_spaces": 1,
+            "hidden_holsters": 2,
+            "discovery_dv": 17
+          },
+          "source": "CP:R 164"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "smuggling-upgrade-contents",
+          "text_en": "The hidden spaces are tracked, but their exact dimensions, contents, and who can reach each holster are resolved manually.",
+          "text_ru": "Скрытые пространства учитываются, но их точные размеры, содержимое и доступ к каждому holster применяются вручную.",
+          "condition": "hidden_space_contents",
+          "source": "CP:R 164"
+        }
+      ]
+    },
+    {
+      "id": "bicycle-smuggling-cargo",
+      "catalog_id": "vehicles_upgrades-38",
+      "label_en": "Bicycle Smuggling Compartment",
+      "label_ru": "Тайник велосипеда",
+      "effects": [
+        {
+          "id": "bicycle-hidden-cargo",
+          "target": "vehicle.cargo",
+          "operation": "grant",
+          "profile": {
+            "id": "bicycle_smuggling_compartment",
+            "kind": "hidden_small",
+            "cargo_spaces": 1,
+            "hidden_holsters": 0,
+            "discovery_dv": 17
+          },
+          "source": "DLC:Wheels 5"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "bicycle-compartment-dimensions",
+          "text_en": "This compartment only holds objects up to 1 × 6 inches (2.54 × 15.24 cm). Contents are tracked manually.",
+          "text_ru": "Тайник вмещает только предметы до 1 × 6 дюймов (2,54 × 15,24 см). Содержимое учитывается вручную.",
+          "condition": "small_compartment_dimensions",
+          "source": "DLC:Wheels 5"
+        }
+      ]
     }
   ]
 }

@@ -2934,7 +2934,21 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - каждое mounted weapon устанавливается разряженным и имеет собственные Mag/Reserve, Fire/Reload, Attack/Damage controls; исходный Reserve создаётся из совместимого ammo snapshot, но единый shared ammo transfer/ownership пока не реализован;
 - условие `Cannot reload while driving` показывается явно, но не блокирует Reload автоматически до появления authoritative driving/session state;
 - все resource actions сохраняют base item неизменным, попадают в readable Ledger и безопасно revert-ятся как resource state;
-- Vehicle Heavy Weapon Mount с привязкой конкретного two-handed weapon, cargo/rooms/Housing и полноценные repair workflows остаются следующими Garage этапами.
+- Vehicle Heavy Weapon Mount, cargo/rooms/Housing и полноценные repair workflows были вынесены в следующие Garage этапы.
+
+**Статус B.7.4 — реализованы Heavy Weapon Mount и Interior Capacity:**
+
+- Vehicle Heavy Weapon Mount создаёт отдельный пустой mount resource и уменьшает effective Seats на 1; установка по-прежнему требует Heavy Chassis и manual compatibility confirmation;
+- `Mount · Action` привязывает конкретный stable instance только двуручного ranged weapon, переводит его в `installed`, хранит vehicle/modification links и блокирует повторную экипировку, продажу, удаление и обход Garage weapon actions;
+- `Unmount · Action` возвращает тот же instance в `carried`, не сбрасывая его Magazine/Reserve; занятый mount нельзя удалить до снятия оружия;
+- bound weapon использует собственные effective mechanics, weapon upgrades, Skill, Damage, Range Table и общий weapon state; Fire/Reload revision-guarded, Ledger-audited и безопасно revert-ятся;
+- для Tsunami Arms Helix распознаются Autofire-only, multiplier 5, расход 20 rounds и 2 Actions to Reload; другие source-specific critical/armor/explosion rules остаются manual;
+- первый mount разрешён на совместимом vehicle, а дополнительные — только на Cabin Cruiser/Yacht/Aerozep либо Groundcar с Housing Capacity; каждый mount требует доступное сиденье;
+- Housing Capacity создаёт структурированный Kombi для Groundcar/AV-4 либо добавляет normal room для Cabin Cruiser/Yacht/Aerozep; Garage показывает total/normal/luxury/complex rooms, beds и amenities;
+- Luxury Vehicle Room заменяет одну доступную комнату без mechanics-бонуса; Complex Vehicle Room требует allowlisted purpose и даёт seat contribution 6 для Cabin Cruiser/Aerozep или 12 для Yacht;
+- Cargo Bay purpose, Smuggling Upgrade и Bicycle Smuggling Compartment отображаются как структурированные cargo modules; DV17, hidden holsters и ограничения размеров сохранены, но фактическое содержимое остаётся `MANUAL CARGO`;
+- Housing нельзя снять, пока от него зависят room upgrades или несколько Groundcar mounts; количество upgraded rooms не может превысить rooms total;
+- выдача Family gift weapon, точные room layouts/cargo contents и полноценные repair workflows остаются ручными/следующими этапами.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -2954,8 +2968,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: instance binding, slot pools, lifecycle, Magazines/Smartgun/Bayonet/scopes, Underbarrels, Autofire/Rebuild profiles и host-specific Range Table choices;
     - дальше: contextual ricochet/charge, full Autofire action/ammo и Tech overrides.
 12. ◐ Vehicle Upgrades и Garage integration.
-    - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective SDP/Body SP/Glass/Seats, Garage damage controls, NOS resources и Onboard Machinegun/Flamethrower/Rocket Pod profiles;
-    - дальше: Vehicle Heavy Weapon Mount binding, shared mounted ammo, cargo/rooms/Housing и repair workflows.
+    - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective SDP/Body SP/Glass/Seats, Garage damage controls, NOS, Onboard weapon profiles, concrete Heavy Weapon Mount binding, Housing/rooms и structured cargo modules;
+    - дальше: shared ammo transfer/ownership, cargo contents/crew stash и полноценные repair workflows.
 13. Cyberdeck/Cyberware/Armor/Tech modification hosts.
 14. JSON import.
 

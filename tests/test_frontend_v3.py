@@ -100,6 +100,11 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('Use NOS', source)
         self.assertIn('mounted_weapons', source)
         self.assertIn('data-vehicle-config', source)
+        self.assertIn('weapon_mounts', source)
+        self.assertIn('data-heavy-mount-select', source)
+        self.assertIn('mount_weapon', source)
+        self.assertIn('Interior, Rooms & Cargo', source)
+        self.assertIn('complex_purposes', source)
 
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
