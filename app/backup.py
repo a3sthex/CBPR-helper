@@ -128,9 +128,21 @@ def add_file_to_tar(archive, source, arcname):
 
 def prune_backups(backup_dir, retention):
     retention = max(1, int(retention))
+
+    def created_key(path):
+        try:
+            manifest = read_manifest(path)
+            if manifest.get('created_at_ns') is not None:
+                return int(manifest['created_at_ns'])
+            if manifest.get('created_at') is not None:
+                return int(float(manifest['created_at']) * 1_000_000_000)
+        except (BackupError, OSError, TypeError, ValueError):
+            pass
+        return path.stat().st_mtime_ns
+
     bundles = sorted(
         (path for path in backup_dir.iterdir() if path.is_file() and BUNDLE_NAME_RX.fullmatch(path.name)),
-        key=lambda path: path.stat().st_mtime,
+        key=lambda path: (created_key(path), path.name),
         reverse=True,
     )
     removed = []
@@ -160,10 +172,12 @@ def create_bundle(db_path=DEFAULT_DB, uploads_dir=DEFAULT_UPLOADS,
             online_sqlite_snapshot(db_path, snapshot)
             uploads = iter_uploads(uploads_dir)
             metadata = database_metadata(snapshot)
+            created_at_ns = time.time_ns()
             manifest = {
                 'format': BUNDLE_FORMAT,
                 'bundle_version': BUNDLE_VERSION,
-                'created_at': time.time(),
+                'created_at': created_at_ns / 1_000_000_000,
+                'created_at_ns': created_at_ns,
                 'created_utc': datetime.now(timezone.utc).isoformat(),
                 'reason': str(reason or 'manual')[:120],
                 'database': {
