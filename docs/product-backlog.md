@@ -960,7 +960,221 @@ Mark Character as Deceased
 
 ---
 
-## 16. Приоритеты
+## 16. Дополнительные системы кампании
+
+Ниже — идеи, которые хорошо связывают уже запланированные Dossiers, Organizations, Locations, Market, Sessions и City Feed. Их не стоит реализовывать одновременно; сначала лучше выбрать несколько систем с максимальной пользой за игровым столом.
+
+### 16.1 Session Recap / Chronicle
+
+Aftermath сейчас связывает Contract, Feed и награды, но полноценный итог сыгранной сессии заслуживает отдельной записи.
+
+```text
+Session date
+GM and participants
+Related Contract / Storyline
+Public summary
+Private GM summary
+Important choices
+NPC status changes
+Locations visited
+Loot / Cash / IP
+Injuries / Humanity changes
+Quotes and screenshots
+```
+
+Recap автоматически пополняет:
+
+- Character history;
+- Storyline timeline;
+- Location history;
+- Organization history;
+- Memorial achievements;
+- City Feed draft.
+
+Это один из самых полезных следующих модулей: он превращает сыгранные партии в общую хронику, а не только в разрозненные посты.
+
+### 16.2 Crew Stash, transfer и trade
+
+Игрокам нужна возможность передавать найденные предметы без ручного удаления у одного Character и добавления другому.
+
+Функции:
+
+- `Give to Character`;
+- `Move to Crew Stash`;
+- `Take from Crew Stash`;
+- `Split Stack`;
+- `Loan Item`;
+- `Return Item`;
+- `Trade`;
+- история владельцев предмета.
+
+Crew Stash может быть связан с Housing/Location: квартира, гараж, база команды, Nomad vehicle cargo. Все движения попадают в ledger обеих сторон.
+
+### 16.3 Downtime Planner
+
+Между сессиями игрок выбирает действия на неделю/месяц:
+
+- Hustle;
+- Therapy;
+- лечение Critical Injuries;
+- восстановление Humanity;
+- установка/удаление cyberware;
+- ремонт Armor/Vehicle;
+- Fabrication/Upgrade/Invention;
+- поиск предмета через Fixer;
+- работа с Contact/Organization;
+- переезд и Lifestyle;
+- подготовка к Contract.
+
+Downtime связывается с календарём кампании и создаёт понятный журнал вместо сообщений GM в чате.
+
+### 16.4 Organization Reputation, Favor и Heat
+
+Одной общей Reputation недостаточно. Нужны отношения конкретного Character/Crew с организациями:
+
+```text
+reputation       известность/уважение
+favor            накопленные услуги и долги
+heat             внимание полиции/корпорации/банды
+standing         allied | friendly | neutral | hostile | hunted
+```
+
+Это может:
+
+- открывать Vendors и редкие товары;
+- менять цены;
+- давать доступ к classified Locations;
+- влиять на Contracts;
+- порождать City Feed/rumors;
+- показываться на Organization page.
+
+Не стоит сразу делать сложную автоматическую симуляцию: первая версия — ручные изменения GM с ledger и простыми порогами.
+
+### 16.5 Intel, Rumors и Case Board
+
+City Feed показывает публичную информацию, но игрокам нужен личный слой знаний.
+
+`Intel Fragment` может быть связан с:
+
+- Persona;
+- Organization;
+- Location;
+- Contract;
+- Storyline;
+- Feed post;
+- Item;
+- датой и источником.
+
+Visibility:
+
+```text
+private character
+crew
+shared players
+gm truth
+```
+
+Case Board позволяет закреплять карточки, соединять их нитями, писать гипотезы и отмечать подтверждённые/ложные сведения. Это особенно полезно для Media, Fixer, Lawman и расследовательских Storylines.
+
+### 16.6 Relationships Graph
+
+На основе Persona memberships и connections можно построить интерактивный граф:
+
+```text
+Character ↔ Persona ↔ Organization ↔ Location ↔ Storyline
+```
+
+У связи есть тип, visibility, период действия и комментарий. Public graph показывает известные связи, GM graph — секретные. Лучше строить его поверх структурированных данных, а не хранить отдельную несогласованную схему.
+
+### 16.7 Medical Record
+
+Отдельный медицинский блок Dossier:
+
+- Critical Injuries;
+- treatment status;
+- attending Medtech/Clinic;
+- therapy sessions;
+- Humanity history;
+- installed/removed cyberware history;
+- invoices and debt;
+- expected recovery date.
+
+Клиники являются Locations/Vendors, а Medtech Persona или Character может быть указан исполнителем.
+
+### 16.8 Vehicle Garage
+
+Для Nomad и транспортных кампаний:
+
+- vehicles и ownership;
+- condition/SDP;
+- upgrades;
+- seats/cargo;
+- fuel/ammo;
+- current Location;
+- assigned driver;
+- garage/home base;
+- repair history;
+- shared Crew vehicles.
+
+Vehicle marker можно отображать на карте только владельцу/Crew/GM согласно visibility.
+
+### 16.9 Achievements, Reputation Moments и Quotes
+
+Не игровые «ачивки ради ачивок», а отмеченные GM события:
+
+```text
+Survived the Watson Blackout
+Saved a Crew member
+Betrayed Militech
+Won a legendary firefight
+First published investigation
+```
+
+Они попадают в Dossier history, Recap и Memorial Wall. Значимые achievements могут быть основанием для Afterlife Legacy.
+
+### 16.10 City Pulse
+
+Небольшой атмосферный слой главной страницы:
+
+- текущая дата/время кампании;
+- погода и предупреждения;
+- NCPD threat level;
+- district alerts;
+- активные gang/corporate conflicts;
+- Night Market opening announcements;
+- system messages из последних Storyline events.
+
+Первая версия может управляться GM вручную. Автоматическую симуляцию города лучше не делать до появления реальной необходимости.
+
+### 16.11 NET Architecture Builder (отдельный большой модуль)
+
+Для Netrunner можно добавить:
+
+- конструктор этажей Architecture;
+- Password/File/Control Node/Black ICE;
+- DV и defenses;
+- Initiative внутри NET;
+- программы и REZ;
+- live run tracker;
+- скрытый GM view и открываемый player view.
+
+Это крупная самостоятельная система. Её лучше проектировать после стабилизации Dossiers, Sessions и предметной модели, а не добавлять маленькими несвязанными фрагментами.
+
+### Рекомендуемые дополнения с максимальной отдачей
+
+Если выбирать только пять следующих идей вне уже утверждённого backlog:
+
+1. **Session Recap / Chronicle**;
+2. **Crew Stash и transfer**;
+3. **Downtime Planner**;
+4. **Organization Reputation / Favor / Heat**;
+5. **Intel / Case Board**.
+
+Они чаще используются в реальной кампании, чем общий чат или сложная автоматическая симуляция города, и хорошо переиспользуют уже существующие данные.
+
+---
+
+## 17. Приоритеты
 
 ### P0 — до публичного доступа
 
@@ -992,6 +1206,11 @@ Mark Character as Deceased
 7. Calendar.
 8. Notifications badge.
 9. Fillable PDF import.
+10. Session Recap / Chronicle.
+11. Crew Stash и item transfer.
+12. Downtime Planner.
+13. Organization Reputation / Favor / Heat.
+14. Intel / Case Board.
 
 ### P3 — технический долг
 
@@ -1003,7 +1222,7 @@ Mark Character as Deceased
 
 ---
 
-## 17. Предлагаемый порядок ближайшей реализации
+## 18. Предлагаемый порядок ближайшей реализации
 
 ### Пакет A — Catalog & Market Rework
 
@@ -1057,9 +1276,18 @@ Mark Character as Deceased
 5. Добавить obituary preview и связь с Feed/Contract/Session.
 6. Реализовать Afterlife Legacy award и Afterlife Menu.
 
+### Пакет G — Campaign Operations
+
+1. Session Recap / Chronicle и автоматические history links.
+2. Crew Stash, item transfer и ownership history.
+3. Downtime Planner с лечением, Therapy, Crafting и поиском предметов.
+4. Organization Reputation / Favor / Heat.
+5. Intel Fragments и Case Board.
+6. Medical Record и Vehicle Garage после стабилизации базовых модулей.
+
 ---
 
-## 18. Открытые вопросы для следующего просмотра
+## 19. Открытые вопросы для следующего просмотра
 
 1. Какие предметы должны быть всегда доступны в Legal Retail, если Full Catalog больше не магазин?
 2. Сколько продавцов Night Market нужно в первой версии: 3, 5 или 6?
@@ -1081,3 +1309,8 @@ Mark Character as Deceased
 18. Какие POI входят в обязательный seed первой версии и по какому источнику сверяются координаты?
 19. Могут ли игроки создавать свои Location markers или только предлагать их GM?
 20. Нужна ли история контроля территории/владельца Location по датам?
+21. Crew Stash принадлежит конкретному Crew, Housing или всей кампании?
+22. Item transfer происходит сразу или требует подтверждения получателя?
+23. Downtime длится фиксированную неделю или произвольный отрезок календаря?
+24. Reputation/Favor/Heat индивидуальны для Character или могут принадлежать Crew?
+25. Intel Board общий для Crew или каждый Character имеет собственную картину расследования?
