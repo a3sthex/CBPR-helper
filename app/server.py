@@ -5512,6 +5512,7 @@ def clean_character(data):
     out = dict(data)
     # Runtime/audit containers are server-owned and never accepted on creation.
     out.pop('cyberware_state', None)
+    out.pop('therapy_state', None)
     out['handle'] = str(out.get('handle') or '').strip()[:60]
     if not out['handle']:
         raise ApiError(400, 'Нужен псевдоним (Handle) персонажа')
@@ -6020,6 +6021,75 @@ CYBERWARE_HOST_ACCEPTED_NAMES = {
 }
 CYBERWARE_SIDED_HOST_KINDS = {'Cyberarm', 'Cyberleg', 'Cybereye'}
 CYBERWARE_INSTALLATION_SITES = {'Mall', 'Clinic', 'Hospital', 'Zoo', 'Tech', 'Manual'}
+THERAPY_PROFILES = {
+    'standard_hl': {
+        'label': 'Therapy (Standard HL)', 'catalog_id': 'services-31',
+        'cost': 500, 'duration_days': 7, 'humanity_dice': 2,
+        'source': 'CP:R 230',
+    },
+    'extreme_hl': {
+        'label': 'Therapy (Extreme HL)', 'catalog_id': 'services-32',
+        'cost': 1000, 'duration_days': 7, 'humanity_dice': 4,
+        'source': 'CP:R 230',
+    },
+    'addiction': {
+        'label': 'Therapy (Addiction)', 'catalog_id': 'services-30',
+        'cost': 1000, 'duration_days': 7, 'humanity_dice': 0,
+        'source': 'CP:R 230', 'manual_effect': True,
+    },
+}
+CYBERWARE_CURATED_PAYLOADS = {
+    'cyberware-16': {
+        'id': 'reflex-co-processor-dodge', 'kind': 'capability',
+        'capability': 'dodge_ranged_attacks_below_ref_8',
+        'label': 'Dodge ranged attacks regardless of REF', 'source': 'BC 21',
+    },
+    'cyberware-62': {
+        'id': 'kerenzikov-initiative', 'kind': 'numeric_modifier',
+        'target': 'initiative.check', 'operation': 'add', 'value': 2,
+        'conflict_group': 'speedware', 'label': 'Initiative +2', 'source': 'CP:R 359',
+    },
+    'cyberware-63': {
+        'id': 'sandevistan-activation', 'kind': 'activation',
+        'target': 'initiative.check', 'operation': 'add', 'value': 3,
+        'duration_seconds': 60, 'cooldown_seconds': 3600,
+        'action_required': True, 'conflict_group': 'speedware',
+        'label': 'Activate: Initiative +3 for 1 minute', 'source': 'CP:R 359',
+    },
+    'cyberware-71': {
+        'id': 'image-enhance-sight', 'kind': 'contextual_skill_modifier',
+        'skills': ['Perception', 'Lip Reading', 'Conceal/Reveal Object'],
+        'operation': 'add', 'value': 2, 'condition': 'sight-based Check',
+        'label': 'Sight-based Checks +2', 'source': 'CP:R 360',
+    },
+    'cyberware-75': {
+        'id': 'amplified-hearing', 'kind': 'contextual_skill_modifier',
+        'skills': ['Perception'], 'operation': 'add', 'value': 2,
+        'condition': 'hearing-based Check', 'label': 'Hearing-based Perception +2',
+        'source': 'CP:R 361',
+    },
+    'cyberware-83': {
+        'id': 'targeting-scope-aimed-shot', 'kind': 'contextual_modifier',
+        'target': 'aimed_shot.check', 'operation': 'add', 'value': 1,
+        'condition': 'Aimed Shot', 'label': 'Aimed Shot Check +1', 'source': 'CP:R 361',
+    },
+    'cyberware-141': {
+        'id': 'sensor-array-slots', 'kind': 'host_slot_grant',
+        'target': 'Cyberaudio Suite', 'slots_granted': 5, 'slots_used_override': 0,
+        'label': 'Cyberaudio Option Slots +5', 'source': 'CP:R 367',
+    },
+    'cyberware-156': {
+        'id': 'micro-waldo-surgery', 'kind': 'contextual_skill_modifier',
+        'skills': ['Surgery'], 'operation': 'add', 'value': 1,
+        'condition': 'Medtech using MicroWaldo', 'label': 'Surgery +1',
+        'source': 'DL:12Cy 5 / DGD 146 / IR3 87',
+    },
+}
+
+
+def cyberware_curated_payload(entry):
+    return copy.deepcopy(CYBERWARE_CURATED_PAYLOADS.get(
+        catalog_item_id_for_entry(entry)))
 
 
 def cyberware_is_installed(entry):
@@ -6131,6 +6201,22 @@ def validate_cyberware_sides(data, allow_unassigned=False):
         raise ApiError(409, 'Paired Cyberlegs требуют обе свободные стороны')
 
 
+def validate_cyberware_payload_conflicts(data):
+    groups = {}
+    for entry in data.get('cyberware') or []:
+        if not isinstance(entry, dict) or not cyberware_is_installed(entry):
+            continue
+        payload = cyberware_curated_payload(entry) or {}
+        group = payload.get('conflict_group')
+        if not group:
+            continue
+        groups.setdefault(group, []).append(entry.get('name') or 'Cyberware')
+    for group, names in groups.items():
+        if len(names) > 1:
+            raise ApiError(
+                409, f'Cyberware conflict {group}: {", ".join(names[:5])}')
+
+
 def effective_cyberware_loadout(data):
     """Return concrete Cyberware foundations, options, slots, and staged items."""
     chrome = [item for item in data.get('cyberware') or []
@@ -6202,7 +6288,10 @@ def effective_cyberware_loadout(data):
         installed = cyberware_is_installed(entry)
         host_ids = cyberware_host_assignments(entry)
         required = max(1, int(_num(capacity.get('hosts_required')) or 1))
-        slots = max(1, int(_num(capacity.get('slots_used')) or 1))
+        payload = cyberware_curated_payload(entry)
+        slots_override = _num((payload or {}).get('slots_used_override'))
+        slots = max(0, int(slots_override if slots_override is not None else
+                           (_num(capacity.get('slots_used')) or 1)))
         reasons = []
         if installed:
             unique_counts[catalog_item_id_for_entry(entry)] = \
@@ -6226,14 +6315,28 @@ def effective_cyberware_loadout(data):
             'slots_used_per_host': slots, 'host_instance_ids': host_ids,
             'compatible_host_ids': [],
             'installation_profile': cyberware_installation_profile(entry),
+            'curated_payload': payload,
             'status': 'staged' if not installed else ('installed' if not reasons else 'unbound'),
             'reasons': reasons,
             'unique': bool(capacity.get('unique')),
         })
 
+    for option in option_rows:
+        payload = option.get('curated_payload') or {}
+        if (option['state'] == 'installed' and not option['reasons'] and
+                payload.get('kind') == 'host_slot_grant'):
+            for host_id in option['host_instance_ids']:
+                host = hosts.get(host_id)
+                if host and host['host_kind'] == payload.get('target'):
+                    granted = max(0, int(_num(payload.get('slots_granted')) or 0))
+                    host['slots_base'] = host.get('slots_base', host['slots_total'])
+                    host['slots_granted'] = host.get('slots_granted', 0) + granted
+                    host['slots_total'] += granted
     option_by_id = {item['instance_id']: item for item in option_rows}
     for host_id, amount in used.items():
         host = hosts[host_id]
+        host.setdefault('slots_base', host['slots_total'])
+        host.setdefault('slots_granted', 0)
         host['slots_used'] = amount
         host['slots_free'] = max(0, host['slots_total'] - amount)
         host['overloaded'] = amount > host['slots_total']
@@ -6256,6 +6359,7 @@ def effective_cyberware_loadout(data):
                 'instance_id': option['instance_id'], 'name': option['name'],
                 'slots_used': option['slots_used_per_host'],
                 'paired': option['hosts_required'] > 1,
+                'curated_payload': copy.deepcopy(option.get('curated_payload')),
             })
             if option['name'] == 'Quick Change Mount':
                 host['quick_change_mount'] = True
@@ -6298,10 +6402,27 @@ def effective_cyberware_loadout(data):
     } for item in chrome
         if cyberware_is_installed(item) and item['instance_id'] not in hosted_ids and
         item['instance_id'] not in host_ids]
+    active_payloads = [
+        copy.deepcopy(option['curated_payload']) | {
+            'instance_id': option['instance_id'], 'name': option['name']}
+        for option in option_rows
+        if option['state'] == 'installed' and option['status'] == 'installed' and
+        isinstance(option.get('curated_payload'), dict)]
+    initiative_modifier = sum(
+        int(_num(payload.get('value')) or 0) for payload in active_payloads
+        if payload.get('kind') == 'numeric_modifier' and
+        payload.get('target') == 'initiative.check')
     return {
         'hosts': sorted(hosts.values(), key=lambda item: (item['host_kind'], item['name'],
                                                           item['instance_id'])),
         'options': option_rows, 'standalone': standalone, 'staged': staged,
+        'active_payloads': active_payloads,
+        'initiative_modifier': initiative_modifier,
+        'capabilities': [payload['capability'] for payload in active_payloads
+                         if payload.get('kind') == 'capability'],
+        'contextual_modifiers': [payload for payload in active_payloads
+                                 if payload.get('kind') in (
+                                     'contextual_modifier', 'contextual_skill_modifier')],
         'unbound_count': sum(item['status'] in ('unbound', 'invalid')
                              for item in option_rows),
     }
@@ -6722,6 +6843,7 @@ def validate_creation(data):
     validate_cyberware_requirements(data)
     validate_cyberware_slots(data)
     validate_cyberware_sides(data, allow_unassigned=True)
+    validate_cyberware_payload_conflicts(data)
     if (derive(data).get('humanity_cur') or 0) < 0:
         raise ApiError(400, 'Нельзя завершить создание с Humanity ниже 0')
     validate_creation_budget(data)
@@ -7079,6 +7201,18 @@ SERVER_ERROR_EN = {
     'Cyberarm не имеет установленный Quick Change Mount': 'Cyberarm has no installed Quick Change Mount',
     'Quick Attach требует detached Quick Change Cyberarm': 'Quick Attach requires a detached Quick Change Cyberarm',
     'Quick Change Cyberarm bundle повреждён': 'Quick Change Cyberarm bundle is corrupted',
+    'Therapy action содержит неподдерживаемые поля': 'Therapy action contains unsupported fields',
+    'Укажите причину Therapy action': 'Provide a reason for the Therapy action',
+    'Therapy course уже активен': 'A Therapy course is already active',
+    'Неизвестный Therapy type': 'Unknown Therapy type',
+    'Укажите therapist или clinic': 'Specify a therapist or clinic',
+    'Недостаточно средств для Therapy': 'Not enough funds for Therapy',
+    'Humanity уже достигла Therapy maximum': 'Humanity has already reached the Therapy maximum',
+    'Укажите addiction для Therapy': 'Specify the addiction for Therapy',
+    'Нет активного Therapy course': 'There is no active Therapy course',
+    'Therapy profile повреждён': 'Therapy profile is corrupted',
+    'Подтвердите завершение недели Therapy': 'Confirm completion of the Therapy week',
+    'Сначала освободите зависимые Cyberware Option Slots': 'Free dependent Cyberware Option Slots first',
     'Run доступен только Attacker Program': 'Run is available only for an Attacker Program',
     'Saved Program instance недоступен для восстановления': 'Saved Program instance is unavailable for restore',
     'Недостаточно Cyberdeck slots для Backup restore': 'Not enough Cyberdeck slots for Backup restore',
@@ -11139,6 +11273,7 @@ class Handler(BaseHTTPRequestHandler):
             chrome['state'] = 'installed'
             validate_cyberware_requirements(data)
             validate_cyberware_sides(data, allow_unassigned=True)
+            validate_cyberware_payload_conflicts(data)
             if expected_host:
                 compatibility = cyberware_option_compatibility(data, instance_id, host_ids)
                 if not compatibility['allowed']:
@@ -11214,6 +11349,7 @@ class Handler(BaseHTTPRequestHandler):
                 item['state'] = 'installed'
             validate_cyberware_requirements(data)
             validate_cyberware_sides(data, allow_unassigned=True)
+            validate_cyberware_payload_conflicts(data)
             validate_cyberware_slots(data, allow_unbound=True)
             affected_ids = [instance_id, *bundle_ids]
             runtime['quick_change_detached'] = False
@@ -11246,6 +11382,9 @@ class Handler(BaseHTTPRequestHandler):
             chrome.pop('host_instances', None)
             chrome.pop('installation_side', None)
             validate_cyberware_requirements(data)
+            post_remove_loadout = effective_cyberware_loadout(data)
+            if any(host['overloaded'] for host in post_remove_loadout['hosts']):
+                raise ApiError(409, 'Сначала освободите зависимые Cyberware Option Slots')
             if before_current is not None:
                 data['humanity_cur'] = before_current
             append_history('uninstall')
@@ -11292,6 +11431,131 @@ class Handler(BaseHTTPRequestHandler):
             'ledger_id': ledger_id, 'action': action,
             'humanity': delta['cyberware_lifecycle'],
             'compatibility': compatibility,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
+    def api_character_therapy_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {
+            'revision', 'action', 'therapy_type', 'therapist',
+            'addiction_label', 'manual_time_confirmed', 'reason',
+        }
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Therapy action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Therapy action')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        therapy_state = data.get('therapy_state')
+        if not isinstance(therapy_state, dict):
+            therapy_state = {'active': None, 'history': []}
+            data['therapy_state'] = therapy_state
+        if not isinstance(therapy_state.get('history'), list):
+            therapy_state['history'] = []
+        active = therapy_state.get('active') \
+            if isinstance(therapy_state.get('active'), dict) else None
+        action = str((body or {}).get('action') or '').lower()
+        now = time.time()
+        result = {'action': action}
+        if action == 'start':
+            if active:
+                raise ApiError(409, 'Therapy course уже активен')
+            therapy_type = str((body or {}).get('therapy_type') or '').lower()
+            profile = THERAPY_PROFILES.get(therapy_type)
+            if not profile:
+                raise ApiError(400, 'Неизвестный Therapy type')
+            therapist = str((body or {}).get('therapist') or '').strip()[:120]
+            if len(therapist) < 2:
+                raise ApiError(400, 'Укажите therapist или clinic')
+            cash = float(data.get('cash') or 0)
+            if cash < profile['cost']:
+                raise ApiError(409, 'Недостаточно средств для Therapy')
+            current_humanity = derive(data).get('humanity_cur')
+            maximum_humanity = derive(data).get('humanity_max')
+            if (profile['humanity_dice'] and current_humanity is not None and
+                    maximum_humanity is not None and
+                    current_humanity >= maximum_humanity):
+                raise ApiError(409, 'Humanity уже достигла Therapy maximum')
+            addiction_label = str((body or {}).get('addiction_label') or '').strip()[:120]
+            if therapy_type == 'addiction' and len(addiction_label) < 2:
+                raise ApiError(400, 'Укажите addiction для Therapy')
+            data['cash'] = round(cash - profile['cost'], 2)
+            active = {
+                'therapy_id': secrets.token_hex(16), 'therapy_type': therapy_type,
+                'label': profile['label'], 'catalog_id': profile['catalog_id'],
+                'cost': profile['cost'], 'duration_days': profile['duration_days'],
+                'humanity_dice': profile['humanity_dice'],
+                'therapist': therapist, 'addiction_label': addiction_label or None,
+                'started_at': now, 'status': 'active', 'source': profile['source'],
+                'manual_time_required': True,
+            }
+            therapy_state['active'] = active
+            result['therapy'] = copy.deepcopy(active)
+            reason = f'Start {profile["label"]}: {reason_detail}'
+        elif action in ('resolve', 'cancel'):
+            if not active:
+                raise ApiError(409, 'Нет активного Therapy course')
+            profile = THERAPY_PROFILES.get(active.get('therapy_type'))
+            if not profile:
+                raise ApiError(409, 'Therapy profile повреждён')
+            completed = action == 'resolve'
+            if completed and (body or {}).get('manual_time_confirmed') is not True:
+                raise ApiError(400, 'Подтвердите завершение недели Therapy')
+            history = copy.deepcopy(active)
+            history['resolved_at'] = now
+            history['status'] = 'completed' if completed else 'canceled'
+            history['reason'] = reason_detail
+            if completed and profile['humanity_dice']:
+                rolled = roll_dice(profile['humanity_dice'], 6)
+                derived_before = derive(data)
+                current = int(_num(derived_before.get('humanity_cur')) or 0)
+                maximum = int(_num(derived_before.get('humanity_max')) or current)
+                after = min(maximum, current + rolled['total'])
+                data['humanity_cur'] = after
+                history.update({
+                    'rolls': rolled['rolls'], 'rolled_humanity': rolled['total'],
+                    'humanity_before': current, 'humanity_after': after,
+                    'humanity_restored': after - current, 'humanity_maximum': maximum,
+                })
+                result['humanity'] = {
+                    'rolls': rolled['rolls'], 'rolled': rolled['total'],
+                    'before': current, 'after': after,
+                    'restored': after - current, 'maximum': maximum,
+                }
+            elif completed:
+                history['manual_effect'] = (
+                    f'Addiction therapy completed for {active.get("addiction_label")}; '
+                    'addiction state remains MANUAL RESOLUTION')
+                result['manual_effect'] = history['manual_effect']
+            therapy_state['history'].append(history)
+            therapy_state['history'] = therapy_state['history'][-50:]
+            therapy_state['active'] = None
+            result['therapy'] = history
+            reason = f'{"Resolve" if completed else "Cancel"} {active.get("label")}: {reason_detail}'
+        else:
+            raise ApiError(400, 'Therapy action: start/resolve/cancel')
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='item_action')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['therapy_lifecycle'] = copy.deepcopy(result)
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'result': result,
             'character': self.char_payload(fresh, fresh['owner'], conn=conn),
         })
 
@@ -14376,6 +14640,7 @@ ROUTES = [
     ('GET', rx(r'/api/characters/(\d+)/items'), Handler.api_character_items),
     ('POST', rx(r'/api/characters/(\d+)/items/([a-f0-9]{32})/action'), Handler.api_character_item_action),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/action'), Handler.api_character_cyberware_action),
+    ('POST', rx(r'/api/characters/(\d+)/therapy/action'), Handler.api_character_therapy_action),
     ('GET', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modifications),
     ('POST', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modification_install),
     ('POST', rx(r'/api/characters/(\d+)/modifications/([a-f0-9]{32})/action'), Handler.api_character_modification_action),

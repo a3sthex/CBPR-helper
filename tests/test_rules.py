@@ -1407,11 +1407,70 @@ class CreationValidationTests(unittest.TestCase):
             legs['instance_id'], server.cyberware_secondary_host_id(legs['instance_id'])])
         server.validate_cyberware_slots(paired)
 
+    def test_curated_cyberware_payloads_and_sensor_array_slots(self):
+        neural = copy.deepcopy(server.item_by_id('cyberware-58'))
+        neural.update({'key': 'cyberware-58', 'catalog_item_id': 'cyberware-58',
+                       'instance_id': '1' * 32, 'state': 'installed'})
+        kerenzikov = copy.deepcopy(server.item_by_id('cyberware-62'))
+        kerenzikov.update({
+            'key': 'cyberware-62', 'catalog_item_id': 'cyberware-62',
+            'instance_id': '2' * 32, 'state': 'installed',
+            'host_instance': neural['instance_id'],
+            'host_instances': [neural['instance_id']],
+        })
+        loadout = server.effective_cyberware_loadout(
+            {'cyberware': [neural, kerenzikov]})
+        self.assertEqual(loadout['initiative_modifier'], 2)
+        self.assertIn('kerenzikov-initiative',
+                      [item['id'] for item in loadout['active_payloads']])
+        sandevistan = copy.deepcopy(server.item_by_id('cyberware-63'))
+        sandevistan.update({
+            'key': 'cyberware-63', 'catalog_item_id': 'cyberware-63',
+            'instance_id': '3' * 32, 'state': 'installed',
+            'host_instance': neural['instance_id'],
+            'host_instances': [neural['instance_id']],
+        })
+        with self.assertRaisesRegex(server.ApiError, 'speedware'):
+            server.validate_cyberware_payload_conflicts(
+                {'cyberware': [neural, kerenzikov, sandevistan]})
+
+        audio = copy.deepcopy(server.item_by_id('cyberware-81'))
+        audio.update({'key': 'cyberware-81', 'catalog_item_id': 'cyberware-81',
+                      'instance_id': '4' * 32, 'state': 'installed'})
+        sensor = copy.deepcopy(server.item_by_id('cyberware-141'))
+        sensor.update({
+            'key': 'cyberware-141', 'catalog_item_id': 'cyberware-141',
+            'instance_id': '5' * 32, 'state': 'installed',
+            'host_instance': audio['instance_id'],
+            'host_instances': [audio['instance_id']],
+        })
+        audio_options = []
+        for index, catalog_id in enumerate(
+                ('cyberware-76', 'cyberware-77', 'cyberware-78', 'cyberware-87'), start=6):
+            option = copy.deepcopy(server.item_by_id(catalog_id))
+            option.update({
+                'key': catalog_id, 'catalog_item_id': catalog_id,
+                'instance_id': f'{index:032x}', 'state': 'installed',
+                'host_instance': audio['instance_id'],
+                'host_instances': [audio['instance_id']],
+            })
+            audio_options.append(option)
+        audio_data = {'cyberware': [audio, sensor, *audio_options]}
+        audio_loadout = server.effective_cyberware_loadout(audio_data)
+        host = audio_loadout['hosts'][0]
+        self.assertEqual((host['slots_base'], host['slots_granted'],
+                          host['slots_total'], host['slots_used']), (3, 5, 8, 4))
+        sensor['state'] = 'carried'
+        without_sensor = server.effective_cyberware_loadout(audio_data)
+        self.assertTrue(without_sensor['hosts'][0]['overloaded'])
+
     def test_cyberware_runtime_audit_state_is_server_owned(self):
         char = valid_character()
         char['cyberware_state'] = {'forged': {'humanity_loss_events': 0}}
+        char['therapy_state'] = {'active': {'forged': True}}
         cleaned = server.clean_character(char)
         self.assertNotIn('cyberware_state', cleaned)
+        self.assertNotIn('therapy_state', cleaned)
 
     def test_cyberware_installation_profiles_and_sides_are_declarative(self):
         arm = copy.deepcopy(server.item_by_id('cyberware-109'))

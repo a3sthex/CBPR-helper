@@ -1126,6 +1126,61 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertTrue(ledger['entries'][0]['delta']['cyberware_lifecycle'][
             'quick_change_no_humanity_loss'])
 
+    def test_therapy_workflow_charges_rolls_caps_and_reverts(self):
+        edited = copy.deepcopy(self.character_data)
+        edited['cash'] = 2000
+        edited['humanity_cur'] = 20
+        self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Prepare Therapy workflow resources',
+            'data': edited,
+        })
+        started = self.call(server.Handler.api_character_therapy_action, self.match(1), {
+            'revision': 1, 'action': 'start', 'therapy_type': 'standard_hl',
+            'therapist': 'South Night City Therapy Center',
+            'reason': 'Begin one week of Standard Humanity Therapy',
+        })
+        self.assertEqual(started['character']['data']['cash'], 1500)
+        self.assertEqual(started['result']['therapy']['humanity_dice'], 2)
+        self.assertTrue(started['character']['data']['therapy_state']['active'])
+        with self.assertRaisesRegex(server.ApiError, 'уже активен'):
+            self.call(server.Handler.api_character_therapy_action, self.match(1), {
+                'revision': 2, 'action': 'start', 'therapy_type': 'extreme_hl',
+                'therapist': 'Second Clinic', 'reason': 'Try overlapping Therapy',
+            })
+        with self.assertRaisesRegex(server.ApiError, 'завершение недели'):
+            self.call(server.Handler.api_character_therapy_action, self.match(1), {
+                'revision': 2, 'action': 'resolve',
+                'reason': 'Try resolving before campaign week confirmation',
+            })
+        with mock.patch.object(server.secrets, 'randbelow', side_effect=[5, 5]):
+            resolved = self.call(
+                server.Handler.api_character_therapy_action, self.match(1), {
+                    'revision': 2, 'action': 'resolve',
+                    'manual_time_confirmed': True,
+                    'reason': 'One full campaign week of Therapy completed',
+                })
+        humanity = resolved['result']['humanity']
+        self.assertEqual(humanity['rolls'], [6, 6])
+        self.assertEqual((humanity['before'], humanity['after'], humanity['restored']),
+                         (20, 32, 12))
+        self.assertIsNone(resolved['character']['data']['therapy_state']['active'])
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertEqual(ledger['entries'][0]['delta']['therapy_lifecycle'][
+            'humanity']['restored'], 12)
+        reverted = self.call(
+            server.Handler.api_character_ledger_revert,
+            re.match(r'^(\d+)/(\d+)$', f'1/{ledger["entries"][0]["id"]}'), {
+                'revision': 3, 'reason': 'Revert Therapy resolution snapshot',
+            })
+        self.assertEqual(reverted['derived']['humanity_cur'], 20)
+        self.assertTrue(reverted['data']['therapy_state']['active'])
+        canceled = self.call(server.Handler.api_character_therapy_action, self.match(1), {
+            'revision': 4, 'action': 'cancel',
+            'reason': 'Therapy interrupted without refund',
+        })
+        self.assertEqual(canceled['character']['data']['cash'], 1500)
+        self.assertEqual(canceled['result']['therapy']['status'], 'canceled')
+
     def test_generic_sheet_edit_cannot_remove_installed_cyberware(self):
         installed = copy.deepcopy(self.character_data)
         eye = copy.deepcopy(server.item_by_id('cyberware-65'))

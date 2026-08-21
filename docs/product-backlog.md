@@ -3110,7 +3110,21 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - повторный `Quick Attach` проверяет bundle, свободную сторону, requirements и Option Slots, но не применяет новый Humanity Loss; Maximum Humanity снова ограничивается установленным bundle по обычным правилам;
 - normal Uninstall Cyberarm с options по-прежнему блокируется: Quick Detach доступен только при реально установленном Quick Change Mount;
 - side/site/technician, affected bundle IDs, manual confirmation и флаг `quick_change_no_humanity_loss` попадают в readable Trust + Audit Ledger и поддерживают snapshot revert;
-- стоимость clinic/surgery, Therapy workflow, Quick Change Faceplate inventory и mechanical payloads Popup/Integrated/weapon cyberware остаются следующими подэтапами.
+- стоимость clinic/surgery, Quick Change Faceplate inventory и расширенные Popup/Integrated weapon payloads остаются следующими подэтапами.
+
+**Статус B.9.3 — реализованы Curated Cyberware Payloads и Therapy Lifecycle:**
+
+- server allowlist получил declarative payloads для Reflex Co-Processor, Kerenzikov, Sandevistan, Image Enhance, Amplified Hearing, Targeting Scope, Sensor Array и RC MicroWaldo;
+- Kerenzikov даёт authoritative `Initiative +2`, а несовместимые Speedware нельзя одновременно установить; Sandevistan остаётся explicit activation/manual timing payload;
+- sight/hearing/Aimed Shot/Surgery modifiers отображаются как `MANUAL CONTEXT`, а не применяются ко всем Checks без доказанного контекста;
+- Sensor Array безопасно даёт Cyberaudio host `+5 Option Slots`, сама занимает 0 slots; её нельзя извлечь, пока зависимые options переполнят базовую ёмкость;
+- Dossier показывает active curated payloads, automated/manual-context маркировку, effective Initiative modifier и base/granted Cyberaudio slots;
+- Therapy Standard HL использует точные `500eb / 1 week / 2d6 Humanity`, Extreme HL — `1000eb / 1 week / 4d6`, Addiction — `1000eb / 1 week / MANUAL EFFECT` по CP:R 230;
+- Start Therapy сразу списывает стоимость и создаёт один active course; Resolve требует explicit подтверждение прошедшей игровой недели, делает trusted server roll и ограничивает восстановление Maximum Humanity;
+- Cancel не возвращает оплату; Addiction completion не выдумывает универсальную addiction schema и остаётся честным `MANUAL RESOLUTION`;
+- active course, therapist, rolls, Humanity before/after/restored, payment и bounded history хранятся в server-owned `therapy_state`, попадают в Ledger и поддерживают snapshot revert;
+- runtime/audit state нельзя внедрить через Character Creation payload;
+- Therapy campaign-calendar scheduling, clinic service reservations, addictions, Immunoblockers и расширенные Popup/Integrated weapon payloads остаются следующими подэтапами.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -3133,8 +3147,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, action budget, cross-character REZ, safe curated effects, concrete Cyberware hosts, sides, clinic audit и Quick Change Mount lifecycle;
-    - дальше: Cyberware option payloads/Therapy, Armor/Shield hosts и Tech Maker modifications.
+    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, action budget, cross-character REZ, safe curated effects, concrete Cyberware hosts, sides, clinic audit, Quick Change, curated option payloads и Therapy lifecycle;
+    - дальше: Popup/Integrated weapon payloads, Armor/Shield hosts и Tech Maker modifications.
 14. JSON import.
 
 ### Пакет C — Publishing Preview
