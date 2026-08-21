@@ -47,6 +47,25 @@ CATS = [
 ]
 
 DESC_KEYS = ['Description & Data', 'Description & Effect', 'Description', 'Description & Effect.', 'Effect']
+NUMERIC_MECHANICS = {
+    'rof', 'hands', 'magazine', 'sp', 'sdp', 'seats', 'nomad_access',
+    'per', 'spd', 'atk', 'def', 'rez',
+}
+
+
+def normalize_display_value(value):
+    text = str(value).strip()
+    if re.fullmatch(r'-?\d+\.0', text):
+        return text[:-2]
+    return text
+
+
+def normalize_mechanic_value(key, value):
+    text = str(value).strip()
+    if key in NUMERIC_MECHANICS and re.fullmatch(r'-?\d+(?:\.\d+)?', text):
+        number = float(text)
+        return int(number) if number.is_integer() else number
+    return normalize_display_value(text)
 
 
 def load_workbook(path):
@@ -243,7 +262,7 @@ def item_mechanics(cat, row, desc):
     for source, target in labels.items():
         value = row.get(source)
         if value is not None and str(value).strip() not in ('', '—', 'N/A'):
-            mechanics[target] = str(value).strip()
+            mechanics[target] = normalize_mechanic_value(target, value)
     if cat == 'ammo':
         amount = re.search(r'(\d+)\s*(?:rounds?|arrows?|bolts?|rockets?|grenades?)', str(desc or ''), re.I)
         mechanics['quantity_per_purchase'] = int(amount.group(1)) if amount else 10
@@ -331,7 +350,7 @@ def main():
             for key, label in fields:
                 val = r.get(key)
                 if val is not None and str(val).strip() not in ('', '—', 'N/A'):
-                    it['fields'][key] = str(val).strip()
+                    it['fields'][key] = normalize_display_value(val)
             it['mechanics'] = item_mechanics(cat, r, desc)
             requirements, capacity = structured_requirements(cat, r, desc)
             it['requirements'] = requirements
@@ -346,6 +365,10 @@ def main():
                 locations, bundled = armor_locations(name, desc, it['sp'])
                 it['armor_locations'] = locations
                 it['armor_bundled'] = bundled
+                it['mechanics']['sp'] = it['sp']
+                it['mechanics']['armor_locations'] = locations
+                it['mechanics']['armor_bundled'] = bundled
+                it['mechanics']['armor_penalties'] = it['penalties']
             if cat in ('guns', 'melee', 'grenades') and r.get('Damage'):
                 dm = re.search(r'(\d+d\d+(?:\s*[/×x]\s*\d+)?)', str(r['Damage']))
                 it['damage'] = dm.group(1) if dm else str(r['Damage']).strip()

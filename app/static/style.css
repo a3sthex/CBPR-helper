@@ -218,6 +218,15 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .item-card .head { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
 .item-card .name { font-weight: 700; font-size: 17px; cursor: pointer; }
 .item-card .name:hover { color: var(--cyan); }
+.item-name-button { padding:0;border:0;background:none;color:var(--text);text-align:left;font:700 17px Rajdhani; }
+.market-toolbar { position:sticky;top:66px;z-index:18;background:color-mix(in srgb,var(--panel) 96%,transparent);backdrop-filter:blur(8px); }
+.market-toolbar .searchbar { align-items:center;margin:8px 0 0; }
+.market-vendor { border-top:2px solid var(--vendor,var(--cyan)); }
+.market-vendor-head { display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px; }
+.market-vendor-head h2,.market-vendor-head p { margin:0 0 4px; }
+.market-vendor .item-card { background:linear-gradient(145deg,color-mix(in srgb,var(--vendor,var(--cyan)) 4%,var(--panel)),var(--panel)); }
+.armor-location { color:var(--yellow);border-color:color-mix(in srgb,var(--yellow) 50%,var(--line)); }
+.green-text { color:var(--green); }
 .item-card .price { color: var(--green); font-weight: 700; white-space: nowrap; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip { font-size: 12.5px; border: 1px solid var(--line); border-radius: 5px; padding: 1px 7px; color: var(--muted); background: var(--bg2); }

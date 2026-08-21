@@ -473,6 +473,11 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertEqual({row['status']: row['n'] for row in rows}, {'crew': 1, 'waitlist': 1})
 
     def test_concurrent_market_purchase_cannot_spend_same_cash_twice(self):
+        market_item = server.night_market()['items'][0]
+        character = json.loads(self.conn.execute('SELECT data FROM characters WHERE id=1').fetchone()['data'])
+        character['cash'] = market_item['street_price']
+        self.conn.execute('UPDATE characters SET data=? WHERE id=1', (json.dumps(character),))
+        self.conn.commit()
         barrier = threading.Barrier(2)
         outcomes = []
         lock = threading.Lock()
@@ -488,7 +493,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             try:
                 barrier.wait()
                 server.Handler.api_buy(handler, conn, {}, None, {
-                    'char_id': 1, 'items': [{'id': 'guns-0', 'qty': 2, 'mode': 'list'}],
+                    'char_id': 1, 'items': [{'id': market_item['id'], 'qty': 1, 'mode': 'nm'}],
                 })
                 result = 'bought'
             except server.ApiError as error:
@@ -505,10 +510,21 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertCountEqual(outcomes, ['bought', 'denied:400'])
         data = json.loads(self.conn.execute('SELECT data FROM characters WHERE id=1').fetchone()['data'])
         self.assertEqual(data['cash'], 0)
-        bought = next(item for item in data['inventory'] if item['key'] == 'guns-0')
-        self.assertEqual(bought['qty'], 2)
+        bought = next(item for item in data['inventory'] if item['key'] == market_item['id'])
+        self.assertEqual(bought['qty'], 1)
         revision = self.conn.execute('SELECT revision FROM characters WHERE id=1').fetchone()['revision']
         self.assertEqual(revision, 1)
+
+    def test_full_catalog_cannot_bypass_rotating_market_stock(self):
+        self.current = self.user('runner')
+        with self.assertRaises(server.ApiError) as denied:
+            self.call(server.Handler.api_buy, body={
+                'char_id': 1, 'items': [{'id': 'guns-0', 'qty': 1, 'mode': 'list'}],
+            })
+        self.assertEqual(denied.exception.status, 400)
+        stored = json.loads(self.conn.execute('SELECT data FROM characters WHERE id=1').fetchone()['data'])
+        self.assertEqual(stored['cash'], 100)
+        self.assertEqual(stored['inventory'], [])
 
     def test_admin_creates_lists_and_verifies_campaign_backup(self):
         with self.assertRaises(server.ApiError) as player_denied:

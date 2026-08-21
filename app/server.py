@@ -1652,6 +1652,15 @@ def init_db():
     promoted = apply_admin_bootstrap(conn)
     if promoted:
         print('NC//NET Admin bootstrap: ' + ', '.join(promoted))
+    for vendor in NIGHT_MARKET_VENDORS:
+        persona_id = ensure_system_persona(conn, vendor['handle'], vendor['name_en'], 'outlet')
+        if persona_id:
+            conn.execute(
+                'UPDATE personas SET display_name=?,short_bio=?,public_bio=?,accent_color=?,updated=? '
+                'WHERE id=?',
+                (vendor['name_en'], vendor['tagline_en'],
+                 vendor['tagline_en'] + ' Daily stock rotates at 00:00 Europe/Moscow.',
+                 vendor['accent_color'], time.time(), persona_id))
     migrate_legacy_network_content(conn)
     conn.close()
 
@@ -1724,6 +1733,46 @@ def create_session(conn, user_id, ip_address='', user_agent=''):
 
 NM_PER_CAT = 4
 NM_MULTS = [0.7, 0.8, 0.9, 0.9, 1.0, 1.0, 1.1, 1.2, 1.5]
+NIGHT_MARKET_VENDORS = [
+    {
+        'id': 'gunmart-after-dark', 'handle': 'gunmart-after-dark', 'accent_color': '#ff9d45', 'name_en': 'Gunmart After Dark',
+        'name_ru': 'Gunmart After Dark', 'icon': '🔫',
+        'tagline_en': 'Weapons, ammunition, explosives, and questionable rebuilds.',
+        'tagline_ru': 'Оружие, боеприпасы, взрывчатка и сомнительные переделки.',
+        'cats': ['guns', 'melee', 'gun_upgrades', 'ammo', 'grenades'],
+    },
+    {
+        'id': 'iron-shell', 'handle': 'iron-shell', 'accent_color': '#8fa0bd', 'name_en': 'Iron Shell', 'name_ru': 'Iron Shell', 'icon': '🛡️',
+        'tagline_en': 'Armor, shields, and the confidence to get shot twice.',
+        'tagline_ru': 'Броня, щиты и уверенность, что переживёшь второй выстрел.',
+        'cats': ['armor'],
+    },
+    {
+        'id': 'chrome-saint', 'handle': 'chrome-saint', 'accent_color': '#ff2d78', 'name_en': 'Chrome Saint', 'name_ru': 'Chrome Saint', 'icon': '🦾',
+        'tagline_en': 'Fashionware, chrome, and discreet installation referrals.',
+        'tagline_ru': 'Fashionware, хром и контакты для неброской установки.',
+        'cats': ['cyberware'],
+    },
+    {
+        'id': 'ghost-packet', 'handle': 'ghost-packet', 'accent_color': '#00e5ff', 'name_en': 'Ghost Packet', 'name_ru': 'Ghost Packet', 'icon': '💾',
+        'tagline_en': 'Cyberdecks, Programs, Black ICE, and NET hardware.',
+        'tagline_ru': 'Cyberdeck, Programs, Black ICE и NET-железо.',
+        'cats': ['net_stuff', 'programs'],
+    },
+    {
+        'id': 'nomad-exchange', 'handle': 'nomad-exchange', 'accent_color': '#ffd500', 'name_en': 'Nomad Exchange', 'name_ru': 'Nomad Exchange', 'icon': '🏍️',
+        'tagline_en': 'Vehicles, upgrades, cargo solutions, no fixed address.',
+        'tagline_ru': 'Транспорт, апгрейды, грузовые решения и никакого адреса.',
+        'cats': ['vehicles', 'vehicles_upgrades'],
+    },
+    {
+        'id': 'back-alley-general', 'handle': 'back-alley-general', 'accent_color': '#3cf28a', 'name_en': 'Back-Alley General',
+        'name_ru': 'Back-Alley General', 'icon': '🎒',
+        'tagline_en': 'Gear, fashion, services, and everything nobody admits buying.',
+        'tagline_ru': 'Снаряжение, мода, услуги и всё, в покупке чего не признаются.',
+        'cats': ['gear', 'fashion', 'services'],
+    },
+]
 
 
 def _h(s):
@@ -1737,20 +1786,38 @@ def nm_day():
 def night_market():
     cat = catalog()
     day = nm_day()
-    out = []
-    for c in cat['cats']:
-        pool = [i for i in cat['items'] if i['cat'] == c['id'] and i.get('price')]
-        pool.sort(key=lambda i: _h(f'{day}|{c["id"]}|{i["id"]}'))
-        for it in pool[:NM_PER_CAT]:
-            m = NM_MULTS[_h(f'p|{day}|{it["id"]}') % len(NM_MULTS)]
-            street = round(it['price'] * m)
-            out.append({
-                'id': it['id'], 'cat': it['cat'], 'name': it['name'],
-                'price': it['price'], 'street_price': street,
-                'discount': street < it['price'],
-                'fields': it['fields'], 'source': it['source'], 'desc': it['desc'],
-            })
-    return {'date': day, 'items': out}
+    all_items = []
+    vendors = []
+    for vendor in NIGHT_MARKET_VENDORS:
+        stock = []
+        for category_id in vendor['cats']:
+            pool = [item for item in cat['items']
+                    if item['cat'] == category_id and item.get('price')]
+            pool.sort(key=lambda item: _h(
+                f'{day}|{vendor["id"]}|{category_id}|{item["id"]}'))
+            for item in pool[:NM_PER_CAT]:
+                multiplier = NM_MULTS[
+                    _h(f'price|{day}|{vendor["id"]}|{item["id"]}') % len(NM_MULTS)]
+                street = round(item['price'] * multiplier)
+                payload = {
+                    'id': item['id'], 'cat': item['cat'], 'name': item['name'],
+                    'price': item['price'], 'street_price': street,
+                    'discount': street < item['price'], 'multiplier': multiplier,
+                    'fields': item.get('fields') or {},
+                    'mechanics': item.get('mechanics') or {},
+                    'requirements': item.get('requirements') or [],
+                    'capacity': item.get('capacity'),
+                    'source': item.get('source'), 'desc': item.get('desc'),
+                    'armor_locations': item.get('armor_locations'),
+                    'armor_bundled': item.get('armor_bundled'),
+                    'vendor_id': vendor['id'],
+                }
+                stock.append(payload)
+                all_items.append(payload)
+        vendor_payload = {key: value for key, value in vendor.items() if key != 'cats'}
+        vendor_payload.update({'categories': list(vendor['cats']), 'items': stock})
+        vendors.append(vendor_payload)
+    return {'date': day, 'items': all_items, 'vendors': vendors}
 
 
 def nm_price_map():
@@ -2546,6 +2613,7 @@ SERVER_ERROR_EN = {
     'stats должен быть объектом': 'stats must be an object',
     'Баланс IP не может быть отрицательным': 'IP balance cannot be negative',
     'В корзине нет известных товаров': 'The Cart contains no recognized items',
+    'Покупка доступна только из текущего Night Market': 'Purchases are only available from the current Night Market stock',
     'Все слоты заняты': 'All slots are filled',
     'Вы уже записаны': 'You are already signed up',
     'Для специализированного навыка повышайте parent-pool': 'Increase the parent pool for a specialized Skill',
@@ -4480,7 +4548,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(it)
 
     def api_nightmarket(self, conn, qs, m, body):
-        self.send_json(night_market())
+        payload = night_market()
+        persona_rows = conn.execute(
+            "SELECT id,handle FROM personas WHERE handle IN (%s)" %
+            ','.join('?' for _ in NIGHT_MARKET_VENDORS),
+            tuple(vendor['handle'] for vendor in NIGHT_MARKET_VENDORS)).fetchall()
+        persona_ids = {row['handle']: row['id'] for row in persona_rows}
+        for vendor in payload['vendors']:
+            vendor['persona_id'] = persona_ids.get(vendor.get('handle'))
+        self.send_json(payload)
 
     # ------------------------------------------------------------ персонажи
 
@@ -4896,10 +4972,9 @@ class Handler(BaseHTTPRequestHandler):
             if not it or not it.get('price'):
                 continue
             qty = max(1, min(99, int(entry.get('qty') or 1)))
-            if entry.get('mode') == 'nm' and it['id'] in nm:
-                price = nm[it['id']]
-            else:
-                price = it['price']
+            if entry.get('mode') != 'nm' or it['id'] not in nm:
+                raise ApiError(400, 'Покупка доступна только из текущего Night Market')
+            price = nm[it['id']]
             total += price * qty
             bought.append((it, qty, price))
         if not bought:

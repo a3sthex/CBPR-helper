@@ -402,11 +402,30 @@ class CatalogArmorTests(unittest.TestCase):
             'notation': '2d6', 'dice': 2, 'sides': 6,
             'multiplier': 1, 'average': 7.0,
         })
-        self.assertEqual(pistol['mechanics']['rof'], '2.0')
+        self.assertEqual(pistol['mechanics']['rof'], 2)
+        self.assertEqual(pistol['mechanics']['magazine'], 12)
+        self.assertEqual(pistol['mechanics']['hands'], 1)
+        self.assertEqual(pistol['fields']['Mag'], '12')
+        self.assertEqual(by_name['Banhammer']['mechanics']['atk'], 1)
+        self.assertEqual(by_name['Banhammer']['mechanics']['def'], 0)
+        shield = by_name['Bulletproof Shield']
+        self.assertEqual(shield['mechanics']['armor_locations'], ['shield'])
+        self.assertFalse(shield['mechanics']['armor_bundled'])
         self.assertIn('compatible_weapons', by_name['Basic']['mechanics'])
         self.assertEqual(by_name['Cyberarm']['capacity']['slots_total'], 4)
         self.assertEqual(by_name['Popup Grenade Launcher']['capacity']['host'], 'Cyberarm')
         self.assertEqual(by_name['Popup Grenade Launcher']['capacity']['slots_used'], 2)
+
+    def test_night_market_is_grouped_by_deterministic_vendors(self):
+        market = server.night_market()
+        self.assertEqual(len(market['vendors']), 6)
+        self.assertEqual(len(market['items']),
+                         sum(len(vendor['items']) for vendor in market['vendors']))
+        vendor_ids = {vendor['id'] for vendor in market['vendors']}
+        self.assertEqual(len(vendor_ids), 6)
+        self.assertTrue(all(item['vendor_id'] in vendor_ids for item in market['items']))
+        self.assertTrue(all('mechanics' in item and 'desc' in item for item in market['items']))
+        self.assertEqual(market, server.night_market())
 
 
 if __name__ == '__main__':

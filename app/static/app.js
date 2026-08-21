@@ -529,9 +529,7 @@ async function loadCodexItems() {
             <span class="name" data-id="${it.id}">${esc(it.name)}</span>
             <span class="price">${it.price != null ? money(it.price) : '<span class="muted">—</span>'}</span>
           </div>
-          <div class="chips"><span class="chip">${catName(it.cat)}</span>
-            ${Object.entries(it.fields || {}).slice(0, 6).map(([k, v]) => `<span class="chip">${esc(shortField(k, v))}</span>`).join('')}
-          </div>
+          <div class="chips"><span class="chip">${catName(it.cat)}</span>${itemMechanicChips(it)}</div>
           ${it.source ? `<div class="small muted">📖 ${esc(it.source)}</div>` : ''}
           ${it.desc ? `<details class="desc-wrap"><summary>${T('Description','Описание')}</summary><div class="desc">${esc(itemDescription(it))}</div></details>` : ''}
         </div>`).join('')}
@@ -542,12 +540,8 @@ async function loadCodexItems() {
     () => { codexState.offset = Math.max(0, codexState.offset - data.limit); loadCodexItems(); });
 }
 
-function shortField(k, v) {
-  const labels = { Type: '', Skill: '', Damage: '', Mag: 'маг ', ROF: 'СКО ', Conceal: 'скрыт ', Quality: '', Install: '', HL: 'HL ', 'Suitable ammo / weapon': '', SP: 'SP ', Seats: 'мест ', Class: '' };
-  v = String(v);
-  if (v.length > 42) v = v.slice(0, 40) + '…';
-  return labels[k] !== undefined ? labels[k] + v : v;
-}
+const ITEM_FIELD_LABELS={Type:['Type','Тип'],Skill:['Skill','Навык'],Damage:['Damage','Урон'],Mag:['Magazine','Магазин'],ROF:['ROF','Скорострельность'],Hands:['Hands','Руки'],Conceal:['Concealable','Скрываемое'],Quality:['Quality','Качество'],Install:['Install','Установка'],HL:['HL','HL'],'Suitable ammo / weapon':['Compatibility','Совместимость'],SP:['SP','SP'],SDP:['SDP','SDP'],Seats:['Seats','Места'],Class:['Class','Класс'],Penalty:['Penalty','Штраф'],Available:['Compatibility','Совместимость'],Availability:['Availability','Доступность'],'Nomad Access':['Nomad Access','Доступ Nomad'],PER:['PER','PER'],SPD:['SPD','SPD'],ATK:['ATK','ATK'],DEF:['DEF','DEF'],REZ:['REZ','REZ']};
+function itemFieldLabel(key){const labels=ITEM_FIELD_LABELS[key];return labels?(APP_I18N.current()==='ru'?labels[1]:labels[0]):key;}
 
 function pagerHtml(total, offset, limit) {
   if (total <= limit) return '';
@@ -574,8 +568,9 @@ async function showItemModal(id) {
       ${it.source ? `<span class="chip">📖 ${esc(it.source)}</span>` : ''}
       ${it.hl ? `<span class="chip hl-badge">HL ${it.hl}</span>` : ''}
     </div>
+    <div class="mechanic-chips mb">${itemMechanicChips(it)}</div>
     <div class="kv mb">
-      ${Object.entries(it.fields || {}).map(([k, v]) => `<b>${esc(k)}</b><span>${esc(v)}</span>`).join('')}
+      ${Object.entries(it.fields || {}).map(([k, v]) => `<b>${esc(itemFieldLabel(k))}</b><span>${esc(String(v).replace(/\.0(?=\b)/g,''))}</span>`).join('')}
     </div>
     ${it.desc ? `<div class="desc">${esc(itemDescription(it))}</div>` : `<div class="muted">${T('No description available.','Описание отсутствует.')}</div>`}
   `);
@@ -584,23 +579,22 @@ async function showItemModal(id) {
 
 /* ============================== чёрный рынок ============================== */
 
-const marketState = { tab: 'nm', q: '', cat: '', offset: 0, limit: 30 };
+const marketState = { tab: 'nm', vendor: '', q: '', cat: '', sort: 'discount', affordable: false, sellChar: null };
 
 async function viewMarket(view) {
   view.innerHTML = `
   <div class="page-head">
     <div><h1>🕶️ ${T('Night Market','Чёрный рынок')}</h1>
-    <div class="sub">${T('The Night Market refreshes every day at 00:00 Moscow time. Street prices vary by ±50%.','Ночная витрина обновляется каждый день в 00:00 МСК. Уличные цены гуляют ±50%.')}</div></div>
-    ${state.me && state.me.is_gm ? `<button id="payroll-btn">💰 ${T('Payout (GM)','Выплата (ГМ)')}</button>` : ''}
+    <div class="sub">${T('Independent vendors refresh their stock every day at 00:00 Moscow time.','Независимые продавцы обновляют ассортимент каждый день в 00:00 МСК.')}</div></div>
+    <div class="row"><a class="btn-sm" href="#/database">📚 ${T('Open Item Database','Открыть базу предметов')}</a>${state.me && state.me.is_gm ? `<button id="payroll-btn">💰 ${T('Payout (GM)','Выплата (ГМ)')}</button>` : ''}</div>
   </div>
   <div class="tabs">
-    <button data-tab="nm" class="${marketState.tab === 'nm' ? 'active' : ''}">🌙 ${T('Night Market Showcase','Ночная витрина')}</button>
-    <button data-tab="catalog" class="${marketState.tab === 'catalog' ? 'active' : ''}">📦 ${T('Full Catalog','Полный каталог')}</button>
+    <button data-tab="nm" class="${marketState.tab === 'nm' ? 'active' : ''}">🌙 ${T('Night Market Vendors','Продавцы Night Market')}</button>
     <button data-tab="sell" class="${marketState.tab === 'sell' ? 'active' : ''}">♻️ ${T('Sell Used Gear','Скупка хлама')}</button>
   </div>
   <div id="market-body">${spinner()}</div>
   <div id="cart-slot"></div>`;
-  $$('.tabs button', view).forEach(b => b.onclick = () => { marketState.tab = b.dataset.tab; marketState.offset = 0; viewMarket(view); });
+  $$('.tabs button', view).forEach(b => b.onclick = () => { marketState.tab = b.dataset.tab; viewMarket(view); });
   const pb = $('#payroll-btn');
   if (pb) pb.onclick = payrollModal;
   await loadMarketBody();
@@ -609,93 +603,43 @@ async function viewMarket(view) {
 async function loadMarketBody() {
   const box = $('#market-body');
   if (!box) return;
-  if (marketState.tab === 'nm') return loadNightMarket(box);
   if (marketState.tab === 'sell') return loadSellTab(box);
-  return loadMarketCatalog(box);
+  return loadNightMarket(box);
 }
 
 async function loadNightMarket(box) {
   box.innerHTML = spinner();
   const data = await api('/api/nightmarket');
-  box.innerHTML = `
-    <div class="muted small mb">Витрина на ${data.date}. Товаров: ${data.items.length}. Цены уличные — на них и покупай.</div>
-    <div class="item-grid">
-      ${data.items.map(it => `
-        <div class="card item-card">
-          <div class="head">
-            <span class="name">${esc(it.name)}</span>
-            <span>
-              ${it.discount ? `<span class="market-price-old">${money(it.price)}</span>` : ''}
-              <span class="price">${money(it.street_price)}</span>
-            </span>
-          </div>
-          <div class="chips">
-            ${it.discount ? '<span class="tag disc">ВЫГОДНО</span>' : '<span class="tag">переплата</span>'}
-            ${Object.entries(it.fields || {}).slice(0, 4).map(([k, v]) => `<span class="chip">${esc(shortField(k, v))}</span>`).join('')}
-          </div>
-          <div class="row">
-            <button class="btn-sm btn-primary" data-buy-nm="${it.id}" data-price="${it.street_price}">В корзину · ${money(it.street_price)}</button>
-          </div>
-        </div>`).join('')}
-    </div>`;
-  $$('[data-buy-nm]', box).forEach(b => b.onclick = () => {
-    const card = b.closest('.item-card');
-    addToCart(b.dataset.buyNm, Number(b.dataset.price), 'nm', $('.name', card).textContent);
-  });
-  renderCart();
-}
-
-async function loadMarketCatalog(box) {
-  box.innerHTML = `
-    <div class="searchbar">
-      <input id="mk-q" placeholder="Поиск по каталогу…" value="${esc(marketState.q)}">
-      <select id="mk-cat">
-        <option value="">Все категории</option>
-        ${state.meta.cats.map(c => `<option value="${c.id}" ${marketState.cat === c.id ? 'selected' : ''}>${c.emoji} ${esc(catalogCategoryName(c))}</option>`).join('')}
-      </select>
-      <button id="mk-search">Найти</button>
-    </div>
-    <div id="mk-results">${spinner()}</div>`;
-  const doSearch = () => {
-    marketState.q = $('#mk-q').value;
-    marketState.cat = $('#mk-cat').value;
-    marketState.offset = 0;
-    loadMarketCatalogItems();
+  let characters=[];
+  if(state.me)try{characters=(await api('/api/characters')).characters.filter(character=>!character.data.archived);}catch(e){}
+  const selectedBuyer=characters.find(character=>character.id===Number(marketState.buyerChar))||characters.find(character=>character.id===Number(localStorage.getItem('ncnet:active-dossier')))||characters[0]||null;
+  if(selectedBuyer)marketState.buyerChar=selectedBuyer.id;
+  const allCategories=[...new Set(data.vendors.flatMap(vendor=>vendor.categories))];
+  const vendorName=vendor=>APP_I18N.current()==='ru'?vendor.name_ru:vendor.name_en;
+  const vendorTagline=vendor=>APP_I18N.current()==='ru'?vendor.tagline_ru:vendor.tagline_en;
+  const categoryName=id=>{const category=state.meta.cats.find(item=>item.id===id);return category?`${category.emoji} ${catalogCategoryName(category)}`:id;};
+  const filterItems=vendor=>{
+    const query=marketState.q.trim().toLowerCase();
+    let items=vendor.items.filter(item=>(!marketState.cat||item.cat===marketState.cat)&&(!query||`${item.name} ${item.desc||''} ${item.source||''}`.toLowerCase().includes(query))&&(!marketState.affordable||!selectedBuyer||Number(item.street_price)<=Number(selectedBuyer.data.cash||0)));
+    const compare={name:(a,b)=>a.name.localeCompare(b.name,APP_I18N.current()==='ru'?'ru':'en'),price_asc:(a,b)=>a.street_price-b.street_price,price_desc:(a,b)=>b.street_price-a.street_price,discount:(a,b)=>a.multiplier-b.multiplier||a.street_price-b.street_price,category:(a,b)=>categoryName(a.cat).localeCompare(categoryName(b.cat))||a.name.localeCompare(b.name)}[marketState.sort]||(()=>0);
+    return [...items].sort(compare);
   };
-  $('#mk-search').onclick = doSearch;
-  $('#mk-cat').onchange = doSearch;
-  $('#mk-q').onkeydown = (e) => { if (e.key === 'Enter') doSearch(); };
-  await loadMarketCatalogItems();
-}
-
-async function loadMarketCatalogItems() {
-  const box = $('#mk-results');
-  if (!box) return;
-  box.innerHTML = spinner();
-  const p = new URLSearchParams({ q: marketState.q, cat: marketState.cat, offset: marketState.offset, limit: marketState.limit });
-  const data = await api('/api/items?' + p);
-  const catName = (id) => { const c = state.meta.cats.find(x => x.id === id); return c ? c.emoji + ' ' + catalogCategoryName(c) : id; };
-  box.innerHTML = `
-    <div class="muted small mb">Найдено: ${nf.format(data.total)} · цены каталожные</div>
-    <div class="item-grid">
-      ${data.items.filter(i => i.price != null).map(it => `
-        <div class="card item-card">
-          <div class="head"><span class="name">${esc(it.name)}</span><span class="price">${money(it.price)}</span></div>
-          <div class="chips"><span class="chip">${catName(it.cat)}</span>
-            ${Object.entries(it.fields || {}).slice(0, 4).map(([k, v]) => `<span class="chip">${esc(shortField(k, v))}</span>`).join('')}</div>
-          ${it.source ? `<div class="small muted">📖 ${esc(it.source)}</div>` : ''}
-          <div class="row"><button class="btn-sm btn-primary" data-buy="${it.id}" data-price="${it.price}">В корзину</button></div>
-        </div>`).join('') || '<div class="empty">Нет товаров с ценой по этому запросу.</div>'}
-    </div>
-    ${pagerHtml(data.total, data.offset, data.limit)}`;
-  $$('[data-buy]', box).forEach(b => b.onclick = () => {
-    const card = b.closest('.item-card');
-    addToCart(b.dataset.buy, Number(b.dataset.price), 'list', $('.name', card).textContent);
-  });
-  bindPager(box, () => { marketState.offset += data.limit; loadMarketCatalogItems(); },
-    () => { marketState.offset = Math.max(0, marketState.offset - data.limit); loadMarketCatalogItems(); });
+  const visibleVendors=data.vendors.filter(vendor=>!marketState.vendor||vendor.id===marketState.vendor);
+  box.innerHTML=`<div class="market-toolbar panel mb"><div class="grid cols-4"><label class="f"><span>${T('Vendor','Продавец')}</span><select id="nm-vendor"><option value="">${T('All Vendors','Все продавцы')}</option>${data.vendors.map(vendor=>`<option value="${vendor.id}" ${marketState.vendor===vendor.id?'selected':''}>${vendor.icon} ${esc(vendorName(vendor))}</option>`).join('')}</select></label><label class="f"><span>${T('Category','Категория')}</span><select id="nm-cat"><option value="">${T('All Categories','Все категории')}</option>${allCategories.map(id=>`<option value="${id}" ${marketState.cat===id?'selected':''}>${esc(categoryName(id))}</option>`).join('')}</select></label><label class="f"><span>${T('Sort','Сортировка')}</span><select id="nm-sort"><option value="discount" ${marketState.sort==='discount'?'selected':''}>${T('Best Deal','Лучшая цена')}</option><option value="price_asc" ${marketState.sort==='price_asc'?'selected':''}>${T('Price: Low to High','Цена: по возрастанию')}</option><option value="price_desc" ${marketState.sort==='price_desc'?'selected':''}>${T('Price: High to Low','Цена: по убыванию')}</option><option value="name" ${marketState.sort==='name'?'selected':''}>${T('Name','Название')}</option><option value="category" ${marketState.sort==='category'?'selected':''}>${T('Category','Категория')}</option></select></label>${characters.length?`<label class="f"><span>${T('Buyer','Покупатель')}</span><select id="nm-buyer">${characters.map(character=>`<option value="${character.id}" ${selectedBuyer?.id===character.id?'selected':''}>${esc(character.data.handle)} · ${money(character.data.cash)}</option>`).join('')}</select></label>`:'<div></div>'}</div><div class="searchbar"><input id="nm-q" value="${esc(marketState.q)}" placeholder="${T('Search current stock…','Поиск по текущему ассортименту…')}"><button id="nm-search">${T('Search','Найти')}</button><label class="checkbox"><input id="nm-affordable" type="checkbox" ${marketState.affordable?'checked':''}> ${T('Affordable only','Только доступное по цене')}</label><span class="small muted">${T('Stock date','Дата ассортимента')}: ${esc(data.date)}</span></div></div>${visibleVendors.map(vendor=>{const items=filterItems(vendor);return `<section class="market-vendor panel mb" style="--vendor:${esc(vendor.accent_color||'#00e5ff')}"><header class="market-vendor-head"><div><h2>${vendor.icon} ${esc(vendorName(vendor))}</h2><p class="muted user-content">${esc(vendorTagline(vendor))}</p></div><div class="row">${vendor.persona_id?`<a class="btn-sm" href="#/personas/${vendor.persona_id}">${T('Vendor Profile','Профиль продавца')}</a>`:''}<span class="tag">${items.length} ${T('offers','предложений')}</span></div></header>${items.length?`<div class="item-grid">${items.map(item=>`<article class="card item-card"><div class="head"><button class="item-name-button name" data-market-info="${item.id}">${esc(item.name)}</button><span>${item.discount?`<span class="market-price-old">${money(item.price)}</span>`:''}<span class="price">${money(item.street_price)}</span></span></div><div class="chips"><span class="chip">${esc(categoryName(item.cat))}</span>${itemMechanicChips(item)}</div>${item.desc?`<details class="desc-wrap"><summary>${T('Description','Описание')}</summary><div class="desc preserve-lines">${esc(itemDescription(item))}</div></details>`:''}<div class="small muted">${item.source?`📖 ${esc(item.source)} · `:''}${item.discount?`<span class="green-text">${Math.round((1-item.multiplier)*100)}% ${T('below list','ниже каталога')}</span>`:`${Math.round((item.multiplier-1)*100)}% ${T('markup','наценка')}`}</div><div class="row"><button class="info-btn" data-market-info="${item.id}" aria-label="${T('Item details','Описание предмета')}">i</button><button class="btn-sm btn-primary" data-buy-nm="${item.id}" data-price="${item.street_price}">${T('Add to Cart','В корзину')} · ${money(item.street_price)}</button></div></article>`).join('')}</div>`:`<div class="empty">${T('No stock matches these filters.','Нет товаров по выбранным фильтрам.')}</div>`}</section>`;}).join('')}`;
+  const reload=()=>loadNightMarket(box);
+  $('#nm-vendor').onchange=event=>{marketState.vendor=event.target.value;reload();};
+  $('#nm-cat').onchange=event=>{marketState.cat=event.target.value;reload();};
+  $('#nm-sort').onchange=event=>{marketState.sort=event.target.value;reload();};
+  if($('#nm-buyer'))$('#nm-buyer').onchange=event=>{marketState.buyerChar=Number(event.target.value);localStorage.setItem('ncnet:active-dossier',event.target.value);reload();};
+  $('#nm-affordable').onchange=event=>{marketState.affordable=event.target.checked;reload();};
+  const runSearch=()=>{marketState.q=$('#nm-q').value;reload();};
+  $('#nm-search').onclick=runSearch;
+  $('#nm-q').onkeydown=event=>{if(event.key==='Enter')runSearch();};
+  $$('[data-market-info]',box).forEach(button=>button.onclick=()=>showItemModal(button.dataset.marketInfo));
+  $$('[data-buy-nm]', box).forEach(button=>button.onclick=()=>{const card=button.closest('.item-card');addToCart(button.dataset.buyNm,Number(button.dataset.price),'nm',$('.name',card).textContent);});
   renderCart();
 }
+
 
 async function loadSellTab(box) {
   if (!state.me) { box.innerHTML = `<div class="empty">Войдите, чтобы продавать хлам со склада своих персонажей. <a href="#/login">${T('Sign in','Войти')}</a></div>`; return; }
@@ -2058,11 +2002,14 @@ function isForbiddenDuplicate(wiz, item) {
 }
 
 function itemMechanicChips(item) {
-  const m=item.mechanics||{}, chips=[];
-  if(m.damage)chips.push(`<span class="weap-dmg">${esc(m.damage.notation)} · ${m.damage.dice} dice · ${m.damage.average} avg</span>`);
-  const labels={rof:'ROF',hands:'Hands',magazine:'Mag',skill:'Skill',quality:'Quality',concealable:'Conceal',sp:'SP',sdp:'SDP',seats:'Seats',combat_speed:'Combat',narrative_speed:'Narrative',installation:'Install',slots_used:'Slots',program_class:'Class',per:'PER',spd:'SPD',atk:'ATK',def:'DEF',rez:'REZ'};
-  for(const [key,label] of Object.entries(labels))if(m[key]!=null)chips.push(`<span class="chip"><b>${label}</b> ${esc(String(m[key]).replace(/\.0$/,''))}</span>`);
-  if(item.sp!=null&&!m.sp)chips.push(`<span class="chip"><b>SP</b> ${item.sp}</span>`);
+  const m=item.mechanics||{},chips=[];
+  const clean=value=>String(value).replace(/\.0(?=\b)/g,'');
+  if(m.damage){const average=Number(m.damage.average),avg=Number.isInteger(average)?average:String(average);chips.push(`<span class="weap-dmg">${esc(m.damage.notation)} · ${m.damage.dice}d${m.damage.sides} · ${avg} ${T('avg','сред.')}</span>`);}
+  const labels={rof:['ROF','Скорострельность'],hands:['Hands','Руки'],magazine:['Mag','Магазин'],skill:['Skill','Навык'],quality:['Quality','Качество'],concealable:['Conceal','Скрываемое'],sp:['SP','SP'],sdp:['SDP','SDP'],seats:['Seats','Места'],combat_speed:['Combat','Боевая скорость'],narrative_speed:['Narrative','Скорость в мире'],installation:['Install','Установка'],slots_used:['Slots','Слоты'],program_class:['Class','Класс'],per:['PER','PER'],spd:['SPD','SPD'],atk:['ATK','ATK'],def:['DEF','DEF'],rez:['REZ','REZ'],nomad_access:['Nomad','Доступ Nomad']};
+  for(const [key,pair] of Object.entries(labels))if(m[key]!=null&&key!=='sp')chips.push(`<span class="chip"><b>${T(pair[0],pair[1])}</b> ${esc(clean(m[key]))}</span>`);
+  if(m.sp!=null||item.sp!=null)chips.push(`<span class="chip"><b>SP</b> ${esc(clean(m.sp??item.sp))}</span>`);
+  const locations=item.armor_locations||m.armor_locations||[];
+  if(locations.length){const locationLabel=locations.includes('shield')?T('SHIELD','ЩИТ'):(item.armor_bundled||m.armor_bundled?T('HEAD + BODY SET','КОМПЛЕКТ ГОЛОВА + ТЕЛО'):locations.map(location=>T(location.toUpperCase(),location==='head'?'ГОЛОВА':'ТЕЛО')).join(' / '));chips.push(`<span class="chip armor-location"><b>${esc(locationLabel)}</b></span>`);if(locations.length>1&&!item.armor_bundled&&!m.armor_bundled)chips.push(`<span class="chip">${T('purchased separately','покупается раздельно')}</span>`);}
   if(item.hl)chips.push(`<span class="hl-badge">HL ${item.hl}</span>`);
   if(m.quantity_per_purchase)chips.push(`<span class="chip">${m.quantity_per_purchase} ${T('per purchase','за покупку')}</span>`);
   return chips.join('');
