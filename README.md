@@ -20,7 +20,7 @@
 | ◈ **Personas / Storylines** | Private/Shared/System персоны, общий audit log, GM-соавторы сюжетных линий и публичная/закрытая хронология. |
 | 📡 **City Feed** | Шесть форматов, прямые Character-публикации, optional images с preset/custom crop, отображение полного соотношения без обрезки и полноразмерный lightbox, event/publication time, metadata, replies, revisions, moderation и скрытая GM truth. |
 | 📞 **Contracts** | Theme-aware карта с district/subdistrict markers; optional covers с preset/custom resolution crop, полным соотношением без обрезки и lightbox; Persona-роли, public/classified briefing, rewards, запись, waitlist, исторический Crew и Aftermath. |
-| ⚙️ **GM OPS** | Поиск и фильтры для Sessions/NPC Templates/Storylines, улучшенные Storyline/collaborator/timeline editors, стабильный initiative order, HP/SP/Shield/Ammo/LUCK/MOVE/Injuries controls, фильтруемый activity log, private GM JSON export и независимо настраиваемый Player View. |
+| ⚙️ **GM OPS** | Поиск и фильтры для Sessions/NPC Templates/Storylines, scoped Session-роли Co-GM/Assistant/Rules Helper/Observer, стабильный initiative order, HP/SP/Shield/Ammo/LUCK/MOVE/Injuries controls, анонимные Pause/X-card Safety signals, Lines/Veils, activity log, private GM JSON export и настраиваемый Player View. |
 
 ## Запуск
 

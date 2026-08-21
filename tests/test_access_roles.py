@@ -70,6 +70,13 @@ class AccessRoleMigrationTests(unittest.TestCase):
             template_columns = {row['name'] for row in conn.execute(
                 'PRAGMA table_info(npc_templates)')}
             self.assertIn('archived', template_columns)
+            session_columns = {row['name'] for row in conn.execute(
+                'PRAGMA table_info(nc_sessions)')}
+            self.assertIn('safety_config', session_columns)
+            for table in ('session_access', 'session_safety_signals'):
+                self.assertTrue(conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                ).fetchone())
             legacy_npc = conn.execute("SELECT * FROM session_combatants WHERE name='Legacy NPC'").fetchone()
             self.assertEqual((legacy_npc['sp_head_max'], legacy_npc['sp_body_max'],
                               legacy_npc['shield_max'], legacy_npc['ammo_max']),
@@ -255,6 +262,9 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertIn('revision:c.revision', source)
         self.assertIn('12_000_000', source)
         network = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')
+        self.assertIn("api(`/api/sessions/${id}/access`", network)
+        self.assertIn("api(`/api/sessions/${id}/safety`", network)
+        self.assertIn('data-safety-status', network)
         network_css = (ROOT / 'app/static/ncnet.css').read_text(encoding='utf-8')
         self.assertIn('nc-feed-image-frame', network)
         self.assertIn('feed-image-lightbox', network)

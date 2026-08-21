@@ -543,6 +543,106 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         finally:
             server.DB_PATH, server.BACKUP_DIR, server.UPLOAD_DIR = original
 
+    def test_scoped_session_roles_enforce_capabilities(self):
+        self.current = self.user('gm')
+        session = self.call(server.Handler.api_session_create, body={'title': 'Scoped Session'})
+        self.call(server.Handler.api_session_access_grant, self.match(session['id']), {
+            'user_id': 3, 'role': 'assistant',
+        })
+        self.call(server.Handler.api_session_access_grant, self.match(session['id']), {
+            'user_id': 2, 'role': 'rules_helper',
+        })
+
+        self.current = self.user('other')
+        assistant = self.call(server.Handler.api_session_detail, self.match(session['id']))
+        self.assertEqual(assistant['access_role'], 'assistant')
+        self.assertTrue(assistant['capabilities']['edit_combatants'])
+        self.assertFalse(assistant['capabilities']['edit_session'])
+        npc = self.call(server.Handler.api_session_combatant_create, self.match(session['id']), {
+            'name': 'Assistant NPC', 'hp_max': 20, 'hp_current': 20,
+            'secret': {'plan': 'classified'},
+        })
+        self.assertTrue(npc['id'])
+        advanced = self.call(server.Handler.api_session_update, self.match(session['id']), {
+            'round': 1, 'active_turn': 0, 'status': 'active',
+        })
+        self.assertEqual(advanced['round'], 1)
+        with self.assertRaises(server.ApiError) as assistant_notes:
+            self.call(server.Handler.api_session_update, self.match(session['id']), {
+                'notes': 'Should be forbidden',
+            })
+        self.assertEqual(assistant_notes.exception.status, 403)
+
+        self.current = self.user('runner')
+        helper = self.call(server.Handler.api_session_detail, self.match(session['id']))
+        self.assertEqual(helper['access_role'], 'rules_helper')
+        self.assertFalse(helper['capabilities']['edit_combatants'])
+        self.assertNotIn('secret', helper['combatants'][0])
+        with self.assertRaises(server.ApiError) as helper_edit:
+            self.call(server.Handler.api_session_combatant_update,
+                      self.match(session['id'], npc['id']), {'hp_current': 1})
+        self.assertEqual(helper_edit.exception.status, 403)
+
+        self.current = self.user('gm')
+        self.call(server.Handler.api_session_access_grant, self.match(session['id']), {
+            'user_id': 2, 'role': 'observer',
+        })
+        self.current = self.user('runner')
+        observer = self.call(server.Handler.api_session_player_view, self.match(session['id']))
+        self.assertEqual(observer['access_role'], 'observer')
+        with self.assertRaises(server.ApiError) as observer_gm_view:
+            self.call(server.Handler.api_session_detail, self.match(session['id']))
+        self.assertEqual(observer_gm_view.exception.status, 404)
+
+    def test_anonymous_session_safety_signal_and_private_resolution(self):
+        self.current = self.user('gm')
+        session = self.call(server.Handler.api_session_create, body={'title': 'Safety Session'})
+        self.call(server.Handler.api_session_update, self.match(session['id']), {
+            'safety_config': {
+                'content_notes': 'Body horror', 'lines': ['Harm to children'],
+                'veils': ['Torture'], 'pause_enabled': True,
+            },
+        })
+        self.call(server.Handler.api_session_access_grant, self.match(session['id']), {
+            'user_id': 2, 'role': 'observer',
+        })
+        self.call(server.Handler.api_session_access_grant, self.match(session['id']), {
+            'user_id': 3, 'role': 'co_gm',
+        })
+
+        self.current = self.user('runner')
+        signal = self.call(server.Handler.api_session_safety_create, self.match(session['id']), {
+            'kind': 'pause', 'message': 'Please fade this scene.',
+        })
+        self.assertEqual(signal['status'], 'open')
+        self.assertNotIn('user_id', signal)
+        own = self.call(server.Handler.api_session_safety, self.match(session['id']))
+        self.assertFalse(own['can_manage'])
+        self.assertEqual(len(own['signals']), 1)
+        self.assertNotIn('user_id', own['signals'][0])
+
+        self.current = self.user('other')
+        manager = self.call(server.Handler.api_session_safety, self.match(session['id']))
+        self.assertTrue(manager['can_manage'])
+        self.assertEqual(manager['signals'][0]['message'], 'Please fade this scene.')
+        self.assertNotIn('user_id', manager['signals'][0])
+        acknowledged = self.call(
+            server.Handler.api_session_safety_update,
+            self.match(session['id'], signal['id']), {'status': 'acknowledged'})
+        self.assertEqual(acknowledged['status'], 'acknowledged')
+        resolved = self.call(
+            server.Handler.api_session_safety_update,
+            self.match(session['id'], signal['id']), {'status': 'resolved'})
+        self.assertEqual(resolved['status'], 'resolved')
+        stored = self.conn.execute(
+            'SELECT user_id,status FROM session_safety_signals WHERE id=?',
+            (signal['id'],)).fetchone()
+        self.assertEqual(stored['user_id'], 2)
+        self.assertEqual(stored['status'], 'resolved')
+        activity = self.conn.execute(
+            "SELECT COUNT(*) n FROM session_activity WHERE event_type LIKE 'safety%'").fetchone()['n']
+        self.assertEqual(activity, 0)
+
     def test_production_install_is_loopback_https_only_and_login_route_is_unique(self):
         installer = (ROOT / 'deploy/install.sh').read_text(encoding='utf-8')
         nginx = (ROOT / 'deploy/nginx-cbpr.conf').read_text(encoding='utf-8')

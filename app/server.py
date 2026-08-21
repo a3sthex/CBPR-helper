@@ -736,9 +736,32 @@ CREATE TABLE IF NOT EXISTS nc_sessions(
   round INTEGER NOT NULL DEFAULT 0,
   active_turn INTEGER NOT NULL DEFAULT 0,
   player_view_config TEXT NOT NULL DEFAULT '{}',
+  safety_config TEXT NOT NULL DEFAULT '{}',
   notes TEXT NOT NULL DEFAULT '',
   created REAL NOT NULL,
   updated REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session_access(
+  session_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  role TEXT NOT NULL,
+  created_by INTEGER NOT NULL,
+  created REAL NOT NULL,
+  updated REAL NOT NULL,
+  PRIMARY KEY(session_id,user_id)
+);
+CREATE TABLE IF NOT EXISTS session_safety_signals(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'pause',
+  message TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'open',
+  acknowledged_by INTEGER,
+  acknowledged_at REAL,
+  resolved_by INTEGER,
+  resolved_at REAL,
+  created REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS session_combatants(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -781,6 +804,8 @@ CREATE TABLE IF NOT EXISTS session_activity(
 );
 CREATE INDEX IF NOT EXISTS idx_character_ledger ON character_ledger(character_id,created);
 CREATE INDEX IF NOT EXISTS idx_sessions_owner ON nc_sessions(owner_user_id,status,updated);
+CREATE INDEX IF NOT EXISTS idx_session_access_user ON session_access(user_id,session_id);
+CREATE INDEX IF NOT EXISTS idx_session_safety_open ON session_safety_signals(session_id,status,created);
 CREATE INDEX IF NOT EXISTS idx_session_combatants ON session_combatants(session_id,sort_order);
 CREATE INDEX IF NOT EXISTS idx_session_activity ON session_activity(session_id,created);
 """
@@ -1007,6 +1032,7 @@ def apply_schema_migrations(conn, make_backup=True):
     if conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='characters'").fetchone():
         ensure_column(conn, 'characters', 'revision', 'INTEGER NOT NULL DEFAULT 0')
+    ensure_column(conn, 'nc_sessions', 'safety_config', "TEXT NOT NULL DEFAULT '{}'")
     ensure_column(conn, 'npc_templates', 'archived', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'session_combatants', 'sp_head_max', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'session_combatants', 'sp_body_max', 'INTEGER NOT NULL DEFAULT 0')
@@ -1093,6 +1119,23 @@ SESSION_VIEW_DEFAULTS = {
     'show_conditions': True,
     'show_injuries': True,
 }
+SESSION_ACCESS_ROLES = {'co_gm', 'assistant', 'rules_helper', 'observer'}
+SESSION_ROLE_CAPABILITIES = {
+    'owner': {'view_gm', 'view_secrets', 'edit_session', 'edit_combatants', 'manage_access', 'manage_safety'},
+    'co_gm': {'view_gm', 'view_secrets', 'edit_session', 'edit_combatants', 'manage_safety'},
+    'assistant': {'view_gm', 'view_secrets', 'edit_combatants'},
+    'rules_helper': {'view_gm'},
+    'observer': {'view_player'},
+    'crew': {'view_player'},
+}
+SESSION_SAFETY_DEFAULTS = {
+    'content_notes': '',
+    'lines': [],
+    'veils': [],
+    'pause_enabled': True,
+}
+SAFETY_SIGNAL_KINDS = {'pause', 'x_card', 'check_in'}
+SAFETY_SIGNAL_STATUSES = {'open', 'acknowledged', 'resolved'}
 
 
 def parse_json_object(value, default=None):
@@ -1139,6 +1182,18 @@ def session_view_config(value):
     return {
         key: raw[key] if isinstance(raw.get(key), bool) else default
         for key, default in SESSION_VIEW_DEFAULTS.items()
+    }
+
+
+def session_safety_config(value):
+    raw = parse_json_object(value)
+    lines = raw.get('lines') if isinstance(raw.get('lines'), list) else []
+    veils = raw.get('veils') if isinstance(raw.get('veils'), list) else []
+    return {
+        'content_notes': str(raw.get('content_notes') or '')[:5000],
+        'lines': [str(item).strip()[:200] for item in lines[:50] if str(item).strip()],
+        'veils': [str(item).strip()[:200] for item in veils[:50] if str(item).strip()],
+        'pause_enabled': raw.get('pause_enabled') is not False,
     }
 
 
@@ -2615,6 +2670,16 @@ SERVER_ERROR_EN = {
     'Некорректный NPC template': 'Invalid NPC template',
     'Сессия не найдена': 'Session not found',
     'Нет права редактировать сессию': 'You cannot edit this Session',
+    'Нет права управлять доступом сессии': 'You cannot manage Session access',
+    'Некорректная роль участника сессии': 'Invalid Session member role',
+    'Назначение доступа не найдено': 'Session access assignment not found',
+    'Assistant может менять только ход и раунд': 'Assistant can only change the turn and round',
+    'Safety signal отключён для этой сессии': 'Safety signals are disabled for this Session',
+    'Некорректный тип Safety signal': 'Invalid Safety signal type',
+    'Нет права управлять Safety signal': 'You cannot manage Safety signals',
+    'Safety signal не найден': 'Safety signal not found',
+    'Некорректный статус Safety signal': 'Invalid Safety signal status',
+    'Resolved Safety signal нельзя открыть повторно': 'A resolved Safety signal cannot be reopened',
     'Некорректный статус сессии': 'Invalid Session status',
     'Участнику сессии нужно имя': 'Session combatant name is required',
     'Нет права редактировать участника': 'You cannot edit this combatant',
@@ -4918,16 +4983,36 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------ NC//NET operations
 
-    def can_edit_nc_session(self, conn, user, session):
-        if not user or not user_is_gm(user):
-            return False
+    def session_access_role(self, conn, user, session):
+        if not user or not session:
+            return None
         if user_is_admin(user) or session['owner_user_id'] == user['id']:
-            return True
+            return 'owner'
+        explicit = conn.execute(
+            'SELECT role FROM session_access WHERE session_id=? AND user_id=?',
+            (session['id'], user['id'])).fetchone()
+        if explicit and explicit['role'] in SESSION_ACCESS_ROLES:
+            return explicit['role']
         if session['contract_id']:
             contract = conn.execute('SELECT * FROM contracts WHERE id=?',
                                     (session['contract_id'],)).fetchone()
-            return can_edit_contract(conn, user, contract)
-        return False
+            if user_is_gm(user) and can_edit_contract(conn, user, contract):
+                return 'co_gm'
+            if conn.execute(
+                    "SELECT 1 FROM contract_signups WHERE contract_id=? AND user_id=? AND status='crew'",
+                    (session['contract_id'], user['id'])).fetchone():
+                return 'crew'
+        return None
+
+    def session_capabilities(self, conn, user, session):
+        role = self.session_access_role(conn, user, session)
+        return role, set(SESSION_ROLE_CAPABILITIES.get(role, set()))
+
+    def can_edit_nc_session(self, conn, user, session):
+        return 'edit_session' in self.session_capabilities(conn, user, session)[1]
+
+    def can_manage_session_access(self, conn, user, session):
+        return 'manage_access' in self.session_capabilities(conn, user, session)[1]
 
     def ordered_session_combatants(self, conn, session_id):
         return conn.execute(
@@ -4947,13 +5032,15 @@ class Handler(BaseHTTPRequestHandler):
                 return bool(value)
             if key == 'player_view_config':
                 return session_view_config(value)
+            if key == 'safety_config':
+                return session_safety_config(value)
             if isinstance(value, (dict, list)):
                 return value
             return value
 
         if event_type == 'session_update':
             for key in ('title', 'status', 'round', 'active_turn',
-                        'player_view_config', 'notes'):
+                        'player_view_config', 'safety_config', 'notes'):
                 if key not in after:
                     continue
                 old_value = before.get(key)
@@ -5005,8 +5092,10 @@ class Handler(BaseHTTPRequestHandler):
         }
 
     def session_payload(self, conn, row, user, player_view=False):
-        can_edit = self.can_edit_nc_session(conn, user, row)
+        access_role, capabilities = self.session_capabilities(conn, user, row)
+        can_edit = 'edit_session' in capabilities
         config = session_view_config(row['player_view_config'])
+        safety = session_safety_config(_row_value(row, 'safety_config', '{}'))
         combatants = self.ordered_session_combatants(conn, row['id'])
         active_turn = min(max(0, _num(row['active_turn']) or 0), max(0, len(combatants) - 1))
         out_combatants = []
@@ -5032,8 +5121,9 @@ class Handler(BaseHTTPRequestHandler):
                     'move': item['move'], 'conditions': parse_json_list(item['conditions_json']),
                     'injuries': parse_json_list(item['injuries_json']),
                     'death_penalty': item['death_penalty'],
-                    'secret': parse_json_object(item['secret_json']),
                 })
+                if 'view_secrets' in capabilities:
+                    data['secret'] = parse_json_object(item['secret_json'])
             else:
                 if item['kind'] == 'character' and config['show_ally_hp']:
                     data.update({'hp_current': item['hp_current'], 'hp_max': item['hp_max']})
@@ -5061,11 +5151,17 @@ class Handler(BaseHTTPRequestHandler):
             'id': row['id'], 'contract_id': row['contract_id'], 'title': row['title'],
             'status': row['status'], 'round': row['round'],
             'active_turn': visible_active_turn if player_view else active_turn,
-            'player_view_config': config, 'combatants': out_combatants,
+            'player_view_config': config, 'safety_config': safety,
+            'combatants': out_combatants,
             'created': row['created'], 'updated': row['updated'], 'can_edit': can_edit,
+            'access_role': access_role,
+            'capabilities': {key: key in capabilities for key in (
+                'view_gm', 'view_secrets', 'edit_session', 'edit_combatants',
+                'manage_access', 'manage_safety')},
         }
-        if can_edit and not player_view:
+        if not player_view and 'edit_session' in capabilities:
             payload['notes'] = row['notes']
+        if not player_view and capabilities.intersection({'edit_session', 'edit_combatants'}):
             activity = conn.execute(
                 'SELECT a.*,u.display_name actor FROM session_activity a '
                 'JOIN users u ON u.id=a.actor_user_id WHERE session_id=? '
@@ -5086,7 +5182,13 @@ class Handler(BaseHTTPRequestHandler):
         }
 
     def api_npc_templates(self, conn, qs, m, body):
-        user = self.require_gm(conn)
+        user = self.require_user(conn)
+        if not user_is_gm(user):
+            session_id = _num(q1(qs.get('session_id')))
+            session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                                   (session_id,)).fetchone() if session_id else None
+            if not session or 'edit_combatants' not in self.session_capabilities(conn, user, session)[1]:
+                raise ApiError(403, 'Только для пользователей с ролью ГМ')
         rows = conn.execute(
             "SELECT * FROM npc_templates WHERE archived=0 AND "
             "(? OR access='shared' OR owner_user_id=?) ORDER BY updated DESC",
@@ -5159,12 +5261,191 @@ class Handler(BaseHTTPRequestHandler):
                      (time.time(), row['id']))
         conn.commit(); self.send_json({'ok': True, 'archived': True})
 
-    def api_sessions(self, conn, qs, m, body):
-        user = self.require_gm(conn)
-        rows = conn.execute('SELECT * FROM nc_sessions ORDER BY updated DESC').fetchall()
-        self.send_json({'sessions': [self.session_payload(conn, row, user) for row in rows
-                                     if self.can_edit_nc_session(conn, user, row)]})
+    def api_session_access(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or not self.can_manage_session_access(conn, user, session):
+            raise ApiError(403, 'Нет права управлять доступом сессии')
+        assignments = conn.execute(
+            'SELECT a.*,u.username,u.display_name,u.account_role FROM session_access a '
+            'JOIN users u ON u.id=a.user_id WHERE a.session_id=? ORDER BY a.role,u.display_name',
+            (session['id'],)).fetchall()
+        candidates = conn.execute(
+            "SELECT id,username,display_name,account_role FROM users "
+            "WHERE id>1 AND disabled_at IS NULL AND account_role!='admin' "
+            'ORDER BY display_name,username').fetchall()
+        self.send_json({
+            'owner_user_id': session['owner_user_id'],
+            'roles': sorted(SESSION_ACCESS_ROLES),
+            'assignments': [dict(row) for row in assignments],
+            'candidates': [dict(row) for row in candidates],
+        })
 
+    @atomic_endpoint
+    def api_session_access_grant(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or not self.can_manage_session_access(conn, user, session):
+            raise ApiError(403, 'Нет права управлять доступом сессии')
+        target_id = _num((body or {}).get('user_id'))
+        role = str((body or {}).get('role') or '').lower()
+        target = conn.execute('SELECT * FROM users WHERE id=? AND disabled_at IS NULL',
+                              (target_id,)).fetchone()
+        if not target or target['id'] == session['owner_user_id'] or role not in SESSION_ACCESS_ROLES:
+            raise ApiError(400, 'Некорректная роль участника сессии')
+        before = conn.execute('SELECT role FROM session_access WHERE session_id=? AND user_id=?',
+                              (session['id'], target['id'])).fetchone()
+        now = time.time()
+        conn.execute(
+            'INSERT INTO session_access(session_id,user_id,role,created_by,created,updated) '
+            'VALUES(?,?,?,?,?,?) ON CONFLICT(session_id,user_id) DO UPDATE SET '
+            'role=excluded.role,created_by=excluded.created_by,updated=excluded.updated',
+            (session['id'], target['id'], role, user['id'], now, now))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,after_json,note,created) '
+            'VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'access_grant',
+             json.dumps({'user_id': target['id'], 'role': before['role'] if before else None}),
+             json.dumps({'user_id': target['id'], 'role': role}), '', now))
+        add_notification(conn, target['id'], 'session_access', 'NC//NET Session access',
+                         f'{session["title"]}: {role}', f'#/session/{session["id"]}')
+        conn.commit()
+        self.send_json({'ok': True, 'user_id': target['id'], 'role': role})
+
+    @atomic_endpoint
+    def api_session_access_revoke(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or not self.can_manage_session_access(conn, user, session):
+            raise ApiError(403, 'Нет права управлять доступом сессии')
+        target_id = int(m.group(2))
+        before = conn.execute('SELECT * FROM session_access WHERE session_id=? AND user_id=?',
+                              (session['id'], target_id)).fetchone()
+        if not before:
+            raise ApiError(404, 'Назначение доступа не найдено')
+        conn.execute('DELETE FROM session_access WHERE session_id=? AND user_id=?',
+                     (session['id'], target_id))
+        now = time.time()
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,after_json,note,created) '
+            'VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'access_revoke', json.dumps(dict(before)),
+             json.dumps({'user_id': target_id, 'role': None}), '', now))
+        add_notification(conn, target_id, 'session_access_revoked', 'NC//NET Session access revoked',
+                         session['title'], None)
+        conn.commit()
+        self.send_json({'ok': True})
+
+    def safety_signal_payload(self, row):
+        return {
+            'id': row['id'], 'kind': row['kind'], 'message': row['message'],
+            'status': row['status'], 'created': row['created'],
+            'acknowledged_at': row['acknowledged_at'], 'resolved_at': row['resolved_at'],
+        }
+
+    def api_session_safety(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        role, capabilities = self.session_capabilities(conn, user, session)
+        if not session or not role:
+            raise ApiError(403, 'Нет доступа к экрану сессии')
+        if 'manage_safety' in capabilities:
+            rows = conn.execute(
+                'SELECT * FROM session_safety_signals WHERE session_id=? '
+                'ORDER BY CASE status WHEN \'open\' THEN 0 WHEN \'acknowledged\' THEN 1 ELSE 2 END,created DESC',
+                (session['id'],)).fetchall()
+        else:
+            rows = conn.execute(
+                'SELECT * FROM session_safety_signals WHERE session_id=? AND user_id=? ORDER BY created DESC',
+                (session['id'], user['id'])).fetchall()
+        self.send_json({'safety_config': session_safety_config(session['safety_config']),
+                        'can_manage': 'manage_safety' in capabilities,
+                        'signals': [self.safety_signal_payload(row) for row in rows]})
+
+    @atomic_endpoint
+    def api_session_safety_create(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        role, capabilities = self.session_capabilities(conn, user, session)
+        if not session or not role:
+            raise ApiError(403, 'Нет доступа к экрану сессии')
+        config = session_safety_config(session['safety_config'])
+        if not config['pause_enabled']:
+            raise ApiError(409, 'Safety signal отключён для этой сессии')
+        self.rate_limit('session-safety', 10, 3600, user['id'])
+        kind = str((body or {}).get('kind') or 'pause').lower()
+        if kind not in SAFETY_SIGNAL_KINDS:
+            raise ApiError(400, 'Некорректный тип Safety signal')
+        message = str((body or {}).get('message') or '').strip()[:500]
+        now = time.time()
+        cur = conn.execute(
+            'INSERT INTO session_safety_signals(session_id,user_id,kind,message,status,created) '
+            "VALUES(?,?,?,?,'open',?)", (session['id'], user['id'], kind, message, now))
+        recipients = {session['owner_user_id']}
+        recipients.update(row['user_id'] for row in conn.execute(
+            "SELECT user_id FROM session_access WHERE session_id=? AND role='co_gm'",
+            (session['id'],)).fetchall())
+        for recipient in recipients:
+            if recipient != user['id']:
+                add_notification(conn, recipient, 'session_safety', 'Anonymous Session safety signal',
+                                 session['title'], f'#/session/{session["id"]}')
+        conn.commit()
+        row = conn.execute('SELECT * FROM session_safety_signals WHERE id=?',
+                           (cur.lastrowid,)).fetchone()
+        self.send_json(self.safety_signal_payload(row), status=201)
+
+    @atomic_endpoint
+    def api_session_safety_update(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        role, capabilities = self.session_capabilities(conn, user, session)
+        if not session or 'manage_safety' not in capabilities:
+            raise ApiError(403, 'Нет права управлять Safety signal')
+        signal = conn.execute(
+            'SELECT * FROM session_safety_signals WHERE id=? AND session_id=?',
+            (int(m.group(2)), session['id'])).fetchone()
+        if not signal:
+            raise ApiError(404, 'Safety signal не найден')
+        status = str((body or {}).get('status') or '').lower()
+        if status not in ('acknowledged', 'resolved'):
+            raise ApiError(400, 'Некорректный статус Safety signal')
+        if signal['status'] == 'resolved' and status != 'resolved':
+            raise ApiError(409, 'Resolved Safety signal нельзя открыть повторно')
+        now = time.time()
+        if status == 'acknowledged':
+            conn.execute(
+                "UPDATE session_safety_signals SET status='acknowledged',acknowledged_by=?,"
+                'acknowledged_at=? WHERE id=?', (user['id'], now, signal['id']))
+        else:
+            conn.execute(
+                "UPDATE session_safety_signals SET status='resolved',resolved_by=?,resolved_at=?,"
+                'acknowledged_by=COALESCE(acknowledged_by,?),'
+                'acknowledged_at=COALESCE(acknowledged_at,?) WHERE id=?',
+                (user['id'], now, user['id'], now, signal['id']))
+        conn.commit()
+        updated = conn.execute('SELECT * FROM session_safety_signals WHERE id=?',
+                               (signal['id'],)).fetchone()
+        self.send_json(self.safety_signal_payload(updated))
+
+    def api_sessions(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        rows = conn.execute('SELECT * FROM nc_sessions ORDER BY updated DESC').fetchall()
+        visible = []
+        for row in rows:
+            role, capabilities = self.session_capabilities(conn, user, row)
+            if not role:
+                continue
+            visible.append(self.session_payload(
+                conn, row, user, player_view='view_gm' not in capabilities))
+        self.send_json({'sessions': visible})
+
+    @atomic_endpoint
     def api_session_create(self, conn, qs, m, body):
         user = self.require_gm(conn)
         contract_id = _num((body or {}).get('contract_id'))
@@ -5177,11 +5458,12 @@ class Handler(BaseHTTPRequestHandler):
         if not title:
             title = contract['title'] if contract else 'NC//NET Session'
         config = session_view_config((body or {}).get('player_view_config'))
+        safety = session_safety_config((body or {}).get('safety_config'))
         now = time.time()
         cur = conn.execute(
-            'INSERT INTO nc_sessions(contract_id,owner_user_id,title,status,player_view_config,notes,created,updated) '
-            "VALUES(?,?,?,'preparing',?,?,?,?)",
-            (contract_id, user['id'], title, json.dumps(config),
+            'INSERT INTO nc_sessions(contract_id,owner_user_id,title,status,player_view_config,'
+            'safety_config,notes,created,updated) VALUES(?,?,?,\'preparing\',?,?,?,?,?)',
+            (contract_id, user['id'], title, json.dumps(config), json.dumps(safety),
              str((body or {}).get('notes') or '')[:20000], now, now))
         session_id = cur.lastrowid
         if contract:
@@ -5221,17 +5503,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(self.session_payload(conn, row, user), status=201)
 
     def api_session_detail(self, conn, qs, m, body):
-        user = self.require_gm(conn)
+        user = self.require_user(conn)
         row = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
-        if not row or not self.can_edit_nc_session(conn, user, row):
+        role, capabilities = self.session_capabilities(conn, user, row)
+        if not row or 'view_gm' not in capabilities:
             raise ApiError(404, 'Сессия не найдена')
         self.send_json(self.session_payload(conn, row, user))
 
+    @atomic_endpoint
     def api_session_update(self, conn, qs, m, body):
-        user = self.require_gm(conn)
+        user = self.require_user(conn)
         row = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
-        if not row or not self.can_edit_nc_session(conn, user, row):
+        role, capabilities = self.session_capabilities(conn, user, row)
+        if not row or not capabilities.intersection({'edit_session', 'edit_combatants'}):
             raise ApiError(403, 'Нет права редактировать сессию')
+        if 'edit_session' not in capabilities:
+            forbidden = set(body or {}) - {'round', 'active_turn', 'status', 'activity_note'}
+            if forbidden:
+                raise ApiError(403, 'Assistant может менять только ход и раунд')
         status = str((body or {}).get('status', row['status']))
         if status not in ('preparing', 'active', 'paused', 'completed', 'archived'):
             raise ApiError(400, 'Некорректный статус сессии')
@@ -5239,6 +5528,7 @@ class Handler(BaseHTTPRequestHandler):
             'title': row['title'], 'status': row['status'], 'round': row['round'],
             'active_turn': row['active_turn'],
             'player_view_config': session_view_config(row['player_view_config']),
+            'safety_config': session_safety_config(row['safety_config']),
             'notes': row['notes'],
         }
         title = str((body or {}).get('title', row['title'])).strip()[:180] or row['title']
@@ -5250,15 +5540,20 @@ class Handler(BaseHTTPRequestHandler):
         active_turn = min(active_turn, max(0, combatant_count - 1))
         config = session_view_config(
             (body or {}).get('player_view_config', row['player_view_config']))
+        safety = session_safety_config(
+            (body or {}).get('safety_config', row['safety_config']))
         notes = str((body or {}).get('notes', row['notes']))[:20000]
         now = time.time()
         after = {
             'title': title, 'status': status, 'round': round_number,
-            'active_turn': active_turn, 'player_view_config': config, 'notes': notes,
+            'active_turn': active_turn, 'player_view_config': config,
+            'safety_config': safety, 'notes': notes,
         }
         conn.execute(
-            'UPDATE nc_sessions SET title=?,status=?,round=?,active_turn=?,player_view_config=?,notes=?,updated=? WHERE id=?',
-            (title, status, round_number, active_turn, json.dumps(config), notes, now, row['id']))
+            'UPDATE nc_sessions SET title=?,status=?,round=?,active_turn=?,player_view_config=?,'
+            'safety_config=?,notes=?,updated=? WHERE id=?',
+            (title, status, round_number, active_turn, json.dumps(config), json.dumps(safety),
+             notes, now, row['id']))
         conn.execute(
             'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,after_json,note,created) '
             'VALUES(?,?,?,?,?,?,?)',
@@ -5268,10 +5563,11 @@ class Handler(BaseHTTPRequestHandler):
         conn.commit(); updated = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (row['id'],)).fetchone()
         self.send_json(self.session_payload(conn, updated, user))
 
+    @atomic_endpoint
     def api_session_combatant_create(self, conn, qs, m, body):
-        user = self.require_gm(conn)
+        user = self.require_user(conn)
         session = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
-        if not session or not self.can_edit_nc_session(conn, user, session):
+        if not session or 'edit_combatants' not in self.session_capabilities(conn, user, session)[1]:
             raise ApiError(403, 'Нет права редактировать сессию')
         before_rows = self.ordered_session_combatants(conn, session['id'])
         old_index = min(max(0, session['active_turn']), max(0, len(before_rows) - 1))
@@ -5339,12 +5635,14 @@ class Handler(BaseHTTPRequestHandler):
              json.dumps(created, ensure_ascii=False), '', now))
         conn.commit(); self.send_json({'id': cur.lastrowid}, status=201)
 
+    @atomic_endpoint
     def api_session_combatant_update(self, conn, qs, m, body):
-        user = self.require_gm(conn)
+        user = self.require_user(conn)
         session = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
         combatant = conn.execute('SELECT * FROM session_combatants WHERE id=? AND session_id=?',
                                  (int(m.group(2)), int(m.group(1)))).fetchone()
-        if not session or not combatant or not self.can_edit_nc_session(conn, user, session):
+        if (not session or not combatant or
+                'edit_combatants' not in self.session_capabilities(conn, user, session)[1]):
             raise ApiError(403, 'Нет права редактировать участника')
         ordered_before = self.ordered_session_combatants(conn, session['id'])
         old_index = min(max(0, session['active_turn']), max(0, len(ordered_before) - 1))
@@ -5405,10 +5703,11 @@ class Handler(BaseHTTPRequestHandler):
              str((body or {}).get('note') or '')[:500], now))
         conn.commit(); self.send_json({'ok': True})
 
+    @atomic_endpoint
     def api_session_combatant_delete(self, conn, qs, m, body):
-        user = self.require_gm(conn)
+        user = self.require_user(conn)
         session = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
-        if not session or not self.can_edit_nc_session(conn, user, session):
+        if not session or 'edit_combatants' not in self.session_capabilities(conn, user, session)[1]:
             raise ApiError(403, 'Нет права редактировать сессию')
         ordered_before = self.ordered_session_combatants(conn, session['id'])
         combatant_id = int(m.group(2))
@@ -5441,12 +5740,8 @@ class Handler(BaseHTTPRequestHandler):
         session = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
         if not session:
             raise ApiError(404, 'Сессия не найдена')
-        allowed = self.can_edit_nc_session(conn, user, session)
-        if not allowed and session['contract_id']:
-            allowed = bool(conn.execute(
-                "SELECT 1 FROM contract_signups WHERE contract_id=? AND user_id=? AND status='crew'",
-                (session['contract_id'], user['id'])).fetchone())
-        if not allowed:
+        role, capabilities = self.session_capabilities(conn, user, session)
+        if 'view_player' not in capabilities and 'view_gm' not in capabilities:
             raise ApiError(403, 'Нет доступа к экрану сессии')
         self.send_json(self.session_payload(conn, session, user, player_view=True))
 
@@ -5699,6 +5994,12 @@ ROUTES = [
     ('GET', rx(r'/api/sessions/(\d+)'), Handler.api_session_detail),
     ('PUT', rx(r'/api/sessions/(\d+)'), Handler.api_session_update),
     ('GET', rx(r'/api/sessions/(\d+)/player-view'), Handler.api_session_player_view),
+    ('GET', rx(r'/api/sessions/(\d+)/access'), Handler.api_session_access),
+    ('POST', rx(r'/api/sessions/(\d+)/access'), Handler.api_session_access_grant),
+    ('DELETE', rx(r'/api/sessions/(\d+)/access/(\d+)'), Handler.api_session_access_revoke),
+    ('GET', rx(r'/api/sessions/(\d+)/safety'), Handler.api_session_safety),
+    ('POST', rx(r'/api/sessions/(\d+)/safety'), Handler.api_session_safety_create),
+    ('POST', rx(r'/api/sessions/(\d+)/safety/(\d+)'), Handler.api_session_safety_update),
     ('POST', rx(r'/api/sessions/(\d+)/combatants'), Handler.api_session_combatant_create),
     ('PUT', rx(r'/api/sessions/(\d+)/combatants/(\d+)'), Handler.api_session_combatant_update),
     ('DELETE', rx(r'/api/sessions/(\d+)/combatants/(\d+)'), Handler.api_session_combatant_delete),
