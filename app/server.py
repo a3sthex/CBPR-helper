@@ -9,6 +9,7 @@ import base64
 import copy
 import hashlib
 import hmac
+import ipaddress
 import json
 import math
 import os
@@ -396,13 +397,19 @@ CREATE TABLE IF NOT EXISTS users(
   notification_prefs TEXT NOT NULL DEFAULT '{}',
   theme_json TEXT NOT NULL DEFAULT '{}',
   avatar_media_id TEXT,
+  disabled_at REAL,
+  disabled_reason TEXT,
+  disabled_by INTEGER,
   created REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions(
   token TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL,
   created REAL NOT NULL,
-  expires REAL NOT NULL
+  expires REAL NOT NULL,
+  last_seen REAL,
+  ip_address TEXT,
+  user_agent TEXT
 );
 CREATE TABLE IF NOT EXISTS characters(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -479,6 +486,14 @@ CREATE TABLE IF NOT EXISTS account_role_audit(
   reason TEXT NOT NULL,
   created REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS account_security_audit(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  actor_user_id INTEGER,
+  event_type TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  created REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS registration_invites(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   code_hash TEXT UNIQUE NOT NULL,
@@ -498,6 +513,9 @@ CREATE INDEX IF NOT EXISTS idx_ip_character ON ip_ledger(character_id, created);
 CREATE INDEX IF NOT EXISTS idx_role_audit_target ON account_role_audit(target_user_id, created);
 CREATE INDEX IF NOT EXISTS idx_registration_invites_active
   ON registration_invites(disabled_at,expires_at,uses,max_uses);
+CREATE INDEX IF NOT EXISTS idx_account_security_audit
+  ON account_security_audit(user_id,created);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id,expires);
 """
 
 NETWORK_SCHEMA = """
@@ -892,6 +910,21 @@ def apply_schema_migrations(conn, make_backup=True):
                  'id INTEGER PRIMARY KEY AUTOINCREMENT, target_user_id INTEGER NOT NULL, '
                  'actor_user_id INTEGER, role_before TEXT NOT NULL, role_after TEXT NOT NULL, '
                  'reason TEXT NOT NULL, created REAL NOT NULL)')
+    conn.executescript("""
+      CREATE TABLE IF NOT EXISTS sessions(
+        token TEXT PRIMARY KEY,user_id INTEGER NOT NULL,created REAL NOT NULL,expires REAL NOT NULL,
+        last_seen REAL,ip_address TEXT,user_agent TEXT
+      );
+      CREATE TABLE IF NOT EXISTS account_security_audit(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,actor_user_id INTEGER,
+        event_type TEXT NOT NULL,detail TEXT NOT NULL DEFAULT '',created REAL NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS registration_invites(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,code_hash TEXT UNIQUE NOT NULL,
+        label TEXT NOT NULL DEFAULT '',created_by INTEGER NOT NULL,max_uses INTEGER NOT NULL DEFAULT 1,
+        uses INTEGER NOT NULL DEFAULT 0,expires_at REAL,disabled_at REAL,created REAL NOT NULL
+      );
+    """)
     applied = {row['version'] for row in conn.execute('SELECT version FROM schema_migrations')}
     migrations = [
         (MIGRATION_ACCOUNT_ROLES, 'account roles and privacy foundation'),
@@ -947,6 +980,12 @@ def apply_schema_migrations(conn, make_backup=True):
     # Recover safely if a rolling/patch deployment recorded the migration before
     # every additive column reached a particular database.
     ensure_column(conn, 'users', 'avatar_media_id', 'TEXT')
+    ensure_column(conn, 'users', 'disabled_at', 'REAL')
+    ensure_column(conn, 'users', 'disabled_reason', 'TEXT')
+    ensure_column(conn, 'users', 'disabled_by', 'INTEGER')
+    ensure_column(conn, 'sessions', 'last_seen', 'REAL')
+    ensure_column(conn, 'sessions', 'ip_address', 'TEXT')
+    ensure_column(conn, 'sessions', 'user_agent', 'TEXT')
     ensure_column(conn, 'npc_templates', 'archived', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'session_combatants', 'sp_head_max', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'session_combatants', 'sp_body_max', 'INTEGER NOT NULL DEFAULT 0')
@@ -971,6 +1010,11 @@ def apply_schema_migrations(conn, make_backup=True):
                  "THEN 1 ELSE 0 END")
     conn.execute('CREATE INDEX IF NOT EXISTS idx_role_audit_target '
                  'ON account_role_audit(target_user_id, created)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_registration_invites_active '
+                 'ON registration_invites(disabled_at,expires_at,uses,max_uses)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_account_security_audit '
+                 'ON account_security_audit(user_id,created)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id,expires)')
     conn.commit()
 
 
@@ -1224,8 +1268,10 @@ def assign_account_role(conn, actor, target_user_id, role, reason='Admin role as
     before = user_account_role(target)
     if before == role:
         return target
-    if before == 'admin' and role != 'admin':
-        admins = conn.execute("SELECT COUNT(*) n FROM users WHERE account_role='admin'").fetchone()['n']
+    if before == 'admin' and role != 'admin' and not _row_value(target, 'disabled_at'):
+        admins = conn.execute(
+            "SELECT COUNT(*) n FROM users WHERE account_role='admin' AND disabled_at IS NULL"
+        ).fetchone()['n']
         if admins <= 1:
             raise ApiError(409, 'Нельзя снять роль с последнего администратора')
     reason = str(reason or 'Admin role assignment').strip()[:500]
@@ -1378,6 +1424,13 @@ def record_character_changes(conn, character_id, actor_user_id, before, after,
              json.dumps(old_value, ensure_ascii=False), json.dumps(new_value, ensure_ascii=False),
              str(reason or '')[:500], time.time()))
         recorded.add(category)
+
+
+def record_account_security(conn, user_id, actor_user_id, event_type, detail=''):
+    conn.execute(
+        'INSERT INTO account_security_audit(user_id,actor_user_id,event_type,detail,created) '
+        'VALUES(?,?,?,?,?)',
+        (user_id, actor_user_id, str(event_type)[:80], str(detail or '')[:500], time.time()))
 
 
 def add_notification(conn, user_id, event_type, title, body='', link=None):
@@ -1543,6 +1596,13 @@ def create_invite_code():
     return f'NCNET-{raw[:4]}-{raw[4:8]}-{raw[8:12]}-{raw[12:16]}'
 
 
+def validate_new_password(password):
+    if len(password) < 8:
+        raise ApiError(400, 'Пароль: минимум 8 символов')
+    if len(password) > 256:
+        raise ApiError(400, 'Пароль слишком длинный')
+
+
 def hash_password(pw):
     salt = secrets.token_hex(16)
     dk = hashlib.pbkdf2_hmac('sha256', pw.encode(), salt.encode(), PBKDF_ITERS)
@@ -1567,11 +1627,14 @@ def session_cookie(token, max_age=SESSION_TTL):
     return '; '.join(parts)
 
 
-def create_session(conn, user_id):
+def create_session(conn, user_id, ip_address='', user_agent=''):
     token = secrets.token_hex(32)
     now = time.time()
-    conn.execute('INSERT INTO sessions(token, user_id, created, expires) VALUES(?,?,?,?)',
-                 (token, user_id, now, now + SESSION_TTL))
+    conn.execute(
+        'INSERT INTO sessions(token,user_id,created,expires,last_seen,ip_address,user_agent) '
+        'VALUES(?,?,?,?,?,?,?)',
+        (token, user_id, now, now + SESSION_TTL, now,
+         str(ip_address or '')[:64], str(user_agent or '')[:300]))
     conn.execute('DELETE FROM sessions WHERE expires < ?', (now,))
     conn.commit()
     return token
@@ -2559,6 +2622,13 @@ SERVER_ERROR_EN = {
     'Пароль слишком длинный': 'Password is too long',
     'Приглашение не найдено': 'Invite not found',
     'Приглашение недействительно или уже использовано': 'Invite is invalid or has already been used',
+    'Аккаунт отключён администратором': 'Account has been disabled by an administrator',
+    'Сессия входа не найдена': 'Login session not found',
+    'Текущую сессию завершайте обычным выходом': 'Use regular sign out for the current session',
+    'Текущий пароль указан неверно': 'Current password is incorrect',
+    'Новый пароль должен отличаться от текущего': 'New password must differ from the current password',
+    'Нельзя отключить собственный аккаунт': 'You cannot disable your own account',
+    'Нельзя отключить последнего активного администратора': 'The last active administrator cannot be disabled',
     'Слишком много запросов; попробуйте позже': 'Too many requests; try again later',
     'Недопустимый источник запроса': 'Invalid request origin',
 }
@@ -2639,8 +2709,22 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write('%s - %s\n' % (self.address_string(), fmt % args))
 
+    def client_ip(self):
+        candidate = getattr(self, 'client_address', ('local',))[0]
+        if os.environ.get('CBPR_TRUST_PROXY', '').lower() in ('1', 'true', 'yes'):
+            headers = getattr(self, 'headers', {})
+            forwarded = [part.strip() for part in
+                         str(headers.get('X-Forwarded-For') or '').split(',') if part.strip()]
+            candidate = (headers.get('X-NCNET-Client-IP') or
+                         headers.get('CF-Connecting-IP') or
+                         (forwarded[-1] if forwarded else '') or candidate)
+        try:
+            return ipaddress.ip_address(str(candidate)).compressed
+        except ValueError:
+            return 'local'
+
     def rate_limit(self, scope, limit, window, user_id=None):
-        identity = str(user_id) if user_id is not None else getattr(self, 'client_address', ('local',))[0]
+        identity = str(user_id) if user_id is not None else self.client_ip()
         enforce_rate_limit(f'{scope}:{identity}', limit, window)
 
     def send_json(self, obj, status=200, cookies=None):
@@ -2682,9 +2766,17 @@ class Handler(BaseHTTPRequestHandler):
         tok = self.cookies().get('sid')
         if not tok:
             return None
+        now = time.time()
         row = conn.execute(
-            'SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id '
-            'WHERE s.token=? AND s.expires > ?', (tok, time.time())).fetchone()
+            'SELECT u.*,s.rowid _session_id,s.last_seen _session_last_seen '
+            'FROM sessions s JOIN users u ON u.id=s.user_id '
+            'WHERE s.token=? AND s.expires>? AND u.disabled_at IS NULL',
+            (tok, now)).fetchone()
+        if row and (_row_value(row, '_session_last_seen') is None or
+                    _row_value(row, '_session_last_seen', 0) < now - 300):
+            conn.execute('UPDATE sessions SET last_seen=? WHERE rowid=?',
+                         (now, row['_session_id']))
+            conn.commit()
         return dict(row) if row else None
 
     def require_user(self, conn):
@@ -2804,10 +2896,7 @@ class Handler(BaseHTTPRequestHandler):
         display = str(body.get('display_name') or '').strip()[:60] or username
         if not re.fullmatch(r'[a-z0-9_.\-]{3,24}', username):
             raise ApiError(400, 'Логин: 3–24 символа, латиница/цифры/._-')
-        if len(password) < 8:
-            raise ApiError(400, 'Пароль: минимум 8 символов')
-        if len(password) > 256:
-            raise ApiError(400, 'Пароль слишком длинный')
+        validate_new_password(password)
         invite = None
         try:
             conn.execute('BEGIN IMMEDIATE')
@@ -2834,7 +2923,9 @@ class Handler(BaseHTTPRequestHandler):
         except sqlite3.IntegrityError:
             conn.rollback()
             raise ApiError(409, 'Такой логин уже занят')
-        token = create_session(conn, cur.lastrowid)
+        token = create_session(
+            conn, cur.lastrowid, self.client_ip(),
+            getattr(self, 'headers', {}).get('User-Agent', ''))
         u = conn.execute('SELECT * FROM users WHERE id=?', (cur.lastrowid,)).fetchone()
         self.send_json(self.me_payload(u), cookies=[session_cookie(token)])
 
@@ -2845,15 +2936,77 @@ class Handler(BaseHTTPRequestHandler):
         u = conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
         if not u or not verify_password(password, u['pass_hash']):
             raise ApiError(401, 'Неверный логин или пароль')
-        token = create_session(conn, u['id'])
-        self.send_json(self.me_payload(u), cookies=[
-            session_cookie(token)])
+        if _row_value(u, 'disabled_at'):
+            raise ApiError(403, 'Аккаунт отключён администратором')
+        token = create_session(
+            conn, u['id'], self.client_ip(),
+            getattr(self, 'headers', {}).get('User-Agent', ''))
+        self.send_json(self.me_payload(u), cookies=[session_cookie(token)])
 
     def api_logout(self, conn, qs, m, body):
         tok = self.cookies().get('sid')
         if tok:
             conn.execute('DELETE FROM sessions WHERE token=?', (tok,))
             conn.commit()
+        self.send_json({'ok': True}, cookies=[session_cookie('', 0)])
+
+    def api_account_sessions(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        token = self.cookies().get('sid')
+        rows = conn.execute(
+            'SELECT rowid session_id,token,created,expires,last_seen,ip_address,user_agent '
+            'FROM sessions WHERE user_id=? AND expires>? ORDER BY last_seen DESC,created DESC',
+            (user['id'], time.time())).fetchall()
+        self.send_json({'sessions': [{
+            'id': row['session_id'], 'created': row['created'], 'expires': row['expires'],
+            'last_seen': row['last_seen'] or row['created'],
+            'ip_address': row['ip_address'] or '',
+            'user_agent': row['user_agent'] or '',
+            'current': hmac.compare_digest(row['token'], token or ''),
+        } for row in rows]})
+
+    def api_account_session_revoke(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session_id = int(m.group(1))
+        row = conn.execute(
+            'SELECT rowid session_id,* FROM sessions WHERE rowid=? AND user_id=?',
+            (session_id, user['id'])).fetchone()
+        if not row:
+            raise ApiError(404, 'Сессия входа не найдена')
+        if hmac.compare_digest(row['token'], self.cookies().get('sid') or ''):
+            raise ApiError(409, 'Текущую сессию завершайте обычным выходом')
+        conn.execute('DELETE FROM sessions WHERE rowid=? AND user_id=?',
+                     (session_id, user['id']))
+        record_account_security(conn, user['id'], user['id'], 'session_revoked',
+                                f'session:{session_id}')
+        conn.commit()
+        self.send_json({'ok': True})
+
+    def api_account_password(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        current_password = str((body or {}).get('current_password') or '')
+        new_password = str((body or {}).get('new_password') or '')
+        if not verify_password(current_password, user['pass_hash']):
+            raise ApiError(403, 'Текущий пароль указан неверно')
+        validate_new_password(new_password)
+        if verify_password(new_password, user['pass_hash']):
+            raise ApiError(400, 'Новый пароль должен отличаться от текущего')
+        token = self.cookies().get('sid') or ''
+        conn.execute('UPDATE users SET pass_hash=? WHERE id=?',
+                     (hash_password(new_password), user['id']))
+        conn.execute('DELETE FROM sessions WHERE user_id=? AND token!=?',
+                     (user['id'], token))
+        record_account_security(conn, user['id'], user['id'], 'password_changed',
+                                'Other sessions revoked')
+        conn.commit()
+        self.send_json({'ok': True})
+
+    def api_account_logout_all(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        record_account_security(conn, user['id'], user['id'], 'logout_all',
+                                'All sessions revoked')
+        conn.execute('DELETE FROM sessions WHERE user_id=?', (user['id'],))
+        conn.commit()
         self.send_json({'ok': True}, cookies=[session_cookie('', 0)])
 
     def me_payload(self, u):
@@ -2873,6 +3026,8 @@ class Handler(BaseHTTPRequestHandler):
             'show_display_name': bool(_row_value(u, 'show_display_name', 0)),
             'avatar_media_id': _row_value(u, 'avatar_media_id'),
             'vk_linked': bool(_row_value(u, 'vk_user_id')),
+            'disabled': bool(_row_value(u, 'disabled_at')),
+            'disabled_reason': _row_value(u, 'disabled_reason'),
             'notification_prefs': notification_prefs,
             'theme': theme,
         }
@@ -2934,6 +3089,12 @@ class Handler(BaseHTTPRequestHandler):
             'LEFT JOIN users actor ON actor.id=a.actor_user_id '
             'ORDER BY a.created DESC, a.id DESC LIMIT 50'
         ).fetchall()
+        security_rows = conn.execute(
+            'SELECT a.*,target.username target_username,actor.username actor_username '
+            'FROM account_security_audit a JOIN users target ON target.id=a.user_id '
+            'LEFT JOIN users actor ON actor.id=a.actor_user_id '
+            'ORDER BY a.created DESC,a.id DESC LIMIT 50'
+        ).fetchall()
         self.send_json({
             'users': [{
                 'id': row['id'], 'username': row['username'],
@@ -2941,6 +3102,9 @@ class Handler(BaseHTTPRequestHandler):
                 'account_role': user_account_role(row),
                 'show_display_name': bool(_row_value(row, 'show_display_name', 0)),
                 'vk_linked': bool(_row_value(row, 'vk_user_id')),
+                'disabled': bool(_row_value(row, 'disabled_at')),
+                'disabled_reason': _row_value(row, 'disabled_reason'),
+                'disabled_at': _row_value(row, 'disabled_at'),
                 'character_count': row['character_count'],
                 'created': row['created'],
             } for row in rows],
@@ -2950,6 +3114,12 @@ class Handler(BaseHTTPRequestHandler):
                 'role_before': row['role_before'], 'role_after': row['role_after'],
                 'reason': row['reason'], 'created': row['created'],
             } for row in audit_rows],
+            'security_audit': [{
+                'id': row['id'], 'target_username': row['target_username'],
+                'actor_username': row['actor_username'] or 'system',
+                'event_type': row['event_type'], 'detail': row['detail'],
+                'created': row['created'],
+            } for row in security_rows],
         })
 
     def api_admin_user_role(self, conn, qs, m, body):
@@ -2959,6 +3129,44 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(400, 'Укажите причину изменения доступа')
         updated = assign_account_role(
             conn, actor, int(m.group(1)), (body or {}).get('account_role'), reason)
+        self.send_json(self.me_payload(updated))
+
+    def api_admin_user_status(self, conn, qs, m, body):
+        actor = self.require_admin(conn)
+        target = conn.execute('SELECT * FROM users WHERE id=?',
+                              (int(m.group(1)),)).fetchone()
+        if not target:
+            raise ApiError(404, 'Пользователь не найден')
+        disabled = bool((body or {}).get('disabled'))
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if not reason:
+            raise ApiError(400, 'Укажите причину изменения доступа')
+        if disabled and target['id'] == actor['id']:
+            raise ApiError(409, 'Нельзя отключить собственный аккаунт')
+        if disabled and user_is_admin(target):
+            active_admins = conn.execute(
+                "SELECT COUNT(*) n FROM users WHERE account_role='admin' AND disabled_at IS NULL"
+            ).fetchone()['n']
+            if active_admins <= 1:
+                raise ApiError(409, 'Нельзя отключить последнего активного администратора')
+        currently_disabled = bool(_row_value(target, 'disabled_at'))
+        if disabled == currently_disabled:
+            self.send_json(self.me_payload(target))
+            return
+        if disabled:
+            conn.execute(
+                'UPDATE users SET disabled_at=?,disabled_reason=?,disabled_by=? WHERE id=?',
+                (time.time(), reason, actor['id'], target['id']))
+            conn.execute('DELETE FROM sessions WHERE user_id=?', (target['id'],))
+            event_type = 'account_disabled'
+        else:
+            conn.execute(
+                'UPDATE users SET disabled_at=NULL,disabled_reason=NULL,disabled_by=NULL WHERE id=?',
+                (target['id'],))
+            event_type = 'account_enabled'
+        record_account_security(conn, target['id'], actor['id'], event_type, reason)
+        conn.commit()
+        updated = conn.execute('SELECT * FROM users WHERE id=?', (target['id'],)).fetchone()
         self.send_json(self.me_payload(updated))
 
     def invite_payload(self, row):
@@ -5304,9 +5512,14 @@ ROUTES = [
     ('POST', rx(r'/api/logout'), Handler.api_logout),
     ('GET', rx(r'/api/me'), Handler.api_me),
     ('POST', rx(r'/api/profile'), Handler.api_profile),
+    ('GET', rx(r'/api/account/sessions'), Handler.api_account_sessions),
+    ('DELETE', rx(r'/api/account/sessions/(\d+)'), Handler.api_account_session_revoke),
+    ('POST', rx(r'/api/account/password'), Handler.api_account_password),
+    ('POST', rx(r'/api/account/logout-all'), Handler.api_account_logout_all),
     ('GET', rx(r'/api/gm/users'), Handler.api_gm_users),
     ('GET', rx(r'/api/admin/users'), Handler.api_admin_users),
     ('POST', rx(r'/api/admin/users/(\d+)/role'), Handler.api_admin_user_role),
+    ('POST', rx(r'/api/admin/users/(\d+)/status'), Handler.api_admin_user_status),
     ('GET', rx(r'/api/admin/invites'), Handler.api_admin_invites),
     ('POST', rx(r'/api/admin/invites'), Handler.api_admin_invite_create),
     ('DELETE', rx(r'/api/admin/invites/(\d+)'), Handler.api_admin_invite_revoke),

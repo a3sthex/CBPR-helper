@@ -324,6 +324,88 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
                       re.match(r'^([a-f0-9]{32})$', media_id))
         self.assertEqual(private_portrait.exception.status, 403)
 
+    def test_password_change_and_session_revocation(self):
+        password_hash = server.hash_password('oldpassword')
+        self.conn.execute('UPDATE users SET pass_hash=? WHERE id=2', (password_hash,))
+        self.conn.commit()
+        self.current = self.user('runner')
+        current_token = server.create_session(self.conn, 2, '192.168.1.10', 'Current Browser')
+        other_token = server.create_session(self.conn, 2, '192.168.1.11', 'Other Browser')
+        self.handler.cookies = lambda: {'sid': current_token}
+
+        sessions = self.call(server.Handler.api_account_sessions)['sessions']
+        self.assertEqual(len(sessions), 2)
+        self.assertEqual(sum(1 for item in sessions if item['current']), 1)
+        other = next(item for item in sessions if not item['current'])
+        self.assertEqual(other['ip_address'], '192.168.1.11')
+
+        with self.assertRaises(server.ApiError) as wrong_password:
+            self.call(server.Handler.api_account_password, body={
+                'current_password': 'wrong', 'new_password': 'newpassword',
+            })
+        self.assertEqual(wrong_password.exception.status, 403)
+        changed = self.call(server.Handler.api_account_password, body={
+            'current_password': 'oldpassword', 'new_password': 'newpassword',
+        })
+        self.assertTrue(changed['ok'])
+        remaining = self.conn.execute('SELECT token FROM sessions WHERE user_id=2').fetchall()
+        self.assertEqual([row['token'] for row in remaining], [current_token])
+        updated_user = self.user('runner')
+        self.assertTrue(server.verify_password('newpassword', updated_user['pass_hash']))
+        self.assertFalse(server.verify_password('oldpassword', updated_user['pass_hash']))
+
+        third_token = server.create_session(self.conn, 2, '192.168.1.12', 'Third Browser')
+        sessions = self.call(server.Handler.api_account_sessions)['sessions']
+        third = next(item for item in sessions if item['ip_address'] == '192.168.1.12')
+        self.call(server.Handler.api_account_session_revoke, self.match(third['id']))
+        self.assertFalse(self.conn.execute('SELECT 1 FROM sessions WHERE token=?',
+                                           (third_token,)).fetchone())
+        with self.assertRaises(server.ApiError) as current_revoke:
+            current_id = next(item['id'] for item in sessions if item['current'])
+            self.call(server.Handler.api_account_session_revoke, self.match(current_id))
+        self.assertEqual(current_revoke.exception.status, 409)
+
+        logged_out = self.call(server.Handler.api_account_logout_all)
+        self.assertTrue(logged_out['ok'])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) n FROM sessions WHERE user_id=2').fetchone()['n'], 0)
+        audit_types = {row['event_type'] for row in self.conn.execute(
+            'SELECT event_type FROM account_security_audit WHERE user_id=2')}
+        self.assertTrue({'password_changed', 'session_revoked', 'logout_all'} <= audit_types)
+
+    def test_admin_disables_account_revokes_sessions_and_can_restore(self):
+        self.conn.execute("UPDATE users SET account_role='admin',is_gm=1 WHERE username='gm'")
+        self.conn.execute('UPDATE users SET pass_hash=? WHERE id=2',
+                          (server.hash_password('runnerpass'),))
+        self.conn.commit()
+        server.create_session(self.conn, 2, '192.168.1.10', 'Runner Browser')
+        self.current = self.user('gm')
+        disabled = self.call(server.Handler.api_admin_user_status, self.match(2), {
+            'disabled': True, 'reason': 'Campaign access suspended',
+        })
+        self.assertTrue(disabled['disabled'])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) n FROM sessions WHERE user_id=2').fetchone()['n'], 0)
+        with self.assertRaises(server.ApiError) as login_denied:
+            self.call(server.Handler.api_login, body={
+                'username': 'runner', 'password': 'runnerpass',
+            })
+        self.assertEqual(login_denied.exception.status, 403)
+        with self.assertRaises(server.ApiError) as self_disable:
+            self.call(server.Handler.api_admin_user_status, self.match(1), {
+                'disabled': True, 'reason': 'Mistake',
+            })
+        self.assertEqual(self_disable.exception.status, 409)
+        enabled = self.call(server.Handler.api_admin_user_status, self.match(2), {
+            'disabled': False, 'reason': 'Access restored',
+        })
+        self.assertFalse(enabled['disabled'])
+        logged_in = self.call(server.Handler.api_login, body={
+            'username': 'runner', 'password': 'runnerpass',
+        })
+        self.assertEqual(logged_in['username'], 'runner')
+        events = [row['event_type'] for row in self.conn.execute(
+            'SELECT event_type FROM account_security_audit WHERE user_id=2 ORDER BY id')]
+        self.assertEqual(events, ['account_disabled', 'account_enabled'])
+
     def test_production_install_is_loopback_https_only_and_login_route_is_unique(self):
         installer = (ROOT / 'deploy/install.sh').read_text(encoding='utf-8')
         nginx = (ROOT / 'deploy/nginx-cbpr.conf').read_text(encoding='utf-8')

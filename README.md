@@ -39,6 +39,8 @@ python3 app/server.py --host 0.0.0.0  # только для изолирован
 - регистрация по умолчанию требует invite-код, созданный в Admin Console;
 - `CBPR_REGISTRATION_MODE=invite|open|closed` управляет режимом регистрации (`invite` по умолчанию);
 - invite-коды хранятся только как SHA-256 hash, а исходный код показывается Admin один раз;
+- в Profile можно сменить пароль, просмотреть активные сеансы, завершить отдельный сеанс или выйти везде;
+- Admin может отключить аккаунт с обязательной причиной; все его сеансы сразу отзываются, действие попадает в Security Audit;
 - **GM** и **Admin** назначаются только через Admin Console;
 - перед первой выдачей прав существующий аккаунт явно указывается в `CBPR_ADMIN_USERS` и сервер перезапускается;
 - альтернативный путь БД для smoke/tests задаётся через `CBPR_DB_PATH`.
@@ -63,9 +65,10 @@ VK_CLIENT_SECRET=...
 VK_REDIRECT_URI=https://example.com/api/vk/oauth/callback
 NCNET_PUBLIC_URL=https://example.com
 CBPR_SECURE_COOKIES=1           # install.sh включает автоматически
+CBPR_TRUST_PROXY=1              # только за доверенным nginx/Cloudflare proxy
 ```
 
-Секреты не сохраняются в SQLite, frontend или Git. Без этих переменных NC//NET работает полностью, а VK outbox остаётся в состоянии pending.
+Секреты не сохраняются в SQLite, frontend или Git. Без VK-переменных NC//NET работает полностью, а VK outbox остаётся в состоянии pending. `CBPR_TRUST_PROXY=1` разрешает использовать `CF-Connecting-IP`/`X-Forwarded-For` для rate limits и session history; включайте его только когда backend слушает loopback и запросы приходят через ваш доверенный reverse proxy. В LAN-режиме с прямым доступом к Python-серверу оставляйте значение выключенным.
 
 Проверка правил и каталога:
 

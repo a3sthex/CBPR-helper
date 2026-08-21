@@ -55,7 +55,14 @@ class AccessRoleMigrationTests(unittest.TestCase):
             self.assertEqual(len(list(Path(directory).glob('campaign.db.backup-*'))), 1)
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(users)')}
             self.assertTrue({'account_role', 'show_display_name', 'vk_user_id',
-                             'notification_prefs', 'theme_json', 'avatar_media_id'} <= columns)
+                             'notification_prefs', 'theme_json', 'avatar_media_id',
+                             'disabled_at', 'disabled_reason', 'disabled_by'} <= columns)
+            session_columns = {row['name'] for row in conn.execute(
+                'PRAGMA table_info(sessions)')}
+            self.assertTrue({'last_seen', 'ip_address', 'user_agent'} <= session_columns)
+            self.assertTrue(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_security_audit'"
+            ).fetchone())
             combatant_columns = {row['name'] for row in conn.execute(
                 'PRAGMA table_info(session_combatants)')}
             self.assertTrue({'sp_head_max', 'sp_body_max', 'shield_max', 'ammo_max',
@@ -204,6 +211,14 @@ class AccessRoleMigrationTests(unittest.TestCase):
         with self.assertRaises(server.ApiError) as denied:
             server.Handler.verify_request_origin(handler)
         self.assertEqual(denied.exception.status, 403)
+        handler.client_address = ('127.0.0.1', 12345)
+        handler.headers = {'X-NCNET-Client-IP': '203.0.113.42',
+                           'CF-Connecting-IP': '198.51.100.99',
+                           'X-Forwarded-For': '198.51.100.7'}
+        with mock.patch.dict(os.environ, {'CBPR_TRUST_PROXY': '1'}, clear=False):
+            self.assertEqual(server.Handler.client_ip(handler), '203.0.113.42')
+        with mock.patch.dict(os.environ, {'CBPR_TRUST_PROXY': '0'}, clear=False):
+            self.assertEqual(server.Handler.client_ip(handler), '127.0.0.1')
 
     def test_frontend_has_no_self_assign_gm_controls(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
@@ -231,6 +246,9 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertIn('crop-output-width', source)
         self.assertIn('id="rg-invite"', source)
         self.assertIn("api('/api/admin/invites'", source)
+        self.assertIn("api('/api/account/sessions'", source)
+        self.assertIn("api('/api/account/password'", source)
+        self.assertIn('data-admin-status', source)
         self.assertIn('data-dossier-visibility', source)
         self.assertIn('12_000_000', source)
         network = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')
