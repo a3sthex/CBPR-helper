@@ -658,15 +658,16 @@ async function loadSellTab(box) {
     const ch = chars2.find(c => c.id === (marketState.sellChar || chars2[0].id)) || chars2[0];
     marketState.sellChar = ch.id;
     const inv = (ch.data.inventory || []);
-    $('#sell-list').innerHTML = inv.length ? inv.map(i => `
+    $('#sell-list').innerHTML = inv.length ? inv.map(i => {const locked=['equipped','installed'].includes(i.state);return `
       <div class="inv-row">
-        <span class="iname">${esc(i.name)} ×${i.qty || 1}</span>
-        <span class="muted small">куплено за ${money(i.price)}</span>
-        <button class="btn-sm" data-sell="${esc(i.key)}">Продать 1 → ${money((i.price || 0) * 0.5)}</button>
-      </div>`).join('') : '<div class="empty">Инвентарь пуст.</div>';
-    $$('[data-sell]', $('#sell-list')).forEach(b => b.onclick = async () => {
+        <span class="iname">${esc(i.custom_name||i.name)} ×${i.qty || 1}</span>
+        <span class="chip">${esc(i.state||'carried')}</span>
+        <span class="muted small">${T('bought for','куплено за')} ${money(i.price)}</span>
+        <button class="btn-sm" data-sell-instance="${esc(i.instance_id||'')}" data-sell-key="${esc(i.key)}" ${locked?'disabled':''}>${locked?T('Unequip first','Сначала снять'):T('Sell 1','Продать 1')+' → '+money((i.price||0)*0.5)}</button>
+      </div>`;}).join('') : `<div class="empty">${T('Inventory is empty.','Инвентарь пуст.')}</div>`;
+    $$('[data-sell-instance]', $('#sell-list')).forEach(b => b.onclick = async () => {
       try {
-        const r = await api('/api/sell', { method: 'POST', body: { char_id: ch.id, key: b.dataset.sell, qty: 1 } });
+        const r = await api('/api/sell', { method: 'POST', body: { char_id: ch.id, instance_id: b.dataset.sellInstance, key: b.dataset.sellKey, qty: 1 } });
         toast(`Продано ${r.name} ×${r.qty} за ${money(r.got)}. Кэш: ${money(r.cash)}`);
         loadSellTab(box);
       } catch (e) { toast(e.message, true); }
@@ -2532,7 +2533,7 @@ async function openImprovementModal(characterPayload){
 
 function combatSheetHtml(ch, derived, mine) {
   const weapons=(ch.inventory||[]).filter(item=>['guns','melee'].includes(item.cat)),states=ch.weapon_state||{};
-  const weaponRows=weapons.map(item=>{const key=String(item.key||item.source_key||item.name),state=states[key]||{},skill=item.mechanics?.skill||'',meta=stateMetaSkill(skill),stat=meta&&meta[2],statValue=stat==='EMP'?(derived.emp_cur??ch.stats.EMP):(ch.stats||{})[stat],base=(num(statValue)||0)+(num((ch.skills||{})[skill])||0),damage=item.mechanics?.damage;return `<article class="weapon-sheet-card"><div><h3>${esc(item.name)}</h3><div class="mechanic-chips">${itemMechanicChips(item)}${skill?`<span class="chip">${esc(skill)} BASE ${base}</span>`:''}</div></div><div class="weapon-controls">${state.magazine_max?`<b>Mag ${state.magazine}/${state.magazine_max}</b><span>Reserve ${state.reserve||0}</span>${mine?`<button data-weapon-action="${esc(key)}|fire">Fire</button><button data-weapon-action="${esc(key)}|reload">Reload</button>`:''}`:''}${mine&&skill?`<button data-attack-roll="${esc(item.name)}|${base}">Attack 🎲</button>`:''}${damage?`<button data-damage-roll="${esc(item.name)}|${damage.dice}|${damage.sides}|${damage.multiplier||1}">Damage 🎲</button>`:''}</div></article>`;}).join('');
+  const weaponRows=weapons.map(item=>{const key=String(item.instance_id||item.key||item.source_key||item.name),state=states[key]||{},skill=item.mechanics?.skill||'',meta=stateMetaSkill(skill),stat=meta&&meta[2],statValue=stat==='EMP'?(derived.emp_cur??ch.stats.EMP):(ch.stats||{})[stat],base=(num(statValue)||0)+(num((ch.skills||{})[skill])||0),damage=item.mechanics?.damage;return `<article class="weapon-sheet-card"><div><h3>${esc(item.custom_name||item.name)}</h3><div class="mechanic-chips">${itemMechanicChips(item)}${skill?`<span class="chip">${esc(skill)} BASE ${base}</span>`:''}</div></div><div class="weapon-controls">${state.magazine_max?`<b>Mag ${state.magazine}/${state.magazine_max}</b><span>Reserve ${state.reserve||0}</span>${mine?`<button data-weapon-action="${esc(key)}|fire">Fire</button><button data-weapon-action="${esc(key)}|reload">Reload</button>`:''}`:''}${mine&&skill?`<button data-attack-roll="${esc(item.custom_name||item.name)}|${base}">Attack 🎲</button>`:''}${damage?`<button data-damage-roll="${esc(item.custom_name||item.name)}|${damage.dice}|${damage.sides}|${damage.multiplier||1}">Damage 🎲</button>`:''}</div></article>`;}).join('');
   const armor=['head','body','shield'].map(location=>{const piece=(ch.armor||{})[location];if(!piece)return '';return `<div class="armor-resource"><b>${location[0].toUpperCase()+location.slice(1)} · ${esc(piece.name)}</b><span>${piece.current??piece.sp??piece.sdp} / ${piece.maximum??piece.sp??piece.sdp} ${location==='shield'?'SDP':'SP'}</span>${mine?`<div><button data-armor-action="${location}|-1">Ablate</button><button data-armor-action="${location}|1">Repair 1</button><button data-armor-action="${location}|reset">Reset</button></div>`:''}</div>`;}).join('');
   return `<div class="combat-sheet-grid"><section><h2>Weapons</h2>${weaponRows||'<div class="empty">No weapons.</div>'}</section><section><h2>Armor</h2>${armor||'<div class="empty">No equipped armor.</div>'}</section></div>`;
 }
@@ -2616,8 +2617,8 @@ async function viewSheet(id) {
       <div class="panel mb" id="sheet-gear">
         <h2>🎒 Inventory (${inv.length})</h2>
         ${inv.length ? groupedItemsHtml(inv.map((item, index) => ({ ...item, _sheetIndex: index })), i => `
-          <div class="inv-row"><span class="iname">${esc(i.display_name || i.name)} ×${i.qty || 1}</span>
-            ${itemMechanicChips(i)}
+          <div class="inv-row"><span class="iname">${esc(i.custom_name || i.display_name || i.name)} ×${i.qty || 1}</span>
+            ${itemMechanicChips(i)}<span class="chip">${esc(i.state||'carried')}</span>
             ${i.sp != null && !(i.mechanics || {}).sp ? `<span class="chip">SP ${i.sp}</span>` : ''}
             <span class="muted small">${money((i.price || 0) * (i.qty || 1))}</span><button class="info-btn" data-owned-item="${i._sheetIndex}">i</button>
           </div>`, T('Gear','Снаряжение')) : `<div class="muted small">${T('Empty.','Пусто. Совсем.')}</div>`}

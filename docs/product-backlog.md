@@ -2643,9 +2643,19 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 ### Пакет B — Character Ownership
 
+**Статус B.1 — реализован фундамент stable item instances:**
+
+- добавлена additive migration `item_instances`, не требующая сброса БД;
+- старые durable stacks безопасно разделяются на отдельные экземпляры, ammunition остаётся stack;
+- Inventory, Cyberware, equipped Armor и Weapon State получают стабильные `instance_id`;
+- новые покупки durable gear создают отдельный экземпляр на каждую единицу;
+- продажа адресуется к конкретному экземпляру, а не удаляет все предметы с одинаковым catalog key;
+- добавлен owner/GM API списка экземпляров; чужие приватные экземпляры сервер не выдаёт;
+- JSON внутри Dossier временно остаётся compatibility projection для поэтапного перехода UI и правил.
+
 1. Вернуть безопасное свободное редактирование.
 2. Расширить ledger до понятных diff events и revert.
-3. Мигрировать stack inventory к стабильным item instances.
+3. ✅ Мигрировать stack inventory к стабильным item instances.
 4. Добавить custom/found items.
 5. Consumable/use/equip/install.
 6. Structured Effects & Modifiers schema/evaluator.

@@ -109,7 +109,7 @@ class MediaAndProgressionTests(unittest.TestCase):
         self.assertEqual(data['luck_cur'], 6)
         self.assertEqual(data['active_role'], 'Solo')
         self.assertEqual(data['roles'][0]['rank'], 4)
-        self.assertEqual(data['schema_version'], 4)
+        self.assertEqual(data['schema_version'], 5)
 
 
 class LocalizationTests(unittest.TestCase):

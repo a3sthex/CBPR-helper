@@ -526,6 +526,95 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertEqual(stored['cash'], 100)
         self.assertEqual(stored['inventory'], [])
 
+    def test_legacy_stacks_migrate_to_stable_item_instances_idempotently(self):
+        legacy = copy.deepcopy(self.character_data)
+        legacy['inventory'] = [
+            {'key': 'guns-0', 'cat': 'guns', 'name': 'Medium Pistol', 'qty': 2,
+             'price': 50, 'mechanics': {'magazine': 12}},
+            {'key': 'ammo-0', 'cat': 'ammo', 'name': 'Basic Ammunition', 'qty': 3,
+             'price': 10},
+        ]
+        legacy['cyberware'] = [
+            {'key': 'cyberware-0', 'cat': 'cyberware', 'name': 'Cyberaudio Suite',
+             'qty': 1, 'price': 500},
+        ]
+        legacy['weapon_state'] = {
+            'guns-0': {'magazine': 7, 'magazine_max': 12, 'reserve': 20},
+        }
+        self.conn.execute('UPDATE characters SET data=? WHERE id=1', (json.dumps(legacy),))
+        self.conn.execute('DELETE FROM schema_migrations WHERE version=?',
+                          (server.MIGRATION_ITEM_INSTANCES,))
+        self.conn.execute('DROP TABLE item_instances')
+        self.conn.commit()
+
+        server.apply_schema_migrations(self.conn, make_backup=False)
+        stored = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])
+        pistols = [item for item in stored['inventory'] if item['key'] == 'guns-0']
+        ammunition = [item for item in stored['inventory'] if item['key'] == 'ammo-0']
+        self.assertEqual(len(pistols), 2)
+        self.assertTrue(all(item['qty'] == 1 for item in pistols))
+        self.assertEqual(len({item['instance_id'] for item in pistols}), 2)
+        self.assertEqual(len(ammunition), 1)
+        self.assertEqual(ammunition[0]['qty'], 3)
+        self.assertRegex(ammunition[0]['instance_id'], r'^[a-f0-9]{32}$')
+        self.assertRegex(stored['cyberware'][0]['instance_id'], r'^[a-f0-9]{32}$')
+        self.assertEqual(stored['cyberware'][0]['state'], 'installed')
+        self.assertNotIn('guns-0', stored['weapon_state'])
+        self.assertTrue(all(stored['weapon_state'][item['instance_id']]['magazine'] == 7
+                            for item in pistols))
+        rows_before = self.conn.execute(
+            'SELECT instance_id,bucket,quantity FROM item_instances WHERE character_id=1 '
+            'ORDER BY instance_id').fetchall()
+        self.assertEqual(len(rows_before), 4)
+
+        server.apply_schema_migrations(self.conn, make_backup=False)
+        rows_after = self.conn.execute(
+            'SELECT instance_id,bucket,quantity FROM item_instances WHERE character_id=1 '
+            'ORDER BY instance_id').fetchall()
+        self.assertEqual([tuple(row) for row in rows_after],
+                         [tuple(row) for row in rows_before])
+
+    def test_durable_market_items_are_individual_and_sale_targets_one_instance(self):
+        market_item = next(item for item in server.night_market()['items']
+                           if item['cat'] == 'guns')
+        character = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])
+        character['cash'] = market_item['street_price'] * 2
+        self.conn.execute('UPDATE characters SET data=? WHERE id=1', (json.dumps(character),))
+        self.conn.commit()
+
+        self.call(server.Handler.api_buy, body={
+            'char_id': 1,
+            'items': [{'id': market_item['id'], 'qty': 2, 'mode': 'nm'}],
+        })
+        purchased = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])['inventory']
+        self.assertEqual(len(purchased), 2)
+        self.assertEqual({item['qty'] for item in purchased}, {1})
+        self.assertEqual(len({item['instance_id'] for item in purchased}), 2)
+        first_id, second_id = (item['instance_id'] for item in purchased)
+        db_ids = {row['instance_id'] for row in self.conn.execute(
+            'SELECT instance_id FROM item_instances WHERE character_id=1').fetchall()}
+        self.assertEqual(db_ids, {first_id, second_id})
+
+        self.call(server.Handler.api_sell, body={
+            'char_id': 1, 'instance_id': first_id, 'qty': 1,
+        })
+        remaining = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])['inventory']
+        self.assertEqual([item['instance_id'] for item in remaining], [second_id])
+        self.assertEqual({row['instance_id'] for row in self.conn.execute(
+            'SELECT instance_id FROM item_instances WHERE character_id=1').fetchall()},
+                         {second_id})
+
+        payload = self.call(server.Handler.api_character_items, self.match(1))
+        self.assertEqual([item['instance_id'] for item in payload['instances']], [second_id])
+        self.current = self.user('other')
+        with self.assertRaises(server.ApiError) as denied:
+            self.call(server.Handler.api_character_items, self.match(1))
+        self.assertEqual(denied.exception.status, 403)
+
     def test_admin_creates_lists_and_verifies_campaign_backup(self):
         with self.assertRaises(server.ApiError) as player_denied:
             self.call(server.Handler.api_admin_backups)

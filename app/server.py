@@ -810,6 +810,31 @@ CREATE INDEX IF NOT EXISTS idx_session_combatants ON session_combatants(session_
 CREATE INDEX IF NOT EXISTS idx_session_activity ON session_activity(session_id,created);
 """
 
+ITEM_INSTANCE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS item_instances(
+  instance_id TEXT PRIMARY KEY,
+  character_id INTEGER NOT NULL,
+  catalog_item_id TEXT,
+  bucket TEXT NOT NULL DEFAULT 'inventory',
+  custom_name TEXT,
+  state TEXT NOT NULL DEFAULT 'carried',
+  quantity INTEGER NOT NULL DEFAULT 1,
+  condition_current INTEGER,
+  condition_max INTEGER,
+  notes TEXT NOT NULL DEFAULT '',
+  acquired_at REAL NOT NULL,
+  source_type TEXT NOT NULL DEFAULT 'legacy_migration',
+  source_ref TEXT,
+  data_json TEXT NOT NULL DEFAULT '{}',
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_item_instances_character
+  ON item_instances(character_id,bucket,state,acquired_at);
+CREATE INDEX IF NOT EXISTS idx_item_instances_catalog
+  ON item_instances(catalog_item_id,character_id);
+"""
+
 NOTIFICATION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS notifications(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -850,6 +875,7 @@ MIGRATION_CITY_FEED = 3
 MIGRATION_OPERATIONS = 4
 MIGRATION_NOTIFICATIONS = 5
 MIGRATION_TACTICAL_PROFILES = 6
+MIGRATION_ITEM_INSTANCES = 7
 DB_BACKUP_LIMIT = 5
 _RATE_LIMIT_BUCKETS = {}
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -945,6 +971,227 @@ def ensure_column(conn, table, name, definition):
         conn.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
 
 
+ITEM_INSTANCE_STATES = {
+    'carried', 'stored', 'equipped', 'installed', 'consumed', 'broken',
+}
+ITEM_INSTANCE_BUCKETS = {'inventory', 'cyberware'}
+INSTANCE_ID_RE = re.compile(r'^[a-f0-9]{32}$')
+
+
+def new_item_instance_id():
+    return secrets.token_hex(16)
+
+
+def catalog_item_id_for_entry(entry):
+    """Resolve a legacy owned-item row to a stable Data Pool identifier."""
+    if not isinstance(entry, dict):
+        return None
+    raw = str(entry.get('catalog_item_id') or entry.get('source_key') or
+              entry.get('key') or '').split('@', 1)[0]
+    return raw if raw and item_by_id(raw) else None
+
+
+def item_entry_stackable(entry):
+    """Use an explicit catalog flag when present; only ammunition stacks by default."""
+    item = item_by_id(catalog_item_id_for_entry(entry)) if isinstance(entry, dict) else None
+    explicit = (item or {}).get('stackable')
+    if isinstance(explicit, bool):
+        return explicit
+    return str((item or entry or {}).get('cat') or '') == 'ammo'
+
+
+def ensure_character_item_instances(data, regenerate=False):
+    """Add stable IDs and split durable legacy stacks without losing quantities.
+
+    The Character JSON remains a compatibility projection while ``item_instances``
+    becomes the relational foundation for modifications, transfers and consumables.
+    """
+    changed = False
+    seen = set()
+    legacy_weapon_state = copy.deepcopy(data.get('weapon_state') or {})
+    legacy_weapon_keys = set()
+    for bucket in ('inventory', 'cyberware'):
+        source = data.get(bucket) if isinstance(data.get(bucket), list) else []
+        normalized = []
+        for raw_entry in source:
+            if not isinstance(raw_entry, dict):
+                normalized.append(raw_entry)
+                continue
+            entry = dict(raw_entry)
+            try:
+                quantity = max(1, int(entry.get('qty') or entry.get('quantity') or 1))
+            except (TypeError, ValueError):
+                quantity = 1
+            stackable = bucket == 'inventory' and item_entry_stackable(entry)
+            copies = 1 if stackable else quantity
+            per_copy_quantity = quantity if stackable else 1
+            if copies != 1 or quantity != per_copy_quantity:
+                changed = True
+            for index in range(copies):
+                owned = dict(entry)
+                candidate = str(entry.get('instance_id') or '').lower() if index == 0 else ''
+                if regenerate or not INSTANCE_ID_RE.fullmatch(candidate) or candidate in seen:
+                    candidate = new_item_instance_id()
+                    changed = True
+                seen.add(candidate)
+                if owned.get('instance_id') != candidate or owned.get('qty') != per_copy_quantity:
+                    changed = True
+                owned['instance_id'] = candidate
+                owned['qty'] = per_copy_quantity
+                owned.pop('quantity', None)
+                state = str(owned.get('state') or
+                            ('installed' if bucket == 'cyberware' else 'carried'))
+                if state not in ITEM_INSTANCE_STATES:
+                    state = 'installed' if bucket == 'cyberware' else 'carried'
+                    changed = True
+                owned['state'] = state
+                catalog_id = catalog_item_id_for_entry(owned)
+                if catalog_id and owned.get('catalog_item_id') != catalog_id:
+                    owned['catalog_item_id'] = catalog_id
+                    changed = True
+                normalized.append(owned)
+                if bucket == 'inventory' and owned.get('cat') in ('guns', 'melee'):
+                    legacy_key = str(entry.get('key') or entry.get('source_key') or
+                                     entry.get('name') or '')
+                    legacy_weapon_keys.add(legacy_key)
+                    if candidate not in legacy_weapon_state and legacy_key in legacy_weapon_state:
+                        legacy_weapon_state[candidate] = copy.deepcopy(legacy_weapon_state[legacy_key])
+                        changed = True
+        if source != normalized:
+            changed = True
+        data[bucket] = normalized
+
+    # Existing equipped armor pointed at a catalog key. Preserve that projection,
+    # but also bind it to one concrete owned item whenever a match is available.
+    armor = data.get('armor') if isinstance(data.get('armor'), dict) else {}
+    inventory = [entry for entry in data.get('inventory') or [] if isinstance(entry, dict)]
+    claimed = set()
+    for location in ('head', 'body', 'shield'):
+        piece = armor.get(location)
+        if not isinstance(piece, dict):
+            continue
+        current = str(piece.get('instance_id') or '')
+        if INSTANCE_ID_RE.fullmatch(current) and current in seen:
+            claimed.add(current)
+            equipped = next((entry for entry in inventory
+                             if entry.get('instance_id') == current), None)
+            if equipped and equipped.get('state') != 'equipped':
+                equipped['state'] = 'equipped'
+                changed = True
+            continue
+        piece_key = str(piece.get('key') or piece.get('source_key') or '').split('@', 1)[0]
+        match = next((entry for entry in inventory
+                      if entry.get('instance_id') not in claimed and
+                      str(entry.get('catalog_item_id') or entry.get('key') or
+                          entry.get('source_key') or '').split('@', 1)[0] == piece_key), None)
+        if match:
+            piece['instance_id'] = match['instance_id']
+            if match.get('state') != 'equipped':
+                match['state'] = 'equipped'
+            claimed.add(match['instance_id'])
+            changed = True
+
+    for key in legacy_weapon_keys:
+        if key in legacy_weapon_state and any(
+                isinstance(entry, dict) and entry.get('instance_id') != key and
+                str(entry.get('key') or entry.get('source_key') or entry.get('name') or '') == key
+                for entry in data.get('inventory') or []):
+            legacy_weapon_state.pop(key, None)
+            changed = True
+    if data.get('weapon_state') != legacy_weapon_state:
+        data['weapon_state'] = legacy_weapon_state
+    if (_num(data.get('schema_version')) or 0) < 5:
+        data['schema_version'] = 5
+        changed = True
+    return changed
+
+
+def persist_character_item_instances(conn, character_id, data, source_type,
+                                     source_ref=None, acquired_at=None, prune=False):
+    """Upsert the compatibility projection into the relational instance store."""
+    now = time.time()
+    acquired_at = float(acquired_at or now)
+    present = set()
+    for bucket in ('inventory', 'cyberware'):
+        for entry in data.get(bucket) or []:
+            if not isinstance(entry, dict):
+                continue
+            instance_id = str(entry.get('instance_id') or '').lower()
+            occupied = conn.execute(
+                'SELECT character_id FROM item_instances WHERE instance_id=?',
+                (instance_id,)).fetchone() if INSTANCE_ID_RE.fullmatch(instance_id) else None
+            if (not INSTANCE_ID_RE.fullmatch(instance_id) or
+                    (occupied and occupied['character_id'] != int(character_id))):
+                old_instance_id = instance_id
+                instance_id = new_item_instance_id()
+                entry['instance_id'] = instance_id
+                for piece in (data.get('armor') or {}).values():
+                    if isinstance(piece, dict) and piece.get('instance_id') == old_instance_id:
+                        piece['instance_id'] = instance_id
+                states = data.get('weapon_state') or {}
+                if old_instance_id in states:
+                    states[instance_id] = states.pop(old_instance_id)
+            present.add(instance_id)
+            catalog_id = catalog_item_id_for_entry(entry)
+            state = str(entry.get('state') or
+                        ('installed' if bucket == 'cyberware' else 'carried'))
+            if state not in ITEM_INSTANCE_STATES:
+                state = 'installed' if bucket == 'cyberware' else 'carried'
+                entry['state'] = state
+            try:
+                quantity = max(1, int(entry.get('qty') or 1))
+            except (TypeError, ValueError):
+                quantity = 1
+            condition_current = _num(entry.get('condition_current'))
+            condition_max = _num(entry.get('condition_max'))
+            conn.execute(
+                'INSERT INTO item_instances(instance_id,character_id,catalog_item_id,bucket,'
+                'custom_name,state,quantity,condition_current,condition_max,notes,acquired_at,'
+                'source_type,source_ref,data_json,created,updated) '
+                'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
+                'ON CONFLICT(instance_id) DO UPDATE SET '
+                'catalog_item_id=excluded.catalog_item_id,bucket=excluded.bucket,'
+                'custom_name=excluded.custom_name,state=excluded.state,quantity=excluded.quantity,'
+                'condition_current=excluded.condition_current,condition_max=excluded.condition_max,'
+                'notes=excluded.notes,data_json=excluded.data_json,updated=excluded.updated',
+                (instance_id, int(character_id), catalog_id, bucket,
+                 str(entry.get('custom_name') or '')[:120] or None, state, quantity,
+                 condition_current, condition_max, str(entry.get('notes') or '')[:2000],
+                 acquired_at, str(source_type or 'unknown')[:40],
+                 str(source_ref or '')[:160] or None,
+                 json.dumps(entry, ensure_ascii=False), acquired_at, now))
+    if prune:
+        if present:
+            marks = ','.join('?' for _ in present)
+            conn.execute(
+                f'DELETE FROM item_instances WHERE character_id=? AND instance_id NOT IN ({marks})',
+                (int(character_id), *sorted(present)))
+        else:
+            conn.execute('DELETE FROM item_instances WHERE character_id=?', (int(character_id),))
+
+
+def backfill_character_item_instances(conn):
+    """One-time, idempotent migration of legacy JSON stacks to stable instances."""
+    if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='characters'").fetchone():
+        return
+    rows = conn.execute('SELECT id,data,created FROM characters ORDER BY id').fetchall()
+    for row in rows:
+        try:
+            data = json.loads(row['data'])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        changed = ensure_character_item_instances(data)
+        ensure_progression(data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'legacy_migration', acquired_at=row['created'], prune=True)
+        if changed:
+            conn.execute('UPDATE characters SET data=? WHERE id=?',
+                         (json.dumps(data, ensure_ascii=False), row['id']))
+
+
 def apply_schema_migrations(conn, make_backup=True):
     """Idempotently upgrade legacy databases without resetting campaign data."""
     conn.execute('CREATE TABLE IF NOT EXISTS schema_migrations('
@@ -976,6 +1223,7 @@ def apply_schema_migrations(conn, make_backup=True):
         (MIGRATION_OPERATIONS, 'character ledger and session operations'),
         (MIGRATION_NOTIFICATIONS, 'site notifications and VK outbox'),
         (MIGRATION_TACTICAL_PROFILES, 'profile media and tactical session resources'),
+        (MIGRATION_ITEM_INSTANCES, 'stable character item instances'),
     ]
     pending = [version for version, _ in migrations if version not in applied]
     if make_backup and pending:
@@ -1014,12 +1262,16 @@ def apply_schema_migrations(conn, make_backup=True):
         ensure_column(conn, 'session_combatants', 'ammo_max', 'INTEGER NOT NULL DEFAULT 0')
         ensure_column(conn, 'session_combatants', 'luck_current', 'INTEGER NOT NULL DEFAULT 0')
         ensure_column(conn, 'session_combatants', 'luck_max', 'INTEGER NOT NULL DEFAULT 0')
+    if MIGRATION_ITEM_INSTANCES not in applied:
+        conn.executescript(ITEM_INSTANCE_SCHEMA)
+        backfill_character_item_instances(conn)
     # Re-run additive CREATE IF NOT EXISTS blocks so patch-level tables added to an
     # already-applied migration remain safe during development and rolling deploys.
     conn.executescript(NETWORK_SCHEMA)
     conn.executescript(FEED_SCHEMA)
     conn.executescript(OPERATIONS_SCHEMA)
     conn.executescript(NOTIFICATION_SCHEMA)
+    conn.executescript(ITEM_INSTANCE_SCHEMA)
     # Recover safely if a rolling/patch deployment recorded the migration before
     # every additive column reached a particular database.
     ensure_column(conn, 'users', 'avatar_media_id', 'TEXT')
@@ -2560,7 +2812,8 @@ def ensure_progression(data):
     inventory = data.get('inventory') or []
     ammo = [item for item in inventory if item.get('cat') in ('ammo','grenades')]
     for weapon in [item for item in inventory if item.get('cat') in ('guns','melee')]:
-        key = str(weapon.get('key') or weapon.get('source_key') or weapon.get('name'))
+        key = str(weapon.get('instance_id') or weapon.get('key') or
+                  weapon.get('source_key') or weapon.get('name'))
         magazine = _num((weapon.get('mechanics') or {}).get('magazine')) or 0
         if key not in states:
             weapon_type = str((weapon.get('mechanics') or {}).get('type') or '').lower()
@@ -2571,7 +2824,7 @@ def ensure_progression(data):
                 if compatible:
                     reserve += (_num(pack.get('qty')) or 1) * (_num((pack.get('mechanics') or {}).get('quantity_per_purchase')) or 1)
             states[key] = {'magazine': magazine, 'magazine_max': magazine, 'reserve': reserve}
-    data['schema_version'] = max(4, _num(data.get('schema_version')) or 0)
+    data['schema_version'] = max(5, _num(data.get('schema_version')) or 0)
     return data
 
 
@@ -2614,6 +2867,9 @@ SERVER_ERROR_EN = {
     'Баланс IP не может быть отрицательным': 'IP balance cannot be negative',
     'В корзине нет известных товаров': 'The Cart contains no recognized items',
     'Покупка доступна только из текущего Night Market': 'Purchases are only available from the current Night Market stock',
+    'Инвентарь не может содержать больше 500 экземпляров': 'Inventory cannot contain more than 500 item instances',
+    'Некорректное количество': 'Invalid quantity',
+    'Сначала снимите или извлеките предмет': 'Unequip or uninstall the item first',
     'Все слоты заняты': 'All slots are filled',
     'Вы уже записаны': 'You are already signed up',
     'Для специализированного навыка повышайте parent-pool': 'Increase the parent pool for a specialized Skill',
@@ -4589,6 +4845,12 @@ class Handler(BaseHTTPRequestHandler):
         u = self.require_user(conn)
         data = clean_character(body.get('data') if isinstance(body, dict) else body)
         validate_creation(data)
+        # Client-provided IDs are never trusted for a new Dossier. Durable items
+        # become separate owned instances; clearly stackable ammunition stays one row.
+        ensure_character_item_instances(data, regenerate=True)
+        if len(data.get('inventory') or []) + len(data.get('cyberware') or []) > 500:
+            raise ApiError(400, 'Инвентарь не может содержать больше 500 экземпляров')
+        ensure_progression(data)
         owned_rows = conn.execute('SELECT data FROM characters WHERE owner_id=?',
                                   (u['id'],)).fetchall()
         count = sum(1 for item in owned_rows if not parse_json_object(item['data']).get('archived'))
@@ -4600,6 +4862,8 @@ class Handler(BaseHTTPRequestHandler):
             'INSERT INTO characters(owner_id, public, data, created, updated) VALUES(?,?,?,?,?)',
             (u['id'], pub, json.dumps(data, ensure_ascii=False), now, now))
         attach_character_media(conn, u['id'], cur.lastrowid, data)
+        persist_character_item_instances(
+            conn, cur.lastrowid, data, 'character_creation', acquired_at=now, prune=True)
         record_character_changes(conn, cur.lastrowid, u['id'], {}, data, 'Character created')
         conn.commit()
         row = conn.execute('SELECT * FROM characters WHERE id=?', (cur.lastrowid,)).fetchone()
@@ -4713,6 +4977,7 @@ class Handler(BaseHTTPRequestHandler):
         conn.execute("DELETE FROM media WHERE attached_type='character' AND attached_id=?", (row['id'],))
         conn.execute('DELETE FROM ip_ledger WHERE character_id=?', (row['id'],))
         conn.execute('DELETE FROM character_ledger WHERE character_id=?', (row['id'],))
+        conn.execute('DELETE FROM item_instances WHERE character_id=?', (row['id'],))
         conn.execute('DELETE FROM characters WHERE id=?', (row['id'],))
         conn.commit()
         for media in media_rows:
@@ -4799,6 +5064,18 @@ class Handler(BaseHTTPRequestHandler):
             'JOIN users u ON u.id=l.actor_user_id WHERE character_id=? '
             'ORDER BY l.id DESC LIMIT 500', (row['id'],)).fetchall()
         self.send_json({'entries': [dict(item) for item in entries]})
+
+    def api_character_items(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        instances = conn.execute(
+            'SELECT * FROM item_instances WHERE character_id=? '
+            'ORDER BY bucket,acquired_at,instance_id', (row['id'],)).fetchall()
+        payload = []
+        for instance in instances:
+            item = dict(instance)
+            item['item'] = parse_json_object(item.pop('data_json'))
+            payload.append(item)
+        self.send_json({'character_id': row['id'], 'instances': payload})
 
     @atomic_endpoint
     def api_character_improve(self, conn, qs, m, body):
@@ -4960,7 +5237,8 @@ class Handler(BaseHTTPRequestHandler):
         if parse_json_object(row['data']).get('archived'):
             raise ApiError(409, 'Архивное досье доступно только для чтения')
         before_data = json.loads(row['data'])
-        data = json.loads(row['data'])
+        data = copy.deepcopy(before_data)
+        ensure_character_item_instances(data)
         cart = body.get('items') or []
         if not cart or not isinstance(cart, list):
             raise ApiError(400, 'Пустая корзина')
@@ -4984,16 +5262,37 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(400, f'Не хватает €$: нужно {total:,.0f}, есть {cash:,.0f}')
         inv = data.setdefault('inventory', [])
         for it, qty, price in bought:
-            found = next((x for x in inv if x.get('key') == it['id']), None)
-            if found:
-                found['qty'] = int(found.get('qty') or 1) + qty
+            owned = {
+                'key': it['id'], 'catalog_item_id': it['id'], 'cat': it['cat'],
+                'name': it['name'], 'price': price, 'qty': 1, 'state': 'carried',
+                'damage': it.get('damage'), 'sp': it.get('sp'), 'hl': it.get('hl'),
+                'fields': copy.deepcopy(it.get('fields') or {}),
+                'mechanics': copy.deepcopy(it.get('mechanics') or {}),
+                'source': it.get('source'),
+            }
+            if item_entry_stackable(owned):
+                found = next((entry for entry in inv if isinstance(entry, dict) and
+                              catalog_item_id_for_entry(entry) == it['id'] and
+                              item_entry_stackable(entry) and
+                              str(entry.get('state') or 'carried') == 'carried' and
+                              not entry.get('custom_name')), None)
+                if found:
+                    found['qty'] = int(found.get('qty') or 1) + qty
+                else:
+                    owned['instance_id'] = new_item_instance_id()
+                    owned['qty'] = qty
+                    inv.append(owned)
             else:
-                inv.append({
-                    'key': it['id'], 'cat': it['cat'], 'name': it['name'],
-                    'price': price, 'qty': qty,
-                    'damage': it.get('damage'), 'sp': it.get('sp'), 'hl': it.get('hl'),
-                })
+                if len(inv) + qty > 500:
+                    raise ApiError(400, 'Инвентарь не может содержать больше 500 экземпляров')
+                for _ in range(qty):
+                    instance = copy.deepcopy(owned)
+                    instance['instance_id'] = new_item_instance_id()
+                    inv.append(instance)
         data['cash'] = round(cash - total, 2)
+        ensure_progression(data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'night_market', source_ref=nm_day())
         record_character_changes(conn, row['id'], u['id'], before_data, data,
                                  'Night Market purchase')
         conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
@@ -5013,26 +5312,43 @@ class Handler(BaseHTTPRequestHandler):
         if parse_json_object(row['data']).get('archived'):
             raise ApiError(409, 'Архивное досье доступно только для чтения')
         before_data = json.loads(row['data'])
-        data = json.loads(row['data'])
+        data = copy.deepcopy(before_data)
+        ensure_character_item_instances(data)
         key = str(body.get('key') or '')
-        qty = max(1, int(body.get('qty') or 1))
+        instance_id = str(body.get('instance_id') or '').lower()
+        try:
+            qty = max(1, int(body.get('qty') or 1))
+        except (TypeError, ValueError):
+            raise ApiError(400, 'Некорректное количество')
         inv = data.get('inventory') or []
-        ent = next((x for x in inv if x.get('key') == key), None)
-        if not ent:
+        index = next((position for position, entry in enumerate(inv)
+                      if isinstance(entry, dict) and instance_id and
+                      entry.get('instance_id') == instance_id), None)
+        if index is None:
+            index = next((position for position, entry in enumerate(inv)
+                          if isinstance(entry, dict) and key and entry.get('key') == key), None)
+        if index is None:
             raise ApiError(404, 'Предмет не найден в инвентаре')
+        ent = inv[index]
+        if str(ent.get('state') or 'carried') in ('equipped', 'installed'):
+            raise ApiError(409, 'Сначала снимите или извлеките предмет')
         qty = min(qty, int(ent.get('qty') or 1))
         back = round(float(ent.get('price') or 0) * 0.5 * qty, 2)
         ent['qty'] = int(ent.get('qty') or 1) - qty
         if ent['qty'] <= 0:
-            data['inventory'] = [x for x in inv if x.get('key') != key]
+            inv.pop(index)
+            (data.get('weapon_state') or {}).pop(str(ent.get('instance_id') or ''), None)
         data['cash'] = round(float(data.get('cash') or 0) + back, 2)
+        persist_character_item_instances(
+            conn, row['id'], data, 'night_market_resale', prune=True)
         record_character_changes(conn, row['id'], u['id'], before_data, data,
-                                 'Night Market resale')
+                                 f'Night Market resale: {ent.get("name") or key}')
         conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), time.time(), row['id']))
         conn.commit()
         self.send_json({'ok': True, 'cash': data['cash'], 'got': back,
-                        'name': ent.get('name'), 'qty': qty})
+                        'name': ent.get('name'), 'qty': qty,
+                        'instance_id': ent.get('instance_id')})
 
     @atomic_endpoint
     def api_payroll(self, conn, qs, m, body):
@@ -6094,6 +6410,7 @@ ROUTES = [
     ('POST', rx(r'/api/characters/(\d+)/ip'), Handler.api_character_ip),
     ('GET', rx(r'/api/characters/(\d+)/ip'), Handler.api_character_ip_history),
     ('GET', rx(r'/api/characters/(\d+)/ledger'), Handler.api_character_ledger),
+    ('GET', rx(r'/api/characters/(\d+)/items'), Handler.api_character_items),
     ('GET', rx(r'/api/characters/(\d+)/network'), Handler.api_character_network),
     ('POST', rx(r'/api/characters/(\d+)/improve'), Handler.api_character_improve),
     ('POST', rx(r'/api/characters/(\d+)/specialization'), Handler.api_character_specialization),
