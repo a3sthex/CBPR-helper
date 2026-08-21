@@ -95,6 +95,11 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('Body SP', source)
         self.assertIn('HP/window', source)
         self.assertIn('data-vehicle-sdp', source)
+        self.assertIn('vehicleGarageActionsHtml', source)
+        self.assertIn('data-vehicle-mod-action', source)
+        self.assertIn('Use NOS', source)
+        self.assertIn('mounted_weapons', source)
+        self.assertIn('data-vehicle-config', source)
 
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')

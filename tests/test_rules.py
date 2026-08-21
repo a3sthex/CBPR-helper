@@ -610,6 +610,80 @@ class VehicleModificationTests(unittest.TestCase):
         self.assertEqual(len(glass_sources), 2)
         self.assertTrue(glass_sources[0]['manual_rules'][0]['manual_resolution_required'])
 
+    def test_vehicle_nos_and_mounted_weapon_profiles_are_allowlisted_resources(self):
+        vehicle = self.owned('vehicles-2', '4' * 32)
+        nos = self.owned('vehicles_upgrades-3', '5' * 32)
+        flamethrower = self.owned('vehicles_upgrades-4', '6' * 32)
+        machinegun = self.owned('vehicles_upgrades-5', '7' * 32)
+        rocket_pod = self.owned('vehicles_upgrades-10', '8' * 32)
+        upgrades = (nos, flamethrower, machinegun, rocket_pod)
+        for upgrade in upgrades:
+            upgrade['state'] = 'installed'
+        owned = {item['instance_id']: item for item in (vehicle, *upgrades)}
+        modifications = []
+        for index, upgrade in enumerate(upgrades):
+            choices = {'orientation': 'side'} if upgrade is flamethrower else {}
+            modifications.append({
+                'modification_id': f'{index + 20:032x}',
+                'host_instance_id': vehicle['instance_id'],
+                'upgrade_instance_id': upgrade['instance_id'],
+                'host_type': 'vehicle', 'active': True, 'slots_used': 0,
+                'configuration': {
+                    'choices': choices,
+                    'effect_rules': server.vehicle_modification_rules_for_catalog(
+                        upgrade['catalog_item_id']),
+                },
+            })
+        vehicle['_modification_state'] = {
+            modifications[0]['modification_id']: {
+                'resource_type': 'nos_tank', 'profile_id': 'nos_tank',
+                'uses_remaining': 0, 'uses_max': 1,
+            },
+            modifications[2]['modification_id']: {
+                'resource_type': 'mounted_weapon',
+                'profile_id': 'onboard_machinegun', 'magazine': 20,
+                'magazine_max': 30, 'reserve': 10, 'ammo_cost': 10,
+                'orientation': 'front',
+            },
+        }
+        result = server.evaluate_effective_vehicle(vehicle, modifications, owned)
+        self.assertEqual(len(result['nos_tanks']), 1)
+        self.assertEqual(result['nos_tanks'][0]['state']['uses_remaining'], 0)
+        self.assertEqual(len(result['mounted_weapons']), 3)
+        by_id = {profile['id']: profile for profile in result['mounted_weapons']}
+        self.assertEqual(by_id['onboard_flamethrower']['orientation'], 'side')
+        self.assertEqual(by_id['onboard_flamethrower']['damage'], '3d6')
+        self.assertEqual(by_id['onboard_machinegun']['kind'], 'autofire')
+        self.assertEqual(by_id['onboard_machinegun']['state']['ammo_cost'], 10)
+        self.assertEqual(by_id['onboard_rocket_pod']['magazine'], 3)
+        self.assertTrue(all(source['automated'] for source in result['sources']))
+        self.assertTrue(any(source['manual_rules'] for source in result['sources']))
+
+        schemas = server.vehicle_modification_configuration_schema(
+            flamethrower['catalog_item_id'])
+        self.assertEqual(schemas[0]['key'], 'orientation')
+        self.assertEqual(server.clean_vehicle_modification_choices(
+            flamethrower['catalog_item_id'], {'orientation': 'rear'}),
+            {'orientation': 'rear'})
+        with self.assertRaises(server.ApiError):
+            server.clean_vehicle_modification_choices(
+                flamethrower['catalog_item_id'], {'orientation': 'top'})
+        self.assertEqual(server.clean_vehicle_modification_choices(
+            machinegun['catalog_item_id'], {}), {'orientation': 'front'})
+        authoritative = server.initial_vehicle_modification_state(
+            server.vehicle_modification_rules_for_catalog(machinegun['catalog_item_id']),
+            {'inventory': []}, {'orientation': 'front'})
+        normalized = server.normalize_vehicle_modification_state({
+            'resource_type': 'mounted_weapon', 'profile_id': 'tampered',
+            'magazine': 999, 'magazine_max': 999, 'reserve': -5,
+            'ammo_cost': 1, 'orientation': 'rear',
+        }, authoritative)
+        self.assertEqual(normalized['profile_id'], 'onboard_machinegun')
+        self.assertEqual(normalized['magazine'], 30)
+        self.assertEqual(normalized['reserve'], 0)
+        self.assertEqual(normalized['ammo_cost'], 10)
+        self.assertEqual(normalized['orientation'], 'front')
+
     def test_vehicle_availability_prerequisites_conflicts_and_role_access(self):
         car = self.owned('vehicles-2', '1' * 32)
         bike = self.owned('vehicles-0', '2' * 32)

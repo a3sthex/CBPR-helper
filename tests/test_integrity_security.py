@@ -960,6 +960,143 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         final_state = removed_heavy['character']['data']['vehicle_state'][vehicle['instance_id']]
         self.assertEqual(final_state, {'sdp_current': 40, 'sdp_max': 50})
 
+    def test_vehicle_nos_and_mounted_weapons_are_authoritative_and_audited(self):
+        edited = copy.deepcopy(self.character_data)
+        item_ids = (
+            'vehicles-2', 'vehicles_upgrades-3', 'vehicles_upgrades-4',
+            'vehicles_upgrades-5', 'ammo-0',
+        )
+        edited['inventory'] = []
+        for item_id in item_ids:
+            item = server.item_by_id(item_id)
+            edited['inventory'].append({
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': item['cat'], 'name': item['name'],
+                'qty': 3 if item_id == 'ammo-0' else 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            })
+        updated = self.call(server.Handler.api_character_sheet_update, self.match(1), {
+            'revision': 0, 'reason': 'Add vehicle action test loadout', 'data': edited,
+        })
+        by_name = {item['name']: item for item in updated['data']['inventory']}
+        vehicle = by_name['Compact Groundcar']
+        nos = by_name['NOS']
+        machinegun = by_name['Onboard Machinegun']
+        flamethrower = by_name['Onboard Flamethrower']
+
+        installed_nos = self.call(server.Handler.api_character_modification_install,
+                                  self.match(1), {
+            'revision': 1, 'host_instance_id': vehicle['instance_id'],
+            'upgrade_instance_id': nos['instance_id'], 'manual_confirm': False,
+            'reason': 'Install NOS tank for field test',
+        })
+        nos_mod_id = installed_nos['modification_id']
+        nos_state = installed_nos['character']['data']['modification_state'][nos_mod_id]
+        self.assertEqual(nos_state['resource_type'], 'nos_tank')
+        self.assertEqual(nos_state['uses_remaining'], 1)
+        nos_match = re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{nos_mod_id}')
+        used = self.call(server.Handler.api_character_modification_action, nos_match, {
+            'revision': 2, 'action': 'use_nos',
+        })
+        self.assertEqual(
+            used['character']['data']['modification_state'][nos_mod_id]['uses_remaining'], 0)
+        self.assertEqual(used['character']['revision'], 3)
+        with self.assertRaises(server.ApiError) as duplicate_use:
+            self.call(server.Handler.api_character_modification_action, nos_match, {
+                'revision': 3, 'action': 'use_nos',
+            })
+        self.assertEqual(duplicate_use.exception.status, 409)
+        with self.assertRaises(server.ApiError):
+            self.call(server.Handler.api_character_modification_action, nos_match, {
+                'revision': 3, 'action': 'reset_nos',
+            })
+        reset = self.call(server.Handler.api_character_modification_action, nos_match, {
+            'revision': 3, 'action': 'reset_nos',
+            'reason': 'Campaign clock advanced to the next day',
+        })
+        self.assertEqual(
+            reset['character']['data']['modification_state'][nos_mod_id]['uses_remaining'], 1)
+
+        installed_machinegun = self.call(
+            server.Handler.api_character_modification_install, self.match(1), {
+                'revision': 4, 'host_instance_id': vehicle['instance_id'],
+                'upgrade_instance_id': machinegun['instance_id'],
+                'manual_confirm': False, 'configuration': {},
+                'reason': 'Install front-facing onboard machinegun',
+            })
+        machinegun_mod_id = installed_machinegun['modification_id']
+        machinegun_state = installed_machinegun['character']['data'][
+            'modification_state'][machinegun_mod_id]
+        self.assertEqual(machinegun_state['orientation'], 'front')
+        self.assertEqual(machinegun_state['magazine'], 0)
+        self.assertEqual(machinegun_state['magazine_max'], 30)
+        self.assertEqual(machinegun_state['reserve'], 30)
+        self.assertEqual(machinegun_state['ammo_cost'], 10)
+        machinegun_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$', f'1/{machinegun_mod_id}')
+        reloaded = self.call(server.Handler.api_character_modification_action,
+                             machinegun_match, {
+            'revision': 5, 'action': 'reload',
+        })
+        reloaded_state = reloaded['character']['data'][
+            'modification_state'][machinegun_mod_id]
+        self.assertEqual((reloaded_state['magazine'], reloaded_state['reserve']), (30, 0))
+        fired = self.call(server.Handler.api_character_modification_action,
+                          machinegun_match, {
+            'revision': 6, 'action': 'fire',
+        })
+        self.assertEqual(fired['character']['data'][
+            'modification_state'][machinegun_mod_id]['magazine'], 20)
+        self.assertEqual(fired['character']['derived']['effective_vehicles'][
+            vehicle['instance_id']]['mounted_weapons'][0]['kind'], 'autofire')
+        action_ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        self.assertTrue(action_ledger['entries'][0]['can_revert'])
+        reverted_fire = self.call(
+            server.Handler.api_character_ledger_revert,
+            self.match(1, action_ledger['entries'][0]['id']), {
+                'revision': 7, 'reason': 'Undo accidental mounted weapon fire',
+            })
+        self.assertEqual(reverted_fire['data']['modification_state'][
+            machinegun_mod_id]['magazine'], 30)
+        with self.assertRaises(server.ApiError) as permanent:
+            self.call(server.Handler.api_character_modification_action,
+                      machinegun_match, {
+                'revision': 8, 'action': 'remove',
+                'reason': 'Try removing permanent onboard weapon',
+            })
+        self.assertEqual(permanent.exception.status, 409)
+
+        with self.assertRaises(server.ApiError) as missing_orientation:
+            self.call(server.Handler.api_character_modification_install,
+                      self.match(1), {
+                'revision': 8, 'host_instance_id': vehicle['instance_id'],
+                'upgrade_instance_id': flamethrower['instance_id'],
+                'manual_confirm': False,
+                'reason': 'Try installation without choosing orientation',
+            })
+        self.assertEqual(missing_orientation.exception.status, 400)
+        installed_flamethrower = self.call(
+            server.Handler.api_character_modification_install, self.match(1), {
+                'revision': 8, 'host_instance_id': vehicle['instance_id'],
+                'upgrade_instance_id': flamethrower['instance_id'],
+                'manual_confirm': False, 'configuration': {'orientation': 'side'},
+                'reason': 'Install side-facing onboard flamethrower',
+            })
+        flame_mod_id = installed_flamethrower['modification_id']
+        self.assertEqual(installed_flamethrower['character']['data'][
+            'modification_state'][flame_mod_id]['orientation'], 'side')
+        profiles = installed_flamethrower['character']['derived']['effective_vehicles'][
+            vehicle['instance_id']]['mounted_weapons']
+        self.assertEqual({profile['id'] for profile in profiles},
+                         {'onboard_machinegun', 'onboard_flamethrower'})
+        ledger = self.call(server.Handler.api_character_ledger, self.match(1))
+        action_entries = [entry for entry in ledger['entries']
+                          if entry['category'] == 'vehicle']
+        self.assertGreaterEqual(len(action_entries), 4)
+        self.assertTrue(any('Use NOS' in entry['reason'] for entry in action_entries))
+        self.assertTrue(any('Fire Onboard Machinegun' in entry['reason']
+                            for entry in action_entries))
+
     def test_active_effect_instances_apply_expire_tick_and_audit(self):
         character = copy.deepcopy(self.character_data)
         character['skills']['Handgun'] = 3

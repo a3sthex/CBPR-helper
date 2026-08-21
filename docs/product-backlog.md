@@ -2924,6 +2924,18 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - доступны server-authoritative SDP damage/repair controls с revision guard и Ledger;
 - base vehicle mechanics не переписываются, а старые installed upgrades получают curated effects через safe fallback rules.
 
+**Статус B.7.3 — реализованы Vehicle Actions и Mounted Weapon Profiles:**
+
+- каждый установленный NOS получает отдельный server-authoritative tank state `uses remaining/max`; `Use NOS` атомарно тратит конкретный tank, защищён revision и записывается в Vehicle Ledger;
+- автоматический календарный reset намеренно не подменяет Campaign Clock: `Reset Campaign Day` выполняется явно с обязательной причиной, а дополнительное Move Action/условие «водитель использует Action» показано как `MANUAL RULE`;
+- Onboard Machinegun получает front-facing Autofire-only Assault Rifle profile: Autofire Skill, Assault Rifle Range Table, multiplier 4, Suppressive Fire, Mag 30 и расход 10 rounds на server-authoritative Fire;
+- Onboard Flamethrower получает обязательную allowlisted ориентацию front/side/rear, Heavy Weapons, Shotgun Range Table, 3d6, ROF 1 и Mag 4; incendiary ignition остаётся manual resolution;
+- Onboard Rocket Pod получает front-facing Heavy Weapons profile, Rocket Launcher Range Table, 8d6, ROF 1 и drum 3; существующие Heavy Chassis/availability/permanent checks продолжают применяться;
+- каждое mounted weapon устанавливается разряженным и имеет собственные Mag/Reserve, Fire/Reload, Attack/Damage controls; исходный Reserve создаётся из совместимого ammo snapshot, но единый shared ammo transfer/ownership пока не реализован;
+- условие `Cannot reload while driving` показывается явно, но не блокирует Reload автоматически до появления authoritative driving/session state;
+- все resource actions сохраняют base item неизменным, попадают в readable Ledger и безопасно revert-ятся как resource state;
+- Vehicle Heavy Weapon Mount с привязкой конкретного two-handed weapon, cargo/rooms/Housing и полноценные repair workflows остаются следующими Garage этапами.
+
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
@@ -2942,8 +2954,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: instance binding, slot pools, lifecycle, Magazines/Smartgun/Bayonet/scopes, Underbarrels, Autofire/Rebuild profiles и host-specific Range Table choices;
     - дальше: contextual ricochet/charge, full Autofire action/ammo и Tech overrides.
 12. ◐ Vehicle Upgrades и Garage integration.
-    - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective SDP/Body SP/Glass/Seats и Garage damage controls;
-    - дальше: NOS state, mounted weapon profiles, cargo/rooms и repair workflows.
+    - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective SDP/Body SP/Glass/Seats, Garage damage controls, NOS resources и Onboard Machinegun/Flamethrower/Rocket Pod profiles;
+    - дальше: Vehicle Heavy Weapon Mount binding, shared mounted ammo, cargo/rooms/Housing и repair workflows.
 13. Cyberdeck/Cyberware/Armor/Tech modification hosts.
 14. JSON import.
 

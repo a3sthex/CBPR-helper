@@ -226,7 +226,10 @@
       "label_en": "Smartgun Link",
       "label_ru": "Smartgun Link",
       "requirements": {
-        "installed_any": ["cyberware-61", "cyberware-125"],
+        "installed_any": [
+          "cyberware-61",
+          "cyberware-125"
+        ],
         "label_en": "Interface Plugs or Subdermal Grip installed",
         "label_ru": "Установлены Interface Plugs или Subdermal Grip"
       },
@@ -405,7 +408,10 @@
             "ammo_cost": 10,
             "suppressive_fire": true
           },
-          "enhanced_when": ["excellent_quality", "base_autofire"],
+          "enhanced_when": [
+            "excellent_quality",
+            "base_autofire"
+          ],
           "enhanced_multiplier": 4,
           "source": "IR5 115"
         }
@@ -557,7 +563,10 @@
       "label_en": "Smart Rebuild Connection",
       "label_ru": "Подключение Smart Rebuild",
       "requirements": {
-        "installed_any": ["cyberware-61", "cyberware-125"],
+        "installed_any": [
+          "cyberware-61",
+          "cyberware-125"
+        ],
         "label_en": "Interface Plugs or Subdermal Grip installed",
         "label_ru": "Установлены Interface Plugs или Subdermal Grip"
       },
@@ -636,7 +645,13 @@
       "label_en": "Armored Chassis",
       "label_ru": "Бронированное шасси",
       "effects": [
-        {"id": "armored-chassis-body-sp", "target": "vehicle.body_sp", "operation": "set", "value": 13, "source": "CP:R 163"}
+        {
+          "id": "armored-chassis-body-sp",
+          "target": "vehicle.body_sp",
+          "operation": "set",
+          "value": 13,
+          "source": "CP:R 163"
+        }
       ],
       "manual_rules": []
     },
@@ -646,10 +661,25 @@
       "label_en": "Bulletproof Glass",
       "label_ru": "Пуленепробиваемое стекло",
       "effects": [
-        {"id": "bulletproof-glass-hp", "target": "vehicle.glass_hp", "operation": "set_by_count", "values": {"1": 15, "2": 30}, "source": "CP:R 163"}
+        {
+          "id": "bulletproof-glass-hp",
+          "target": "vehicle.glass_hp",
+          "operation": "set_by_count",
+          "values": {
+            "1": 15,
+            "2": 30
+          },
+          "source": "CP:R 163"
+        }
       ],
       "manual_rules": [
-        {"id": "glass-windows-individual", "text_en": "Each vehicle window sustains damage individually.", "text_ru": "Каждое окно транспорта получает повреждения отдельно.", "condition": "individual_windows", "source": "CP:R 163"}
+        {
+          "id": "glass-windows-individual",
+          "text_en": "Each vehicle window sustains damage individually.",
+          "text_ru": "Каждое окно транспорта получает повреждения отдельно.",
+          "condition": "individual_windows",
+          "source": "CP:R 163"
+        }
       ]
     },
     {
@@ -658,10 +688,22 @@
       "label_en": "Heavy Chassis",
       "label_ru": "Тяжёлое шасси",
       "effects": [
-        {"id": "heavy-chassis-sdp", "target": "vehicle.sdp_max", "operation": "add", "value": 20, "source": "CP:R 164"}
+        {
+          "id": "heavy-chassis-sdp",
+          "target": "vehicle.sdp_max",
+          "operation": "add",
+          "value": 20,
+          "source": "CP:R 164"
+        }
       ],
       "manual_rules": [
-        {"id": "heavy-chassis-towing", "text_en": "The upgraded vehicle can tow up to 10 tons.", "text_ru": "Улучшенный транспорт может буксировать до 10 тонн.", "condition": "towing_capacity", "source": "CP:R 164"}
+        {
+          "id": "heavy-chassis-towing",
+          "text_en": "The upgraded vehicle can tow up to 10 tons.",
+          "text_ru": "Улучшенный транспорт может буксировать до 10 тонн.",
+          "condition": "towing_capacity",
+          "source": "CP:R 164"
+        }
       ]
     },
     {
@@ -670,10 +712,22 @@
       "label_en": "Seating Upgrade",
       "label_ru": "Дополнительные сиденья",
       "effects": [
-        {"id": "seating-upgrade-seats", "target": "vehicle.seats", "operation": "add", "value": 2, "source": "CP:R 163"}
+        {
+          "id": "seating-upgrade-seats",
+          "target": "vehicle.seats",
+          "operation": "add",
+          "value": 2,
+          "source": "CP:R 163"
+        }
       ],
       "manual_rules": [
-        {"id": "seating-ejector-options", "text_en": "Sidecar, enclosure, ejector-seat, parachute, and collision details require manual configuration and resolution.", "text_ru": "Sidecar, enclosure, ejector-seat, parachute и столкновения требуют ручной конфигурации и применения.", "condition": "optional_seating_configuration", "source": "CP:R 163"}
+        {
+          "id": "seating-ejector-options",
+          "text_en": "Sidecar, enclosure, ejector-seat, parachute, and collision details require manual configuration and resolution.",
+          "text_ru": "Sidecar, enclosure, ejector-seat, parachute и столкновения требуют ручной конфигурации и применения.",
+          "condition": "optional_seating_configuration",
+          "source": "CP:R 163"
+        }
       ]
     },
     {
@@ -682,7 +736,13 @@
       "label_en": "Cycle Armor",
       "label_ru": "Броня велосипеда",
       "effects": [
-        {"id": "cycle-armor-body-sp", "target": "vehicle.body_sp", "operation": "set", "value": 7, "source": "DLC:Wheels 4"}
+        {
+          "id": "cycle-armor-body-sp",
+          "target": "vehicle.body_sp",
+          "operation": "set",
+          "value": 7,
+          "source": "DLC:Wheels 4"
+        }
       ],
       "manual_rules": []
     },
@@ -692,10 +752,207 @@
       "label_en": "Reinforced Frame",
       "label_ru": "Усиленная рама",
       "effects": [
-        {"id": "reinforced-frame-sdp", "target": "vehicle.sdp_max", "operation": "add", "value": 5, "source": "DLC:Wheels 5"}
+        {
+          "id": "reinforced-frame-sdp",
+          "target": "vehicle.sdp_max",
+          "operation": "add",
+          "value": 5,
+          "source": "DLC:Wheels 5"
+        }
       ],
       "manual_rules": [
-        {"id": "reinforced-frame-body-limit", "text_en": "The reinforced frame permits riders with BODY 11 or higher.", "text_ru": "Усиленная рама позволяет ездить персонажам с BODY 11 или выше.", "condition": "rider_body_limit", "source": "DLC:Wheels 5"}
+        {
+          "id": "reinforced-frame-body-limit",
+          "text_en": "The reinforced frame permits riders with BODY 11 or higher.",
+          "text_ru": "Усиленная рама позволяет ездить персонажам с BODY 11 или выше.",
+          "condition": "rider_body_limit",
+          "source": "DLC:Wheels 5"
+        }
+      ]
+    },
+    {
+      "id": "nos-tank-resource",
+      "catalog_id": "vehicles_upgrades-3",
+      "label_en": "NOS Tank",
+      "label_ru": "Баллон NOS",
+      "effects": [
+        {
+          "id": "nos-tank-use",
+          "target": "vehicle.nos_tank",
+          "operation": "grant",
+          "resource": {
+            "id": "nos_tank",
+            "label_en": "NOS Tank",
+            "label_ru": "Баллон NOS",
+            "uses": 1
+          },
+          "source": "CP:R 163"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "nos-extra-move-action",
+          "text_en": "Spend this tank using an Action while driving to take one additional Move Action.",
+          "text_ru": "Потратьте этот баллон, используя Action за рулём, чтобы совершить ещё одно Move Action.",
+          "condition": "driver_uses_action",
+          "source": "CP:R 163"
+        },
+        {
+          "id": "nos-campaign-day-reset",
+          "text_en": "Each tank refreshes once per campaign day. Reset it explicitly when the campaign day advances.",
+          "text_ru": "Каждый баллон восстанавливается раз в игровой день. Сбросьте ресурс вручную при смене игрового дня.",
+          "condition": "campaign_day_advanced",
+          "source": "CP:R 163"
+        }
+      ]
+    },
+    {
+      "id": "onboard-flamethrower-profile",
+      "catalog_id": "vehicles_upgrades-4",
+      "label_en": "Onboard Flamethrower",
+      "label_ru": "Бортовой огнемёт",
+      "effects": [
+        {
+          "id": "onboard-flamethrower-weapon",
+          "target": "vehicle.mounted_weapon",
+          "operation": "grant",
+          "profile": {
+            "id": "onboard_flamethrower",
+            "label_en": "Onboard Flamethrower",
+            "label_ru": "Бортовой огнемёт",
+            "kind": "standard",
+            "skill": "Heavy Weapons",
+            "weapon_type": "Flamethrower",
+            "range_table": "Shotgun",
+            "damage": "3d6",
+            "rof": 1,
+            "magazine": 4,
+            "ammo_kind": "incendiary_shotgun",
+            "ammo_cost": 1,
+            "orientations": [
+              "front",
+              "side",
+              "rear"
+            ],
+            "operator": "driver",
+            "suppressive_fire": false
+          },
+          "source": "CP:R 163; CP:R 348"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "onboard-flamethrower-driver-action",
+          "text_en": "The driver fires this weapon using their Action. Resolve incendiary ignition and ongoing fire manually.",
+          "text_ru": "Водитель стреляет из этого оружия своим Action. Возгорание и продолжающийся урон применяются вручную.",
+          "condition": "driver_action_and_incendiary",
+          "source": "CP:R 163; CP:R 348"
+        },
+        {
+          "id": "onboard-flamethrower-driving-reload",
+          "text_en": "This weapon cannot be reloaded while driving; driving state is not tracked automatically yet.",
+          "text_ru": "Это оружие нельзя перезаряжать во время движения; состояние движения пока не отслеживается автоматически.",
+          "condition": "vehicle_is_driving",
+          "source": "CP:R 163"
+        }
+      ]
+    },
+    {
+      "id": "onboard-machinegun-profile",
+      "catalog_id": "vehicles_upgrades-5",
+      "label_en": "Onboard Machinegun",
+      "label_ru": "Бортовой пулемёт",
+      "effects": [
+        {
+          "id": "onboard-machinegun-weapon",
+          "target": "vehicle.mounted_weapon",
+          "operation": "grant",
+          "profile": {
+            "id": "onboard_machinegun",
+            "label_en": "Onboard Machinegun",
+            "label_ru": "Бортовой пулемёт",
+            "kind": "autofire",
+            "skill": "Autofire",
+            "weapon_type": "Assault Rifle",
+            "range_table": "Assault Rifle",
+            "rof": 1,
+            "magazine": 30,
+            "ammo_kind": "rifle",
+            "ammo_cost": 10,
+            "orientations": [
+              "front"
+            ],
+            "operator": "driver",
+            "autofire_multiplier": 4,
+            "suppressive_fire": true
+          },
+          "source": "CP:R 163"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "onboard-machinegun-autofire-only",
+          "text_en": "The driver fires this weapon using their Action. It can only use Autofire or Suppressive Fire.",
+          "text_ru": "Водитель стреляет из этого оружия своим Action. Доступны только Autofire или Suppressive Fire.",
+          "condition": "driver_action_autofire_only",
+          "source": "CP:R 163"
+        },
+        {
+          "id": "onboard-machinegun-driving-reload",
+          "text_en": "This weapon cannot be reloaded while driving; driving state is not tracked automatically yet.",
+          "text_ru": "Это оружие нельзя перезаряжать во время движения; состояние движения пока не отслеживается автоматически.",
+          "condition": "vehicle_is_driving",
+          "source": "CP:R 163"
+        }
+      ]
+    },
+    {
+      "id": "onboard-rocket-pod-profile",
+      "catalog_id": "vehicles_upgrades-10",
+      "label_en": "Onboard Rocket Pod",
+      "label_ru": "Бортовой ракетный блок",
+      "effects": [
+        {
+          "id": "onboard-rocket-pod-weapon",
+          "target": "vehicle.mounted_weapon",
+          "operation": "grant",
+          "profile": {
+            "id": "onboard_rocket_pod",
+            "label_en": "Onboard Rocket Pod",
+            "label_ru": "Бортовой ракетный блок",
+            "kind": "standard",
+            "skill": "Heavy Weapons",
+            "weapon_type": "Rocket Launcher",
+            "range_table": "Rocket Launcher",
+            "damage": "8d6",
+            "rof": 1,
+            "magazine": 3,
+            "ammo_kind": "rocket",
+            "ammo_cost": 1,
+            "orientations": [
+              "front"
+            ],
+            "operator": "driver",
+            "suppressive_fire": false
+          },
+          "source": "CP:R 164; CP:R 341"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "onboard-rocket-pod-driver-action",
+          "text_en": "The driver fires this weapon using their Action. Resolve explosion area, cover, and targets manually.",
+          "text_ru": "Водитель стреляет из этого оружия своим Action. Область взрыва, укрытия и цели применяются вручную.",
+          "condition": "driver_action_explosion_resolution",
+          "source": "CP:R 164; CP:R 341"
+        },
+        {
+          "id": "onboard-rocket-pod-driving-reload",
+          "text_en": "This weapon cannot be reloaded while driving; driving state is not tracked automatically yet.",
+          "text_ru": "Это оружие нельзя перезаряжать во время движения; состояние движения пока не отслеживается автоматически.",
+          "condition": "vehicle_is_driving",
+          "source": "CP:R 164"
+        }
       ]
     }
   ]
