@@ -155,6 +155,9 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('ss-net-action', ncnet)
         self.assertIn('/net/actions', ncnet)
         self.assertIn('NET Action Result', ncnet)
+        self.assertIn('data-session-ice-attack', ncnet)
+        self.assertIn('/net/entities/', ncnet)
+        self.assertIn('Black ICE Attack', ncnet)
 
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')

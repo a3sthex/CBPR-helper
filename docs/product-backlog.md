@@ -3038,7 +3038,19 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Attack result содержит totals/success и trusted source effect text как `MANUAL EFFECT`; неоднозначный damage/target consequence не применяется автоматически;
 - Program Attack увеличивает runtime run count, revision-защищён, получает Character Ledger entry с `session_id`, а topology actions записываются в Session Activity/NET Action Log;
 - GM Dashboard получил Netrunner position cards и action launcher; Player View показывает Jacked In position и только безопасный action summary;
-- Black ICE autonomous attacks, Program effect application, Cloak/Scanner/Virus и action-budget enforcement остаются следующими NET combat подэтапами.
+- Black ICE attack/effect resolution, Cloak/Scanner/Virus и action-budget enforcement были оставлены следующим NET combat подэтапам.
+
+**Статус B.8.7 — реализованы Black ICE Attack и безопасное Effect Resolution:**
+
+- hunting Black ICE в Session Dashboard получает authoritative Attack action; source entity, current target, same-node position и target Interface/Program state повторно проверяются сервером;
+- Anti-Personnel ICE бросает `ICE ATK + 1d10` против `Netrunner Interface + 1d10`; brain damage, forced Jack Out, fire и временные STAT/status effects возвращаются как trusted `MANUAL EFFECT` без ложной автоматизации;
+- Anti-Program Dragon/Killer/Sabertooth выбирают target случайно среди реально Rezzed Programs; GM override разрешён явно и попадает в audit result;
+- Anti-Program opposed check использует `ICE ATK + 1d10` против `Program DEF + 1d10`; при hit сервер бросает source-specific 6d6/4d6/6d6 REZ damage;
+- если урон Dragon/Killer/Sabertooth доводит Program до 0, concrete copy становится `destroyed/broken`, installation освобождает slots, а установленный Backup Drive сохраняет runtime snapshot;
+- target Program update, relational modification removal, Backup contents, Session Action Log и Character Ledger записываются одной atomic transaction;
+- linked Ledger revert восстанавливает Program runtime/copy/slots/Backup и Session NET snapshot; откат блокируется после последующих Session изменений;
+- Session payload отдаёт GM только validated Rezzed target Programs с DEF/REZ и current Character revision; Player View не получает эти приватные mechanics;
+- Asp/Raven random Program destruction/derez, Anti-Personnel HP/status consequences и Attacker Program damage application остаются manual/следующими curated effect этапами.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -3061,8 +3073,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: Cyberdeck/Program runtime, Black ICE, Live NET graph/queue и Netrunner topology actions/Program Attack checks;
-    - дальше: Black ICE attacks/effect application, затем Cyberware/Armor/Tech hosts.
+    - готово: Cyberdeck/Program runtime, Live NET graph/actions и curated Black ICE opposed attacks/Anti-Program REZ damage;
+    - дальше: remaining curated NET effects, затем Cyberware/Armor/Tech hosts.
 14. JSON import.
 
 ### Пакет C — Publishing Preview

@@ -976,6 +976,21 @@ class CyberdeckModificationTests(unittest.TestCase):
         self.assertEqual(len(state['paths']), 1)
         self.assertEqual(state['paths'][0]['direction'], 'one_way')
 
+    def test_black_ice_effect_profiles_automate_only_unambiguous_rez_damage(self):
+        killer = self.owned('programs-25', 'e' * 32)
+        hellhound = self.owned('programs-17', 'f' * 32)
+        killer_effect = server.black_ice_effect_profile(killer)
+        hellhound_effect = server.black_ice_effect_profile(hellhound)
+        self.assertEqual((killer_effect['resolution'], killer_effect['damage_dice']),
+                         ('automated_rez_damage', 4))
+        self.assertTrue(killer_effect['destroy_on_derez'])
+        self.assertEqual(hellhound_effect['resolution'], 'manual_effect')
+        self.assertIn('2d6 damage', hellhound_effect['manual_effect'])
+        rolled = server.roll_dice(4, 6)
+        self.assertEqual(len(rolled['rolls']), 4)
+        self.assertEqual(rolled['total'], sum(rolled['rolls']))
+        self.assertTrue(all(1 <= value <= 6 for value in rolled['rolls']))
+
     def test_black_ice_entity_snapshots_stats_mode_and_target_type(self):
         killer = self.owned('programs-25', 'f' * 32)
         waiting = server.initial_black_ice_entity(

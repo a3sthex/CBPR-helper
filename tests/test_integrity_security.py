@@ -1350,6 +1350,200 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertEqual(restored_program['net_entity']['status'], 'lying_in_wait')
         self.assertEqual(restored_program['runtime']['status'], 'rezzed')
 
+    def test_black_ice_attacks_apply_anti_program_damage_and_keep_brain_effects_manual(self):
+        source_data = copy.deepcopy(self.character_data)
+        source_ids = ('net_stuff-1', 'programs-25', 'programs-17')
+        source_data['inventory'] = [
+            {
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': server.item_by_id(item_id)['cat'],
+                'name': server.item_by_id(item_id)['name'], 'qty': 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            }
+            for item_id in source_ids
+        ]
+        source_updated = self.call(
+            server.Handler.api_character_sheet_update, self.match(1), {
+                'revision': 0, 'reason': 'Add Black ICE attack source loadout',
+                'data': source_data,
+            })
+        source_by_name = {item['name']: item
+                          for item in source_updated['data']['inventory']}
+        source_deck = source_by_name['Cyberdeck (Standard Quality)']
+        killer, hellhound = source_by_name['Killer'], source_by_name['Hellhound']
+        self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 1, 'host_instance_id': source_deck['instance_id'],
+            'upgrade_instance_id': killer['instance_id'], 'manual_confirm': False,
+            'reason': 'Install Killer attack source',
+        })
+        self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 2, 'host_instance_id': source_deck['instance_id'],
+            'upgrade_instance_id': hellhound['instance_id'], 'manual_confirm': False,
+            'reason': 'Install Hellhound attack source',
+        })
+
+        target_data = copy.deepcopy(self.character_data)
+        target_data.update({
+            'handle': 'Target Netrunner', 'role': 'Netrunner',
+            'primary_role': 'Netrunner', 'active_role': 'Netrunner', 'role_rank': 4,
+            'roles': [{'name': 'Netrunner', 'rank': 4, 'primary': True}],
+        })
+        target_ids = ('net_stuff-1', 'net_stuff-19', 'programs-12')
+        target_data['inventory'] = [
+            {
+                'key': item_id, 'catalog_item_id': item_id,
+                'cat': server.item_by_id(item_id)['cat'],
+                'name': server.item_by_id(item_id)['name'], 'qty': 1,
+                'state': 'carried', 'acquisition_source': 'loot',
+            }
+            for item_id in target_ids
+        ]
+        self.conn.execute(
+            'INSERT INTO characters(owner_id,public,data,created,updated) VALUES(3,1,?,1,1)',
+            (json.dumps(self.character_data),))
+        self.conn.commit()
+        self.current = self.user('other')
+        target_updated = self.call(
+            server.Handler.api_character_sheet_update, self.match(2), {
+                'revision': 0, 'reason': 'Create target Netrunner loadout',
+                'data': target_data,
+            })
+        target_by_name = {item['name']: item
+                          for item in target_updated['data']['inventory']}
+        target_deck = target_by_name['Cyberdeck (Standard Quality)']
+        backup, armor = target_by_name['Backup Drive'], target_by_name['Armor']
+        self.call(server.Handler.api_character_modification_install, self.match(2), {
+            'revision': 1, 'host_instance_id': target_deck['instance_id'],
+            'upgrade_instance_id': backup['instance_id'], 'manual_confirm': False,
+            'reason': 'Install target Backup Drive',
+        })
+        self.call(server.Handler.api_character_modification_install, self.match(2), {
+            'revision': 2, 'host_instance_id': target_deck['instance_id'],
+            'upgrade_instance_id': armor['instance_id'], 'manual_confirm': False,
+            'reason': 'Install target Armor Program',
+        })
+        armor_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})/([a-f0-9]{32})$',
+            f'2/{target_deck["instance_id"]}/{armor["instance_id"]}')
+        self.call(server.Handler.api_character_program_action, armor_match, {
+            'revision': 3, 'action': 'rez', 'reason': 'Rez target Armor Program',
+        })
+
+        self.current = self.user('gm')
+        session = self.call(server.Handler.api_session_create, body={
+            'title': 'Black ICE Attack Resolution Test',
+        })
+        session_id = session['id']
+        self.conn.execute(
+            "INSERT INTO session_combatants(session_id,kind,character_id,name,initiative,visible,sort_order) "
+            "VALUES(?,'character',1,'ICE Controller',12,1,0)", (session_id,))
+        self.conn.execute(
+            "INSERT INTO session_combatants(session_id,kind,character_id,name,initiative,visible,sort_order) "
+            "VALUES(?,'character',2,'Target Netrunner',10,1,1)", (session_id,))
+        self.conn.commit()
+        source_combatant = self.conn.execute(
+            'SELECT id FROM session_combatants WHERE session_id=? AND character_id=1',
+            (session_id,)).fetchone()['id']
+        target_combatant = self.conn.execute(
+            'SELECT id FROM session_combatants WHERE session_id=? AND character_id=2',
+            (session_id,)).fetchone()['id']
+        floor = self.call(server.Handler.api_session_net_floor_create,
+                          self.match(session_id), {
+            'label': 'Combat Floor', 'reason': 'Create ICE attack Floor',
+        })
+        node = self.call(server.Handler.api_session_net_node_create,
+                         self.match(session_id), {
+            'floor_id': floor['floor_id'], 'type': 'access_point',
+            'label': 'ICE Arena', 'visible': True,
+            'reason': 'Create ICE attack node',
+        })
+
+        self.current = self.user('other')
+        self.call(server.Handler.api_session_net_action, self.match(session_id), {
+            'action': 'jack_in', 'actor_combatant_id': target_combatant,
+            'target_node_id': node['node_id'],
+            'reason': 'Target Netrunner enters ICE Arena',
+        })
+        self.current = self.user('runner')
+        killer_deploy = re.match(
+            r'^(\d+)/([a-f0-9]{32})/([a-f0-9]{32})$',
+            f'1/{source_deck["instance_id"]}/{killer["instance_id"]}')
+        killer_entity = self.call(server.Handler.api_character_black_ice_deploy,
+                                  killer_deploy, {
+            'revision': 3, 'mode': 'deploy_combat', 'session_id': session_id,
+            'session_floor_id': floor['floor_id'], 'session_node_id': node['node_id'],
+            'target_combatant_id': target_combatant,
+            'reason': 'Deploy Killer against target Program source',
+        })['net_entity']
+        hellhound_deploy = re.match(
+            r'^(\d+)/([a-f0-9]{32})/([a-f0-9]{32})$',
+            f'1/{source_deck["instance_id"]}/{hellhound["instance_id"]}')
+        hellhound_entity = self.call(server.Handler.api_character_black_ice_deploy,
+                                     hellhound_deploy, {
+            'revision': 4, 'mode': 'deploy_combat', 'session_id': session_id,
+            'session_floor_id': floor['floor_id'], 'session_node_id': node['node_id'],
+            'target_combatant_id': target_combatant,
+            'reason': 'Deploy Hellhound against target Netrunner',
+        })['net_entity']
+
+        self.current = self.user('gm')
+        session_payload = self.call(server.Handler.api_session_detail,
+                                    self.match(session_id))
+        killer_payload = next(item for item in session_payload['net']['entities']
+                              if item['net_entity_id'] == killer_entity['net_entity_id'])
+        self.assertEqual(killer_payload['effect_resolution'], 'automated_rez_damage')
+        self.assertEqual(killer_payload['valid_target_programs'][0]['name'], 'Armor')
+        attack_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$',
+            f'{session_id}/{killer_entity["net_entity_id"]}')
+        with mock.patch.object(
+                server.secrets, 'randbelow', side_effect=lambda limit: 0 if limit == 1 else 5):
+            killer_attack = self.call(server.Handler.api_session_black_ice_attack,
+                                      attack_match, {
+                'selection_mode': 'random', 'target_character_revision': 4,
+                'reason': 'Killer attacks random Rezzed Program',
+            })
+        result = killer_attack['result']
+        self.assertTrue(result['success'])
+        self.assertEqual(result['damage_total'], 24)
+        self.assertTrue(result['destroyed'])
+        self.assertEqual(result['target_program_name'], 'Armor')
+        stored_target = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=2').fetchone()['data'])
+        armor_after = next(item for item in stored_target['inventory']
+                           if item['instance_id'] == armor['instance_id'])
+        self.assertEqual(armor_after['state'], 'broken')
+        backup_state = next(value for value in stored_target['modification_state'].values()
+                            if value.get('resource_type') == 'backup_drive')
+        self.assertEqual(len(backup_state['saved_programs']), 1)
+        target_ledger = self.call(server.Handler.api_character_ledger, self.match(2))
+        self.assertTrue(target_ledger['entries'][0]['can_revert'])
+        reverted = self.call(server.Handler.api_character_ledger_revert,
+                             self.match(2, target_ledger['entries'][0]['id']), {
+            'revision': 5, 'reason': 'Undo incorrect Killer target selection',
+        })
+        restored_armor = next(item for item in reverted['data']['inventory']
+                              if item['instance_id'] == armor['instance_id'])
+        self.assertEqual(restored_armor['state'], 'installed')
+        self.assertEqual(reverted['data']['program_state'][armor['instance_id']]['status'],
+                         'rezzed')
+
+        hellhound_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$',
+            f'{session_id}/{hellhound_entity["net_entity_id"]}')
+        with mock.patch.object(server.secrets, 'randbelow', return_value=5):
+            hellhound_attack = self.call(server.Handler.api_session_black_ice_attack,
+                                         hellhound_match, {
+                'reason': 'Hellhound attack leaves brain damage effect manual',
+            })
+        manual_result = hellhound_attack['result']
+        self.assertTrue(manual_result['success'])
+        self.assertNotIn('damage_total', manual_result)
+        self.assertIn('2d6 damage', manual_result['manual_effect'])
+        self.assertEqual(
+            self.conn.execute('SELECT revision FROM characters WHERE id=2').fetchone()['revision'],
+            6)
+
     def test_live_net_session_validates_floors_targets_queue_and_gm_actions(self):
         edited = copy.deepcopy(self.character_data)
         item_ids = ('net_stuff-1', 'programs-25')

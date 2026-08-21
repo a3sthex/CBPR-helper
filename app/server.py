@@ -3349,6 +3349,31 @@ NET_ENTITY_STATUSES = {
 }
 
 
+BLACK_ICE_ANTI_PROGRAM_DAMAGE = {
+    'Dragon': 6, 'Killer': 4, 'Sabertooth': 6,
+}
+
+
+def black_ice_effect_profile(item):
+    catalog_item = item_by_id(catalog_item_id_for_entry(item)) or item or {}
+    name = str(catalog_item.get('name') or '')
+    dice = BLACK_ICE_ANTI_PROGRAM_DAMAGE.get(name)
+    return {
+        'resolution': 'automated_rez_damage' if dice else 'manual_effect',
+        'damage_dice': dice, 'damage_sides': 6 if dice else None,
+        'destroy_on_derez': bool(dice),
+        'source': catalog_item.get('source'),
+        'manual_effect': str(catalog_item.get('desc') or '')[:2000],
+    }
+
+
+def roll_dice(count, sides=6):
+    count = max(0, min(100, int(count or 0)))
+    sides = max(2, min(100, int(sides or 6)))
+    rolls = [secrets.randbelow(sides) + 1 for _ in range(count)]
+    return {'rolls': rolls, 'total': sum(rolls)}
+
+
 def black_ice_target_type(item):
     program_class = str((item.get('mechanics') or {}).get('program_class') or '')
     return 'enemy_program_source' if 'Anti Program Black ICE' in program_class \
@@ -4182,9 +4207,12 @@ def session_net_state(value):
             'action_id': action_id,
             'combatant_id': int(item['combatant_id'])
                 if isinstance(item.get('combatant_id'), int) else None,
+            'actor_entity_id': str(item.get('actor_entity_id') or '') or None,
             'action': str(item.get('action') or '')[:40],
             'target_node_id': str(item.get('target_node_id') or '') or None,
             'target_entity_id': str(item.get('target_entity_id') or '') or None,
+            'target_program_instance_id': str(
+                item.get('target_program_instance_id') or '') or None,
             'success': item.get('success') if isinstance(item.get('success'), bool) else None,
             'actor_total': _num(item.get('actor_total')),
             'defense_total': _num(item.get('defense_total')),
@@ -6464,6 +6492,19 @@ SERVER_ERROR_EN = {
     'Program Attack требует Black ICE на текущем node': 'Program Attack requires Black ICE on the current node',
     'Program Attack target entity недоступна': 'Program Attack target entity is unavailable',
     'Program Attack требует installed Attacker Program': 'Program Attack requires an installed Attacker Program',
+    'Нет права выполнять Black ICE attack': 'No permission to perform a Black ICE attack',
+    'Black ICE attack содержит неподдерживаемые поля': 'Black ICE attack contains unsupported fields',
+    'Black ICE attack требует active target link': 'Black ICE attack requires an active target link',
+    'Source Black ICE Character отсутствует': 'Source Black ICE Character is missing',
+    'Black ICE attack требует hunting entity': 'Black ICE attack requires a hunting entity',
+    'Source Black ICE Program отсутствует': 'Source Black ICE Program is missing',
+    'Black ICE target требует Netrunner Character': 'Black ICE target requires a Netrunner Character',
+    'Black ICE target должен быть Jacked In на том же node': 'Black ICE target must be Jacked In on the same node',
+    'Black ICE target не имеет Interface Rank': 'Black ICE target has no Interface Rank',
+    'Укажите причину Black ICE attack': 'Provide a reason for the Black ICE attack',
+    'Нет Rezzed Programs для Anti-Program Black ICE': 'No Rezzed Programs are available for Anti-Program Black ICE',
+    'Anti-Program Black ICE effect требует manual resolution': 'Anti-Program Black ICE effect requires manual resolution',
+    'Выбранная target Program не является Rezzed': 'Selected target Program is not Rezzed',
     'Неподдерживаемый тип modification host': 'Unsupported modification host type',
     'Сначала снимите зависимые vehicle upgrades': 'Remove dependent vehicle upgrades first',
     'Vehicle instance не найден': 'Vehicle instance not found',
@@ -10933,9 +10974,40 @@ class Handler(BaseHTTPRequestHandler):
                 'rez_max': entity.get('rez_max'),
                 'visible': link['visible'],
             }
+            source_program = next((item for item in character_data.get('inventory') or []
+                                   if isinstance(item, dict) and
+                                   item.get('instance_id') == entity.get('source_program_instance_id')), {})
+            effect_profile = black_ice_effect_profile(source_program)
+            payload['effect_resolution'] = effect_profile['resolution']
             if not player_view:
                 payload['character_revision'] = character['revision']
                 payload['initiative_roll'] = entity.get('initiative_roll')
+                payload['effect_profile'] = effect_profile
+                if target and target['character_id']:
+                    target_character = conn.execute(
+                        'SELECT id,revision,data FROM characters WHERE id=?',
+                        (target['character_id'],)).fetchone()
+                    if target_character:
+                        target_data = enrich_owned_item_interactions(
+                            ensure_progression(json.loads(target_character['data'])))
+                        target_modifications = character_modifications(
+                            conn, target_character['id'])
+                        target_decks = character_effective_cyberdecks(
+                            target_data, target_modifications)
+                        payload['target_interface_rank'] = character_interface_rank(target_data)
+                        payload['target_character_revision'] = target_character['revision']
+                        payload['valid_target_programs'] = [
+                            {
+                                'instance_id': program['instance_id'],
+                                'name': program['name'],
+                                'def': int(_num((program.get('mechanics') or {}).get('def')) or 0),
+                                'rez_current': int(_num((program.get('runtime') or {}).get('rez_current')) or 0),
+                                'rez_max': int(_num((program.get('runtime') or {}).get('rez_max')) or 0),
+                                'category': (program.get('runtime') or {}).get('category'),
+                            }
+                            for deck in target_decks.values()
+                            for program in deck.get('programs') or []
+                            if (program.get('runtime') or {}).get('status') == 'rezzed']
             else:
                 for private_key in ('character_id', 'target_combatant_id', 'visible',
                                     'node_id'):
@@ -12078,6 +12150,244 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     @atomic_endpoint
+    def api_session_black_ice_attack(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_combatants' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права выполнять Black ICE attack')
+        allowed = {'selection_mode', 'target_program_instance_id',
+                   'target_character_revision', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Black ICE attack содержит неподдерживаемые поля')
+        entity_id = str(m.group(2)).lower()
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        state_before = copy.deepcopy(state)
+        link = next((item for item in state['links']
+                     if item['net_entity_id'] == entity_id and item['active']), None)
+        if not link or not link.get('target_combatant_id'):
+            raise ApiError(409, 'Black ICE attack требует active target link')
+        source_character = conn.execute('SELECT * FROM characters WHERE id=?',
+                                        (link['character_id'],)).fetchone()
+        if not source_character:
+            raise ApiError(409, 'Source Black ICE Character отсутствует')
+        source_data = enrich_owned_item_interactions(
+            ensure_progression(json.loads(source_character['data'])))
+        entity = (source_data.get('net_entities') or {}).get(entity_id)
+        if not isinstance(entity, dict) or entity.get('status') != 'hunting':
+            raise ApiError(409, 'Black ICE attack требует hunting entity')
+        source_program = next((item for item in source_data.get('inventory') or []
+                               if isinstance(item, dict) and
+                               item.get('instance_id') == entity.get('source_program_instance_id')), None)
+        if not source_program:
+            raise ApiError(409, 'Source Black ICE Program отсутствует')
+        target_combatant = conn.execute(
+            'SELECT * FROM session_combatants WHERE session_id=? AND id=?',
+            (session['id'], link['target_combatant_id'])).fetchone()
+        if not target_combatant or not target_combatant['character_id']:
+            raise ApiError(409, 'Black ICE target требует Netrunner Character')
+        target_runner = next((item for item in state['runners']
+                              if item['combatant_id'] == target_combatant['id']), None)
+        if (not target_runner or not target_runner['jacked_in'] or
+                target_runner.get('node_id') != link.get('node_id')):
+            raise ApiError(409, 'Black ICE target должен быть Jacked In на том же node')
+        target_character = conn.execute('SELECT * FROM characters WHERE id=?',
+                                        (target_combatant['character_id'],)).fetchone()
+        target_data = enrich_owned_item_interactions(
+            ensure_progression(json.loads(target_character['data'])))
+        target_interface = character_interface_rank(target_data)
+        if target_interface <= 0:
+            raise ApiError(409, 'Black ICE target не имеет Interface Rank')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину Black ICE attack')
+        effect = black_ice_effect_profile(source_program)
+        attack_die = secrets.randbelow(10) + 1
+        attack_total = int(entity.get('atk') or 0) + attack_die
+        target_before = None
+        target_ledger_id = None
+        removed_modification_ids = []
+        now = time.time()
+        result = {
+            'action': 'black_ice_attack', 'actor_entity_id': entity_id,
+            'name': entity.get('name'), 'attack_roll': attack_die,
+            'attack_total': attack_total, 'effect_profile': effect,
+        }
+        target_program_id = None
+        if entity.get('target_type') == 'enemy_program_source':
+            target_modifications = character_modifications(conn, target_character['id'])
+            target_decks = character_effective_cyberdecks(target_data, target_modifications)
+            valid_programs = [
+                program for deck in target_decks.values()
+                for program in deck.get('programs') or []
+                if (program.get('runtime') or {}).get('status') == 'rezzed']
+            if not valid_programs:
+                raise ApiError(409, 'Нет Rezzed Programs для Anti-Program Black ICE')
+            selection_mode = str((body or {}).get('selection_mode') or 'random').lower()
+            if selection_mode == 'random':
+                target_program = valid_programs[secrets.randbelow(len(valid_programs))]
+            elif selection_mode == 'override':
+                requested_id = str((body or {}).get('target_program_instance_id') or '').lower()
+                target_program = next((program for program in valid_programs
+                                       if program['instance_id'] == requested_id), None)
+                if not target_program:
+                    raise ApiError(400, 'Выбранная target Program не является Rezzed')
+            else:
+                raise ApiError(400, 'selection_mode: random/override')
+            expected_revision = _num((body or {}).get('target_character_revision'))
+            if expected_revision != (_row_value(target_character, 'revision', 0) or 0):
+                raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+            target_program_id = target_program['instance_id']
+            defense_die = secrets.randbelow(10) + 1
+            defense_total = int(_num((target_program.get('mechanics') or {}).get('def')) or 0) + defense_die
+            success = attack_total > defense_total
+            result.update({
+                'selection_mode': selection_mode,
+                'target_program_instance_id': target_program_id,
+                'target_program_name': target_program['name'],
+                'defense_roll': defense_die, 'defense_total': defense_total,
+                'success': success,
+            })
+            if success:
+                damage = roll_dice(effect.get('damage_dice') or 0, 6)
+                if not damage['rolls']:
+                    raise ApiError(409, 'Anti-Program Black ICE effect требует manual resolution')
+                target_before = copy.deepcopy(target_data)
+                program_item = next(item for item in target_data.get('inventory') or []
+                                    if isinstance(item, dict) and
+                                    item.get('instance_id') == target_program_id)
+                runtime = initial_program_runtime_state(
+                    program_item, (target_program.get('runtime') or {}).get('deck_instance_id'),
+                    (target_program.get('runtime') or {}).get('modification_id'),
+                    (target_data.get('program_state') or {}).get(target_program_id))
+                previous_rez = runtime['rez_current']
+                destroyed = damage['total'] >= previous_rez and effect['destroy_on_derez']
+                if destroyed:
+                    program_modification = next(
+                        item for item in target_modifications
+                        if item.get('upgrade_instance_id') == target_program_id)
+                    backup_modification = next((
+                        item for item in target_modifications
+                        if item.get('host_instance_id') == program_modification.get('host_instance_id') and
+                        (next((owned for owned in target_data.get('inventory') or []
+                               if isinstance(owned, dict) and
+                               owned.get('instance_id') == item.get('upgrade_instance_id')), {}) or {}).get('name') == 'Backup Drive'), None)
+                    if runtime['category'] != 'black_ice' and backup_modification:
+                        backup_state = target_data.setdefault('modification_state', {}).setdefault(
+                            backup_modification['modification_id'],
+                            {'resource_type': 'backup_drive', 'saved_programs': []})
+                        backup_state.setdefault('saved_programs', []).append({
+                            'program_instance_id': target_program_id,
+                            'modification_id': program_modification['modification_id'],
+                            'catalog_item_id': catalog_item_id_for_entry(program_item),
+                            'name': program_item.get('name'),
+                            'runtime_before': copy.deepcopy(runtime), 'saved_at': now,
+                        })
+                    runtime['status'] = 'destroyed'
+                    runtime['rez_current'] = 0
+                    if runtime['category'] == 'black_ice':
+                        target_ice = next((ice for ice in
+                                           (target_data.get('net_entities') or {}).values()
+                                           if isinstance(ice, dict) and
+                                           ice.get('source_program_instance_id') == target_program_id and
+                                           ice.get('status') in ('lying_in_wait', 'hunting', 'derezzed')), None)
+                        if target_ice:
+                            target_ice['status'] = 'destroyed'
+                            target_ice['rez_current'] = 0
+                            target_ice['archived_at'] = now
+                            target_ice['updated_at'] = now
+                            linked_target_ice = next((item for item in state['links']
+                                                      if item['net_entity_id'] ==
+                                                      target_ice.get('net_entity_id')), None)
+                            if linked_target_ice:
+                                linked_target_ice['active'] = False
+                    program_item['state'] = 'broken'
+                    program_item.pop('host_instance_id', None)
+                    conn.execute(
+                        'UPDATE item_modifications SET active=0,removed_by=?,removed_at=?,updated=? '
+                        'WHERE modification_id=?',
+                        (user['id'], now, now, program_modification['modification_id']))
+                    removed_modification_ids.append(program_modification['modification_id'])
+                else:
+                    runtime['rez_current'] = max(0, previous_rez - damage['total'])
+                    if runtime['rez_current'] == 0:
+                        runtime['status'] = 'derezzed'
+                target_data.setdefault('program_state', {})[target_program_id] = runtime
+                result.update({
+                    'damage_rolls': damage['rolls'], 'damage_total': damage['total'],
+                    'rez_before': previous_rez, 'rez_after': runtime['rez_current'],
+                    'destroyed': destroyed,
+                })
+        else:
+            defense_die = secrets.randbelow(10) + 1
+            defense_total = target_interface + defense_die
+            result.update({
+                'target_combatant_id': target_combatant['id'],
+                'target_interface_rank': target_interface,
+                'defense_roll': defense_die, 'defense_total': defense_total,
+                'success': attack_total > defense_total,
+                'manual_effect': effect['manual_effect'],
+            })
+        summary = (f'{entity.get("name")} attack {attack_total} vs '
+                   f'{result.get("defense_total")} → '
+                   f'{"hit" if result.get("success") else "miss"}')
+        action_entry = {
+            'action_id': secrets.token_hex(16), 'combatant_id': target_combatant['id'],
+            'actor_entity_id': entity_id, 'action': 'black_ice_attack',
+            'target_node_id': link.get('node_id'),
+            'target_program_instance_id': target_program_id,
+            'success': result.get('success'), 'actor_total': attack_total,
+            'defense_total': result.get('defense_total'), 'created': now,
+            'summary': summary,
+        }
+        state.setdefault('action_log', []).append(action_entry)
+        state['action_log'] = state['action_log'][-100:]
+        queue_count = sum(1 for item in state['links']
+                          if item['active'] and (_num(item.get('initiative')) or 0) > 0)
+        state['active_turn'] = min(state['active_turn'], max(0, queue_count - 1))
+        if target_before is not None:
+            validate_active_modification_references(
+                conn, target_character['id'], target_data)
+            persist_character_item_instances(
+                conn, target_character['id'], target_data,
+                'black_ice_attack', source_ref=summary, prune=True)
+            revision_before = _row_value(target_character, 'revision', 0) or 0
+            target_ledger_id = record_character_change_set(
+                conn, target_character['id'], user['id'], target_before, target_data,
+                f'Live NET {summary}: {reason}', revision_before,
+                revision_before + 1,
+                category='modification' if removed_modification_ids else 'item_action')
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (target_ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            if removed_modification_ids:
+                delta['removed_modification_ids'] = removed_modification_ids
+            delta['session_net_change'] = {
+                'session_id': session['id'], 'before': state_before,
+                'after': copy.deepcopy(state),
+            }
+            conn.execute('UPDATE character_ledger SET session_id=?,delta_json=? WHERE id=?',
+                         (session['id'], json.dumps(delta, ensure_ascii=False),
+                          target_ledger_id))
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                         (json.dumps(target_data, ensure_ascii=False), now,
+                          revision_before + 1, target_character['id']))
+            result['target_character_revision'] = revision_before + 1
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_action',
+             json.dumps(state_before, ensure_ascii=False),
+             json.dumps(action_entry, ensure_ascii=False), reason, now))
+        conn.commit()
+        updated = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (session['id'],)).fetchone()
+        self.send_json({'result': result,
+                        'session': self.session_payload(conn, updated, user)})
+
+    @atomic_endpoint
     def api_session_net_state_update(self, conn, qs, m, body):
         user = self.require_user(conn)
         session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
@@ -12682,6 +12992,7 @@ ROUTES = [
     ('PUT', rx(r'/api/sessions/(\d+)/net/paths/([a-f0-9]{32})'), Handler.api_session_net_path_update),
     ('DELETE', rx(r'/api/sessions/(\d+)/net/paths/([a-f0-9]{32})'), Handler.api_session_net_path_delete),
     ('POST', rx(r'/api/sessions/(\d+)/net/actions'), Handler.api_session_net_action),
+    ('POST', rx(r'/api/sessions/(\d+)/net/entities/([a-f0-9]{32})/attack'), Handler.api_session_black_ice_attack),
     ('PUT', rx(r'/api/sessions/(\d+)/net/state'), Handler.api_session_net_state_update),
     ('GET', rx(r'/api/sessions/(\d+)/access'), Handler.api_session_access),
     ('POST', rx(r'/api/sessions/(\d+)/access'), Handler.api_session_access_grant),
