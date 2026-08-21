@@ -3352,14 +3352,21 @@ NET_ENTITY_STATUSES = {
 BLACK_ICE_ANTI_PROGRAM_DAMAGE = {
     'Dragon': 6, 'Killer': 4, 'Sabertooth': 6,
 }
+ATTACKER_PROGRAM_BLACK_ICE_DAMAGE = {'Sword': 3, 'Banhammer': 2}
 
 
 def black_ice_effect_profile(item):
     catalog_item = item_by_id(catalog_item_id_for_entry(item)) or item or {}
     name = str(catalog_item.get('name') or '')
     dice = BLACK_ICE_ANTI_PROGRAM_DAMAGE.get(name)
+    if name == 'Asp':
+        resolution = 'automated_random_destroy'
+    elif name == 'Raven':
+        resolution = 'automated_random_derez_plus_manual'
+    else:
+        resolution = 'automated_rez_damage' if dice else 'manual_effect'
     return {
-        'resolution': 'automated_rez_damage' if dice else 'manual_effect',
+        'resolution': resolution,
         'damage_dice': dice, 'damage_sides': 6 if dice else None,
         'destroy_on_derez': bool(dice),
         'source': catalog_item.get('source'),
@@ -4194,6 +4201,10 @@ def session_net_state(value):
             'jacked_in': item.get('jacked_in') is True,
             'interface_rank': max(0, min(10, int(_num(item.get('interface_rank')) or 0))),
             'actions_recorded': max(0, int(_num(item.get('actions_recorded')) or 0)),
+            'action_round': max(0, int(_num(item.get('action_round')) or 0)),
+            'actions_used': max(0, int(_num(item.get('actions_used')) or 0)),
+            'next_action_penalty': max(0, min(3, int(_num(
+                item.get('next_action_penalty')) or 0))),
             'last_action_at': _num(item.get('last_action_at')),
         })
     action_log = []
@@ -4233,6 +4244,19 @@ def character_interface_rank(data):
     return max([int(_num(role.get('rank')) or 0)
                 for role in data.get('roles') or []
                 if isinstance(role, dict) and role.get('name') == 'Netrunner'] or [0])
+
+
+def net_actions_for_interface(rank):
+    rank = max(0, min(10, int(_num(rank) or 0)))
+    if rank <= 0:
+        return 0
+    if rank <= 3:
+        return 2
+    if rank <= 6:
+        return 3
+    if rank <= 9:
+        return 4
+    return 5
 
 
 def session_net_path_between(state, from_node_id, to_node_id, *, require_visible=True):
@@ -6492,6 +6516,9 @@ SERVER_ERROR_EN = {
     'Program Attack требует Black ICE на текущем node': 'Program Attack requires Black ICE on the current node',
     'Program Attack target entity недоступна': 'Program Attack target entity is unavailable',
     'Program Attack требует installed Attacker Program': 'Program Attack requires an installed Attacker Program',
+    'NET Action budget исчерпан для текущего NET Round': 'NET Action budget is exhausted for the current NET Round',
+    'Нет допустимых Programs для curated Black ICE effect': 'No eligible Programs for the curated Black ICE effect',
+    'Выбранная target Program недопустима': 'Selected target Program is not eligible',
     'Нет права выполнять Black ICE attack': 'No permission to perform a Black ICE attack',
     'Black ICE attack содержит неподдерживаемые поля': 'Black ICE attack contains unsupported fields',
     'Black ICE attack требует active target link': 'Black ICE attack requires an active target link',
@@ -10996,7 +11023,7 @@ class Handler(BaseHTTPRequestHandler):
                             target_data, target_modifications)
                         payload['target_interface_rank'] = character_interface_rank(target_data)
                         payload['target_character_revision'] = target_character['revision']
-                        payload['valid_target_programs'] = [
+                        all_target_programs = [
                             {
                                 'instance_id': program['instance_id'],
                                 'name': program['name'],
@@ -11004,10 +11031,20 @@ class Handler(BaseHTTPRequestHandler):
                                 'rez_current': int(_num((program.get('runtime') or {}).get('rez_current')) or 0),
                                 'rez_max': int(_num((program.get('runtime') or {}).get('rez_max')) or 0),
                                 'category': (program.get('runtime') or {}).get('category'),
+                                'status': (program.get('runtime') or {}).get('status'),
                             }
                             for deck in target_decks.values()
-                            for program in deck.get('programs') or []
-                            if (program.get('runtime') or {}).get('status') == 'rezzed']
+                            for program in deck.get('programs') or []]
+                        payload['valid_target_programs'] = [
+                            program for program in all_target_programs
+                            if program['status'] == 'rezzed']
+                        if effect_profile['resolution'] == 'automated_random_destroy':
+                            payload['curated_target_programs'] = all_target_programs
+                        elif effect_profile['resolution'] == 'automated_random_derez_plus_manual':
+                            payload['curated_target_programs'] = [
+                                program for program in all_target_programs
+                                if program['status'] == 'rezzed' and
+                                program['category'] == 'defender']
             else:
                 for private_key in ('character_id', 'target_combatant_id', 'visible',
                                     'node_id'):
@@ -11042,8 +11079,15 @@ class Handler(BaseHTTPRequestHandler):
             runner = runner_by_combatant.get(combatant['id']) or {
                 'combatant_id': combatant['id'], 'character_id': character['id'],
                 'node_id': None, 'jacked_in': False, 'actions_recorded': 0,
+                'action_round': state['round'], 'actions_used': 0,
+                'next_action_penalty': 0,
             }
             node = node_by_id.get(runner.get('node_id'))
+            current_actions_used = runner.get('actions_used', 0) \
+                if runner.get('action_round') == state['round'] else 0
+            action_penalty = runner.get('next_action_penalty', 0) \
+                if runner.get('action_round') == state['round'] else 0
+            actions_max = max(2, net_actions_for_interface(interface_rank) - action_penalty)
             runner_payload = {
                 'combatant_id': combatant['id'],
                 'character_id': character['id'],
@@ -11052,6 +11096,9 @@ class Handler(BaseHTTPRequestHandler):
                 'node_label': node['label'] if node else None,
                 'interface_rank': interface_rank,
                 'actions_recorded': runner.get('actions_recorded', 0),
+                'actions_used': current_actions_used,
+                'actions_max': actions_max,
+                'actions_remaining': max(0, actions_max - current_actions_used),
             }
             can_act = bool(user and character['owner_id'] == user['id'])
             if not player_view or can_act:
@@ -11940,11 +11987,20 @@ class Handler(BaseHTTPRequestHandler):
                 'combatant_id': actor['id'], 'character_id': character['id'],
                 'node_id': None, 'previous_node_id': None, 'jacked_in': False,
                 'interface_rank': interface_rank, 'actions_recorded': 0,
-                'last_action_at': None,
+                'action_round': state['round'], 'actions_used': 0,
+                'next_action_penalty': 0, 'last_action_at': None,
             }
             state['runners'].append(runner)
         runner['interface_rank'] = interface_rank
         action = str((body or {}).get('action') or '').lower()
+        if runner.get('action_round') != state['round']:
+            runner['action_round'] = state['round']
+            runner['actions_used'] = 0
+            runner['next_action_penalty'] = 0
+        consumes_net_action = action not in ('jack_in', 'jack_out')
+        actions_max = net_actions_for_interface(interface_rank)
+        if consumes_net_action and runner.get('actions_used', 0) >= actions_max:
+            raise ApiError(409, 'NET Action budget исчерпан для текущего NET Round')
         target_node_id = str((body or {}).get('target_node_id') or '').lower()
         target_node = node_by_id.get(target_node_id)
         now = time.time()
@@ -12096,9 +12152,20 @@ class Handler(BaseHTTPRequestHandler):
                     'manual_effect': str(catalog_program.get('desc') or '')[:2000],
                     'summary': f'{program.get("name")} attack {attack} vs DEF {defense}',
                 })
+                damage_dice = ATTACKER_PROGRAM_BLACK_ICE_DAMAGE.get(
+                    str(program.get('name') or ''))
+                if success and damage_dice:
+                    damage = roll_dice(damage_dice, 6)
+                    result.update({
+                        'damage_rolls': damage['rolls'],
+                        'damage_total': damage['total'],
+                        'damage_target': 'black_ice_rez',
+                        'damage_application': 'manual',
+                    })
             else:
                 raise ApiError(400, 'NET action: jack_in/jack_out/move/pathfinder/backdoor/eye_dee/control/program_attack')
             runner['actions_recorded'] += 1
+            runner['actions_used'] = runner.get('actions_used', 0) + 1
         runner['last_action_at'] = now
         action_entry = {
             'action_id': secrets.token_hex(16), 'combatant_id': actor['id'],
@@ -12328,6 +12395,99 @@ class Handler(BaseHTTPRequestHandler):
                 'success': attack_total > defense_total,
                 'manual_effect': effect['manual_effect'],
             })
+            if result['success'] and effect['resolution'] in (
+                    'automated_random_destroy', 'automated_random_derez_plus_manual'):
+                target_modifications = character_modifications(conn, target_character['id'])
+                target_decks = character_effective_cyberdecks(target_data, target_modifications)
+                eligible = [
+                    program for deck in target_decks.values()
+                    for program in deck.get('programs') or []
+                    if (effect['resolution'] == 'automated_random_destroy' or
+                        ((program.get('runtime') or {}).get('status') == 'rezzed' and
+                         (program.get('runtime') or {}).get('category') == 'defender'))]
+                if not eligible:
+                    raise ApiError(409, 'Нет допустимых Programs для curated Black ICE effect')
+                selection_mode = str((body or {}).get('selection_mode') or 'random').lower()
+                if selection_mode == 'random':
+                    target_program = eligible[secrets.randbelow(len(eligible))]
+                elif selection_mode == 'override':
+                    requested_id = str((body or {}).get('target_program_instance_id') or '').lower()
+                    target_program = next((program for program in eligible
+                                           if program['instance_id'] == requested_id), None)
+                    if not target_program:
+                        raise ApiError(400, 'Выбранная target Program недопустима')
+                else:
+                    raise ApiError(400, 'selection_mode: random/override')
+                expected_revision = _num((body or {}).get('target_character_revision'))
+                if expected_revision != (_row_value(target_character, 'revision', 0) or 0):
+                    raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+                target_program_id = target_program['instance_id']
+                target_before = copy.deepcopy(target_data)
+                program_item = next(item for item in target_data.get('inventory') or []
+                                    if isinstance(item, dict) and
+                                    item.get('instance_id') == target_program_id)
+                runtime = initial_program_runtime_state(
+                    program_item, (target_program.get('runtime') or {}).get('deck_instance_id'),
+                    (target_program.get('runtime') or {}).get('modification_id'),
+                    (target_data.get('program_state') or {}).get(target_program_id))
+                if effect['resolution'] == 'automated_random_destroy':
+                    program_modification = next(
+                        item for item in target_modifications
+                        if item.get('upgrade_instance_id') == target_program_id)
+                    backup_modification = next((
+                        item for item in target_modifications
+                        if item.get('host_instance_id') == program_modification.get('host_instance_id') and
+                        (next((owned for owned in target_data.get('inventory') or []
+                               if isinstance(owned, dict) and
+                               owned.get('instance_id') == item.get('upgrade_instance_id')), {}) or {}).get('name') == 'Backup Drive'), None)
+                    if runtime['category'] != 'black_ice' and backup_modification:
+                        backup_state = target_data.setdefault('modification_state', {}).setdefault(
+                            backup_modification['modification_id'],
+                            {'resource_type': 'backup_drive', 'saved_programs': []})
+                        backup_state.setdefault('saved_programs', []).append({
+                            'program_instance_id': target_program_id,
+                            'modification_id': program_modification['modification_id'],
+                            'catalog_item_id': catalog_item_id_for_entry(program_item),
+                            'name': program_item.get('name'),
+                            'runtime_before': copy.deepcopy(runtime), 'saved_at': now,
+                        })
+                    runtime['status'] = 'destroyed'
+                    runtime['rez_current'] = 0
+                    if runtime['category'] == 'black_ice':
+                        target_ice = next((ice for ice in
+                                           (target_data.get('net_entities') or {}).values()
+                                           if isinstance(ice, dict) and
+                                           ice.get('source_program_instance_id') == target_program_id and
+                                           ice.get('status') in ('lying_in_wait', 'hunting', 'derezzed')), None)
+                        if target_ice:
+                            target_ice['status'] = 'destroyed'
+                            target_ice['rez_current'] = 0
+                            target_ice['archived_at'] = now
+                            target_ice['updated_at'] = now
+                            linked_target_ice = next((item for item in state['links']
+                                                      if item['net_entity_id'] ==
+                                                      target_ice.get('net_entity_id')), None)
+                            if linked_target_ice:
+                                linked_target_ice['active'] = False
+                    program_item['state'] = 'broken'
+                    program_item.pop('host_instance_id', None)
+                    conn.execute(
+                        'UPDATE item_modifications SET active=0,removed_by=?,removed_at=?,updated=? '
+                        'WHERE modification_id=?',
+                        (user['id'], now, now, program_modification['modification_id']))
+                    removed_modification_ids.append(program_modification['modification_id'])
+                    result['destroyed'] = True
+                else:
+                    runtime['status'] = 'derezzed'
+                    runtime['rez_current'] = 0
+                    result['derezzed'] = True
+                target_data.setdefault('program_state', {})[target_program_id] = runtime
+                result.update({
+                    'selection_mode': selection_mode,
+                    'target_program_instance_id': target_program_id,
+                    'target_program_name': target_program['name'],
+                    'rez_after': runtime['rez_current'],
+                })
         summary = (f'{entity.get("name")} attack {attack_total} vs '
                    f'{result.get("defense_total")} → '
                    f'{"hit" if result.get("success") else "miss"}')

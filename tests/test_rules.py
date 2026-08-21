@@ -927,6 +927,9 @@ class CyberdeckModificationTests(unittest.TestCase):
         }
 
     def test_net_action_helpers_use_interface_and_path_direction(self):
+        self.assertEqual([server.net_actions_for_interface(rank)
+                          for rank in (1, 3, 4, 6, 7, 9, 10)],
+                         [2, 2, 3, 3, 4, 4, 5])
         self.assertEqual(server.character_interface_rank({
             'roles': [{'name': 'Netrunner', 'rank': 4},
                       {'name': 'Solo', 'rank': 5}]}), 4)
@@ -979,6 +982,8 @@ class CyberdeckModificationTests(unittest.TestCase):
     def test_black_ice_effect_profiles_automate_only_unambiguous_rez_damage(self):
         killer = self.owned('programs-25', 'e' * 32)
         hellhound = self.owned('programs-17', 'f' * 32)
+        asp = self.owned('programs-15', '1' * 31 + '0')
+        raven = self.owned('programs-20', '2' * 31 + '0')
         killer_effect = server.black_ice_effect_profile(killer)
         hellhound_effect = server.black_ice_effect_profile(hellhound)
         self.assertEqual((killer_effect['resolution'], killer_effect['damage_dice']),
@@ -986,6 +991,10 @@ class CyberdeckModificationTests(unittest.TestCase):
         self.assertTrue(killer_effect['destroy_on_derez'])
         self.assertEqual(hellhound_effect['resolution'], 'manual_effect')
         self.assertIn('2d6 damage', hellhound_effect['manual_effect'])
+        self.assertEqual(server.black_ice_effect_profile(asp)['resolution'],
+                         'automated_random_destroy')
+        self.assertEqual(server.black_ice_effect_profile(raven)['resolution'],
+                         'automated_random_derez_plus_manual')
         rolled = server.roll_dice(4, 6)
         self.assertEqual(len(rolled['rolls']), 4)
         self.assertEqual(rolled['total'], sum(rolled['rolls']))

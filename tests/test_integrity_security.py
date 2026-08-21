@@ -1352,7 +1352,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
 
     def test_black_ice_attacks_apply_anti_program_damage_and_keep_brain_effects_manual(self):
         source_data = copy.deepcopy(self.character_data)
-        source_ids = ('net_stuff-1', 'programs-25', 'programs-17')
+        source_ids = ('net_stuff-1', 'programs-25', 'programs-17', 'programs-20')
         source_data['inventory'] = [
             {
                 'key': item_id, 'catalog_item_id': item_id,
@@ -1370,7 +1370,8 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         source_by_name = {item['name']: item
                           for item in source_updated['data']['inventory']}
         source_deck = source_by_name['Cyberdeck (Standard Quality)']
-        killer, hellhound = source_by_name['Killer'], source_by_name['Hellhound']
+        killer, hellhound, raven = (
+            source_by_name['Killer'], source_by_name['Hellhound'], source_by_name['Raven'])
         self.call(server.Handler.api_character_modification_install, self.match(1), {
             'revision': 1, 'host_instance_id': source_deck['instance_id'],
             'upgrade_instance_id': killer['instance_id'], 'manual_confirm': False,
@@ -1380,6 +1381,11 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             'revision': 2, 'host_instance_id': source_deck['instance_id'],
             'upgrade_instance_id': hellhound['instance_id'], 'manual_confirm': False,
             'reason': 'Install Hellhound attack source',
+        })
+        self.call(server.Handler.api_character_modification_install, self.match(1), {
+            'revision': 3, 'host_instance_id': source_deck['instance_id'],
+            'upgrade_instance_id': raven['instance_id'], 'manual_confirm': False,
+            'reason': 'Install Raven curated effect source',
         })
 
         target_data = copy.deepcopy(self.character_data)
@@ -1470,7 +1476,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             f'1/{source_deck["instance_id"]}/{killer["instance_id"]}')
         killer_entity = self.call(server.Handler.api_character_black_ice_deploy,
                                   killer_deploy, {
-            'revision': 3, 'mode': 'deploy_combat', 'session_id': session_id,
+            'revision': 4, 'mode': 'deploy_combat', 'session_id': session_id,
             'session_floor_id': floor['floor_id'], 'session_node_id': node['node_id'],
             'target_combatant_id': target_combatant,
             'reason': 'Deploy Killer against target Program source',
@@ -1480,10 +1486,20 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             f'1/{source_deck["instance_id"]}/{hellhound["instance_id"]}')
         hellhound_entity = self.call(server.Handler.api_character_black_ice_deploy,
                                      hellhound_deploy, {
-            'revision': 4, 'mode': 'deploy_combat', 'session_id': session_id,
+            'revision': 5, 'mode': 'deploy_combat', 'session_id': session_id,
             'session_floor_id': floor['floor_id'], 'session_node_id': node['node_id'],
             'target_combatant_id': target_combatant,
             'reason': 'Deploy Hellhound against target Netrunner',
+        })['net_entity']
+        raven_deploy = re.match(
+            r'^(\d+)/([a-f0-9]{32})/([a-f0-9]{32})$',
+            f'1/{source_deck["instance_id"]}/{raven["instance_id"]}')
+        raven_entity = self.call(server.Handler.api_character_black_ice_deploy,
+                                 raven_deploy, {
+            'revision': 6, 'mode': 'deploy_combat', 'session_id': session_id,
+            'session_floor_id': floor['floor_id'], 'session_node_id': node['node_id'],
+            'target_combatant_id': target_combatant,
+            'reason': 'Deploy Raven against target Defender Program',
         })['net_entity']
 
         self.current = self.user('gm')
@@ -1528,6 +1544,24 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertEqual(reverted['data']['program_state'][armor['instance_id']]['status'],
                          'rezzed')
 
+        raven_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$',
+            f'{session_id}/{raven_entity["net_entity_id"]}')
+        with mock.patch.object(server.secrets, 'randbelow', side_effect=[9, 0, 0]):
+            raven_attack = self.call(server.Handler.api_session_black_ice_attack,
+                                     raven_match, {
+                'selection_mode': 'random', 'target_character_revision': 6,
+                'reason': 'Raven randomly Derezzes target Defender',
+            })
+        raven_result = raven_attack['result']
+        self.assertTrue(raven_result['success'])
+        self.assertTrue(raven_result['derezzed'])
+        self.assertEqual(raven_result['target_program_name'], 'Armor')
+        raven_target = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=2').fetchone()['data'])
+        self.assertEqual(raven_target['program_state'][armor['instance_id']]['status'],
+                         'derezzed')
+
         hellhound_match = re.match(
             r'^(\d+)/([a-f0-9]{32})$',
             f'{session_id}/{hellhound_entity["net_entity_id"]}')
@@ -1542,7 +1576,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertIn('2d6 damage', manual_result['manual_effect'])
         self.assertEqual(
             self.conn.execute('SELECT revision FROM characters WHERE id=2').fetchone()['revision'],
-            6)
+            7)
 
     def test_live_net_session_validates_floors_targets_queue_and_gm_actions(self):
         edited = copy.deepcopy(self.character_data)
@@ -1879,6 +1913,18 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             'reason': 'Backdoor Security Password',
         })
         self.assertTrue(backdoor['result']['success'])
+        with self.assertRaises(server.ApiError) as budget_exhausted:
+            self.call(server.Handler.api_session_net_action, action_match, {
+                'action': 'eye_dee', 'actor_combatant_id': actor_id,
+                'reason': 'Try exceeding Interface Rank action budget',
+            })
+        self.assertEqual(budget_exhausted.exception.status, 409)
+        self.current = self.user('gm')
+        self.call(server.Handler.api_session_net_state_update, action_match, {
+            'round': 1, 'active_turn': 0,
+            'reason': 'Advance NET Round after three actions',
+        })
+        self.current = self.user('runner')
         self.call(server.Handler.api_session_net_action, action_match, {
             'action': 'move', 'actor_combatant_id': actor_id,
             'target_node_id': nodes['control']['node_id'],
@@ -1897,17 +1943,26 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         control_state = next(item for item in controlled['session']['net']['nodes']
                              if item['node_id'] == nodes['control']['node_id'])
         self.assertTrue(control_state['controlled'])
-
-        attack = self.call(server.Handler.api_session_net_action, action_match, {
-            'action': 'program_attack', 'actor_combatant_id': actor_id,
-            'program_instance_id': banhammer['instance_id'],
-            'target_entity_id': entity_id, 'character_revision': 4,
-            'reason': 'Run Banhammer against Killer; resolve damage manually',
+        self.current = self.user('gm')
+        self.call(server.Handler.api_session_net_state_update, action_match, {
+            'round': 2, 'active_turn': 0,
+            'reason': 'Advance NET Round before Program Attack',
         })
+        self.current = self.user('runner')
+
+        with mock.patch.object(server.secrets, 'randbelow', side_effect=[9, 0, 5, 5]):
+            attack = self.call(server.Handler.api_session_net_action, action_match, {
+                'action': 'program_attack', 'actor_combatant_id': actor_id,
+                'program_instance_id': banhammer['instance_id'],
+                'target_entity_id': entity_id, 'character_revision': 4,
+                'reason': 'Run Banhammer against Killer; resolve damage manually',
+            })
         result = attack['result']
         self.assertIn(result['success'], (True, False))
         self.assertGreaterEqual(result['actor_total'], 6)
         self.assertGreaterEqual(result['defense_total'], 3)
+        self.assertEqual(result['damage_total'], 12)
+        self.assertEqual(result['damage_application'], 'manual')
         self.assertIn('Does 3d6 REZ', result['manual_effect'])
         self.assertEqual(result['character_revision'], 5)
         stored = json.loads(self.conn.execute(

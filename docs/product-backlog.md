@@ -3050,7 +3050,18 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - target Program update, relational modification removal, Backup contents, Session Action Log и Character Ledger записываются одной atomic transaction;
 - linked Ledger revert восстанавливает Program runtime/copy/slots/Backup и Session NET snapshot; откат блокируется после последующих Session изменений;
 - Session payload отдаёт GM только validated Rezzed target Programs с DEF/REZ и current Character revision; Player View не получает эти приватные mechanics;
-- Asp/Raven random Program destruction/derez, Anti-Personnel HP/status consequences и Attacker Program damage application остаются manual/следующими curated effect этапами.
+- remaining Anti-Personnel HP/status consequences и cross-character Attacker damage application были оставлены следующим curated effect этапам.
+
+**Статус B.8.8 — реализованы Curated NET Effects и Action Economy:**
+
+- NET Action budget теперь authoritative для каждого Netrunner и NET Round: Interface 1–3 даёт 2 actions, 4–6 — 3, 7–9 — 4, Rank 10 — 5;
+- Jack In/Jack Out не расходуют NET Action, остальные topology/Program actions расходуют budget даже при failed check; новый NET Round автоматически открывает новый budget;
+- Session Dashboard и Player View показывают `used/max`, cumulative action count и блокируют сервером попытку превысить лимит;
+- successful Sword/Banhammer attack дополнительно получает server damage roll 3d6/2d6 против Black ICE; применение к чужому Character runtime пока остаётся `manual`, чтобы не создавать небезопасный multi-character partial revert;
+- Asp при hit случайно выбирает любую installed Program и уничтожает concrete copy; Raven случайно выбирает Rezzed Defender и переводит её в `derezzed`, сохраняя brain damage как `MANUAL EFFECT`;
+- Asp/Raven поддерживают explicit GM override, Character revision guard, stable instance updates, slot release, Backup Drive и linked Session+Character Ledger revert;
+- уничтожение active Black ICE Program корректно архивирует её NET entity и удаляет link из Initiative Queue;
+- Wisp next-turn action penalty, Defense Sequencer unused-Armor trigger, Anti-Personnel HP/status effects и автоматическое применение Sword/Banhammer damage остаются следующими точечными интеграциями.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -3073,8 +3084,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: Cyberdeck/Program runtime, Live NET graph/actions и curated Black ICE opposed attacks/Anti-Program REZ damage;
-    - дальше: remaining curated NET effects, затем Cyberware/Armor/Tech hosts.
+    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET graph/actions, action budget и safe curated Program effects;
+    - дальше: remaining cross-character effects, затем Cyberware/Armor/Tech hosts.
 14. JSON import.
 
 ### Пакет C — Publishing Preview
