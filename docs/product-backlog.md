@@ -3013,7 +3013,19 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Session-scoped GM/Assistant с `edit_combatants` может применять REZ damage, Slide, Engage, Deactivate и Destroy через character endpoint без глобального доступа к чужому Dossier;
 - initial `Lie in Wait` скрыт из Player View; combat deployment и Engage делают entity видимой, после чего Player View показывает отдельную NET queue со stats/REZ/Floor/Target;
 - все deploy/entity/turn/floor операции пишутся в Session Activity; linked Character Ledger revert атомарно возвращает и Character runtime, и Session NET context snapshot;
-- Floor и target теперь validated внутри Session, но полноценные Architecture nodes/paths, преследование между связанными Floors и автоматические Program attacks остаются следующими Architecture/NET combat этапами.
+- Floor и target стали validated внутри Session; полноценный topology graph был вынесен в B.8.5.
+
+**Статус B.8.5 — реализован NET Architecture Graph Foundation:**
+
+- существующий Session `net_state_json` расширен allowlisted `nodes` и `paths` без новой schema migration: B.8.4 migration 11 уже предоставляет безопасный контейнер;
+- GM создаёт nodes типов `Access Point`, `Password`, `File`, `Control`, `Black ICE` и `Objective` с validated Floor, DV 0–29, defense 0–29, reveal/resolved state и приватной заметкой;
+- paths соединяют только существующие разные nodes, имеют `bidirectional`/`one_way` direction, reveal state и optional label; duplicate/self/orphan edges блокируются;
+- dependency-safe deletion запрещает удалять Floor с nodes, node с paths либо node/Floor, используемый active Black ICE entity;
+- Black ICE deployment и Engage теперь могут требовать конкретный validated node; combat deployment автоматически reveal-ит выбранный node, а entity хранит canonical node link;
+- Session Dashboard получил Architecture Graph builder, node reveal/resolve controls, path creation/reveal и topology cards рядом с LIVE NET queue;
+- Player View получает только revealed nodes и paths, причём path показывается лишь когда reveal-разрешены оба endpoint nodes; `gm_note`, internal Floor links и hidden topology server-side не отправляются;
+- вся topology validation выполняется по строгим типам и bounded полям; JavaScript/Python/произвольные effect payloads в nodes не поддерживаются;
+- Pathfinder/Eye-Dee/Backdoor/Control Actions, движение по paths, Password blocking и автоматические attack/effect rolls остаются B.8.6 NET Action Resolution.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -3036,8 +3048,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: Cyberdeck/Program runtime, Backup Drive, Black ICE entities и Live Session NET Queue/Floors/targets;
-    - дальше: NET Architecture nodes/paths и attack resolution, затем Cyberware/Armor/Tech hosts.
+    - готово: Cyberdeck/Program runtime, Backup Drive, Black ICE entities, Live NET Queue и Architecture node/path graph;
+    - дальше: NET Action/attack resolution, затем Cyberware/Armor/Tech hosts.
 14. JSON import.
 
 ### Пакет C — Publishing Preview

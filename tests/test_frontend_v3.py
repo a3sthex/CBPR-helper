@@ -141,7 +141,16 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('chooseBlackIceDeploymentContext', app)
         self.assertIn('/net-contexts', app)
         self.assertIn('session_floor_id', app)
+        self.assertIn('session_node_id', app)
         self.assertIn('target_combatant_id', app)
+        self.assertIn('Architecture Graph', ncnet)
+        self.assertIn('ss-net-node-add', ncnet)
+        self.assertIn('ss-net-path-add', ncnet)
+        self.assertIn('/net/nodes', ncnet)
+        self.assertIn('/net/paths', ncnet)
+        self.assertIn('Revealed NET Architecture', ncnet)
+        self.assertIn('data-net-node-toggle', ncnet)
+        self.assertIn('data-net-path-toggle', ncnet)
 
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')

@@ -926,6 +926,37 @@ class CyberdeckModificationTests(unittest.TestCase):
             'configuration': {},
         }
 
+    def test_session_net_architecture_state_sanitizes_nodes_paths_and_links(self):
+        floor_id, access_id, password_id, path_id = (
+            'a' * 32, 'b' * 32, 'c' * 32, 'd' * 32)
+        state = server.session_net_state({
+            'round': 2, 'active_turn': 1,
+            'floors': [{'floor_id': floor_id, 'label': 'Lobby'}],
+            'nodes': [
+                {'node_id': access_id, 'floor_id': floor_id,
+                 'type': 'access_point', 'label': 'Access', 'visible': True},
+                {'node_id': password_id, 'floor_id': floor_id,
+                 'type': 'password', 'label': 'Password', 'dv': 99,
+                 'defense': -5, 'gm_note': 'secret'},
+                {'node_id': 'e' * 32, 'floor_id': floor_id,
+                 'type': 'javascript', 'label': 'Unsafe'},
+            ],
+            'paths': [
+                {'path_id': path_id, 'from_node_id': access_id,
+                 'to_node_id': password_id, 'direction': 'one_way',
+                 'visible': True},
+                {'path_id': 'f' * 32, 'from_node_id': access_id,
+                 'to_node_id': access_id, 'direction': 'bidirectional'},
+            ],
+            'links': [],
+        })
+        self.assertEqual(len(state['nodes']), 2)
+        self.assertEqual(state['nodes'][1]['dv'], 29)
+        self.assertEqual(state['nodes'][1]['defense'], 0)
+        self.assertFalse(state['nodes'][1]['visible'])
+        self.assertEqual(len(state['paths']), 1)
+        self.assertEqual(state['paths'][0]['direction'], 'one_way')
+
     def test_black_ice_entity_snapshots_stats_mode_and_target_type(self):
         killer = self.owned('programs-25', 'f' * 32)
         waiting = server.initial_black_ice_entity(

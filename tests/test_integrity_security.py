@@ -1393,12 +1393,45 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             'label': 'Lobby Node', 'reason': 'Create validated entry Floor',
         })
         self.assertRegex(floor['floor_id'], r'^[a-f0-9]{32}$')
+        access_node = self.call(server.Handler.api_session_net_node_create,
+                                self.match(session_id), {
+            'floor_id': floor['floor_id'], 'type': 'access_point',
+            'label': 'Lobby Access Point', 'dv': 0, 'defense': 0,
+            'visible': True, 'gm_note': 'Entry node',
+            'reason': 'Create revealed Architecture entry node',
+        })
+        password_node = self.call(server.Handler.api_session_net_node_create,
+                                  self.match(session_id), {
+            'floor_id': floor['floor_id'], 'type': 'password',
+            'label': 'Lobby Password', 'dv': 9, 'defense': 0,
+            'visible': False, 'gm_note': 'Blocks deeper access',
+            'reason': 'Create hidden Password node',
+        })
+        path = self.call(server.Handler.api_session_net_path_create,
+                         self.match(session_id), {
+            'from_node_id': access_node['node_id'],
+            'to_node_id': password_node['node_id'],
+            'direction': 'one_way', 'label': 'Authentication route',
+            'visible': True, 'reason': 'Connect Architecture nodes',
+        })
+        self.assertRegex(path['path_id'], r'^[a-f0-9]{32}$')
+        access_node_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$',
+            f'{session_id}/{access_node["node_id"]}')
+        with self.assertRaises(server.ApiError) as path_dependency:
+            self.call(server.Handler.api_session_net_node_delete,
+                      access_node_match, {
+                'reason': 'Try deleting node with connected path',
+            })
+        self.assertEqual(path_dependency.exception.status, 409)
 
         self.current = self.user('runner')
         contexts = self.call(server.Handler.api_character_net_contexts, self.match(1))
         self.assertEqual(contexts['sessions'][0]['session_id'], session_id)
         self.assertEqual(contexts['sessions'][0]['access_role'], 'crew')
         self.assertEqual(contexts['sessions'][0]['floors'][0]['floor_id'], floor['floor_id'])
+        self.assertEqual({item['node_id'] for item in contexts['sessions'][0]['nodes']},
+                         {access_node['node_id'], password_node['node_id']})
         deploy_match = re.match(
             r'^(\d+)/([a-f0-9]{32})/([a-f0-9]{32})$',
             f'1/{deck["instance_id"]}/{killer["instance_id"]}')
@@ -1406,12 +1439,15 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
                              deploy_match, {
             'revision': 2, 'mode': 'deploy_combat', 'session_id': session_id,
             'session_floor_id': floor['floor_id'],
+            'session_node_id': access_node['node_id'],
             'target_combatant_id': target_id,
             'reason': 'Deploy Killer into validated Live NET context',
         })
         entity = deployed['net_entity']
         self.assertEqual(entity['session_id'], session_id)
         self.assertEqual(entity['floor_label'], 'Lobby Node')
+        self.assertEqual(entity['session_node_id'], access_node['node_id'])
+        self.assertEqual(entity['session_node_label'], 'Lobby Access Point')
         self.assertEqual(entity['target_label'], 'Enemy Netrunner')
 
         self.current = self.user('gm')
@@ -1422,9 +1458,35 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertTrue(session_payload['net']['entities'][0]['active'])
         self.assertEqual(session_payload['net']['entities'][0]['target_combatant_id'],
                          target_id)
+        self.assertEqual(session_payload['net']['entities'][0]['node_id'],
+                         access_node['node_id'])
         player_payload = self.call(server.Handler.api_session_player_view,
                                    self.match(session_id))
         self.assertEqual(len(player_payload['net']['entities']), 1)
+        self.assertEqual(len(player_payload['net']['nodes']), 1)
+        self.assertNotIn('gm_note', player_payload['net']['nodes'][0])
+        self.assertFalse(player_payload['net']['paths'])
+        password_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$',
+            f'{session_id}/{password_node["node_id"]}')
+        self.call(server.Handler.api_session_net_node_update, password_match, {
+            'visible': True, 'reason': 'Reveal Password after successful Pathfinder',
+        })
+        revealed_player = self.call(server.Handler.api_session_player_view,
+                                    self.match(session_id))
+        self.assertEqual(len(revealed_player['net']['nodes']), 2)
+        self.assertEqual(len(revealed_player['net']['paths']), 1)
+        path_match = re.match(
+            r'^(\d+)/([a-f0-9]{32})$', f'{session_id}/{path["path_id"]}')
+        self.call(server.Handler.api_session_net_path_update, path_match, {
+            'visible': False, 'reason': 'Hide route after topology correction',
+        })
+        hidden_path_player = self.call(server.Handler.api_session_player_view,
+                                       self.match(session_id))
+        self.assertFalse(hidden_path_player['net']['paths'])
+        self.call(server.Handler.api_session_net_path_update, path_match, {
+            'visible': True, 'reason': 'Reveal corrected route to players',
+        })
 
         entity_match = re.match(
             r'^(\d+)/([a-f0-9]{32})$', f'1/{entity["net_entity_id"]}')
@@ -1452,6 +1514,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
                             entity_match, {
             'revision': 5, 'action': 'engage',
             'session_floor_id': floor['floor_id'],
+            'session_node_id': password_node['node_id'],
             'target_combatant_id': target_id,
             'reason': 'Killer reacquires validated Session target',
         })
@@ -1487,7 +1550,8 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         activity_types = {item['event_type'] for item in
                           self.call(server.Handler.api_session_detail,
                                     self.match(session_id))['activity']}
-        self.assertTrue({'net_floor_create', 'net_entity_deploy',
+        self.assertTrue({'net_floor_create', 'net_node_create', 'net_node_update',
+                         'net_path_create', 'net_path_update', 'net_entity_deploy',
                          'net_entity_damage', 'net_turn_update',
                          'net_entity_revert'} <= activity_types)
 

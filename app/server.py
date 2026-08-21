@@ -3983,6 +3983,10 @@ SESSION_SAFETY_DEFAULTS = {
 }
 SAFETY_SIGNAL_KINDS = {'pause', 'x_card', 'check_in'}
 SAFETY_SIGNAL_STATUSES = {'open', 'acknowledged', 'resolved'}
+SESSION_NET_NODE_TYPES = {
+    'access_point', 'password', 'file', 'control', 'black_ice', 'objective',
+}
+SESSION_NET_PATH_DIRECTIONS = {'bidirectional', 'one_way'}
 
 
 def parse_json_object(value, default=None):
@@ -4059,6 +4063,55 @@ def session_net_state(value):
         seen_floors.add(floor_id)
         floors.append({'floor_id': floor_id, 'label': label,
                        'sort_order': len(floors)})
+    nodes = []
+    seen_nodes = set()
+    for item in raw.get('nodes') or []:
+        if not isinstance(item, dict):
+            continue
+        node_id = str(item.get('node_id') or '').lower()
+        floor_id = str(item.get('floor_id') or '').lower()
+        node_type = str(item.get('type') or '').lower()
+        label = str(item.get('label') or '').strip()[:120]
+        if (not INSTANCE_ID_RE.fullmatch(node_id) or node_id in seen_nodes or
+                floor_id not in seen_floors or node_type not in SESSION_NET_NODE_TYPES or
+                not label or len(nodes) >= 500):
+            continue
+        seen_nodes.add(node_id)
+        nodes.append({
+            'node_id': node_id, 'floor_id': floor_id, 'type': node_type,
+            'label': label, 'dv': max(0, min(29, int(_num(item.get('dv')) or 0))),
+            'defense': max(0, min(29, int(_num(item.get('defense')) or 0))),
+            'visible': item.get('visible') is True,
+            'resolved': item.get('resolved') is True,
+            'gm_note': str(item.get('gm_note') or '')[:2000],
+            'sort_order': len(nodes),
+        })
+    paths = []
+    seen_paths = set()
+    seen_pairs = set()
+    for item in raw.get('paths') or []:
+        if not isinstance(item, dict):
+            continue
+        path_id = str(item.get('path_id') or '').lower()
+        from_node_id = str(item.get('from_node_id') or '').lower()
+        to_node_id = str(item.get('to_node_id') or '').lower()
+        direction = str(item.get('direction') or 'bidirectional').lower()
+        pair = (from_node_id, to_node_id, direction)
+        if (not INSTANCE_ID_RE.fullmatch(path_id) or path_id in seen_paths or
+                from_node_id not in seen_nodes or to_node_id not in seen_nodes or
+                from_node_id == to_node_id or direction not in SESSION_NET_PATH_DIRECTIONS or
+                pair in seen_pairs or len(paths) >= 1000):
+            continue
+        seen_paths.add(path_id)
+        seen_pairs.add(pair)
+        if direction == 'bidirectional':
+            seen_pairs.add((to_node_id, from_node_id, direction))
+        paths.append({
+            'path_id': path_id, 'from_node_id': from_node_id,
+            'to_node_id': to_node_id, 'direction': direction,
+            'label': str(item.get('label') or '')[:120],
+            'visible': item.get('visible') is True,
+        })
     links = []
     seen_entities = set()
     for item in raw.get('links') or []:
@@ -4066,16 +4119,23 @@ def session_net_state(value):
             continue
         entity_id = str(item.get('net_entity_id') or '').lower()
         floor_id = str(item.get('floor_id') or '').lower()
+        node_id = str(item.get('node_id') or '').lower()
         character_id = _num(item.get('character_id'))
         target_id = _num(item.get('target_combatant_id'))
         if (not INSTANCE_ID_RE.fullmatch(entity_id) or entity_id in seen_entities or
                 not isinstance(character_id, int) or character_id < 1 or
-                floor_id not in seen_floors or len(links) >= 200):
+                floor_id not in seen_floors or len(links) >= 200 or
+                (node_id and node_id not in seen_nodes)):
             continue
+        if node_id:
+            node_floor = next((node['floor_id'] for node in nodes
+                               if node['node_id'] == node_id), None)
+            if node_floor != floor_id:
+                continue
         seen_entities.add(entity_id)
         links.append({
             'net_entity_id': entity_id, 'character_id': character_id,
-            'floor_id': floor_id,
+            'floor_id': floor_id, 'node_id': node_id or None,
             'target_combatant_id': int(target_id) if isinstance(target_id, int) and target_id > 0 else None,
             'initiative': max(-1000, min(1000, _num(item.get('initiative')) or 0)),
             'active': item.get('active') is not False,
@@ -4085,7 +4145,7 @@ def session_net_state(value):
     return {
         'round': max(0, int(_num(raw.get('round')) or 0)),
         'active_turn': max(0, int(_num(raw.get('active_turn')) or 0)),
-        'floors': floors, 'links': links,
+        'floors': floors, 'nodes': nodes, 'paths': paths, 'links': links,
     }
 
 
@@ -6294,6 +6354,23 @@ SERVER_ERROR_EN = {
     'Выберите Session target combatant': 'Choose a Session target combatant',
     'Некорректный Session target для Black ICE': 'Invalid Session target for Black ICE',
     'Выберите validated Session Floor и target': 'Choose a validated Session Floor and target',
+    'Сначала удалите NET nodes с этого Floor': 'Delete NET nodes from this Floor first',
+    'Нет права редактировать NET Architecture': 'No permission to edit NET Architecture',
+    'NET node содержит неподдерживаемые поля': 'NET node contains unsupported fields',
+    'NET node требует validated Floor': 'NET node requires a validated Floor',
+    'Некорректный NET node type или label': 'Invalid NET node type or label',
+    'Укажите причину изменения NET Architecture': 'Provide a reason for changing NET Architecture',
+    'Достигнут лимит NET nodes': 'NET node limit reached',
+    'NET node не найден': 'NET node not found',
+    'Сначала удалите NET paths этого node': 'Delete NET paths connected to this node first',
+    'NET node используется active entity': 'NET node is used by an active entity',
+    'NET path содержит неподдерживаемые поля': 'NET path contains unsupported fields',
+    'Некорректные NET path endpoints или direction': 'Invalid NET path endpoints or direction',
+    'NET path уже существует': 'NET path already exists',
+    'Достигнут лимит NET paths': 'NET path limit reached',
+    'NET path не найден': 'NET path not found',
+    'Выберите validated Session NET node': 'Choose a validated Session NET node',
+    'Выберите validated Session Floor, node и target': 'Choose a validated Session Floor, node, and target',
     'Неподдерживаемый тип modification host': 'Unsupported modification host type',
     'Сначала снимите зависимые vehicle upgrades': 'Remove dependent vehicle upgrades first',
     'Vehicle instance не найден': 'Vehicle instance not found',
@@ -8298,6 +8375,7 @@ class Handler(BaseHTTPRequestHandler):
                         for private_key in ('floor_label', 'target_label',
                                             'owner_character_id', 'initiative_roll',
                                             'session_id', 'session_floor_id',
+                                            'session_node_id', 'session_node_label',
                                             'target_combatant_id'):
                             entity.pop(private_key, None)
         return {
@@ -9307,7 +9385,8 @@ class Handler(BaseHTTPRequestHandler):
         user, row = self.require_character_editor(conn, m.group(1))
         allowed = {
             'revision', 'mode', 'floor_label', 'target_label', 'reason',
-            'session_id', 'session_floor_id', 'target_combatant_id'}
+            'session_id', 'session_floor_id', 'session_node_id',
+            'target_combatant_id'}
         if set(body or {}) - allowed:
             raise ApiError(400, 'Black ICE deployment содержит неподдерживаемые поля')
         current_revision = _row_value(row, 'revision', 0) or 0
@@ -9342,6 +9421,8 @@ class Handler(BaseHTTPRequestHandler):
         net_state = None
         net_state_before = None
         session_floor_id = None
+        session_node_id = None
+        session_node_label = None
         target_combatant_id = None
         session_id = _num((body or {}).get('session_id'))
         floor_label = str((body or {}).get('floor_label') or '').strip()[:120]
@@ -9367,6 +9448,18 @@ class Handler(BaseHTTPRequestHandler):
             if not floor:
                 raise ApiError(400, 'Выберите validated Session NET Floor')
             floor_label = floor['label']
+            floor_nodes = [item for item in net_state['nodes']
+                           if item['floor_id'] == session_floor_id]
+            session_node_id = str((body or {}).get('session_node_id') or '').lower()
+            node = None
+            if floor_nodes:
+                node = next((item for item in floor_nodes
+                             if item['node_id'] == session_node_id), None)
+                if not node:
+                    raise ApiError(400, 'Выберите validated Session NET node')
+                session_node_label = node['label']
+            else:
+                session_node_id = None
             if mode == 'deploy_combat':
                 target_combatant_id = _num((body or {}).get('target_combatant_id'))
                 if (target_combatant_id is None or int(target_combatant_id) != target_combatant_id):
@@ -9378,6 +9471,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError(400, 'Некорректный Session target для Black ICE')
                 target_combatant_id = target['id']
                 target_label = target['name']
+                if node:
+                    node['visible'] = True
         reason_detail = str((body or {}).get('reason') or '').strip()[:500]
         if len(floor_label) < 1:
             raise ApiError(400, 'Укажите Floor для Black ICE')
@@ -9390,6 +9485,8 @@ class Handler(BaseHTTPRequestHandler):
         if session:
             entity.update({
                 'session_id': session['id'], 'session_floor_id': session_floor_id,
+                'session_node_id': session_node_id,
+                'session_node_label': session_node_label,
                 'target_combatant_id': target_combatant_id,
             })
         entities = data.setdefault('net_entities', {})
@@ -9416,6 +9513,7 @@ class Handler(BaseHTTPRequestHandler):
             net_state['links'].append({
                 'net_entity_id': entity['net_entity_id'],
                 'character_id': row['id'], 'floor_id': session_floor_id,
+                'node_id': session_node_id,
                 'target_combatant_id': target_combatant_id,
                 'initiative': entity.get('initiative') or 0,
                 'active': True, 'visible': mode == 'deploy_combat',
@@ -9454,7 +9552,7 @@ class Handler(BaseHTTPRequestHandler):
         if parse_json_object(row['data']).get('archived'):
             raise ApiError(409, 'Архивное досье доступно только для чтения')
         allowed = {'revision', 'action', 'amount', 'floor_label',
-                   'target_label', 'reason', 'session_floor_id',
+                   'target_label', 'reason', 'session_floor_id', 'session_node_id',
                    'target_combatant_id'}
         if set(body or {}) - allowed:
             raise ApiError(400, 'NET entity action содержит неподдерживаемые поля')
@@ -9544,19 +9642,31 @@ class Handler(BaseHTTPRequestHandler):
                                linked_net_link.get('floor_id') or '').lower()
                 floor = next((item for item in linked_net_state['floors']
                               if item['floor_id'] == floor_id), None)
+                floor_nodes = [item for item in linked_net_state['nodes']
+                               if item['floor_id'] == floor_id]
+                node_id = str((body or {}).get('session_node_id') or
+                              linked_net_link.get('node_id') or '').lower()
+                node = next((item for item in floor_nodes
+                             if item['node_id'] == node_id), None) if floor_nodes else None
                 target_id = _num((body or {}).get('target_combatant_id'))
                 target = conn.execute(
                     'SELECT * FROM session_combatants WHERE session_id=? AND id=?',
                     (linked_session['id'], int(target_id))).fetchone() \
                     if target_id is not None and int(target_id) == target_id else None
-                if not floor or not target or target['character_id'] == row['id']:
-                    raise ApiError(400, 'Выберите validated Session Floor и target')
+                if (not floor or not target or target['character_id'] == row['id'] or
+                        (floor_nodes and not node)):
+                    raise ApiError(400, 'Выберите validated Session Floor, node и target')
                 floor_label, target_label = floor['label'], target['name']
                 entity['session_floor_id'] = floor_id
+                entity['session_node_id'] = node_id if node else None
+                entity['session_node_label'] = node['label'] if node else None
                 entity['target_combatant_id'] = target['id']
                 linked_net_link['floor_id'] = floor_id
+                linked_net_link['node_id'] = node_id if node else None
                 linked_net_link['target_combatant_id'] = target['id']
                 linked_net_link['visible'] = True
+                if node:
+                    node['visible'] = True
             else:
                 target_label = str((body or {}).get('target_label') or '').strip()[:120]
                 floor_label = str((body or {}).get('floor_label') or
@@ -10688,6 +10798,7 @@ class Handler(BaseHTTPRequestHandler):
     def session_net_payload(self, conn, row, player_view=False):
         state = session_net_state(_row_value(row, 'net_state_json', '{}'))
         floor_by_id = {item['floor_id']: item for item in state['floors']}
+        node_by_id = {item['node_id']: item for item in state['nodes']}
         combatants = {item['id']: item for item in self.ordered_session_combatants(
             conn, row['id'])}
         entities = []
@@ -10706,6 +10817,7 @@ class Handler(BaseHTTPRequestHandler):
                     entity.get('status') not in ('lying_in_wait', 'hunting', 'derezzed')):
                 continue
             floor = floor_by_id.get(link['floor_id'])
+            node = node_by_id.get(link.get('node_id'))
             target = combatants.get(link.get('target_combatant_id'))
             payload = {
                 'net_entity_id': link['net_entity_id'],
@@ -10716,6 +10828,8 @@ class Handler(BaseHTTPRequestHandler):
                 'in_queue': entity.get('status') == 'hunting',
                 'floor_id': link['floor_id'],
                 'floor_label': floor['label'] if floor else entity.get('floor_label'),
+                'node_id': link.get('node_id'),
+                'node_label': node['label'] if node else None,
                 'target_combatant_id': link.get('target_combatant_id'),
                 'target_label': target['name'] if target and
                     (not player_view or target['visible']) else None,
@@ -10730,7 +10844,8 @@ class Handler(BaseHTTPRequestHandler):
                 payload['character_revision'] = character['revision']
                 payload['initiative_roll'] = entity.get('initiative_roll')
             else:
-                for private_key in ('character_id', 'target_combatant_id', 'visible'):
+                for private_key in ('character_id', 'target_combatant_id', 'visible',
+                                    'node_id'):
                     payload.pop(private_key, None)
             entities.append(payload)
         queue = sorted(
@@ -10744,16 +10859,30 @@ class Handler(BaseHTTPRequestHandler):
             0 if item['in_queue'] else 1,
             -(_num(item.get('initiative')) or 0), item['net_entity_id']))
         if player_view:
-            visible_floor_ids = {item['floor_id'] for item in entities}
+            visible_nodes = [item for item in state['nodes'] if item['visible']]
+            visible_node_ids = {item['node_id'] for item in visible_nodes}
+            nodes = [{
+                key: value for key, value in item.items()
+                if key not in ('gm_note', 'visible', 'sort_order', 'floor_id')
+            } | {'floor_label': (floor_by_id.get(item['floor_id']) or {}).get('label')}
+                     for item in visible_nodes]
+            paths = [copy.deepcopy(item) for item in state['paths']
+                     if item['visible'] and item['from_node_id'] in visible_node_ids and
+                     item['to_node_id'] in visible_node_ids]
+            visible_floor_ids = {item['floor_id'] for item in visible_nodes} | {
+                item['floor_id'] for item in entities}
             floors = [{'label': item['label']} for item in state['floors']
                       if item['floor_id'] in visible_floor_ids]
             for item in entities:
                 item.pop('floor_id', None)
         else:
             floors = state['floors']
+            nodes = state['nodes']
+            paths = state['paths']
         return {
             'round': state['round'], 'active_turn': active_turn,
-            'floors': floors, 'entities': entities,
+            'floors': floors, 'nodes': nodes, 'paths': paths,
+            'entities': entities,
         }
 
     def session_activity_payload(self, row):
@@ -10822,6 +10951,8 @@ class Handler(BaseHTTPRequestHandler):
                     'round': value.get('round'),
                     'active_turn': value.get('active_turn'),
                     'floors': len(value.get('floors') or []),
+                    'nodes': len(value.get('nodes') or []),
+                    'paths': len(value.get('paths') or []),
                     'links': len(value.get('links') or []),
                 }
             changes.append({'field': 'net_context',
@@ -11213,7 +11344,8 @@ class Handler(BaseHTTPRequestHandler):
             contexts.append({
                 'session_id': session['id'], 'title': session['title'],
                 'status': session['status'], 'access_role': role,
-                'floors': state['floors'],
+                'floors': state['floors'], 'nodes': state['nodes'],
+                'paths': state['paths'],
                 'targets': [dict(target) for target in targets],
                 'can_manage_net': 'edit_combatants' in capabilities,
             })
@@ -11268,6 +11400,8 @@ class Handler(BaseHTTPRequestHandler):
                       if item['floor_id'] == floor_id), None)
         if not floor:
             raise ApiError(404, 'Session NET Floor не найден')
+        if any(item['floor_id'] == floor_id for item in state['nodes']):
+            raise ApiError(409, 'Сначала удалите NET nodes с этого Floor')
         if any(item['active'] and item['floor_id'] == floor_id
                for item in state['links']):
             raise ApiError(409, 'NET Floor используется active entity')
@@ -11287,6 +11421,253 @@ class Handler(BaseHTTPRequestHandler):
             (session['id'], user['id'], 'net_floor_delete',
              json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
              note, now))
+        conn.commit()
+        self.send_json({'ok': True})
+
+    @atomic_endpoint
+    def api_session_net_node_create(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_session' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права редактировать NET Architecture')
+        allowed = {'floor_id', 'type', 'label', 'dv', 'defense',
+                   'visible', 'resolved', 'gm_note', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'NET node содержит неподдерживаемые поля')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        floor_id = str((body or {}).get('floor_id') or '').lower()
+        node_type = str((body or {}).get('type') or '').lower()
+        label = str((body or {}).get('label') or '').strip()[:120]
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if not any(item['floor_id'] == floor_id for item in state['floors']):
+            raise ApiError(400, 'NET node требует validated Floor')
+        if node_type not in SESSION_NET_NODE_TYPES or not label:
+            raise ApiError(400, 'Некорректный NET node type или label')
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Architecture')
+        if len(state['nodes']) >= 500:
+            raise ApiError(409, 'Достигнут лимит NET nodes')
+        before = copy.deepcopy(state)
+        node = {
+            'node_id': secrets.token_hex(16), 'floor_id': floor_id,
+            'type': node_type, 'label': label,
+            'dv': max(0, min(29, int(_num((body or {}).get('dv')) or 0))),
+            'defense': max(0, min(29, int(_num((body or {}).get('defense')) or 0))),
+            'visible': (body or {}).get('visible') is True,
+            'resolved': (body or {}).get('resolved') is True,
+            'gm_note': str((body or {}).get('gm_note') or '')[:2000],
+            'sort_order': len(state['nodes']),
+        }
+        state['nodes'].append(node)
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_node_create',
+             json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             reason, now))
+        conn.commit()
+        self.send_json(node, status=201)
+
+    @atomic_endpoint
+    def api_session_net_node_update(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_session' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права редактировать NET Architecture')
+        allowed = {'type', 'label', 'dv', 'defense', 'visible',
+                   'resolved', 'gm_note', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'NET node содержит неподдерживаемые поля')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        node_id = str(m.group(2)).lower()
+        node = next((item for item in state['nodes']
+                     if item['node_id'] == node_id), None)
+        if not node:
+            raise ApiError(404, 'NET node не найден')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Architecture')
+        before = copy.deepcopy(state)
+        node_type = str((body or {}).get('type', node['type'])).lower()
+        label = str((body or {}).get('label', node['label'])).strip()[:120]
+        if node_type not in SESSION_NET_NODE_TYPES or not label:
+            raise ApiError(400, 'Некорректный NET node type или label')
+        node.update({
+            'type': node_type, 'label': label,
+            'dv': max(0, min(29, int(_num((body or {}).get('dv', node['dv'])) or 0))),
+            'defense': max(0, min(29, int(_num(
+                (body or {}).get('defense', node['defense'])) or 0))),
+            'visible': (body or {}).get('visible', node['visible']) is True,
+            'resolved': (body or {}).get('resolved', node['resolved']) is True,
+            'gm_note': str((body or {}).get('gm_note', node['gm_note']) or '')[:2000],
+        })
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_node_update',
+             json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             reason, now))
+        conn.commit()
+        self.send_json(node)
+
+    @atomic_endpoint
+    def api_session_net_node_delete(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_session' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права редактировать NET Architecture')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        node_id = str(m.group(2)).lower()
+        node = next((item for item in state['nodes']
+                     if item['node_id'] == node_id), None)
+        if not node:
+            raise ApiError(404, 'NET node не найден')
+        if any(item['from_node_id'] == node_id or item['to_node_id'] == node_id
+               for item in state['paths']):
+            raise ApiError(409, 'Сначала удалите NET paths этого node')
+        if any(item['active'] and item.get('node_id') == node_id
+               for item in state['links']):
+            raise ApiError(409, 'NET node используется active entity')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Architecture')
+        before = copy.deepcopy(state)
+        state['nodes'] = [item for item in state['nodes'] if item['node_id'] != node_id]
+        for index, item in enumerate(state['nodes']):
+            item['sort_order'] = index
+        for link in state['links']:
+            if link.get('node_id') == node_id:
+                link['node_id'] = None
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_node_delete',
+             json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             reason, now))
+        conn.commit()
+        self.send_json({'ok': True})
+
+    @atomic_endpoint
+    def api_session_net_path_create(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_session' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права редактировать NET Architecture')
+        allowed = {'from_node_id', 'to_node_id', 'direction',
+                   'label', 'visible', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'NET path содержит неподдерживаемые поля')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        from_id = str((body or {}).get('from_node_id') or '').lower()
+        to_id = str((body or {}).get('to_node_id') or '').lower()
+        direction = str((body or {}).get('direction') or 'bidirectional').lower()
+        node_ids = {item['node_id'] for item in state['nodes']}
+        if (from_id not in node_ids or to_id not in node_ids or from_id == to_id or
+                direction not in SESSION_NET_PATH_DIRECTIONS):
+            raise ApiError(400, 'Некорректные NET path endpoints или direction')
+        if any(item['from_node_id'] == from_id and item['to_node_id'] == to_id and
+               item['direction'] == direction for item in state['paths']):
+            raise ApiError(409, 'NET path уже существует')
+        if direction == 'bidirectional' and any(
+                item['from_node_id'] == to_id and item['to_node_id'] == from_id and
+                item['direction'] == direction for item in state['paths']):
+            raise ApiError(409, 'NET path уже существует')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Architecture')
+        if len(state['paths']) >= 1000:
+            raise ApiError(409, 'Достигнут лимит NET paths')
+        before = copy.deepcopy(state)
+        path = {
+            'path_id': secrets.token_hex(16), 'from_node_id': from_id,
+            'to_node_id': to_id, 'direction': direction,
+            'label': str((body or {}).get('label') or '')[:120],
+            'visible': (body or {}).get('visible') is True,
+        }
+        state['paths'].append(path)
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_path_create',
+             json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             reason, now))
+        conn.commit()
+        self.send_json(path, status=201)
+
+    @atomic_endpoint
+    def api_session_net_path_update(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_session' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права редактировать NET Architecture')
+        if set(body or {}) - {'label', 'visible', 'reason'}:
+            raise ApiError(400, 'NET path содержит неподдерживаемые поля')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        path_id = str(m.group(2)).lower()
+        path = next((item for item in state['paths']
+                     if item['path_id'] == path_id), None)
+        if not path:
+            raise ApiError(404, 'NET path не найден')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Architecture')
+        before = copy.deepcopy(state)
+        path['label'] = str((body or {}).get('label', path['label']) or '')[:120]
+        path['visible'] = (body or {}).get('visible', path['visible']) is True
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_path_update',
+             json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             reason, now))
+        conn.commit()
+        self.send_json(path)
+
+    @atomic_endpoint
+    def api_session_net_path_delete(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_session' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права редактировать NET Architecture')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        path_id = str(m.group(2)).lower()
+        if not any(item['path_id'] == path_id for item in state['paths']):
+            raise ApiError(404, 'NET path не найден')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Architecture')
+        before = copy.deepcopy(state)
+        state['paths'] = [item for item in state['paths'] if item['path_id'] != path_id]
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_path_delete',
+             json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             reason, now))
         conn.commit()
         self.send_json({'ok': True})
 
@@ -11888,6 +12269,12 @@ ROUTES = [
     ('GET', rx(r'/api/sessions/(\d+)/player-view'), Handler.api_session_player_view),
     ('POST', rx(r'/api/sessions/(\d+)/net/floors'), Handler.api_session_net_floor_create),
     ('DELETE', rx(r'/api/sessions/(\d+)/net/floors/([a-f0-9]{32})'), Handler.api_session_net_floor_delete),
+    ('POST', rx(r'/api/sessions/(\d+)/net/nodes'), Handler.api_session_net_node_create),
+    ('PUT', rx(r'/api/sessions/(\d+)/net/nodes/([a-f0-9]{32})'), Handler.api_session_net_node_update),
+    ('DELETE', rx(r'/api/sessions/(\d+)/net/nodes/([a-f0-9]{32})'), Handler.api_session_net_node_delete),
+    ('POST', rx(r'/api/sessions/(\d+)/net/paths'), Handler.api_session_net_path_create),
+    ('PUT', rx(r'/api/sessions/(\d+)/net/paths/([a-f0-9]{32})'), Handler.api_session_net_path_update),
+    ('DELETE', rx(r'/api/sessions/(\d+)/net/paths/([a-f0-9]{32})'), Handler.api_session_net_path_delete),
     ('PUT', rx(r'/api/sessions/(\d+)/net/state'), Handler.api_session_net_state_update),
     ('GET', rx(r'/api/sessions/(\d+)/access'), Handler.api_session_access),
     ('POST', rx(r'/api/sessions/(\d+)/access'), Handler.api_session_access_grant),
