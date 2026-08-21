@@ -1248,6 +1248,104 @@ deploy/install.sh --lan
 
 которая безопасно настраивает `0.0.0.0`, non-Secure cookie для домашнего HTTP и ограничение firewall локальной подсетью. Сейчас это делается ручным systemd override.
 
+### Ruleset Profiles и House Rules
+
+Проект смешивает CP:R, CEMK/2070-е и campaign-specific решения. Нужна явная настройка кампании:
+
+```text
+Ruleset: Cyberpunk RED | CEMK 2070 | Hybrid
+House Rules Profile
+Source Priority
+```
+
+Каждая автоматизация (Character creation, Programs, Humanity, Vehicles, Range DV, Effects) знает, из какого ruleset/source она взята. House Rule не переписывает core rule молча, а создаёт versioned override с автором и пояснением.
+
+Это особенно важно до реализации Effects Engine, NPC automation и Netrunner Tabletop: один и тот же item/action может работать по-разному в разных профилях.
+
+### Storyline / Faction Clocks
+
+Простые progress tracks для долгих угроз и проектов:
+
+```text
+Arasaka Investigation        4/8
+Tyger Claws Retaliation      2/6
+Crew Safehouse Construction  5/8
+```
+
+Clock может быть Public/Crew/GM, связан со Storyline, Organization, Contract или Location и обновляться Session Recap/Downtime. Это даёт GM понятный инструмент развития мира без сложной автоматической симуляции.
+
+### Universal Search и Entity Links
+
+Command Palette стоит расширить до поиска по данным:
+
+- Characters;
+- Personas;
+- Organizations;
+- Locations;
+- Contracts;
+- Feed;
+- Items;
+- Sessions;
+- Intel;
+- Storylines.
+
+Любое текстовое поле с поддержкой связей может вставлять безопасную entity reference, а не копировать название строкой. Например `@Dex`, `#Watson-Blackout`, `⌖Afterlife`. При переименовании entity ссылки не ломаются.
+
+### Safety Tools
+
+Для живых и online-сессий:
+
+- Lines & Veils кампании;
+- Content Notes на Contract/Session;
+- анонимный `Pause / X-card` сигнал GM;
+- настройка видимости safety preferences;
+- Session debrief/check-in;
+- отсутствие публичного журнала о том, кто нажал safety signal.
+
+Это не должно превращаться в бюрократию, но базовый приватный механизм полезнее ещё одной декоративной функции.
+
+### Co-GM, Assistant и Observer permissions
+
+Помимо Player/GM/Admin нужны назначения в рамках конкретной Session/Storyline:
+
+```text
+Session Owner
+Co-GM
+Assistant GM
+Observer / Spectator
+Rules Helper
+```
+
+Co-GM может вести NPC/Initiative, не получая глобальные Admin-права. Observer получает только выбранный Player View. Все действия остаются в audit/activity log.
+
+### QR и physical integration
+
+Для живой встречи печатные материалы могут содержать QR:
+
+- Character Quick Sheet → Dossier;
+- NPC card → GM statblock;
+- Item card → Database description;
+- Handout → media/full text;
+- Location → map page;
+- Session Pack → join/presentation screen.
+
+QR не должен открывать classified данные без авторизации. Для общего экрана используется короткоживущий read-only Session token/PIN.
+
+### Full Campaign Export / Import
+
+Помимо backup нужен переносимый Campaign Bundle:
+
+```text
+manifest/version
+SQLite logical export or structured JSON
+uploads/media
+custom Locations/Items/Rules
+settings
+checksums
+```
+
+Перед импортом — preview, version migration и conflict report. Это позволит переносить кампанию между домашним сервером и VPS без ручного копирования неизвестных файлов.
+
 ---
 
 ## 14. Preview перед публикацией Feed post и Contract
@@ -2431,16 +2529,17 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 
 ### P1 — основной продуктовый пакет
 
-1. Trust + Audit character editor, включая Admin edit чужих Dossiers.
-2. Item instances, Structured Effects Engine, consumables и host-based Upgrades/Attachments.
-3. Market vendors + Database без универсальной покупки.
-4. Database tags/i18n/armor locations.
-5. Feed/Contract preview перед публикацией.
-6. NPC Manager: stats, skills, weapons, attacks и full templates.
-7. Netrunner Cyberdeck/Program Manager.
-8. Crew Registry portraits.
-9. Dedicated landscape print sheet.
-10. JSON import.
+1. Ruleset Profiles и versioned House Rules.
+2. Trust + Audit character editor, включая Admin edit чужих Dossiers.
+3. Item instances, Structured Effects Engine, consumables и host-based Upgrades/Attachments.
+4. Market vendors + Database без универсальной покупки.
+5. Database tags/i18n/armor locations.
+6. Feed/Contract preview перед публикацией.
+7. NPC Manager: stats, skills, weapons, attacks и full templates.
+8. Netrunner Cyberdeck/Program Manager.
+9. Crew Registry portraits.
+10. Dedicated landscape print sheet.
+11. JSON import.
 
 ### P2 — расширение мира
 
@@ -2458,7 +2557,11 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 12. Downtime Planner.
 13. Organization Reputation / Favor / Heat.
 14. Intel / Case Board.
-15. NET Architecture Builder после Program Manager.
+15. Storyline/Faction Clocks.
+16. Universal Search/Entity Links.
+17. Safety Tools.
+18. Session-scoped Co-GM/Observer permissions.
+19. NET Architecture Builder после Program Manager.
 
 ### P3 — технический долг
 
@@ -2482,6 +2585,17 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 ---
 
 ## 18. Предлагаемый порядок ближайшей реализации
+
+### Пакет 0 — Foundation, Privacy & Rules
+
+1. Privacy payload для Dossiers/Roster/Folio.
+2. Invite registration, password/session controls.
+3. Атомарные транзакции и регулярные backups.
+4. Full Campaign Export/Import bundle.
+5. Ruleset Profiles CP:R/CEMK/Hybrid.
+6. Versioned House Rules и source metadata.
+7. Session-scoped Co-GM/Observer permissions.
+8. Базовые Safety Tools.
 
 ### Пакет A — Catalog & Market Rework
 
@@ -2550,8 +2664,10 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 2. Crew Stash, item transfer и ownership history.
 3. Downtime Planner с лечением, Therapy, Crafting и поиском предметов.
 4. Organization Reputation / Favor / Heat.
-5. Intel Fragments и Case Board.
-6. Medical Record и Vehicle Garage после стабилизации базовых модулей.
+5. Storyline/Faction Clocks.
+6. Intel Fragments и Case Board.
+7. Universal Search и stable Entity Links.
+8. Medical Record и Vehicle Garage после стабилизации базовых модулей.
 
 ### Пакет H — GM Combat & NET
 
@@ -2570,15 +2686,16 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 
 1. Подготовить stable entity IDs, permissions и authoritative Session events.
 2. Сначала реализовать Live Session Pack, print/export и GM quick screen для живых встреч.
-3. Добавить optional Shared Screen и Player Companion, не делая их обязательными.
-4. Добавить официальный Online/LAN deployment mode и локальные assets.
-5. Реализовать Online VTT Scenes, Tokens, Grid/Measurement и Initiative sync — одинаково для Internet и LAN.
-6. Связать token actions с Dossiers/NPC/Weapons/Effects.
-7. Добавить server-authoritative Dice/Event Log и reconnect snapshots.
-8. Реализовать manual Fog, Drawings и Handouts.
-9. Добавить internet presence и remote session access на VPS/relay.
-10. Реализовать NET Architecture как отдельный scene type.
-11. Только затем рассматривать walls/vision/lighting/plugin API.
+3. Добавить QR links для Character/NPC/Item/Location/Handout и short-lived Session PIN.
+4. Добавить optional Shared Screen и Player Companion, не делая их обязательными.
+5. Добавить официальный Online/LAN deployment mode и локальные assets.
+6. Реализовать Online VTT Scenes, Tokens, Grid/Measurement и Initiative sync — одинаково для Internet и LAN.
+7. Связать token actions с Dossiers/NPC/Weapons/Effects.
+8. Добавить server-authoritative Dice/Event Log и reconnect snapshots.
+9. Реализовать manual Fog, Drawings и Handouts.
+10. Добавить internet presence и remote session access на VPS/relay.
+11. Реализовать NET Architecture как отдельный scene type.
+12. Только затем рассматривать walls/vision/lighting/plugin API.
 
 ---
 
@@ -2639,3 +2756,10 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 53. Насколько рано нужны Fog/Walls/Vision и стоит ли полностью отказаться от dynamic lighting в пользу простоты?
 54. Set bonuses и active effect breakdown видны всем или только owner/GM?
 55. Должен ли Live/Offline flow позволять полностью провести встречу без запуска сервера после печати Session Pack?
+56. Ruleset Profile задаётся для всей кампании или может переопределяться для конкретной Session/Character?
+57. Кто может создавать и менять House Rules, и как поступать с уже сыгранными Session после изменения версии?
+58. Storyline/Faction Clock обновляется только GM или поддерживает автоматические triggers от Recap/Downtime?
+59. Entity Links вставляются только через picker или также распознаются из `@/#/⌖` синтаксиса?
+60. Как обеспечить анонимность Safety signal даже от остальных Admin/Co-GM, кроме назначенного получателя?
+61. Какие точные разрешения получают Co-GM/Assistant/Rules Helper в Session?
+62. Сколько живёт read-only QR/PIN из печатного Session Pack и можно ли отозвать его после встречи?
