@@ -1331,12 +1331,107 @@ destroyed
 REZ current / max
 Activate / Deactivate
 Take REZ damage
-Repair/Restore
+Derezz at 0 REZ
+Deactivate + Activate to restore full REZ
 Destroy
 Load backup copy
 ```
 
-Rezzing не уменьшает количество программы. Количество теряется только при уничтожении конкретной копии согласно правилам/эффекту.
+Rezzing не уменьшает количество программы. Derezzed Program остаётся установленной/«запущенной», но не работает; для восстановления требуется Deactivate и затем Activate. Количество теряется только при уничтожении конкретной копии согласно правилам/эффекту.
+
+Поведение зависит от Class:
+
+- Booster/Defender остаются Rezzed и дают постоянный эффект;
+- Attacker выполняет атаку/эффект и автоматически Deactivate;
+- Black ICE создаёт самостоятельную активную сущность в NET;
+- Destroyed copy удаляется из Cyberdeck и требует replacement/backup.
+
+#### Rezzed Black ICE / «призываемые» программы
+
+Killer, Dragon, Sabertooth, Hellhound и другие Black ICE нельзя отображать как обычную включённую иконку. После Activate они становятся отдельными участниками NET combat со своими PER/SPD/ATK/DEF/REZ, target, Initiative и текущим Floor.
+
+Black ICE занимает два Cyberdeck slots. Install/Uninstall Black ICE — downtime-операция, а Activate/Deactivate — NET Action.
+
+При нажатии `Rez Black ICE` UI предлагает разрешённый режим:
+
+```text
+LIE IN WAIT
+- разместить на текущем Floor
+- выбрать target rules
+- недоступно во время combat
+
+DEPLOY IN COMBAT
+- выбрать допустимую цель
+- добавить Black ICE на верх Initiative Queue
+- начать преследование
+```
+
+Runtime instance:
+
+```text
+net_entity_id
+source_program_instance_id
+owner_netrunner_id
+type: black_ice
+class: anti_personnel | anti_program
+floor_id
+target_entity_id / target_netrunner_id
+PER / SPD / ATK / DEF
+REZ current / max
+initiative
+status: lying_in_wait | hunting | derezzed | destroyed | slid
+activated_at
+```
+
+Black ICE действует узко по своей Class и не является универсальным цифровым питомцем. GM ведёт его Turns, даже если Black ICE принадлежит Player Netrunner; интерфейс может подсвечивать запрограммированную цель и разрешённое действие.
+
+Чтобы переназначить цель, Netrunner тратит NET Action на Deactivate и ещё один NET Action на повторный Activate. После повторной активации ICE возвращается в Initiative с новой допустимой целью.
+
+##### Killer
+
+Killer — `Anti-Program Black ICE`:
+
+```text
+PER 4
+SPD 8
+ATK 6
+DEF 2
+REZ 20
+Effect: 4d6 REZ damage to a Program;
+if damage would Derezz it, the Program is Destroyed instead.
+```
+
+Flow в интерфейсе:
+
+```text
+Rez Killer
+→ choose enemy Netrunner / valid Program source
+→ Killer enters NET Initiative
+→ on Killer Turn select/randomize valid Rezzed enemy Program
+→ roll Killer ATK + 1d10 vs Program DEF + 1d10
+→ on hit roll 4d6 REZ damage
+→ if target reaches 0, mark target Program Destroyed
+→ update Cyberdeck and ledger
+```
+
+Anti-Program Black ICE продолжает преследовать вражеского Netrunner как источник Programs, даже если в конкретный момент у него нет Rezzed Programs. При появлении допустимой цели оно может продолжить свою запрограммированную атаку. Slide переводит ICE в состояние `lying_in_wait` на Floor, где от него ушли.
+
+Нужно поддерживать несколько копий одной Black ICE как разные Program instances: каждая занимает свои slots, имеет собственный REZ и может быть Rezzed отдельно. Нельзя создать больше runtime ICE, чем реально установлено копий.
+
+##### NET combat board
+
+Rezzed Black ICE показывается отдельной карточкой/токеном:
+
+```text
+[KILLER]  REZ 20/20
+Floor 3 · Hunting Armor.exe
+SPD 8 · ATK 6 · DEF 2
+Next: Black ICE Turn
+
+Attack · Damage · Change Target (2 NET Actions) · Deactivate
+```
+
+В Case/Activity log записываются Activate, target assignment, attack, REZ damage, Slide, Derezz и Destroy.
 
 #### Program categories
 
@@ -1545,8 +1640,10 @@ Program Manager лучше реализовать до полноценного 
 4. Добавить NPC threat presets и Player View visibility.
 5. Нормализовать Programs/Black ICE/Hardware в каталоге.
 6. Добавить Cyberdeck loadout, slots, Program states и REZ.
-7. Реализовать Netrunner Session panel и Enemy Netrunner profile.
-8. После стабилизации добавить NET Architecture Builder/live run.
+7. Реализовать Rezzed Black ICE как отдельные `net_entities` с target/floor/initiative.
+8. Добавить Killer/Dragon/Sabertooth attack flows, Slide и Destroyed Programs.
+9. Реализовать Netrunner Session panel и Enemy Netrunner profile.
+10. После стабилизации добавить NET Architecture Builder/live run.
 
 ---
 
@@ -1584,3 +1681,6 @@ Program Manager лучше реализовать до полноценного 
 30. Program Manager должен одновременно поддерживать CP:R и CEMK/2070 ruleset profiles?
 31. Нужны ли отдельные backup copies Programs и история уничтоженных копий?
 32. Может ли GM вручную переопределять calculated Skill/Attack Base NPC без изменения STAT/Skill?
+33. Следуем ли правилу, что Turns даже player-owned Black ICE ведёт GM, или даём кампании опцию player control?
+34. Выбор цели Anti-Program Black ICE всегда случайный среди Rezzed Programs или GM получает rules-aware randomize button с возможностью override?
+35. Нужен ли отдельный визуальный token/icon editor для внешнего вида призванной Black ICE?
