@@ -3201,7 +3201,22 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Dossier Cyberweapons показывает `Mag 1/1 · payload` и `MANUAL EFFECT` источник, shared_ammo для special = 0;
 - Server-authoritative `cyberware/weapon/action` теперь принимает `payload_type` для Gas Jet, атомарно логируется и поддерживает Ledger revert;
 - Front-end Reload для special weapons открывает payload picker (Gas Jet) вместо Ammo stack selector;
-- Shield Tech Upgrade остаётся permanent + manual для щитов: `MANUAL SHIELD TECH UPGRADE` не даёт автоматического SP+1, требует Tech подтверждение и reason; Campaign Clock auto-completion и Tech Maker custom modifications остаются следующими этапами.
+- Shield Tech Upgrade остаётся permanent + manual для щитов: `MANUAL SHIELD TECH UPGRADE` не даёт автоматического SP+1, требует Tech подтверждение и reason; Campaign Clock auto-completion остаётся следующим этапом.
+
+**Статус B.11.1 — реализованы Tech Maker Custom Modifications:**
+
+- server-owned контейнер `tech_maker_state` хранит custom modifications (upgrade/invention) с `modification_id`, host link, specialty, tech, effect и bounded history; никогда не принимается из Character Creation;
+- declarative allowlist `TECH_MAKER_EFFECT_TARGETS`: `weapon.attack_check add -3..+3`, `weapon.magazine add 1..20`, `weapon.concealable set YES/NO`, `armor.sp add +1`, `vehicle.sdp_max add 1..50`; операции и значения строго валидируются, executable данные отклоняются;
+- Maker gate по активной Tech Role: `character_maker_ranks` требует `upgrade`/`invention` rank 1+; specialty записывается в Ledger и payload;
+- host types из concrete owned instances: `weapon` (guns), `armor`, `vehicle`, `cyberware`; broken/stored hosts блокируются;
+- custom modification без automated effect возможен только с явным `manual_rule` и помечается `manual_resolution_required`;
+- automated effect требует explicit `manual_confirm` (успешный Maker Check за столом) и не дублируется на том же host+target;
+- эффекты применяются в effective-проекции: `evaluate_effective_weapon` (attack/magazine/concealable), `effective_armor_hosts` (SP) и `evaluate_effective_vehicle` (Max SDP) — base значения не переписываются;
+- endpoints `POST /api/characters/{id}/tech-maker/modifications` и `.../modifications/{mid}/action` (remove) атомарны, revision-guarded, пишут Trust + Audit Ledger с `tech_maker_modification` delta и поддерживают snapshot revert;
+- public Dossier скрывает `tech_maker` (tech_name/reason/notes) если equipment приватно;
+- Character Sheet получил панель `Tech Maker Modifications` с create-modal (host/specialty/effect/manual rule/reason) и Remove;
+- 8 новых тестов: allowlist, ranks, host mapping, reference validation, effective weapon/armor/vehicle, интеграционный create/duplicate/remove flow;
+- generic Tech Maker fabrication (создание новых custom items) и Campaign Clock service completion остаются следующими этапами.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -3224,8 +3239,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
-    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, concrete Cyberware/Popup weapons/Popup Shield, Therapy, concrete Armor/Shield hosts, Tech Upgrade, manual/Jeeves/paid Armor Repair, curated special cyberweapons (Net Launcher / Dartguns / Gas Jet) с special-ammo lifecycle и Manual Shield Tech Upgrade Polish;
-    - дальше: Campaign Clock services и generic Tech Maker custom modifications.
+    - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, concrete Cyberware/Popup weapons/Popup Shield, Therapy, concrete Armor/Shield hosts, Tech Upgrade, manual/Jeeves/paid Armor Repair, curated special cyberweapons (Net Launcher / Dartguns / Gas Jet) с special-ammo lifecycle, Manual Shield Tech Upgrade Polish и Tech Maker Custom Modifications (allowlisted upgrade/invention effects на weapon/armor/vehicle/cyberware);
+    - дальше: Campaign Clock services, Tech Maker fabrication (создание новых custom items) и более широкий allowlisted effect surface.
 14. JSON import.
 
 ### Пакет C — Publishing Preview

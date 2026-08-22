@@ -2329,6 +2329,87 @@ function therapyLifecycleHtml(character,derived,mine){
   return `<div class="therapy-panel mt"><div class="row" style="justify-content:space-between"><div><b>🧠 Therapy</b><div class="small muted">${T('One campaign week · server Humanity roll · capped by Maximum Humanity','Одна игровая неделя · серверный бросок Humanity · не выше Maximum Humanity')}</div></div>${mine?`<button data-therapy-action="start">${T('Start Therapy','Начать Therapy')}</button>`:''}</div>${latestHtml}</div>`;
 }
 
+function makerRanks(ch){
+  const roles=ch.roles||[];
+  const active=ch.active_role||ch.role;
+  let role=roles.find(r=>r.name===active);
+  if(!role||role.name!=='Tech')role=roles.find(r=>r.name==='Tech');
+  if(!role||role.name!=='Tech')return null;
+  const setup=role.setup||{};
+  const ranks={field:num(setup.field)||0,upgrade:num(setup.upgrade)||0,fabrication:num(setup.fabrication)||0,invention:num(setup.invention)||0};
+  if(!ranks.field&&!ranks.upgrade&&!ranks.fabrication&&!ranks.invention)return null;
+  return ranks;
+}
+
+function techMakerEffectLabel(effect){
+  if(!effect)return '';
+  const target=String(effect.target||'');
+  const labels={
+    'weapon.attack_check':['Attack Check','Бросок атаки'],
+    'weapon.magazine':['Magazine','Магазин'],
+    'weapon.concealable':['Concealable','Скрываемость'],
+    'armor.sp':['Stopping Power','Stopping Power'],
+    'vehicle.sdp_max':['Max SDP','Макс. SDP'],
+  };
+  const pair=labels[target]||[target,target];
+  const label=APP_I18N.current()==='ru'?pair[1]:pair[0];
+  const value=effect.operation==='set'?effect.value:`${effect.value>0?'+':''}${effect.value}`;
+  return `${label} ${effect.operation} ${value}`;
+}
+
+function techMakerSheetHtml(ch,d,mine){
+  const tm=d.tech_maker||{};
+  const mods=tm.modifications||[];
+  const ranks=makerRanks(ch);
+  if(!mods.length&&!mine)return '';
+  const manualTag=T('MANUAL','ВРУЧНУЮ'),autoTag=T('AUTOMATED','АВТОМАТИЧЕСКИ');
+  const rows=mods.map(mod=>{
+    const tag=mod.manual_resolution_required?`<span class="tag">${esc(manualTag)}</span>`:`<span class="tag">${esc(autoTag)}</span>`;
+    return `<div class="inv-row"><span class="iname"><b>${esc(mod.name)}</b><span class="small muted">${esc(mod.host_name||'')} · ${esc(mod.maker_specialty||'')}${mod.maker_rank?` rank ${mod.maker_rank}`:''}${mod.tech_name?' · '+esc(mod.tech_name):''}</span></span>${mod.effect?`<span class="chip">${esc(techMakerEffectLabel(mod.effect))}</span>`:''}${tag}${mod.manual_rule?`<span class="small warn-text">${esc(mod.manual_rule)}</span>`:''}${mod.source?`<span class="chip">📖 ${esc(mod.source)}</span>`:''}${mod.reason?`<span class="small user-content">${esc(mod.reason)}</span>`:''}${mine&&mod.active?`<button class="btn-sm btn-danger" data-tech-maker-action="${mod.modification_id}|remove">${T('Remove','Снять')}</button>`:''}</div>`;
+  }).join('');
+  const emptyRow=`<div class="muted small">${T('No Tech Maker modifications recorded.','Tech Maker modifications не записаны.')}</div>`;
+  const createBtn=mine&&ranks?`<button class="btn-sm mt" data-tech-maker-create>＋ ${T('Create Tech Maker Modification','Создать Tech Maker Modification')}</button>`:'';
+  return `<div class="panel mt" id="sheet-tech-maker">
+    <h2>🔧 ${T('Tech Maker Modifications','Tech Maker Modifications')}</h2>
+    <div class="small muted mb">${T('Custom Upgrade/Invention Expertise work. Automated effects are allowlisted and bounded; ambiguous results stay manual.','Работа Upgrade/Invention Expertise. Автоматические эффекты ограничены allowlist; неоднозначные результаты остаются ручными.')}</div>
+    ${mods.length?rows:emptyRow}
+    ${createBtn}
+  </div>`;
+}
+
+const TECH_MAKER_HOST_TYPES={guns:'weapon',armor:'armor',vehicles:'vehicle',cyberware:'cyberware'};
+const TECH_MAKER_EFFECTS=[
+  {target:'weapon.attack_check',host:'weapon',kind:'number',min:-3,max:3,labelEn:'Attack Check',labelRu:'Бросок атаки'},
+  {target:'weapon.magazine',host:'weapon',kind:'number',min:1,max:20,labelEn:'Magazine capacity',labelRu:'Ёмкость магазина'},
+  {target:'weapon.concealable',host:'weapon',kind:'choice',choices:['YES','NO'],labelEn:'Concealability',labelRu:'Скрываемость'},
+  {target:'armor.sp',host:'armor',kind:'number',min:1,max:1,labelEn:'Stopping Power',labelRu:'Stopping Power'},
+  {target:'vehicle.sdp_max',host:'vehicle',kind:'number',min:1,max:50,labelEn:'Maximum SDP',labelRu:'Максимальный SDP'},
+];
+function openTechMakerCreateModal(c){
+  const ch=c.data||{};
+  const ranks=makerRanks(ch);
+  const inv=(ch.inventory||[]).filter(item=>TECH_MAKER_HOST_TYPES[item.cat]&&item.state!=='stored'&&item.state!=='broken');
+  const cw=(ch.cyberware||[]).filter(item=>item.state==='installed');
+  const hosts=[...inv,...cw.map(item=>({...item,cat:'cyberware'}))];
+  const modal=openModal(`<h2>🔧 ${T('Create Tech Maker Modification','Создать Tech Maker Modification')}</h2><div class="panel accent mb"><p class="small">${T('Maker specialties for the active Tech role:','Специализации Maker активной роли Tech:')} ${Object.entries(ranks||{}).map(([k,v])=>`${esc(k)} ${v}`).join(' · ')||'—'}</p><p class="small muted">${T('Automated effects are allowlisted and bounded. Ambiguous results stay MANUAL.','Автоматические эффекты ограничены allowlist. Неоднозначные результаты остаются MANUAL.')}</p></div><div class="grid cols-2"><label class="f"><span>${T('Modification name *','Название modification *')}</span><input id="tm-name" maxlength="120" placeholder="Custom Smart Weapon Calibration"></label><label class="f"><span>${T('Tech performing the work *','Tech, выполняющий работу *')}</span><input id="tm-tech" maxlength="120" value="${esc(ch.handle||'')}"></label></div><div class="grid cols-2"><label class="f"><span>${T('Host instance *','Host instance *')}</span><select id="tm-host">${hosts.map((item,index)=>`<option value="${esc(item.instance_id)}" data-host-type="${TECH_MAKER_HOST_TYPES[item.cat]}">${esc(item.custom_name||item.name)} · ${esc(TECH_MAKER_HOST_TYPES[item.cat])}</option>`).join('')}</select></label><label class="f"><span>${T('Maker specialty *','Специализация Maker *')}</span><select id="tm-specialty"><option value="upgrade">${T('Upgrade Expertise','Upgrade Expertise')}${ranks?` (${ranks.upgrade||0})`:''}</option><option value="invention">${T('Invention Expertise','Invention Expertise')}${ranks?` (${ranks.invention||0})`:''}</option></select></label></div><label class="f"><span>${T('Effect (optional)','Эффект (необязательно)')}</span><select id="tm-effect"><option value="">— ${T('Manual only','Только вручную')} —</option></select></label><div class="grid cols-2" id="tm-effect-value-wrap" hidden><label class="f"><span id="tm-effect-value-label">Value</span><input id="tm-effect-value" type="number" step="1"></label><label class="f"><span>${T('Description','Описание')}</span><input id="tm-description" maxlength="2000"></label></div><label class="f"><span>${T('Manual rule (required if no effect)','Ручное правило (обязательно без эффекта)')}</span><textarea id="tm-manual-rule" maxlength="1000" rows="2" placeholder="${T('e.g. +2 only while stabilized on a bipod','например: +2 только с сошек')}"></textarea></label><label class="checkbox"><input id="tm-confirm" type="checkbox"> ${T('Confirm the successful Maker Check was resolved at the table.','Подтвердите успешный Maker Check за столом.')}</label><label class="f"><span>${T('Reason *','Причина *')}</span><textarea id="tm-reason" maxlength="500" rows="2" placeholder="${T('Upgrade Expertise result during downtime…','Результат Upgrade Expertise во время downtime…')}"></textarea></label><div class="row"><button id="tm-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="tm-submit">${T('Create','Создать')}</button></div>`,true);
+  const hostSelect=$('#tm-host',modal),effectSelect=$('#tm-effect',modal),valueWrap=$('#tm-effect-value-wrap',modal),valueInput=$('#tm-effect-value',modal),valueLabel=$('#tm-effect-value-label',modal);
+  const refreshEffects=()=>{const hostType=hostSelect.selectedOptions[0]?.dataset.hostType||'weapon';const options=TECH_MAKER_EFFECTS.filter(effect=>effect.host===hostType);effectSelect.innerHTML=`<option value="">— ${T('Manual only','Только вручную')} —</option>`+options.map((effect,index)=>`<option value="${index}">${esc(APP_I18N.current()==='ru'?effect.labelRu:effect.labelEn)}</option>`).join('');refreshValue();};
+  const refreshValue=()=>{const index=Number(effectSelect.value);if(Number.isNaN(index)||effectSelect.value===''){valueWrap.hidden=true;return;}const effect=TECH_MAKER_EFFECTS[index];valueWrap.hidden=false;if(effect.kind==='choice'){valueInput.outerHTML=`<select id="tm-effect-value">${effect.choices.map(choice=>`<option value="${choice}">${choice}</option>`).join('')}</select>`;valueLabel.textContent=effect.labelRu||effect.labelEn;}else{valueLabel.textContent=`${effect.labelEn} (${effect.min}…${effect.max})`;}};
+  hostSelect.onchange=refreshEffects;effectSelect.onchange=refreshValue;refreshEffects();
+  $('#tm-cancel',modal).onclick=closeModal;
+  $('#tm-submit',modal).onclick=async()=>{
+    const name=$('#tm-name',modal).value.trim(),tech=$('#tm-tech',modal).value.trim(),host=$('#tm-host',modal).value,specialty=$('#tm-specialty',modal).value,reason=$('#tm-reason',modal).value.trim(),manualRule=$('#tm-manual-rule',modal).value.trim(),description=$('#tm-description',modal).value.trim();
+    if(name.length<2||tech.length<2||reason.length<3){toast(T('Fill name, Tech and reason.','Заполните название, Tech и причину.'),true);return;}
+    const index=Number(effectSelect.value),effectDef=Number.isInteger(index)&&effectSelect.value!==''?TECH_MAKER_EFFECTS[index]:null;
+    let effect=null;
+    if(effectDef){const valueEl=$('#tm-effect-value',modal);const value=effectDef.kind==='choice'?valueEl.value:Number(valueEl.value);if(effectDef.kind==='number'&&(!Number.isInteger(value)||value<effectDef.min||value>effectDef.max)){toast(T('Effect value is out of the allowed range.','Значение эффекта вне допустимого диапазона.'),true);return;}if(!$('#tm-confirm',modal).checked){toast(T('Confirm the successful Maker Check.','Подтвердите успешный Maker Check.'),true);return;}effect={target:effectDef.target,operation:effectDef.kind==='choice'?'set':'add',value};}
+    if(!effect&&manualRule.length<3){toast(T('Provide a manual rule when there is no automated effect.','Укажите ручное правило, если нет автоматического эффекта.'),true);return;}
+    const body={revision:c.revision,name,tech_name:tech,host_instance_id:host,maker_specialty:specialty,effect,manual_rule:manualRule,description,manual_confirm:!!effect,reason};
+    const submit=$('#tm-submit',modal);submit.disabled=true;
+    try{await api(`/api/characters/${c.id}/tech-maker/modifications`,{method:'POST',body});closeModal();toast(T('Tech Maker modification created.','Tech Maker modification создана.'));viewSheet(c.id);}catch(error){submit.disabled=false;toast(error.message,true);}
+  };
+}
+
 function wizStepSummaryHtml() {
   const wiz=state.wizard,c=wizChar(),d=wizDerived(),errors=wizValidationErrors(),warnings=equipmentWarnings(wiz);
   if(d.emp_cur!=null&&d.emp_cur<=2)warnings.push(T('EMP is 2 or lower','EMP не выше 2'));
@@ -2688,7 +2769,7 @@ async function viewSheet(id) {
     </div>
   </div>
 
-  <nav class="sheet-tabs"><button data-sheet-jump="sheet-overview">Overview</button><button data-sheet-jump="sheet-skills">Skills</button><button data-sheet-jump="sheet-combat">Combat</button><button data-sheet-jump="sheet-gear">Gear</button><button data-sheet-jump="sheet-cyberdecks">Netrunning</button><button data-sheet-jump="sheet-garage">Garage</button><button data-sheet-jump="sheet-cyberware">Cyberware</button><button data-sheet-jump="sheet-lifepath">Lifepath</button></nav>
+  <nav class="sheet-tabs"><button data-sheet-jump="sheet-overview">Overview</button><button data-sheet-jump="sheet-skills">Skills</button><button data-sheet-jump="sheet-combat">Combat</button><button data-sheet-jump="sheet-gear">Gear</button><button data-sheet-jump="sheet-cyberdecks">Netrunning</button><button data-sheet-jump="sheet-garage">Garage</button><button data-sheet-jump="sheet-cyberware">Cyberware</button><button data-sheet-jump="sheet-tech-maker">Tech Maker</button><button data-sheet-jump="sheet-lifepath">Lifepath</button></nav>
   <div class="panel accent mb">
     <div class="derived">
       <span class="dstat resource-stat"><span class="v">${d.hp_max != null ? hpCur + ' / ' + d.hp_max : '—'}</span><span class="k">HP</span>${mine?`<span class="resource-actions"><button data-resource="hp|-5">−5</button><button data-resource="hp|-1">−1</button><button data-resource="hp|1">+1</button><button data-resource="hp|5">+5</button></span>`:''}</span>
@@ -2743,6 +2824,7 @@ async function viewSheet(id) {
             ${Object.values(armorPenalties(piece)).some(v => v) ? `<span class="chip">${Object.entries(armorPenalties(piece)).map(([k,v]) => k + ' ' + v).join(' · ')}</span>` : ''}
           </div>`).join('')}` : ''}
         ${armorHostLifecycleHtml(d.effective_armor_hosts,mine)}
+        ${techMakerSheetHtml(ch,d,mine)}
       </div>
       <div class="panel mb" id="sheet-cyberdecks">
         <h2>💻 ${T('Cyberdeck Loadout','Загрузка Cyberdeck')}</h2>
@@ -2793,7 +2875,8 @@ async function viewSheet(id) {
   $$('[data-owned-item]', view).forEach(btn => btn.onclick = () => showCreationItemInfo(inv[Number(btn.dataset.ownedItem)]));
   $$('[data-armor-repair]',view).forEach(button=>button.onclick=async()=>{const [instanceId,action]=button.dataset.armorRepair.split('|'),body={revision:c.revision,action};if(action==='start'){const methods=['manual_tech','jeeves','paid_service'],methodAnswer=Number(prompt(`1. ${T('Manual Tech repair','Ручной ремонт Tech')}\n2. Jeeves Executive Garment Bag\n3. ${T('Paid external service · manual quote','Платный внешний сервис · цена вручную')}`,'1'));body.method=methods[methodAnswer-1];if(!body.method)return;const useJeeves=body.method==='jeeves';body.technician=(prompt(T('Repair technician / service provider','Исполнитель ремонта / сервис'),useJeeves?'Jeeves Executive Garment Bag':ch.handle||'')||'').trim();if(body.technician.length<2)return;if(useJeeves){const bags=inv.filter(item=>item.catalog_item_id==='gear-39'||String(item.key||'').split('@')[0]==='gear-39'),answer=prompt(`${T('Choose Jeeves bag','Выберите сумку Jeeves')}:\n${bags.map((item,index)=>`${index+1}. ${item.custom_name||item.name}`).join('\n')}`,'1'),bag=bags[Number(answer)-1];if(!bag)return;body.jeeves_instance_id=bag.instance_id;}if(body.method==='paid_service'){const cost=Number(prompt(T('Agreed service cost in eb','Согласованная стоимость сервиса в eb'),'100'));if(!Number.isInteger(cost)||cost<0)return;if(!confirm(`${T('Pay non-refundable Armor Repair service quote','Оплатить невозвратную стоимость ремонта')}: ${money(cost)}?`))return;body.service_cost=cost;body.payment_confirmed=true;}}else if(action==='resolve'){if(!confirm(T('Confirm the manual repair time/check is complete.','Подтвердите завершение ручного времени/проверки ремонта.')))return;body.manual_resolution_confirmed=true;}else if(action==='self_repair_tick'){if(!confirm(T('Confirm one full day passed without this armor losing SP.','Подтвердите полный день без потери SP этой бронёй.')))return;body.no_sp_loss_confirmed=true;}body.reason=(prompt(T('Armor Repair reason','Причина Armor Repair'),action==='start'?T('Begin tracked armor repair','Начать отслеживаемый ремонт брони'):action==='resolve'?T('Repair time and check completed','Время и проверка ремонта завершены'):action==='cancel'?T('Armor repair interrupted','Ремонт брони прерван'):T('Daily nanomachine repair condition met','Условие ежедневного ремонта наномашинами выполнено'))||'').trim();if(body.reason.length<3)return;button.disabled=true;try{await api(`/api/characters/${c.id}/armor/${instanceId}/repair`,{method:'POST',body});toast(T('Armor Repair workflow updated.','Armor Repair workflow обновлён.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
   $$('[data-armor-tech-upgrade]',view).forEach(button=>button.onclick=async()=>{const tech=(prompt(T('Tech performing Upgrade Expertise','Tech, выполняющий Upgrade Expertise'),ch.handle||'')||'').trim();if(tech.length<2)return;if(!confirm(T('Confirm successful Tech Upgrade Check. Armor SP +1 is automated; Shield effect remains manual.','Подтвердите успешный Tech Upgrade Check. SP брони +1 автоматизирован; эффект щита остаётся ручным.')))return;const reason=(prompt(T('Armor Tech Upgrade reason','Причина Armor Tech Upgrade'),T('Upgrade Expertise resolved at the table','Upgrade Expertise разрешён за столом'))||'').trim();if(reason.length<3)return;button.disabled=true;try{await api(`/api/characters/${c.id}/armor/${button.dataset.armorTechUpgrade}/tech-upgrade`,{method:'POST',body:{revision:c.revision,tech_name:tech,manual_confirm:true,reason}});toast(T('Permanent Armor Tech Upgrade recorded.','Permanent Armor Tech Upgrade записан.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
-  $$('[data-item-action]',view).forEach(button=>button.onclick=()=>{const [instanceId,action]=button.dataset.itemAction.split('|'),item=inv.find(entry=>entry.instance_id===instanceId);if(item)performSheetItemAction(c,item,action);});
+  $$('[data-tech-maker-create]',view).forEach(button=>button.onclick=()=>openTechMakerCreateModal(c));
+  $$('[data-tech-maker-action]',view).forEach(button=>button.onclick=async()=>{const [modificationId,action]=button.dataset.techMakerAction.split('|');if(action!=='remove')return;if(!confirm(T('Remove this Tech Maker modification?','Снять эту Tech Maker modification?')))return;const reason=(prompt(T('Tech Maker removal reason','Причина снятия Tech Maker modification'),T('Removed during downtime','Снято во время downtime'))||'').trim();if(reason.length<3)return;button.disabled=true;try{await api(`/api/characters/${c.id}/tech-maker/modifications/${modificationId}/action`,{method:'POST',body:{revision:c.revision,action:'remove',reason}});toast(T('Tech Maker modification removed.','Tech Maker modification снята.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
   $$('[data-item-equip]',view).forEach(button=>button.onclick=()=>{const item=inv.find(entry=>entry.instance_id===button.dataset.itemEquip);if(item)chooseEquipMode(c,item);});
   $$('[data-item-use]',view).forEach(button=>button.onclick=()=>{const item=inv.find(entry=>entry.instance_id===button.dataset.itemUse);if(!item)return;const maximum=Math.max(1,Number(item.qty)||1),amount=maximum>1?Number(prompt(T(`How many uses? 1–${maximum}`,`Сколько использовать? 1–${maximum}`),'1')):1;if(!Number.isInteger(amount)||amount<1||amount>maximum)return;if(confirm(`${T('Use','Использовать')} ${item.custom_name||item.name} ×${amount}?`))performSheetItemAction(c,item,'use',{amount});});
   $$('[data-sheet-jump]',view).forEach(button=>button.onclick=()=>document.getElementById(button.dataset.sheetJump)?.scrollIntoView({behavior:'smooth',block:'start'}));

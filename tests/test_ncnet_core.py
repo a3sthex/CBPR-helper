@@ -391,3 +391,119 @@ class NCNetCoreFlowTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TechMakerFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = sqlite3.connect(str(Path(self.tmp.name) / 'ncnet.db'))
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(server.SCHEMA)
+        server.apply_schema_migrations(self.conn, make_backup=False)
+        self.conn.execute(
+            'INSERT INTO users(username,display_name,pass_hash,is_gm,account_role,created) '
+            "VALUES('runner1','Runner One','x',0,'player',1)")
+        self.conn.commit()
+        self.weapon_id = '1' * 32
+        data = {
+            'handle': 'V', 'role': 'Tech', 'role_rank': 4,
+            'roles': [{'name': 'Tech', 'rank': 4, 'primary': True,
+                       'setup': {'field': 2, 'upgrade': 2, 'fabrication': 2, 'invention': 2}}],
+            'active_role': 'Tech',
+            'stats': {'BODY': 6, 'WILL': 6, 'LUCK': 5, 'MOVE': 6},
+            'skills': {}, 'cyberware': [], 'armor': {},
+            'cash': 100, 'ip_available': 0, 'ip_total_earned': 0,
+            'ip_total_spent': 0, 'luck_cur': 5, 'reputation': 0,
+            'inventory': [{
+                'key': 'guns-0', 'catalog_item_id': 'guns-0',
+                'instance_id': self.weapon_id, 'cat': 'guns',
+                'name': 'Medium Pistol', 'qty': 1, 'state': 'carried',
+                'mechanics': {'type': 'Medium Pistol', 'skill': 'Handgun',
+                              'damage': {'notation': '2d6'}, 'magazine': 12,
+                              'concealable': 'YES'},
+            }],
+        }
+        self.conn.execute(
+            'INSERT INTO characters(owner_id,public,data,created,updated) VALUES(1,1,?,1,1)',
+            (json.dumps(data),))
+        self.conn.commit()
+        self.handler = object.__new__(server.Handler)
+        self.response = {}
+        self.current = self.user('runner1')
+        self.handler.current_user = lambda conn: self.current
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def user(self, username):
+        return self.conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
+
+    def call(self, method, *args):
+        self.response = {}
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+        method(self.handler, self.conn, *args)
+        return self.response
+
+    @staticmethod
+    def match(*values):
+        return re.match('^' + '/'.join('(\\d+)' for _ in values) + '$',
+                        '/'.join(str(value) for value in values))
+
+    def test_create_applies_effect_and_remove_clears_it(self):
+        self.call(server.Handler.api_character_tech_maker_create, {}, self.match(1), {
+            'revision': 0, 'name': 'Calibrated', 'tech_name': 'Vee',
+            'host_instance_id': self.weapon_id, 'maker_specialty': 'upgrade',
+            'effect': {'target': 'weapon.attack_check', 'operation': 'add', 'value': 1},
+            'manual_confirm': True, 'reason': 'Upgrade Expertise at the table',
+        })
+        payload = self.response['payload']
+        mod_id = payload['modification_id']
+        character = payload['character']
+        self.assertIn(mod_id, character['data']['tech_maker_state']['modifications'])
+        weapon = character['derived']['effective_weapons'][self.weapon_id]
+        self.assertEqual(weapon['attack_modifier'], 1)
+        self.assertEqual(weapon['effective']['magazine'], 12)
+
+        # Duplicate effect on the same host/target is blocked.
+        with self.assertRaises(server.ApiError) as duplicate:
+            self.call(server.Handler.api_character_tech_maker_create, {}, self.match(1), {
+                'revision': character['revision'], 'name': 'Second', 'tech_name': 'Vee',
+                'host_instance_id': self.weapon_id, 'maker_specialty': 'upgrade',
+                'effect': {'target': 'weapon.attack_check', 'operation': 'add', 'value': 1},
+                'manual_confirm': True, 'reason': 'Upgrade Expertise at the table',
+            })
+        self.assertEqual(duplicate.exception.status, 409)
+
+        action_match = re.match(r'^(\d+)/([a-f0-9]{32})$', f'1/{mod_id}')
+        self.call(server.Handler.api_character_tech_maker_action, {}, action_match, {
+            'revision': character['revision'], 'action': 'remove',
+            'reason': 'Removed during downtime',
+        })
+        removed = self.response['payload']['character']
+        self.assertFalse(
+            removed['data']['tech_maker_state']['modifications'][mod_id]['active'])
+        weapon_after = removed['derived']['effective_weapons'][self.weapon_id]
+        self.assertEqual(weapon_after['attack_modifier'], 0)
+
+    def test_requires_tech_role_and_allowlisted_effect(self):
+        with self.assertRaises(server.ApiError) as bad_effect:
+            self.call(server.Handler.api_character_tech_maker_create, {}, self.match(1), {
+                'revision': 0, 'name': 'Bad', 'tech_name': 'Vee',
+                'host_instance_id': self.weapon_id, 'maker_specialty': 'upgrade',
+                'effect': {'target': 'weapon.damage', 'operation': 'set', 'value': '10d6'},
+                'manual_confirm': True, 'reason': 'Upgrade Expertise at the table',
+            })
+        self.assertEqual(bad_effect.exception.status, 400)
+
+        with self.assertRaises(server.ApiError) as missing_confirm:
+            self.call(server.Handler.api_character_tech_maker_create, {}, self.match(1), {
+                'revision': 0, 'name': 'NoConfirm', 'tech_name': 'Vee',
+                'host_instance_id': self.weapon_id, 'maker_specialty': 'upgrade',
+                'effect': {'target': 'weapon.attack_check', 'operation': 'add', 'value': 1},
+                'reason': 'Upgrade Expertise at the table',
+            })
+        self.assertEqual(missing_confirm.exception.status, 409)

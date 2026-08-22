@@ -1168,6 +1168,39 @@ def evaluate_effective_weapon(host, modifications, owned_by_id, character):
                 'modification_id': modification.get('modification_id'),
                 'upgrade_instance_id': modification.get('upgrade_instance_id'),
             })
+    # Tech Maker custom modifications: declarative, allowlisted, non-stacking.
+    for mod in character_tech_maker_modifications(character).values():
+        if mod.get('host_instance_id') != host.get('instance_id'):
+            continue
+        effect = mod.get('effect')
+        if not isinstance(effect, dict):
+            continue
+        target = effect.get('target')
+        maker = {
+            'id': f'tech-maker:{target}',
+            'label_en': mod.get('name') or 'Tech Maker Modification',
+            'label_ru': mod.get('name') or 'Tech Maker Modification',
+            'active': True, 'automated': True, 'source_type': 'tech_maker',
+            'source': mod.get('source'),
+            'modification_id': mod.get('modification_id'),
+            'manual_resolution_required': False,
+            'effects': [copy.deepcopy(effect)],
+        }
+        if target == 'weapon.attack_check':
+            effect['before'] = attack_modifier
+            attack_modifier += int(effect.get('value') or 0)
+            effect['after'] = attack_modifier
+        elif target == 'weapon.magazine':
+            effect['before'] = effective_magazine
+            effective_magazine = max(0, effective_magazine + int(effect.get('value') or 0))
+            effect['after'] = effective_magazine
+        elif target == 'weapon.concealable':
+            effect['before'] = effective_concealable
+            effective_concealable = effect.get('value')
+            effect['after'] = effective_concealable
+        maker['effects'] = [copy.deepcopy(effect)]
+        applied.append(effect)
+        sources.append(maker)
     if base_magazine or effective_magazine:
         effective['magazine'] = effective_magazine
     if effective_concealable is not None:
@@ -1480,6 +1513,26 @@ def evaluate_effective_vehicle(host, modifications, owned_by_id,
     interior['hidden_cargo_spaces'] = sum(
         int(module.get('cargo_spaces') or 0) for module in cargo_modules
         if str(module.get('kind') or '').startswith('hidden'))
+    tech_maker = None
+    for mod in character_tech_maker_modifications(character).values():
+        if mod.get('host_instance_id') != host.get('instance_id'):
+            continue
+        effect = mod.get('effect')
+        if not isinstance(effect, dict):
+            continue
+        if effect.get('target') == 'vehicle.sdp_max':
+            effect['before'] = effective_sdp
+            effective_sdp += int(effect.get('value') or 0)
+            effect['after'] = effective_sdp
+            tech_maker = copy.deepcopy(mod)
+            sources.append({
+                'id': f'tech-maker:{mod.get("modification_id")}',
+                'label_en': mod.get('name') or 'Tech Maker Modification',
+                'label_ru': mod.get('name') or 'Tech Maker Modification',
+                'active': True, 'automated': True, 'effects': [copy.deepcopy(effect)],
+                'manual_rules': [], 'source': mod.get('source'),
+                'modification_id': mod.get('modification_id'),
+            })
     effective = copy.deepcopy(base)
     effective.update({'sdp': effective_sdp, 'body_sp': effective_body_sp,
                       'glass_hp': effective_glass_hp, 'seats': effective_seats})
@@ -1493,7 +1546,7 @@ def evaluate_effective_vehicle(host, modifications, owned_by_id,
         'effective': effective, 'state': state, 'sources': sources,
         'nos_tanks': nos_tanks, 'mounted_weapons': mounted_weapons,
         'weapon_mounts': weapon_mounts, 'interior': interior,
-        'cargo_modules': cargo_modules,
+        'cargo_modules': cargo_modules, 'tech_maker_modification': tech_maker,
     }
 
 
@@ -5522,6 +5575,7 @@ def clean_character(data):
     out.pop('therapy_state', None)
     out.pop('armor_tech_state', None)
     out.pop('armor_repair_state', None)
+    out.pop('tech_maker_state', None)
     out['handle'] = str(out.get('handle') or '').strip()[:60]
     if not out['handle']:
         raise ApiError(400, 'Нужен псевдоним (Handle) персонажа')
@@ -6060,6 +6114,18 @@ def effective_armor_hosts(data):
         effective_sp = (base_sp + 1) if upgraded and mode == 'sp_plus_one' and \
             base_sp is not None else base_sp
         effective_sdp = base_sdp
+        tech_maker = None
+        for mod in character_tech_maker_modifications(data).values():
+            if mod.get('host_instance_id') != item['instance_id']:
+                continue
+            effect = mod.get('effect')
+            if not isinstance(effect, dict):
+                continue
+            if effect.get('target') == 'armor.sp' and not shield and effective_sp is not None:
+                effective_sp += int(effect.get('value') or 0)
+                tech_maker = copy.deepcopy(mod)
+        if tech_maker:
+            tech_maker['effective'] = effective_sp
         equipped_locations = [
             location for location in ('head', 'body', 'shield')
             if isinstance(equipped.get(location), dict) and
@@ -6095,6 +6161,7 @@ def effective_armor_hosts(data):
                 (base_sp is not None or shield),
             'automated_upgrade_available': not upgraded and base_sp is not None and not shield,
             'manual_resolution_required': shield,
+            'tech_maker_modification': tech_maker,
         })
     return {'hosts': hosts, 'upgraded_count': sum(bool(item['tech_upgrade']) for item in hosts)}
 
@@ -6115,6 +6182,178 @@ def validate_armor_repair_references(data):
     if any(instance_id not in armor_ids or not isinstance(state, dict)
            for instance_id, state in states.items()):
         raise ApiError(409, 'Повреждена связь Armor Repair Workflow')
+
+
+# -------------------------------------------------------- Tech Maker
+
+TECH_MAKER_SPECIALTIES = ('upgrade', 'invention')
+# Declarative allowlist of what a Tech Maker custom modification may do.
+# Values are bounded; no executable data is accepted.
+TECH_MAKER_EFFECT_TARGETS = {
+    'weapon.attack_check': {
+        'host_types': {'weapon'}, 'operations': ('add',),
+        'value_kind': 'number', 'value_min': -3, 'value_max': 3,
+        'label_en': 'Attack Check', 'label_ru': 'Бросок атаки',
+    },
+    'weapon.magazine': {
+        'host_types': {'weapon'}, 'operations': ('add',),
+        'value_kind': 'number', 'value_min': 1, 'value_max': 20,
+        'label_en': 'Magazine capacity', 'label_ru': 'Ёмкость магазина',
+    },
+    'weapon.concealable': {
+        'host_types': {'weapon'}, 'operations': ('set',),
+        'value_kind': 'choice', 'choices': ('YES', 'NO'),
+        'label_en': 'Concealability', 'label_ru': 'Скрываемость',
+    },
+    'armor.sp': {
+        'host_types': {'armor'}, 'operations': ('add',),
+        'value_kind': 'number', 'value_min': 1, 'value_max': 1,
+        'label_en': 'Stopping Power', 'label_ru': 'Stopping Power',
+    },
+    'vehicle.sdp_max': {
+        'host_types': {'vehicle'}, 'operations': ('add',),
+        'value_kind': 'number', 'value_min': 1, 'value_max': 50,
+        'label_en': 'Maximum SDP', 'label_ru': 'Максимальный SDP',
+    },
+}
+TECH_MAKER_SPECIALTY_LABELS = {
+    'upgrade': ('Upgrade Expertise', 'Upgrade Expertise'),
+    'invention': ('Invention Expertise', 'Invention Expertise'),
+}
+
+
+def tech_maker_host_type(entry):
+    """Map a concrete owned instance to a Tech Maker host type."""
+    if not isinstance(entry, dict):
+        return None
+    cat = str(entry.get('cat') or '')
+    if cat == 'guns':
+        return 'weapon'
+    if cat == 'armor':
+        return 'armor'
+    if cat == 'vehicles':
+        return 'vehicle'
+    if cat == 'cyberware':
+        return 'cyberware'
+    return None
+
+
+def character_maker_ranks(data):
+    """Return Maker specialty ranks for the character's active Tech Role."""
+    roles = data.get('roles') or []
+    active_name = str(data.get('active_role') or data.get('role') or '')
+    role = next((row for row in roles if isinstance(row, dict) and
+                 str(row.get('name') or '') == active_name), None)
+    if not role or role.get('name') != 'Tech':
+        role = next((row for row in roles if isinstance(row, dict) and
+                     row.get('name') == 'Tech'), None)
+    if not role:
+        return {}
+    setup = role.get('setup') if isinstance(role.get('setup'), dict) else {}
+    return {key: max(0, _num(setup.get(key)) or 0)
+            for key in ('field', 'upgrade', 'fabrication', 'invention')}
+
+
+def clean_tech_maker_effect(host_type, raw):
+    """Validate and normalize a declarative Tech Maker effect payload."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ApiError(400, 'Tech Maker effect должен быть объектом')
+    if set(raw) - {'target', 'operation', 'value'}:
+        raise ApiError(400, 'Tech Maker effect содержит неподдерживаемые поля')
+    target = str(raw.get('target') or '')
+    definition = TECH_MAKER_EFFECT_TARGETS.get(target)
+    if not definition:
+        raise ApiError(400, 'Недопустимый Tech Maker effect target')
+    if host_type not in definition['host_types']:
+        raise ApiError(400, f'Effect target {target} недопустим для host {host_type}')
+    operation = str(raw.get('operation') or '')
+    if operation not in definition['operations']:
+        raise ApiError(400, f'Недопустимая операция {operation} для {target}')
+    value = raw.get('value')
+    if definition['value_kind'] == 'number':
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ApiError(400, 'Tech Maker effect value должен быть целым числом')
+        if not definition['value_min'] <= value <= definition['value_max']:
+            raise ApiError(400, f'Tech Maker effect value вне диапазона '
+                                f'{definition["value_min"]}–{definition["value_max"]}')
+    else:
+        if value not in definition['choices']:
+            raise ApiError(400, f'Недопустимое значение {value} для {target}')
+    return {'target': target, 'operation': operation, 'value': value}
+
+
+def character_tech_maker_modifications(data):
+    """Return active Tech Maker custom modifications keyed by modification_id."""
+    state = data.get('tech_maker_state')
+    if not isinstance(state, dict):
+        return {}
+    mods = state.get('modifications')
+    if not isinstance(mods, dict):
+        return {}
+    return {key: value for key, value in mods.items()
+            if isinstance(value, dict) and value.get('active')}
+
+
+def validate_tech_maker_references(data):
+    state = data.get('tech_maker_state')
+    if not isinstance(state, dict):
+        return
+    mods = state.get('modifications')
+    if not isinstance(mods, dict):
+        return
+    owned_ids = {item.get('instance_id') for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('instance_id')}
+    owned_ids |= {item.get('instance_id') for item in data.get('cyberware') or []
+                  if isinstance(item, dict) and item.get('instance_id')}
+    for mod_id, mod in mods.items():
+        if not isinstance(mod, dict):
+            raise ApiError(409, 'Повреждена запись Tech Maker modification')
+        if mod.get('active') and mod.get('host_instance_id') not in owned_ids:
+            raise ApiError(409, 'Повреждена связь Tech Maker modification')
+    history = state.get('history')
+    if history is not None and not isinstance(history, list):
+        raise ApiError(409, 'Повреждена история Tech Maker modifications')
+
+
+def tech_maker_payload(data):
+    state = data.get('tech_maker_state')
+    state = state if isinstance(state, dict) else {}
+    mods = state.get('modifications')
+    mods = mods if isinstance(mods, dict) else {}
+    owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+             if isinstance(item, dict) and item.get('instance_id')}
+    owned.update({item.get('instance_id'): item for item in data.get('cyberware') or []
+                  if isinstance(item, dict) and item.get('instance_id')})
+    out = []
+    for mod_id, mod in sorted(mods.items()):
+        if not isinstance(mod, dict):
+            continue
+        host = owned.get(mod.get('host_instance_id')) or {}
+        out.append({
+            'modification_id': mod_id,
+            'name': mod.get('name') or 'Tech Maker Modification',
+            'description': mod.get('description') or '',
+            'host_instance_id': mod.get('host_instance_id'),
+            'host_name': host.get('custom_name') or host.get('name'),
+            'host_type': mod.get('host_type'),
+            'maker_specialty': mod.get('maker_specialty'),
+            'maker_rank': mod.get('maker_rank'),
+            'tech_name': mod.get('tech_name'),
+            'effect': copy.deepcopy(mod.get('effect')) if isinstance(mod.get('effect'), dict) else None,
+            'manual_rule': mod.get('manual_rule') or '',
+            'manual_resolution_required': bool(mod.get('manual_resolution_required')),
+            'source': mod.get('source'),
+            'active': bool(mod.get('active')),
+            'permanent': bool(mod.get('permanent')),
+            'installed_at': mod.get('installed_at'),
+            'reason': mod.get('reason') or '',
+            'notes': mod.get('notes') or '',
+        })
+    return {'modifications': out,
+            'history': [copy.deepcopy(item) for item in state.get('history') or []
+                        if isinstance(item, dict)][-50:][::-1]}
 
 
 CYBERWARE_HOST_ACCEPTED_NAMES = {
@@ -7913,6 +8152,28 @@ SERVER_ERROR_EN = {
     'Dossier изменён в другой вкладке; обновите страницу': 'Dossier changed in another tab; reload the page',
     'Слишком много запросов; попробуйте позже': 'Too many requests; try again later',
     'Недопустимый источник запроса': 'Invalid request origin',
+    'Tech Maker modification содержит неподдерживаемые поля': 'Tech Maker modification contains unsupported fields',
+    'Укажите название Tech Maker modification': 'Tech Maker modification name is required',
+    'Укажите Tech и причину Tech Maker modification': 'Provide the Tech and a reason for the Tech Maker modification',
+    'Выберите конкретный host instance': 'Choose a specific host instance',
+    'Host instance не найден': 'Host instance not found',
+    'Host не поддерживает Tech Maker modifications': 'The host does not support Tech Maker modifications',
+    'Tech Maker effect должен быть объектом': 'Tech Maker effect must be an object',
+    'Tech Maker effect содержит неподдерживаемые поля': 'Tech Maker effect contains unsupported fields',
+    'Недопустимый Tech Maker effect target': 'Invalid Tech Maker effect target',
+    'Tech Maker effect value должен быть целым числом': 'Tech Maker effect value must be an integer',
+    'Tech Maker modification требует effect или manual_rule': 'Tech Maker modification requires an effect or a manual rule',
+    'Подтвердите успешный Tech Maker Check за столом': 'Confirm the successful Tech Maker Check at the table',
+    'Host уже имеет Tech Maker modification этого типа': 'The host already has a Tech Maker modification of this type',
+    'Достигнут лимит Tech Maker modifications': 'Tech Maker modification limit reached',
+    'Tech Maker action содержит неподдерживаемые поля': 'Tech Maker action contains unsupported fields',
+    'Укажите причину Tech Maker action': 'Provide a reason for the Tech Maker action',
+    'Tech Maker modification не найдена': 'Tech Maker modification not found',
+    'Permanent Tech Maker modification нельзя снять': 'A permanent Tech Maker modification cannot be removed',
+    'Tech Maker modification уже снята': 'Tech Maker modification is already removed',
+    'Повреждена запись Tech Maker modification': 'Tech Maker modification record is corrupted',
+    'Повреждена связь Tech Maker modification': 'Tech Maker modification link is corrupted',
+    'Повреждена история Tech Maker modifications': 'Tech Maker modification history is corrupted',
 }
 
 def server_error_message(message, language):
@@ -7986,6 +8247,13 @@ def server_error_message(message, language):
         ('Не удалось создать резервную копию:', 'Could not create backup:'),
         ('Резервная копия не прошла проверку:', 'Backup verification failed:'),
         ('Резервная копия не найдена:', 'Backup not found:'),
+        ('Требуется Maker', 'Requires Maker'),
+        ('rank 1+ для Tech Maker modification', 'rank 1+ for the Tech Maker modification'),
+        ('недопустим для host', 'is not allowed for host'),
+        ('Недопустимая операция', 'Invalid operation'),
+        ('Tech Maker effect value вне диапазона', 'Tech Maker effect value is outside the range'),
+        ('Недопустимое значение', 'Invalid value'),
+        (' для ', ' for '),
     ]
     out = str(message)
     for ru, en in replacements:
@@ -9715,13 +9983,15 @@ class Handler(BaseHTTPRequestHandler):
                 full_data, modifications)
             derived['effective_cyberdecks'] = character_effective_cyberdecks(
                 full_data, modifications)
+            derived['tech_maker'] = tech_maker_payload(full_data)
         if public_view and not visibility['combat']:
             derived = {}
         elif public_view:
             if not visibility['equipment']:
                 for private_key in ('modifications', 'effective_weapons',
                                     'effective_vehicles', 'effective_cyberdecks',
-                                    'effective_cyberware', 'effective_armor_hosts'):
+                                    'effective_cyberware', 'effective_armor_hosts',
+                                    'tech_maker'):
                     derived.pop(private_key, None)
             for effect in (derived.get('effects') or {}).get('instances') or []:
                 for private_key in ('reason', 'actor', 'source_item_instance_id'):
@@ -9734,6 +10004,10 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(tech_upgrade, dict):
                     for private_key in ('tech_name', 'installed_by', 'reason'):
                         tech_upgrade.pop(private_key, None)
+                tech_maker = armor_host.get('tech_maker_modification')
+                if isinstance(tech_maker, dict):
+                    for private_key in ('tech_name', 'installed_by', 'reason', 'notes'):
+                        tech_maker.pop(private_key, None)
             for vehicle in (derived.get('effective_vehicles') or {}).values():
                 repair_state = vehicle.get('state') or {}
                 if isinstance(repair_state.get('repair'), dict):
@@ -9741,6 +10015,13 @@ class Handler(BaseHTTPRequestHandler):
                 for repair in repair_state.get('repair_history') or []:
                     if isinstance(repair, dict):
                         repair.pop('technician', None)
+                tech_maker = vehicle.get('tech_maker_modification')
+                if isinstance(tech_maker, dict):
+                    for private_key in ('tech_name', 'installed_by', 'reason', 'notes'):
+                        tech_maker.pop(private_key, None)
+            for mod in (derived.get('tech_maker') or {}).get('modifications') or []:
+                for private_key in ('tech_name', 'reason', 'notes'):
+                    mod.pop(private_key, None)
             for deck in (derived.get('effective_cyberdecks') or {}).values():
                 for program in deck.get('programs') or []:
                     entity = program.get('net_entity')
@@ -9874,6 +10155,7 @@ class Handler(BaseHTTPRequestHandler):
         validate_popup_shield_references(after)
         validate_armor_tech_references(after)
         validate_armor_repair_references(after)
+        validate_tech_maker_references(after)
         validate_active_modification_references(conn, row['id'], after)
         sync_weapon_states_with_modifications(conn, row['id'], after)
         sync_vehicle_states_with_modifications(conn, row['id'], after)
@@ -10128,6 +10410,7 @@ class Handler(BaseHTTPRequestHandler):
         ensure_progression(target)
         validate_armor_tech_references(target)
         validate_armor_repair_references(target)
+        validate_tech_maker_references(target)
         validate_bound_popup_weapon_references(target)
         validate_popup_shield_references(target)
         validate_active_modification_references(conn, row['id'], target)
@@ -12331,6 +12614,170 @@ class Handler(BaseHTTPRequestHandler):
         fresh = self.get_char(conn, row['id'])
         self.send_json({
             'ledger_id': ledger_id, 'upgrade': state,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
+    def api_character_tech_maker_create(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'name', 'description', 'host_instance_id',
+                   'maker_specialty', 'tech_name', 'effect', 'manual_rule',
+                   'manual_confirm', 'reason', 'notes'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Tech Maker modification содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        name = str((body or {}).get('name') or '').strip()[:120]
+        if len(name) < 2:
+            raise ApiError(400, 'Укажите название Tech Maker modification')
+        tech_name = str((body or {}).get('tech_name') or '').strip()[:120]
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(tech_name) < 2 or len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите Tech и причину Tech Maker modification')
+        specialty = str((body or {}).get('maker_specialty') or '').strip().lower()
+        if specialty not in TECH_MAKER_SPECIALTIES:
+            raise ApiError(400, 'maker_specialty: upgrade/invention')
+        host_id = str((body or {}).get('host_instance_id') or '').lower()
+        if not INSTANCE_ID_RE.fullmatch(host_id):
+            raise ApiError(400, 'Выберите конкретный host instance')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('instance_id')}
+        owned.update({item.get('instance_id'): item for item in data.get('cyberware') or []
+                      if isinstance(item, dict) and item.get('instance_id')})
+        host = owned.get(host_id)
+        if not host:
+            raise ApiError(404, 'Host instance не найден')
+        if host.get('state') in ('stored', 'broken', 'consumed'):
+            raise ApiError(409, 'Host должен быть исправен и находиться при персонаже')
+        host_type = tech_maker_host_type(host)
+        if not host_type:
+            raise ApiError(400, 'Host не поддерживает Tech Maker modifications')
+        ranks = character_maker_ranks(data)
+        rank = ranks.get(specialty, 0)
+        if rank < 1:
+            raise ApiError(409, f'Требуется Maker {specialty} rank 1+ для Tech Maker modification')
+        effect = clean_tech_maker_effect(host_type, (body or {}).get('effect'))
+        manual_rule = str((body or {}).get('manual_rule') or '').strip()[:1000]
+        if effect is None and not manual_rule:
+            raise ApiError(400, 'Tech Maker modification требует effect или manual_rule')
+        if effect is not None and not bool((body or {}).get('manual_confirm')):
+            raise ApiError(409, 'Подтвердите успешный Tech Maker Check за столом')
+        state = data.setdefault('tech_maker_state', {})
+        mods = state.setdefault('modifications', {})
+        stack_key = (host_id, (effect or {}).get('target') or 'manual')
+        for mod in mods.values():
+            if (isinstance(mod, dict) and mod.get('active') and
+                    (mod.get('host_instance_id'), (mod.get('effect') or {}).get('target') or 'manual') == stack_key):
+                raise ApiError(409, 'Host уже имеет Tech Maker modification этого типа')
+        if len(mods) >= 100:
+            raise ApiError(409, 'Достигнут лимит Tech Maker modifications')
+        modification_id = secrets.token_hex(16)
+        now = time.time()
+        source = f'Maker: {TECH_MAKER_SPECIALTY_LABELS[specialty][0]} · CP:R 148'
+        record = {
+            'modification_id': modification_id, 'name': name,
+            'description': str((body or {}).get('description') or '').strip()[:2000],
+            'host_instance_id': host_id, 'host_type': host_type,
+            'host_catalog_item_id': catalog_item_id_for_entry(host),
+            'maker_specialty': specialty, 'maker_rank': rank,
+            'tech_name': tech_name, 'effect': effect,
+            'manual_rule': manual_rule,
+            'manual_resolution_required': effect is None,
+            'source': source, 'active': True, 'permanent': False,
+            'installed_by': user['id'], 'installed_at': now,
+            'reason': reason_detail,
+            'notes': str((body or {}).get('notes') or '')[:2000],
+        }
+        mods[modification_id] = record
+        state.setdefault('history', []).append({
+            'action': 'create', 'modification_id': modification_id,
+            'name': name, 'host_instance_id': host_id, 'host_type': host_type,
+            'maker_specialty': specialty, 'tech_name': tech_name, 'at': now,
+        })
+        state['history'] = state['history'][-50:]
+        validate_tech_maker_references(data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'tech_maker_create', source_ref=reason_detail, prune=True)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data,
+            f'Tech Maker {specialty}: {name} on {host.get("name")}: {reason_detail}',
+            current_revision, revision_after, category='modification')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['tech_maker_modification'] = {
+            'modification_id': modification_id, 'name': name,
+            'host_instance_id': host_id, 'host_type': host_type,
+            'maker_specialty': specialty, 'effect': copy.deepcopy(effect),
+            'manual_rule': manual_rule,
+        }
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now, revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'modification_id': modification_id,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        }, status=201)
+
+    @atomic_endpoint
+    def api_character_tech_maker_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'action', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Tech Maker action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Tech Maker action')
+        modification_id = str(m.group(2)).lower()
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        state = data.get('tech_maker_state')
+        mods = state.get('modifications') if isinstance(state, dict) else {}
+        mod = mods.get(modification_id) if isinstance(mods, dict) else None
+        if not isinstance(mod, dict):
+            raise ApiError(404, 'Tech Maker modification не найдена')
+        action = str((body or {}).get('action') or '').lower()
+        if action == 'remove':
+            if mod.get('permanent'):
+                raise ApiError(409, 'Permanent Tech Maker modification нельзя снять')
+            if not mod.get('active'):
+                raise ApiError(409, 'Tech Maker modification уже снята')
+            mod['active'] = False
+            mod['removed_by'] = user['id']
+            mod['removed_at'] = time.time()
+            state.setdefault('history', []).append({
+                'action': 'remove', 'modification_id': modification_id,
+                'name': mod.get('name'), 'host_instance_id': mod.get('host_instance_id'),
+                'host_type': mod.get('host_type'), 'at': time.time(),
+            })
+            state['history'] = state['history'][-50:]
+            reason = f'Remove Tech Maker modification {mod.get("name")}: {reason_detail}'
+        else:
+            raise ApiError(400, 'Tech Maker action: remove')
+        validate_tech_maker_references(data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'tech_maker_action', source_ref=reason_detail, prune=True)
+        revision_after = current_revision + 1
+        record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='modification')
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), time.time(),
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'modification_id': modification_id,
             'character': self.char_payload(fresh, fresh['owner'], conn=conn),
         })
 
@@ -15662,6 +16109,8 @@ ROUTES = [
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/popup-shield/action'), Handler.api_character_popup_shield_action),
     ('POST', rx(r'/api/characters/(\d+)/armor/([a-f0-9]{32})/repair'), Handler.api_character_armor_repair_action),
     ('POST', rx(r'/api/characters/(\d+)/armor/([a-f0-9]{32})/tech-upgrade'), Handler.api_character_armor_tech_upgrade),
+    ('POST', rx(r'/api/characters/(\d+)/tech-maker/modifications'), Handler.api_character_tech_maker_create),
+    ('POST', rx(r'/api/characters/(\d+)/tech-maker/modifications/([a-f0-9]{32})/action'), Handler.api_character_tech_maker_action),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/popup-weapon/bind'), Handler.api_character_popup_weapon_bind),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/weapon/action'), Handler.api_character_cyberware_weapon_action),
     ('GET', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modifications),

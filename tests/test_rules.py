@@ -1745,3 +1745,123 @@ class CatalogArmorTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TechMakerModificationTests(unittest.TestCase):
+    def tech_data(self):
+        data = server.ensure_progression(valid_character('Tech'))
+        return data
+
+    def owned(self, catalog_id, instance_id, cat=None, state='carried'):
+        item = copy.deepcopy(server.item_by_id(catalog_id))
+        item.update({'key': catalog_id, 'catalog_item_id': catalog_id,
+                     'instance_id': instance_id, 'qty': 1, 'state': state,
+                     'cat': cat or item.get('cat')})
+        return item
+
+    def test_maker_ranks_follow_active_tech_role(self):
+        data = self.tech_data()
+        ranks = server.character_maker_ranks(data)
+        self.assertEqual(ranks['upgrade'], 2)
+        self.assertEqual(ranks['invention'], 2)
+        solo = server.ensure_progression(valid_character('Solo'))
+        self.assertEqual(server.character_maker_ranks(solo), {})
+
+    def test_host_type_mapping(self):
+        self.assertEqual(server.tech_maker_host_type({'cat': 'guns'}), 'weapon')
+        self.assertEqual(server.tech_maker_host_type({'cat': 'armor'}), 'armor')
+        self.assertEqual(server.tech_maker_host_type({'cat': 'vehicles'}), 'vehicle')
+        self.assertEqual(server.tech_maker_host_type({'cat': 'cyberware'}), 'cyberware')
+        self.assertIsNone(server.tech_maker_host_type({'cat': 'gear'}))
+
+    def test_effect_allowlist_rejects_executable_or_out_of_range(self):
+        self.assertEqual(server.clean_tech_maker_effect('weapon', {
+            'target': 'weapon.attack_check', 'operation': 'add', 'value': 1}),
+            {'target': 'weapon.attack_check', 'operation': 'add', 'value': 1})
+        self.assertEqual(server.clean_tech_maker_effect('armor', {
+            'target': 'armor.sp', 'operation': 'add', 'value': 1}),
+            {'target': 'armor.sp', 'operation': 'add', 'value': 1})
+        with self.assertRaises(server.ApiError):
+            server.clean_tech_maker_effect('weapon', {
+                'target': 'armor.sp', 'operation': 'add', 'value': 1})
+        with self.assertRaises(server.ApiError):
+            server.clean_tech_maker_effect('weapon', {
+                'target': 'weapon.attack_check', 'operation': 'add', 'value': 99})
+        with self.assertRaises(server.ApiError):
+            server.clean_tech_maker_effect('weapon', {
+                'target': 'weapon.damage', 'operation': 'set', 'value': '10d6'})
+        with self.assertRaises(server.ApiError):
+            server.clean_tech_maker_effect('weapon', {
+                'target': 'weapon.attack_check', 'operation': 'add',
+                'value': 1, 'javascript': 'alert(1)'})
+        self.assertIsNone(server.clean_tech_maker_effect('weapon', None))
+
+    def test_references_validate_against_owned_hosts(self):
+        data = self.tech_data()
+        data['tech_maker_state'] = {'modifications': {
+            'a' * 32: {'active': True, 'host_instance_id': 'b' * 32},
+        }, 'history': []}
+        with self.assertRaises(server.ApiError):
+            server.validate_tech_maker_references(data)
+        weapon = self.owned('guns-0', 'b' * 32)
+        data['inventory'] = [weapon]
+        server.validate_tech_maker_references(data)
+
+    def test_effective_weapon_applies_attack_and_magazine(self):
+        host = self.owned('guns-0', '1' * 32)
+        character = {
+            'inventory': [host], 'cyberware': [],
+            'tech_maker_state': {'modifications': {
+                'a' * 32: {'active': True, 'host_instance_id': '1' * 32,
+                           'name': 'Calibrated', 'source': 'Maker',
+                           'modification_id': 'a' * 32,
+                           'effect': {'target': 'weapon.attack_check',
+                                      'operation': 'add', 'value': 1}},
+                'b' * 32: {'active': True, 'host_instance_id': '1' * 32,
+                           'name': 'Extended', 'source': 'Maker',
+                           'modification_id': 'b' * 32,
+                           'effect': {'target': 'weapon.magazine',
+                                      'operation': 'add', 'value': 8}},
+            }},
+        }
+        owned = {host['instance_id']: host}
+        evaluated = server.evaluate_effective_weapon(host, [], owned, character)
+        self.assertEqual(evaluated['attack_modifier'], 1)
+        self.assertEqual(evaluated['effective']['magazine'], 20)
+        self.assertEqual(host['mechanics']['magazine'], 12)
+        maker_ids = {source['id'] for source in evaluated['sources']}
+        self.assertIn('tech-maker:weapon.attack_check', maker_ids)
+
+    def test_effective_armor_and_vehicle_apply_tech_maker(self):
+        armor = self.owned('armor-2', '2' * 32)
+        armor['armor_locations'] = ['body']
+        char = {
+            'inventory': [armor], 'cyberware': [], 'armor': {
+                'body': {'instance_id': '2' * 32, 'sp': 7, 'maximum': 7, 'current': 7}},
+            'tech_maker_state': {'modifications': {
+                'c' * 32: {'active': True, 'host_instance_id': '2' * 32,
+                           'name': 'Reinforced', 'source': 'Maker',
+                           'modification_id': 'c' * 32,
+                           'effect': {'target': 'armor.sp',
+                                      'operation': 'add', 'value': 1}},
+            }},
+        }
+        hosts = server.effective_armor_hosts(char)['hosts']
+        self.assertEqual(hosts[0]['effective_sp'], 8)
+
+        vehicle = self.owned('vehicles-0', '3' * 32)
+        vehicle['_vehicle_state'] = {}
+        vchar = {
+            'inventory': [vehicle], 'cyberware': [], 'modification_state': {},
+            'tech_maker_state': {'modifications': {
+                'd' * 32: {'active': True, 'host_instance_id': '3' * 32,
+                           'name': 'Uparmored', 'source': 'Maker',
+                           'modification_id': 'd' * 32,
+                           'effect': {'target': 'vehicle.sdp_max',
+                                      'operation': 'add', 'value': 20}},
+            }},
+        }
+        owned = {vehicle['instance_id']: vehicle}
+        evaluated = server.evaluate_effective_vehicle(vehicle, [], owned, vchar)
+        self.assertEqual(evaluated['effective']['sdp'],
+                         evaluated['base']['sdp'] + 20)
