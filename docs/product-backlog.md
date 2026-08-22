@@ -1744,21 +1744,24 @@ Crew Stash может быть связан с Housing/Location: квартир�
 
 ### 16.3 Downtime Planner
 
+**Статус 2026-08-22 (B.18):** реализовано ядро — сервер-owned `downtime_state` (active + history), declarative каталог `DOWNTIME_ACTIVITIES`, start/resolve/complete/abandon эндпоинты, автоматическое применение результата `Hustle` (+€$) и `Recover HP` (с ручным броском за столом), связь с Campaign Clock (duration_key → campaign_due_at). Отложено: работа с Contact/Organization, переезд/Lifestyle (нужны Organization/Location модели).
+
 Между сессиями игрок выбирает действия на неделю/месяц:
 
-- Hustle;
-- Therapy;
-- лечение Critical Injuries;
-- восстановление Humanity;
-- установка/удаление cyberware;
-- ремонт Armor/Vehicle;
-- Fabrication/Upgrade/Invention;
-- поиск предмета через Fixer;
-- работа с Contact/Organization;
-- переезд и Lifestyle;
-- подготовка к Contract.
+- ✅ Hustle (запись результата броска → авто-начисление €$);
+- ✅ Recover HP (запись восстановленных HP);
+- Therapy (через существующий Therapy workflow);
+- лечение Critical Injuries (запись в activities `other`);
+- восстановление Humanity (через Therapy);
+- установка/удаление cyberware (через Cyberware lifecycle);
+- ремонт Armor/Vehicle (через Armor/Vehicle Repair workflow);
+- Fabrication/Upgrade/Invention (через Tech Maker);
+- поиск предмета через Fixer (через Fixer Requests);
+- работа с Contact/Organization (отложено);
+- переезд и Lifestyle (отложено);
+- подготовка к Contract (запись в activities `other`).
 
-Downtime связывается с календарём кампании и создаёт понятный журнал вместо сообщений GM в чате.
+Downtime связывается с календарём кампании и создаёт понятный журнал вместо сообщений GM в чате. **Решение по вопросу 23:** длительность downtime выбирается явно из набора ключей (`1_day`/`1_week`/`2_weeks`, reuse `CAMPAIGN_DURATION_SECONDS`) или Manual без срока — `campaign_due_at` вычисляется по Campaign Clock, статус `DUE / Xd / MANUAL TIME`.
 
 ### 16.4 Organization Reputation, Favor и Heat
 
@@ -3312,6 +3315,18 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - UI: пункт навигации `📜 Chronicle` (публичная хроника) + кнопка `＋ Recap` в GM OPS; редактор recap (сессия/контракт/сюжет, дата, публичное описание, GM-заметки, списки решений/NPC/локаций/добычи/травм/цитат, published + City Feed);
 - 9 новых тестов (223 total): unit (clean input, списки bounded, payload gating) + интеграционные (автоучастники + feed/timeline links, приватность для игроков, GM-only создание, unpublished скрыт, update/delete);
 - отложено: автосвязь Location/Organization history и Memorial achievements (появятся вместе с этими модулями).
+
+**Статус B.18 — реализован Downtime Planner:**
+
+- сервер-owned контейнер `downtime_state` (active период + bounded history до 50) в Character JSON; не принимается из Character Creation и сбрасывается при JSON import;
+- declarative каталог `DOWNTIME_ACTIVITIES` (hustle, recover_hp, therapy, armor_repair, vehicle_repair, fabrication, fixer_search, other) — allowlist, без executable данных;
+- `GET /api/downtime/activities`, `GET /api/characters/{id}/downtime`, `POST /api/characters/{id}/downtime/start`, `POST /api/characters/{id}/downtime/action` (resolve/complete/abandon); запись — owner или GM;
+- длительность downtime: `duration_key` из `CAMPAIGN_DURATION_SECONDS` (1_day/1_week/2_weeks) или Manual; `campaign_due_at` по Campaign Clock, статус `DUE / Xd / MANUAL TIME`;
+- `hustle` resolve: ручной бросок за столом → GM/owner вводит заработанное → €$ начисляются атомарно (MANUAL ROLL → AUTOMATED EFFECT); `recover_hp` resolve: HP восстанавливаются с ограничением hp_max; `other` — только запись результата;
+- каждый resolve/complete/abandon пишется в Trust + Audit Ledger (category `downtime`, non-revertible) и в `downtime_state.history`;
+- `derived.downtime` на Character Sheet (скрыт в public view); панель `🛌 Downtime Planner` показывает активный период + активности + историю и кнопки Start/Resolve/Complete/Abandon;
+- 9 новых тестов (232 total): unit (allowlist, bounds, payload, strip на creation) + интеграционные (start→hustle cash+ledger→complete, recover_hp bounded, неизвестная activity, double-start, GM/player права);
+- отложено: работа с Contact/Organization, переезд/Lifestyle (нужны Organization/Location модели).
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
 4. ✅ Добавить custom/found items и acquisition provenance.
@@ -3377,7 +3392,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
    - готово: CRUD recap'ов, автосбор участников, публичная хроника + приватные GM-детали, авто-черновик City Feed и авто-событие Storyline timeline;
    - дальше: автосвязь Location/Organization history и Memorial achievements.
 2. ✅ Crew Stash, item transfer и ownership history (реализовано B.13).
-3. Downtime Planner с лечением, Therapy, Crafting и поиском предметов.
+3. ✅ Downtime Planner с лечением, Therapy, Crafting и поиском предметов (реализовано B.18).
 4. Organization Reputation / Favor / Heat.
 5. Storyline/Faction Clocks.
 6. Intel Fragments и Case Board.
@@ -3440,7 +3455,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 20. Нужна ли история контроля территории/владельца Location по датам?
 21. Crew Stash принадлежит конкретному Crew, Housing или всей кампании? → **Решено (B.13):** пока один общий склад на кампанию; привязка к Housing/Location и Nomad vehicle cargo — будущее расширение.
 22. Item transfer происходит сразу или требует подтверждения получателя? → **Решено (B.13):** сразу, в модели Trust + Audit — каждая передача атомарна, revision-guarded и пишется в `item_transfers` и Ledger обеих сторон; получатель видит предмет и запись без отдельного подтверждения.
-23. Downtime длится фиксированную неделю или произвольный отрезок календаря?
+23. Downtime длится фиксированную неделю или произвольный отрезок календаря? → **Решено (B.18):** длительность выбирается из набора ключей (`1_day`/`1_week`/`2_weeks`) или Manual без срока; `campaign_due_at` считается по Campaign Clock.
 24. Reputation/Favor/Heat индивидуальны для Character или могут принадлежать Crew?
 25. Intel Board общий для Crew или каждый Character имеет собственную картину расследования?
 26. Какие поля обязательны в Quick NPC, а какие скрываются в Full mode?

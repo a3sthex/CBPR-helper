@@ -2240,3 +2240,48 @@ class SessionRecapTests(unittest.TestCase):
         self.assertEqual(full['gm_notes'], 'secret')
         self.assertEqual(full['loot'], ['loot'])
         self.assertEqual(full['choices'], ['choice'])
+
+
+class DowntimePlannerTests(unittest.TestCase):
+    def test_activity_allowlist_validation(self):
+        activity = server.clean_downtime_activity({'id': 'hustle', 'note': 'x'})
+        self.assertEqual(activity['id'], 'hustle')
+        self.assertEqual(activity['resolved'], False)
+        with self.assertRaises(server.ApiError) as err:
+            server.clean_downtime_activity({'id': 'not-real'})
+        self.assertEqual(err.exception.status, 400)
+        with self.assertRaises(server.ApiError) as err2:
+            server.clean_downtime_activity('nope')
+        self.assertEqual(err2.exception.status, 400)
+
+    def test_activities_bounded(self):
+        many = [{'id': 'other'} for _ in range(20)]
+        with self.assertRaises(server.ApiError) as err:
+            server.clean_downtime_activities(many)
+        self.assertEqual(err.exception.status, 400)
+        self.assertEqual(len(server.clean_downtime_activities(None)), 0)
+        self.assertEqual(len(server.clean_downtime_activities([{'id': 'other'}])), 1)
+
+    def test_downtime_payload_structure(self):
+        data = {'downtime_state': {
+            'active': {'downtime_id': 'x', 'started_at': 1, 'campaign_started_at': 1,
+                       'campaign_due_at': None, 'duration_key': None, 'duration_label': None,
+                       'note': 'off', 'created_by': 1, 'activities': [
+                           {'id': 'hustle', 'note': '', 'resolved': False, 'resolution_note': ''}]},
+            'history': [],
+        }}
+        payload = server.downtime_payload(data)
+        self.assertIsNotNone(payload['active'])
+        self.assertEqual(payload['active']['activities'][0]['kind'], 'hustle')
+        self.assertEqual(payload['active']['status'], 'MANUAL TIME')
+        self.assertIn('activities', payload)
+        self.assertEqual(len(payload['activities']), len(server.DOWNTIME_ACTIVITIES))
+
+    def test_downtime_state_not_accepted_on_creation(self):
+        raw = {'handle': 'V', 'role': 'Solo', 'role_rank': 4,
+               'roles': [{'name': 'Solo', 'rank': 4, 'primary': True}],
+               'stats': {'BODY': 6, 'WILL': 6, 'LUCK': 5, 'MOVE': 6},
+               'skills': {}, 'inventory': [], 'cyberware': [], 'armor': {},
+               'downtime_state': {'active': {'note': 'sneaky'}}}
+        cleaned = server.clean_character(raw)
+        self.assertNotIn('downtime_state', cleaned)

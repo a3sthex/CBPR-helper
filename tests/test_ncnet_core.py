@@ -1320,3 +1320,136 @@ class SessionRecapFlowTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DowntimeFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = sqlite3.connect(str(Path(self.tmp.name) / 'ncnet.db'))
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(server.SCHEMA)
+        server.apply_schema_migrations(self.conn, make_backup=False)
+        for username, display, role in (('gm', 'GM', 'gm'),
+                                        ('runner1', 'Runner One', 'player'),
+                                        ('runner2', 'Runner Two', 'player')):
+            self.conn.execute(
+                'INSERT INTO users(username,display_name,pass_hash,is_gm,account_role,created) '
+                'VALUES(?,?,?,?,?,?)',
+                (username, display, 'x', 1 if role in ('gm', 'admin') else 0, role, 1))
+        base = {
+            'handle': 'V', 'role': 'Solo', 'role_rank': 4,
+            'roles': [{'name': 'Solo', 'rank': 4, 'primary': True}], 'active_role': 'Solo',
+            'stats': {'BODY': 6, 'WILL': 6, 'LUCK': 5, 'MOVE': 6, 'DEX': 7, 'REF': 7,
+                      'TECH': 4, 'INT': 4, 'COOL': 4, 'EMP': 5},
+            'skills': {}, 'inventory': [], 'cyberware': [], 'armor': {},
+            'cash': 100, 'hp_cur': 20, 'ip_available': 0, 'ip_total_earned': 0,
+            'ip_total_spent': 0, 'luck_cur': 5, 'reputation': 0,
+        }
+        self.conn.execute(
+            'INSERT INTO characters(owner_id,public,data,created,updated) VALUES(2,1,?,1,1)',
+            (json.dumps(base),))
+        self.conn.execute(
+            'INSERT INTO characters(owner_id,public,data,created,updated) VALUES(3,1,?,1,1)',
+            (json.dumps(dict(base, handle='K')),))
+        self.conn.commit()
+        self.handler = object.__new__(server.Handler)
+        self.response = {}
+        self.current = self.user('runner1')
+        self.handler.current_user = lambda conn: self.current
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def user(self, username):
+        return self.conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
+
+    def call(self, method, *args):
+        self.response = {}
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+        method(self.handler, self.conn, *args)
+        return self.response
+
+    @staticmethod
+    def match(*values):
+        pattern = '^' + '/'.join('(\\d+)' for _ in values) + '$'
+        return re.match(pattern, '/'.join(str(value) for value in values))
+
+    def char_data(self, char_id):
+        return json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=?', (char_id,)).fetchone()['data'])
+
+    def revision(self, char_id):
+        return self.conn.execute(
+            'SELECT revision FROM characters WHERE id=?', (char_id,)).fetchone()['revision']
+
+    def start(self, char_id, body, as_user='runner1'):
+        self.current = self.user(as_user)
+        body = dict(body)
+        body.setdefault('revision', self.revision(char_id))
+        return self.call(server.Handler.api_character_downtime_start, {},
+                          self.match(char_id), body)
+
+    def action(self, char_id, body, as_user='runner1'):
+        self.current = self.user(as_user)
+        body = dict(body)
+        body.setdefault('revision', self.revision(char_id))
+        return self.call(server.Handler.api_character_downtime_action, {},
+                          self.match(char_id), body)
+
+    def test_start_hustle_and_complete(self):
+        self.start(1, {'duration_key': '1_week',
+                       'activities': [{'id': 'hustle'}], 'note': 'Week off'})
+        self.assertEqual(self.response['status'], 201)
+        active = self.response['payload']['downtime']['active']
+        self.assertEqual(active['duration_key'], '1_week')
+        self.assertEqual([a['id'] for a in active['activities']], ['hustle'])
+        # Resolve hustle: cash applied and ledger recorded.
+        self.action(1, {'action': 'resolve', 'activity_id': 'hustle', 'earned': 500,
+                        'note': 'Rolled a 5'})
+        self.assertEqual(self.response['status'], 200)
+        self.assertEqual(self.char_data(1)['cash'], 600)
+        self.assertTrue(self.conn.execute(
+            "SELECT 1 FROM character_ledger WHERE character_id=1 AND category='downtime' "
+            'LIMIT 1').fetchone())
+        # Complete the period.
+        self.action(1, {'action': 'complete', 'note': 'Back on the street'})
+        self.assertEqual(self.response['status'], 200)
+        payload = self.response['payload']['downtime']
+        self.assertIsNone(payload['active'])
+        self.assertEqual(len(payload['history']), 1)
+
+    def test_recover_hp_is_bounded_by_max(self):
+        self.start(1, {'activities': [{'id': 'recover_hp'}]})
+        hp_max = server.derive(self.char_data(1)).get('hp_max')
+        self.action(1, {'action': 'resolve', 'activity_id': 'recover_hp', 'hp': 999})
+        self.assertEqual(self.char_data(1)['hp_cur'], hp_max)
+
+    def test_activity_resolve_requires_known_activity(self):
+        self.start(1, {'activities': [{'id': 'hustle'}]})
+        with self.assertRaises(server.ApiError) as err:
+            self.action(1, {'action': 'resolve', 'activity_id': 'therapy'})
+        self.assertEqual(err.exception.status, 404)
+
+    def test_double_start_blocked(self):
+        self.start(1, {'activities': [{'id': 'other'}]})
+        self.assertEqual(self.response['status'], 201)
+        with self.assertRaises(server.ApiError) as err:
+            self.start(1, {'activities': [{'id': 'other'}]})
+        self.assertEqual(err.exception.status, 409)
+
+    def test_gm_can_manage_others_player_cannot(self):
+        self.current = self.user('gm')
+        self.start(1, {'activities': [{'id': 'other'}]}, as_user='gm')
+        self.assertEqual(self.response['status'], 201)
+        self.current = self.user('runner2')
+        with self.assertRaises(server.ApiError) as denied:
+            self.start(1, {'activities': [{'id': 'other'}]}, as_user='runner2')
+        self.assertEqual(denied.exception.status, 403)
+
+
+if __name__ == '__main__':
+    unittest.main()

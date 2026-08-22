@@ -5573,6 +5573,10 @@ CAMPAIGN_DURATION_SECONDS = {
     '1_week': 7 * 24 * 3600,
     '2_weeks': 14 * 24 * 3600,
 }
+CAMPAIGN_DURATION_LABELS = {
+    '1_hour': '1 Hour', '3_hours': '3 Hours', '6_hours': '6 Hours',
+    '1_day': '1 Day', '1_week': '1 Week', '2_weeks': '2 Weeks',
+}
 
 
 def campaign_timezone():
@@ -5718,6 +5722,139 @@ def campaign_pending_services(conn):
     pending.sort(key=lambda item: (item['campaign_due_at'] is None,
                                     item['campaign_due_at'] or 0))
     return pending
+
+
+# -------------------------------------------------------- Downtime Planner
+
+# Declarative downtime activity catalog. ``kind`` drives what a resolution may
+# automate; ambiguous activities stay MANUAL (GM resolves the roll at the table
+# and records only the outcome).
+DOWNTIME_ACTIVITIES = [
+    {'id': 'hustle', 'kind': 'hustle', 'label_en': 'Hustle',
+     'label_ru': 'Подработка (Hustle)',
+     'desc_en': 'Roll the Role Hustle table; record the €$ result.',
+     'desc_ru': 'Бросок по таблице Hustle роли; запишите результат в €$.'},
+    {'id': 'recover_hp', 'kind': 'recover_hp', 'label_en': 'Recover HP',
+     'label_ru': 'Восстановление HP',
+     'desc_en': 'Rest and healing; record HP recovered.',
+     'desc_ru': 'Отдых и лечение; запишите восстановленные HP.'},
+    {'id': 'therapy', 'kind': 'therapy', 'label_en': 'Therapy',
+     'label_ru': 'Терапия (Humanity)',
+     'desc_en': 'Start a Therapy course (Humanity recovery).',
+     'desc_ru': 'Начать курс Therapy (восстановление Humanity).'},
+    {'id': 'armor_repair', 'kind': 'armor_repair', 'label_en': 'Armor Repair',
+     'label_ru': 'Ремонт брони',
+     'desc_en': 'Repair damaged Armor/Shield via the Armor workflow.',
+     'desc_ru': 'Ремонт повреждённой брони/щита через Armor workflow.'},
+    {'id': 'vehicle_repair', 'kind': 'vehicle_repair', 'label_en': 'Vehicle Repair',
+     'label_ru': 'Ремонт транспорта',
+     'desc_en': 'Repair vehicle durability via the Garage workflow.',
+     'desc_ru': 'Ремонт прочности транспорта через Garage workflow.'},
+    {'id': 'fabrication', 'kind': 'fabrication', 'label_en': 'Fabrication / Invention',
+     'label_ru': 'Fabrication / Invention',
+     'desc_en': 'Tech Maker fabrication or invention during downtime.',
+     'desc_ru': 'Fabrication или Invention Tech Maker во время downtime.'},
+    {'id': 'fixer_search', 'kind': 'fixer_search', 'label_en': 'Fixer Search',
+     'label_ru': 'Поиск через Fixer',
+     'desc_en': 'Ask a Fixer to source an item.',
+     'desc_ru': 'Попросить Fixer достать предмет.'},
+    {'id': 'other', 'kind': 'other', 'label_en': 'Other',
+     'label_ru': 'Другое',
+     'desc_en': 'Any other downtime activity; record the outcome.',
+     'desc_ru': 'Любое другое занятие; запишите результат.'},
+]
+DOWNTIME_ACTIVITY_BY_ID = {item['id']: item for item in DOWNTIME_ACTIVITIES}
+DOWNTIME_ACTIVITY_IDS = set(DOWNTIME_ACTIVITY_BY_ID)
+# ``hustle`` and ``recover_hp`` apply a bounded numeric result automatically,
+# but the roll itself is always resolved manually at the table.
+DOWNTIME_RESOLVE_KINDS = {'hustle', 'recover_hp', 'other'}
+
+
+def clean_downtime_activity(source):
+    if not isinstance(source, dict):
+        raise ApiError(400, 'Downtime activity должен быть объектом')
+    activity_id = str(source.get('id') or '').strip().lower()
+    if activity_id not in DOWNTIME_ACTIVITY_IDS:
+        raise ApiError(400, 'Неизвестная Downtime activity')
+    return {
+        'id': activity_id,
+        'note': str(source.get('note') or '').strip()[:500],
+        'resolved': bool(source.get('resolved')),
+        'resolution_note': str(source.get('resolution_note') or '').strip()[:1000],
+    }
+
+
+def clean_downtime_activities(source):
+    if source is None:
+        return []
+    if not isinstance(source, list) or len(source) > 12:
+        raise ApiError(400, 'Downtime activities должен быть списком до 12 записей')
+    return [clean_downtime_activity(item) for item in source]
+
+
+def downtime_state(data):
+    state = data.get('downtime_state')
+    if not isinstance(state, dict):
+        state = {'active': None, 'history': []}
+        data['downtime_state'] = state
+    if not isinstance(state.get('history'), list):
+        state['history'] = []
+    active = state.get('active') if isinstance(state.get('active'), dict) else None
+    if active is not None and not isinstance(active.get('activities'), list):
+        active['activities'] = []
+    return state
+
+
+def downtime_activity_payload(activity):
+    catalog = DOWNTIME_ACTIVITY_BY_ID.get(activity.get('id')) or {}
+    return {
+        'id': activity.get('id'),
+        'kind': catalog.get('kind'),
+        'label_en': catalog.get('label_en'),
+        'label_ru': catalog.get('label_ru'),
+        'note': activity.get('note') or '',
+        'resolved': bool(activity.get('resolved')),
+        'resolution_note': activity.get('resolution_note') or '',
+    }
+
+
+def downtime_payload(data, conn=None):
+    state = downtime_state(data)
+    active = state.get('active') if isinstance(state.get('active'), dict) else None
+    now = campaign_now(conn) if conn is not None else time.time()
+    active_payload = None
+    if active is not None:
+        status = campaign_service_status(now, active.get('campaign_due_at'))
+        active_payload = {
+            'downtime_id': active.get('downtime_id'),
+            'started_at': active.get('started_at'),
+            'campaign_started_at': active.get('campaign_started_at'),
+            'campaign_due_at': active.get('campaign_due_at'),
+            'duration_key': active.get('duration_key'),
+            'duration_label': active.get('duration_label'),
+            'note': active.get('note') or '',
+            'created_by': active.get('created_by'),
+            'status': status['label'],
+            'ready': status['ready'],
+            'due_label': status['due_label'],
+            'activities': [downtime_activity_payload(item)
+                           for item in active.get('activities') or []],
+        }
+    history = [{
+        'downtime_id': item.get('downtime_id'),
+        'started_at': item.get('started_at'),
+        'campaign_started_at': item.get('campaign_started_at'),
+        'campaign_due_at': item.get('campaign_due_at'),
+        'duration_key': item.get('duration_key'),
+        'duration_label': item.get('duration_label'),
+        'note': item.get('note') or '',
+        'completed_at': item.get('completed_at'),
+        'summary': item.get('summary') or '',
+        'activities': [downtime_activity_payload(activity)
+                       for activity in item.get('activities') or []],
+    } for item in (state.get('history') or [])[-50:][::-1] if isinstance(item, dict)]
+    return {'active': active_payload, 'history': history,
+            'activities': DOWNTIME_ACTIVITIES}
 
 
 # -------------------------------------------------------- Crew Stash & transfers
@@ -6430,6 +6567,7 @@ def clean_character(data):
     out.pop('armor_tech_state', None)
     out.pop('armor_repair_state', None)
     out.pop('tech_maker_state', None)
+    out.pop('downtime_state', None)
     out['handle'] = str(out.get('handle') or '').strip()[:60]
     if not out['handle']:
         raise ApiError(400, 'Нужен псевдоним (Handle) персонажа')
@@ -6890,7 +7028,7 @@ def clean_character_trust_update(old_data, incoming):
 IMPORT_STRIP_KEYS = (
     'cyberware_state', 'therapy_state', 'armor_tech_state', 'armor_repair_state',
     'tech_maker_state', 'modification_state', 'weapon_state', 'program_state',
-    'net_entities', 'vehicle_state',
+    'net_entities', 'vehicle_state', 'downtime_state',
     'portrait_media_id', 'archived', 'archive_reason', 'public',
 )
 
@@ -9181,6 +9319,19 @@ SERVER_ERROR_EN = {
     'Recap не опубликован': 'Recap is not published',
     'Нет права редактировать Recap': 'Not allowed to edit this Recap',
     'Нет права удалять Recap': 'Not allowed to delete this Recap',
+    'Downtime activity должен быть объектом': 'Downtime activity must be an object',
+    'Неизвестная Downtime activity': 'Unknown Downtime activity',
+    'Downtime activities должен быть списком до 12 записей': 'Downtime activities must be a list with up to 12 entries',
+    'Downtime start содержит неподдерживаемые поля': 'Downtime start contains unsupported fields',
+    'Downtime уже активен': 'Downtime is already active',
+    'Неизвестная длительность Downtime': 'Unknown Downtime duration',
+    'Downtime action содержит неподдерживаемые поля': 'Downtime action contains unsupported fields',
+    'Downtime action: resolve/complete/abandon': 'Downtime action: resolve/complete/abandon',
+    'Нет активного Downtime': 'There is no active Downtime',
+    'Downtime activity не найдена': 'Downtime activity not found',
+    'Downtime activity уже отмечена выполненной': 'Downtime activity is already resolved',
+    'Некорректная сумма Hustle': 'Invalid Hustle amount',
+    'Некорректное восстановление HP': 'Invalid HP recovery',
 }
 
 def server_error_message(message, language):
@@ -11250,8 +11401,10 @@ class Handler(BaseHTTPRequestHandler):
             derived['campaign_services'] = character_campaign_services(full_data, conn)
             derived['campaign_time'] = campaign_now(conn)
             derived['loans'] = character_open_loans(conn, row['id'])
+            derived['downtime'] = downtime_payload(full_data, conn=conn)
         if public_view:
             derived.pop('loans', None)
+            derived.pop('downtime', None)
         if public_view and not visibility['combat']:
             derived = {}
         elif public_view:
@@ -11259,7 +11412,7 @@ class Handler(BaseHTTPRequestHandler):
                 for private_key in ('modifications', 'effective_weapons',
                                     'effective_vehicles', 'effective_cyberdecks',
                                     'effective_cyberware', 'effective_armor_hosts',
-                                    'tech_maker', 'campaign_services'):
+                                    'tech_maker', 'campaign_services', 'downtime'):
                     derived.pop(private_key, None)
             for effect in (derived.get('effects') or {}).get('instances') or []:
                 for private_key in ('reason', 'actor', 'source_item_instance_id'):
@@ -14249,6 +14402,195 @@ class Handler(BaseHTTPRequestHandler):
             'ledger_id': ledger_id, 'fabrication': fabrication_record,
             'character': self.char_payload(fresh, fresh['owner'], conn=conn),
         }, status=201)
+
+    def api_downtime_activities(self, conn, qs, m, body):
+        self.require_user(conn)
+        self.send_json({'activities': DOWNTIME_ACTIVITIES})
+
+    def api_character_downtime(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        data = ensure_progression(json.loads(row['data']))
+        self.send_json(downtime_payload(data, conn=conn))
+
+    @atomic_endpoint
+    def api_character_downtime_start(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        allowed = {'revision', 'duration_key', 'activities', 'note'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Downtime start содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        state = downtime_state(data)
+        if isinstance(state.get('active'), dict):
+            raise ApiError(409, 'Downtime уже активен')
+        duration_key = str((body or {}).get('duration_key') or '') or None
+        duration_label = None
+        if duration_key:
+            duration = campaign_duration_seconds(duration_key)
+            if duration is None:
+                raise ApiError(400, 'Неизвестная длительность Downtime')
+            duration_label = CAMPAIGN_DURATION_LABELS.get(duration_key)
+        activities = clean_downtime_activities((body or {}).get('activities'))
+        note = str((body or {}).get('note') or '').strip()[:1000]
+        now = time.time()
+        campaign_started = campaign_now(conn)
+        active = {
+            'downtime_id': secrets.token_hex(16),
+            'started_at': now,
+            'campaign_started_at': campaign_started,
+            'campaign_due_at': campaign_started + duration if duration_key else None,
+            'duration_key': duration_key,
+            'duration_label': duration_label,
+            'note': note,
+            'created_by': user['id'],
+            'activities': activities,
+        }
+        state['active'] = active
+        reason = f'Downtime started: {note or duration_key or "manual"}'
+        persist_character_item_instances(conn, row['id'], data, 'downtime_start',
+                                         source_ref=reason)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='downtime')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['revertible'] = False
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now, revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({'ok': True, 'downtime': downtime_payload(
+            ensure_progression(json.loads(fresh['data'])), conn=conn)}, status=201)
+
+    @atomic_endpoint
+    def api_character_downtime_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        allowed = {'revision', 'action', 'activity_id', 'earned', 'hp', 'note'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Downtime action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        action = str((body or {}).get('action') or '').strip().lower()
+        if action not in ('resolve', 'complete', 'abandon'):
+            raise ApiError(400, 'Downtime action: resolve/complete/abandon')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        state = downtime_state(data)
+        active = state.get('active') if isinstance(state.get('active'), dict) else None
+        if not active:
+            raise ApiError(409, 'Нет активного Downtime')
+        note = str((body or {}).get('note') or '').strip()[:1000]
+        reason = None
+        if action == 'resolve':
+            activity_id = str((body or {}).get('activity_id') or '').strip().lower()
+            activity = next((item for item in active.get('activities') or []
+                             if item.get('id') == activity_id), None)
+            if not activity:
+                raise ApiError(404, 'Downtime activity не найдена')
+            if activity.get('resolved'):
+                raise ApiError(409, 'Downtime activity уже отмечена выполненной')
+            catalog = DOWNTIME_ACTIVITY_BY_ID[activity_id]
+            kind = catalog['kind']
+            if kind == 'hustle':
+                try:
+                    earned = max(0.0, min(9_999_999.0, float((body or {}).get('earned') or 0)))
+                except (TypeError, ValueError):
+                    raise ApiError(400, 'Некорректная сумма Hustle')
+                cash = float(data.get('cash') or 0)
+                if not math.isfinite(cash) or cash + earned > 9_999_999:
+                    raise ApiError(400, 'Слишком большая сумма')
+                data['cash'] = round(cash + earned, 2)
+                resolution_note = note or f'Hustle: +€$ {earned:,.0f} (manual roll)'
+                reason = f'Downtime Hustle: +€$ {earned:,.0f}'
+            elif kind == 'recover_hp':
+                try:
+                    hp = max(0, min(1000, int((body or {}).get('hp') or 0)))
+                except (TypeError, ValueError):
+                    raise ApiError(400, 'Некорректное восстановление HP')
+                derived = derive(data)
+                hp_max = _num(derived.get('hp_max')) or _num(data.get('hp_cur')) or 0
+                hp_cur = _num(data.get('hp_cur'))
+                if hp_cur is not None and hp_max:
+                    data['hp_cur'] = min(hp_max, hp_cur + hp)
+                elif hp_cur is not None:
+                    data['hp_cur'] = hp_cur + hp
+                else:
+                    data['hp_cur'] = hp
+                resolution_note = note or f'Recover HP: +{hp}'
+                reason = f'Downtime Recover HP: +{hp}'
+            else:
+                resolution_note = note or 'Resolved at the table'
+                reason = f'Downtime activity resolved: {catalog["label_ru"]}'
+            activity['resolved'] = True
+            activity['resolution_note'] = resolution_note
+            revision_after = current_revision + 1
+            persist_character_item_instances(conn, row['id'], data, 'downtime_resolve',
+                                             source_ref=reason)
+            ledger_id = record_character_change_set(
+                conn, row['id'], user['id'], before, data, reason,
+                current_revision, revision_after, category='downtime')
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            delta['revertible'] = False
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(delta, ensure_ascii=False), ledger_id))
+        elif action == 'complete':
+            summary = str(note or 'Downtime completed').strip()[:1000]
+            active['completed_at'] = time.time()
+            active['summary'] = summary
+            state['history'].append(active)
+            state['history'] = state['history'][-50:]
+            state['active'] = None
+            reason = f'Downtime completed: {summary}'
+            revision_after = current_revision + 1
+            persist_character_item_instances(conn, row['id'], data, 'downtime_complete',
+                                             source_ref=reason)
+            ledger_id = record_character_change_set(
+                conn, row['id'], user['id'], before, data, reason,
+                current_revision, revision_after, category='downtime')
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            delta['revertible'] = False
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(delta, ensure_ascii=False), ledger_id))
+        else:  # abandon
+            summary = str(note or 'Downtime abandoned').strip()[:1000]
+            active['completed_at'] = time.time()
+            active['summary'] = summary
+            state['history'].append(active)
+            state['history'] = state['history'][-50:]
+            state['active'] = None
+            reason = f'Downtime abandoned: {summary}'
+            revision_after = current_revision + 1
+            persist_character_item_instances(conn, row['id'], data, 'downtime_abandon',
+                                             source_ref=reason)
+            ledger_id = record_character_change_set(
+                conn, row['id'], user['id'], before, data, reason,
+                current_revision, revision_after, category='downtime')
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            delta['revertible'] = False
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), time.time(),
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({'ok': True, 'action': action,
+                        'downtime': downtime_payload(
+                            ensure_progression(json.loads(fresh['data'])), conn=conn)})
 
     @atomic_endpoint
     def api_character_popup_weapon_bind(self, conn, qs, m, body):
@@ -18181,6 +18523,10 @@ ROUTES = [
     ('POST', rx(r'/api/characters/(\d+)/tech-maker/modifications'), Handler.api_character_tech_maker_create),
     ('POST', rx(r'/api/characters/(\d+)/tech-maker/modifications/([a-f0-9]{32})/action'), Handler.api_character_tech_maker_action),
     ('POST', rx(r'/api/characters/(\d+)/tech-maker/fabricate'), Handler.api_character_tech_maker_fabricate),
+    ('GET', rx(r'/api/downtime/activities'), Handler.api_downtime_activities),
+    ('GET', rx(r'/api/characters/(\d+)/downtime'), Handler.api_character_downtime),
+    ('POST', rx(r'/api/characters/(\d+)/downtime/start'), Handler.api_character_downtime_start),
+    ('POST', rx(r'/api/characters/(\d+)/downtime/action'), Handler.api_character_downtime_action),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/popup-weapon/bind'), Handler.api_character_popup_weapon_bind),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/weapon/action'), Handler.api_character_cyberware_weapon_action),
     ('GET', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modifications),

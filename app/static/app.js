@@ -2467,6 +2467,39 @@ function campaignServicesHtml(d){
   return `<div class="panel mb" id="sheet-campaign-services"><h2>⏳ ${T('Campaign Clock','Campaign Clock')}</h2><div class="small muted mb">${T('Active services are tracked against campaign time. Completion checks are still resolved at the table.','Активные сервисы отслеживаются по игровому времени. Проверки завершения по-прежнему выполняются за столом.')}${esc(nowLabel)}</div>${services.map(service=>`<div class="inv-row"><span class="iname"><b>${esc(service.label)}</b></span>${service.ready===true?`<span class="tag">${T('DUE','ГОТОВО')}</span>`:service.ready===false?`<span class="tag">${T('IN PROGRESS','ИДЁТ')} · ${esc(service.status)}</span>`:`<span class="tag">${T('MANUAL','ВРУЧНУЮ')}</span>`}${service.due_label?`<span class="small muted">${esc(service.due_label)}</span>`:''}</div>`).join('')}</div>`;
 }
 
+function downtimeActivityLabel(activity){
+  const name=APP_I18N.current()==='ru'?(activity.label_ru||activity.label_en):(activity.label_en||activity.id);
+  return name;
+}
+
+function downtimeSheetHtml(c,d,canManage){
+  const dt=d.downtime||{};
+  const active=dt.active||null;
+  const history=dt.history||[];
+  const activeRow=active?`<div class="inv-row"><span class="iname"><b>${T('Downtime','Downtime')}</b><span class="small muted">${active.duration_label?esc(active.duration_label):T('Manual','Вручную')} · ${active.status==='MANUAL TIME'?T('MANUAL TIME','ВРУЧНУЮ'):esc(active.status)}</span>${active.note?`<div class="small muted">${esc(active.note)}</div>`:''}</span>${active.ready===true?`<span class="tag">${T('DUE','ГОТОВО')}</span>`:''}<div class="row">${active.activities.map(activity=>`<div class="inv-row" style="margin:0"><span class="iname">${activity.resolved?'✓ ':''}${esc(downtimeActivityLabel(activity))}</span>${activity.resolution_note?`<span class="small muted">${esc(activity.resolution_note)}</span>`:''}${canManage&&!activity.resolved&&['hustle','recover_hp','other'].includes(activity.kind)?`<button class="btn-sm" data-downtime-resolve="${esc(activity.id)}|${esc(activity.kind)}">${T('Resolve','Решить')}</button>`:''}</div>`).join('')}</div>${canManage?`<div class="row mt"><button class="btn-sm btn-primary" data-downtime-complete>${T('Complete Downtime','Завершить Downtime')}</button><button class="btn-sm" data-downtime-abandon>${T('Abandon','Отменить')}</button></div>`:''}</div>`:'';
+  const startRow=canManage&&!active?`<div class="row"><button class="btn-primary" data-downtime-start>＋ ${T('Start Downtime','Начать Downtime')}</button></div>`:'';
+  const historyHtml=history.length?`<details class="mt"><summary>${T('Downtime history','История downtime')} · ${history.length}</summary>${history.map(item=>`<div class="inv-row"><span class="iname"><b>${item.duration_label?esc(item.duration_label):T('Manual','Вручную')}</b><div class="small muted">${item.campaign_started_at?new Date(item.campaign_started_at*1000).toLocaleDateString():''}${item.summary?` · ${esc(item.summary)}`:''}</div></span>${item.activities.map(activity=>`<span class="chip">${activity.resolved?'✓ ':''}${esc(downtimeActivityLabel(activity))}</span>`).join('')}</div>`).join('')}</details>`:'';
+  if(!active&&!history.length&&!canManage)return '';
+  return `<div class="panel mb" id="sheet-downtime"><h2>🛌 ${T('Downtime Planner','Downtime Planner')}</h2><div class="small muted mb">${T('Record what the character does between sessions. Rolls resolve at the table; only the outcome is recorded.','Запишите, чем персонаж занят между сессиями. Броски выполняются за столом — записывается только результат.')}</div>${activeRow}${startRow}${historyHtml}</div>`;
+}
+
+async function openDowntimeStartModal(c){
+  let catalog=[];
+  try{catalog=(await api('/api/downtime/activities')).activities||[];}catch(e){/* empty */}
+  const modal=openModal(`<h2>🛌 ${T('Start Downtime','Начать Downtime')}</h2><p class="muted small">${T('Choose a duration and the activities for this downtime period.','Выберите длительность и занятия на этот период downtime.')}</p><label class="f"><span>${T('Duration','Длительность')}</span><select id="dt-duration"><option value="">${T('Manual (no due)','Вручную (без срока)')}</option>${Object.entries({ '1_day':'1 Day','1_week':'1 Week','2_weeks':'2 Weeks' }).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label><div class="mt">${catalog.map(item=>`<label class="checkbox"><input type="checkbox" data-dt-activity="${esc(item.id)}"> <b>${esc(downtimeActivityLabel(item))}</b> <span class="small muted">${esc(APP_I18N.current()==='ru'?item.desc_ru:item.desc_en)}</span></label>`).join('')}</div><label class="f"><span>${T('Note','Заметка')}</span><input id="dt-note" maxlength="1000" placeholder="${T('Week off, side hustle…','Неделя отдыха, подработка…')}"></label><div class="row"><button id="dt-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="dt-save">${T('Start','Начать')}</button></div>`,true);
+  $('#dt-cancel',modal).onclick=closeModal;
+  $('#dt-save',modal).onclick=async()=>{
+    const activities=$$('[data-dt-activity]',modal).filter(input=>input.checked).map(input=>({id:input.dataset.dtActivity}));
+    const body={revision:c.revision,duration_key:$('#dt-duration',modal).value||null,activities,note:$('#dt-note',modal).value.trim()};
+    try{await api(`/api/characters/${c.id}/downtime/start`,{method:'POST',body});closeModal();toast(T('Downtime started.','Downtime начат.'));viewSheet(c.id);}catch(e){toast(e.message,true);}
+  };
+}
+
+async function performDowntimeAction(c,action,extra){
+  const body={revision:c.revision,action,...extra};
+  try{await api(`/api/characters/${c.id}/downtime/action`,{method:'POST',body});toast(T('Downtime updated.','Downtime обновлён.'));viewSheet(c.id);}catch(e){toast(e.message,true);}
+}
+
 function makerRanks(ch){
   const roles=ch.roles||[];
   const active=ch.active_role||ch.role;
@@ -3189,6 +3222,7 @@ async function viewSheet(id) {
           </div>`).join('')}` : ''}
         ${armorHostLifecycleHtml(d.effective_armor_hosts,mine)}
         ${techMakerSheetHtml(ch,d,mine)}
+        ${downtimeSheetHtml(c,d,canTransfer)}
         ${loansSheetHtml(c,d,canTransfer)}
         ${canTransfer?`<div class="row mt"><button class="btn-sm" onclick="location.hash='#/stash'">🎒 ${T('Crew Stash','Общий склад')}</button></div>`:''}
       </div>
@@ -3248,6 +3282,10 @@ async function viewSheet(id) {
   $$('[data-item-use]',view).forEach(button=>button.onclick=()=>{const item=inv.find(entry=>entry.instance_id===button.dataset.itemUse);if(!item)return;const maximum=Math.max(1,Number(item.qty)||1),amount=maximum>1?Number(prompt(T(`How many uses? 1–${maximum}`,`Сколько использовать? 1–${maximum}`),'1')):1;if(!Number.isInteger(amount)||amount<1||amount>maximum)return;if(confirm(`${T('Use','Использовать')} ${item.custom_name||item.name} ×${amount}?`))performSheetItemAction(c,item,'use',{amount});});
   $$('[data-item-transfer]',view).forEach(button=>button.onclick=()=>{const item=inv.find(entry=>entry.instance_id===button.dataset.itemTransfer);if(item)openItemTransferModal(c,item);});
   $$('[data-loan-action]',view).forEach(button=>button.onclick=()=>{const [instanceId,action]=button.dataset.loanAction.split('|');const loan=(d.loans||[]).find(l=>l.instance_id===instanceId);if(loan)performLoanAction(c,loan,action);});
+  $$('[data-downtime-start]',view).forEach(button=>button.onclick=()=>openDowntimeStartModal(c));
+  $$('[data-downtime-complete]',view).forEach(button=>button.onclick=()=>{const note=(prompt(T('Downtime summary','Итог downtime'))||'').trim();if(!note)return;performDowntimeAction(c,'complete',{note});});
+  $$('[data-downtime-abandon]',view).forEach(button=>button.onclick=()=>{if(!confirm(T('Abandon this downtime period?','Отменить этот период downtime?')))return;performDowntimeAction(c,'abandon',{note:T('Downtime abandoned','Downtime отменён')});});
+  $$('[data-downtime-resolve]',view).forEach(button=>button.onclick=()=>{const [activityId,kind]=button.dataset.downtimeResolve.split('|');if(kind==='hustle'){const amount=Number(prompt(T('Hustle earnings (€$) — resolved at the table','Заработок Hustle (€$) — решено за столом'),'0'));if(!Number.isFinite(amount)||amount<0)return;const note=(prompt(T('Hustle note (roll, context)','Заметка Hustle (бросок, контекст)'),T('Manual Hustle roll','Ручной бросок Hustle'))||'').trim();performDowntimeAction(c,'resolve',{activity_id:activityId,earned:amount,note});}else if(kind==='recover_hp'){const amount=Number(prompt(T('HP recovered','Восстановлено HP'),'0'));if(!Number.isFinite(amount)||amount<0)return;const note=(prompt(T('Healing note','Заметка о лечении'))||'').trim();performDowntimeAction(c,'resolve',{activity_id:activityId,hp:amount,note});}else{const note=(prompt(T('Resolution note','Заметка о результате'))||'').trim();if(!note)return;performDowntimeAction(c,'resolve',{activity_id:activityId,note});}});
   $$('[data-sheet-jump]',view).forEach(button=>button.onclick=()=>document.getElementById(button.dataset.sheetJump)?.scrollIntoView({behavior:'smooth',block:'start'}));
   $$('[data-manage-upgrades]',view).forEach(button=>button.onclick=()=>openWeaponUpgradeManager(c,button.dataset.manageUpgrades));
   $$('[data-manage-cyberdeck]',view).forEach(button=>button.onclick=()=>openCyberdeckManager(c,button.dataset.manageCyberdeck));
