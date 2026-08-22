@@ -6187,6 +6187,7 @@ def validate_armor_repair_references(data):
 # -------------------------------------------------------- Tech Maker
 
 TECH_MAKER_SPECIALTIES = ('upgrade', 'invention')
+TECH_MAKER_FABRICATION_SPECIALTIES = ('fabrication', 'invention')
 # Declarative allowlist of what a Tech Maker custom modification may do.
 # Values are bounded; no executable data is accepted.
 TECH_MAKER_EFFECT_TARGETS = {
@@ -6219,7 +6220,23 @@ TECH_MAKER_EFFECT_TARGETS = {
 TECH_MAKER_SPECIALTY_LABELS = {
     'upgrade': ('Upgrade Expertise', 'Upgrade Expertise'),
     'invention': ('Invention Expertise', 'Invention Expertise'),
+    'fabrication': ('Fabrication Expertise', 'Fabrication Expertise'),
 }
+# Physical item categories a Tech can reproduce from a blueprint via
+# Fabrication Expertise. Cyberware and Services are excluded on purpose:
+# Cyberware requires a clinic install, Services are not physical goods.
+TECH_MAKER_FABRICABLE_CATS = {
+    'guns', 'melee', 'gun_upgrades', 'ammo', 'grenades', 'armor',
+    'gear', 'fashion', 'vehicles', 'vehicles_upgrades', 'net_stuff', 'programs',
+}
+
+
+def tech_maker_fabricable_item(item):
+    if not isinstance(item, dict):
+        return False
+    if not item_by_id(item.get('id')):
+        return False
+    return item.get('cat') in TECH_MAKER_FABRICABLE_CATS
 
 
 def tech_maker_host_type(entry):
@@ -6351,7 +6368,11 @@ def tech_maker_payload(data):
             'reason': mod.get('reason') or '',
             'notes': mod.get('notes') or '',
         })
-    return {'modifications': out,
+    fabrications = [
+        copy.deepcopy(item) for item in state.get('fabrications') or []
+        if isinstance(item, dict)
+    ][-50:][::-1]
+    return {'modifications': out, 'fabrications': fabrications,
             'history': [copy.deepcopy(item) for item in state.get('history') or []
                         if isinstance(item, dict)][-50:][::-1]}
 
@@ -8174,6 +8195,13 @@ SERVER_ERROR_EN = {
     'Повреждена запись Tech Maker modification': 'Tech Maker modification record is corrupted',
     'Повреждена связь Tech Maker modification': 'Tech Maker modification link is corrupted',
     'Повреждена история Tech Maker modifications': 'Tech Maker modification history is corrupted',
+    'Tech Maker fabrication содержит неподдерживаемые поля': 'Tech Maker fabrication contains unsupported fields',
+    'Укажите название, Tech и причину Tech Maker fabrication': 'Provide a name, Tech, and reason for the Tech Maker fabrication',
+    'Неизвестный blueprint item': 'Unknown blueprint item',
+    'Этот предмет нельзя изготовить через Fabrication Expertise': 'This item cannot be fabricated with Fabrication Expertise',
+    'Blueprint fabrication требует maker_specialty fabrication': 'Blueprint fabrication requires maker_specialty fabrication',
+    'Fabrication Expertise требует blueprint item': 'Fabrication Expertise requires a blueprint item',
+    'Некорректная стоимость материалов': 'Invalid material cost',
 }
 
 def server_error_message(message, language):
@@ -12782,6 +12810,171 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     @atomic_endpoint
+    def api_character_tech_maker_fabricate(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'name', 'description', 'blueprint_catalog_id',
+                   'category', 'price', 'qty', 'maker_specialty', 'tech_name',
+                   'material_cost', 'manual_confirm', 'reason', 'notes'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Tech Maker fabrication содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        name = str((body or {}).get('name') or '').strip()[:120]
+        tech_name = str((body or {}).get('tech_name') or '').strip()[:120]
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(name) < 2 or len(tech_name) < 2 or len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите название, Tech и причину Tech Maker fabrication')
+        specialty = str((body or {}).get('maker_specialty') or '').strip().lower()
+        if specialty not in TECH_MAKER_FABRICATION_SPECIALTIES:
+            raise ApiError(400, 'maker_specialty: fabrication/invention')
+        if (body or {}).get('manual_confirm') is not True:
+            raise ApiError(400, 'Подтвердите успешный Tech Maker Check за столом')
+        try:
+            material_cost = max(0, min(9_999_999, int((body or {}).get('material_cost') or 0)))
+        except (TypeError, ValueError):
+            raise ApiError(400, 'Некорректная стоимость материалов')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        ranks = character_maker_ranks(data)
+        rank = ranks.get(specialty, 0)
+        if rank < 1:
+            raise ApiError(409, f'Требуется Maker {specialty} rank 1+ для Tech Maker fabrication')
+        blueprint_id = str((body or {}).get('blueprint_catalog_id') or '').strip()
+        blueprint = item_by_id(blueprint_id) if blueprint_id else None
+        if blueprint_id and not blueprint:
+            raise ApiError(400, 'Неизвестный blueprint item')
+        if blueprint and not tech_maker_fabricable_item(blueprint):
+            raise ApiError(400, 'Этот предмет нельзя изготовить через Fabrication Expertise')
+        if blueprint and specialty != 'fabrication':
+            raise ApiError(400, 'Blueprint fabrication требует maker_specialty fabrication')
+        if not blueprint and specialty == 'fabrication':
+            raise ApiError(400, 'Fabrication Expertise требует blueprint item')
+        try:
+            qty = max(1, min(99, int((body or {}).get('qty') or 1)))
+        except (TypeError, ValueError):
+            raise ApiError(400, 'Некорректное количество')
+        if len(data.get('inventory') or []) + len(data.get('cyberware') or []) + qty > 500:
+            raise ApiError(400, 'Инвентарь не может содержать больше 500 экземпляров')
+        cash = float(data.get('cash') or 0)
+        if material_cost > cash + 1e-9:
+            raise ApiError(400, f'Не хватает €$: нужно {material_cost:,.0f}, есть {cash:,.0f}')
+        inventory = data.setdefault('inventory', [])
+        created_instance_ids = []
+        if blueprint:
+            owned = {
+                'key': blueprint['id'], 'catalog_item_id': blueprint['id'],
+                'cat': blueprint['cat'], 'name': blueprint['name'],
+                'price': blueprint.get('price'), 'qty': 1, 'state': 'carried',
+                'damage': blueprint.get('damage'), 'sp': blueprint.get('sp'),
+                'hl': blueprint.get('hl'),
+                'fields': copy.deepcopy(blueprint.get('fields') or {}),
+                'mechanics': copy.deepcopy(blueprint.get('mechanics') or {}),
+                'source': blueprint.get('source'),
+                'acquisition_source': 'crafted',
+                'acquisition_note': f'Fabricated by {tech_name}: {reason_detail}'[:500],
+            }
+            owned.update(catalog_interaction_data(blueprint))
+            owned.update({key: copy.deepcopy(blueprint[key]) for key in ITEM_MODIFICATION_FIELDS if key in blueprint})
+            coverage = item_effect_coverage(blueprint.get('id'))
+            if coverage:
+                owned['effect_coverage'] = coverage
+            if item_entry_stackable(owned):
+                owned['instance_id'] = new_item_instance_id()
+                owned['qty'] = qty
+                if blueprint.get('cat') == 'ammo':
+                    owned['ammo_rounds'] = qty * ammo_pack_size(owned)
+                inventory.append(owned)
+                created_instance_ids.append(owned['instance_id'])
+            else:
+                for _ in range(qty):
+                    instance = copy.deepcopy(owned)
+                    instance['instance_id'] = new_item_instance_id()
+                    inventory.append(instance)
+                    created_instance_ids.append(instance['instance_id'])
+        else:
+            category = str((body or {}).get('category') or 'custom').strip().lower()
+            allowed_categories = {row2['id'] for row2 in catalog().get('cats') or []} | {'custom'}
+            if category not in allowed_categories:
+                raise ApiError(400, 'Некорректная категория custom item')
+            price = trust_number((body or {}).get('price', 0),
+                                 'Custom item value', 0, 9_999_999)
+            stackable = False
+            owned = {
+                'is_custom': True, 'key': 'custom', 'cat': category,
+                'name': name, 'custom_name': name,
+                'desc': str((body or {}).get('description') or '')[:4000],
+                'price': price, 'stackable': stackable, 'qty': 1,
+                'state': 'carried', 'source': 'Tech Maker Invention',
+                'manual_resolution_required': True,
+                'acquisition_source': 'crafted',
+                'acquisition_note': f'Invented by {tech_name}: {reason_detail}'[:500],
+            }
+            for _ in range(qty):
+                instance = copy.deepcopy(owned)
+                instance['instance_id'] = new_item_instance_id()
+                instance['key'] = f'custom-{instance["instance_id"]}'
+                inventory.append(instance)
+                created_instance_ids.append(instance['instance_id'])
+        data['cash'] = round(cash - material_cost, 2)
+        # Fabricated firearms start unloaded, mirroring Night Market purchases.
+        for instance_id in created_instance_ids:
+            weapon = next((item for item in inventory
+                           if isinstance(item, dict) and
+                           item.get('instance_id') == instance_id), None)
+            if weapon and weapon.get('cat') in ('guns', 'melee'):
+                state = (data.get('weapon_state') or {}).get(instance_id)
+                if state:
+                    state['magazine'] = 0
+        state = data.setdefault('tech_maker_state', {})
+        fabrication_record = {
+            'fabrication_id': secrets.token_hex(16), 'name': name,
+            'blueprint_catalog_id': blueprint_id or None,
+            'category': blueprint.get('cat') if blueprint else str(
+                (body or {}).get('category') or 'custom'),
+            'qty': qty, 'maker_specialty': specialty, 'maker_rank': rank,
+            'tech_name': tech_name, 'material_cost': material_cost,
+            'source': f'Maker: {TECH_MAKER_SPECIALTY_LABELS[specialty][0]} · CP:R 148',
+            'at': time.time(), 'reason': reason_detail,
+            'instance_ids': created_instance_ids,
+        }
+        fabrications = state.setdefault('fabrications', [])
+        if not isinstance(fabrications, list):
+            fabrications = []
+            state['fabrications'] = fabrications
+        fabrications.append(fabrication_record)
+        state['fabrications'] = fabrications[-50:]
+        validate_tech_maker_references(data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'tech_maker_fabricate',
+            source_ref=reason_detail, prune=True)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data,
+            f'Tech Maker {specialty}: fabricate {name} ×{qty}: {reason_detail}',
+            current_revision, revision_after, category='item_action')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['tech_maker_fabrication'] = {
+            'fabrication_id': fabrication_record['fabrication_id'],
+            'name': name, 'blueprint_catalog_id': blueprint_id or None,
+            'qty': qty, 'maker_specialty': specialty, 'material_cost': material_cost,
+            'instance_ids': created_instance_ids,
+        }
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), time.time(),
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'fabrication': fabrication_record,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        }, status=201)
+
+    @atomic_endpoint
     def api_character_popup_weapon_bind(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
         allowed = {'revision', 'weapon_instance_id', 'permanent_confirmed', 'reason'}
@@ -16111,6 +16304,7 @@ ROUTES = [
     ('POST', rx(r'/api/characters/(\d+)/armor/([a-f0-9]{32})/tech-upgrade'), Handler.api_character_armor_tech_upgrade),
     ('POST', rx(r'/api/characters/(\d+)/tech-maker/modifications'), Handler.api_character_tech_maker_create),
     ('POST', rx(r'/api/characters/(\d+)/tech-maker/modifications/([a-f0-9]{32})/action'), Handler.api_character_tech_maker_action),
+    ('POST', rx(r'/api/characters/(\d+)/tech-maker/fabricate'), Handler.api_character_tech_maker_fabricate),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/popup-weapon/bind'), Handler.api_character_popup_weapon_bind),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/weapon/action'), Handler.api_character_cyberware_weapon_action),
     ('GET', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modifications),

@@ -3216,7 +3216,20 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - public Dossier скрывает `tech_maker` (tech_name/reason/notes) если equipment приватно;
 - Character Sheet получил панель `Tech Maker Modifications` с create-modal (host/specialty/effect/manual rule/reason) и Remove;
 - 8 новых тестов: allowlist, ranks, host mapping, reference validation, effective weapon/armor/vehicle, интеграционный create/duplicate/remove flow;
-- generic Tech Maker fabrication (создание новых custom items) и Campaign Clock service completion остаются следующими этапами.
+- Campaign Clock service completion остаётся следующим этапом.
+
+**Статус B.11.2 — реализована Tech Maker Fabrication/Invention:**
+
+- `POST /api/characters/{id}/tech-maker/fabricate` создаёт предмет через Fabrication (blueprint из Database) или Invention (новый custom item);
+- Fabrication требует `maker_specialty=fabrication` и валидный `blueprint_catalog_id`; Invention — `invention` без blueprint, с явной категорией custom item;
+- blueprint ограничен физическими категориями (`guns/melee/gun_upgrades/ammo/grenades/armor/gear/fashion/vehicles/vehicles_upgrades/net_stuff/programs`) — Cyberware и Services исключены;
+- `material_cost` атомарно списывается с Cash с проверкой баланса; количество 1–99, инвентарь не превышает 500 экземпляров;
+- изготовленные catalog items получают `acquisition_source=crafted` и заметку о Tech; изобретённые — `is_custom` с `manual_resolution_required`;
+- изготовленное огнестрельное оружие создаётся разряженным (magazine 0), как и при покупке;
+- gate по Maker `fabrication`/`invention` rank 1+ из активной Tech Role; specialty/rank/tech/cost записываются в `tech_maker_state.fabrications` (bounded history);
+- fabrication atomically protected revision, пишет Trust + Audit Ledger с `tech_maker_fabrication` delta и поддерживает snapshot revert;
+- Character Sheet Tech Maker панель показывает историю Fabricated/Invented Items и кнопку `Fabricate / Invent Item` с модалкой;
+- 3 новых теста: fabricable категории + интеграционные blueprint/invention и gate-проверки.
 
 1. ✅ Вернуть безопасное свободное редактирование владельцем.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
@@ -3240,7 +3253,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
     - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, concrete Cyberware/Popup weapons/Popup Shield, Therapy, concrete Armor/Shield hosts, Tech Upgrade, manual/Jeeves/paid Armor Repair, curated special cyberweapons (Net Launcher / Dartguns / Gas Jet) с special-ammo lifecycle, Manual Shield Tech Upgrade Polish и Tech Maker Custom Modifications (allowlisted upgrade/invention effects на weapon/armor/vehicle/cyberware);
-    - дальше: Campaign Clock services, Tech Maker fabrication (создание новых custom items) и более широкий allowlisted effect surface.
+    - дальше: Campaign Clock services и более широкий allowlisted effect surface.
 14. JSON import.
 
 ### Пакет C — Publishing Preview

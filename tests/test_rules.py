@@ -1832,6 +1832,13 @@ class TechMakerModificationTests(unittest.TestCase):
         maker_ids = {source['id'] for source in evaluated['sources']}
         self.assertIn('tech-maker:weapon.attack_check', maker_ids)
 
+    def test_fabricable_categories_exclude_cyberware_and_services(self):
+        self.assertTrue(server.tech_maker_fabricable_item(server.item_by_id('guns-0')))
+        self.assertTrue(server.tech_maker_fabricable_item(server.item_by_id('armor-2')))
+        self.assertFalse(server.tech_maker_fabricable_item(server.item_by_id('cyberware-42')))
+        self.assertFalse(server.tech_maker_fabricable_item(server.item_by_id('services-31')))
+        self.assertFalse(server.tech_maker_fabricable_item({'id': 'nope'}))
+
     def test_effective_armor_and_vehicle_apply_tech_maker(self):
         armor = self.owned('armor-2', '2' * 32)
         armor['armor_locations'] = ['body']

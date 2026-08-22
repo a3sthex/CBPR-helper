@@ -388,11 +388,6 @@ class NCNetCoreFlowTests(unittest.TestCase):
         post_after_archive = self.call(server.Handler.api_feed_detail, {}, self.match(post['id']), {})['payload']
         self.assertEqual(post_after_archive['author']['display_name'], 'K')
 
-
-if __name__ == '__main__':
-    unittest.main()
-
-
 class TechMakerFlowTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -507,3 +502,55 @@ class TechMakerFlowTests(unittest.TestCase):
                 'reason': 'Upgrade Expertise at the table',
             })
         self.assertEqual(missing_confirm.exception.status, 409)
+
+    def test_fabricate_blueprint_and_invention(self):
+        # Blueprint fabrication deducts material cost and creates a carried item.
+        self.call(server.Handler.api_character_tech_maker_fabricate, {}, self.match(1), {
+            'revision': 0, 'name': 'Custom Pistol', 'tech_name': 'Vee',
+            'blueprint_catalog_id': 'guns-0', 'maker_specialty': 'fabrication',
+            'qty': 2, 'material_cost': 100, 'manual_confirm': True,
+            'reason': 'Fabrication Expertise at the table',
+        })
+        payload = self.response['payload']
+        character = payload['character']
+        inv = character['data']['inventory']
+        crafted = [item for item in inv if item.get('acquisition_source') == 'crafted']
+        self.assertEqual(len(crafted), 2)
+        self.assertEqual(character['data']['cash'], 0)
+        fabrications = character['derived']['tech_maker']['fabrications']
+        self.assertEqual(fabrications[0]['blueprint_catalog_id'], 'guns-0')
+        self.assertEqual(fabrications[0]['qty'], 2)
+
+        # Invention without a blueprint creates a custom item.
+        self.call(server.Handler.api_character_tech_maker_fabricate, {}, self.match(1), {
+            'revision': character['revision'], 'name': 'Boom Gadget', 'tech_name': 'Vee',
+            'maker_specialty': 'invention', 'category': 'custom',
+            'description': 'A one-off prototype.', 'qty': 1, 'material_cost': 0,
+            'manual_confirm': True, 'reason': 'Invention Expertise at the table',
+        })
+        invented = self.response['payload']['character']['data']['inventory']
+        custom = [item for item in invented if item.get('is_custom')]
+        self.assertEqual(len(custom), 1)
+        self.assertEqual(custom[0]['custom_name'], 'Boom Gadget')
+
+    def test_fabricate_gates_on_specialty_and_blueprint(self):
+        # Fabrication requires a blueprint.
+        with self.assertRaises(server.ApiError) as no_blueprint:
+            self.call(server.Handler.api_character_tech_maker_fabricate, {}, self.match(1), {
+                'revision': 0, 'name': 'Ghost', 'tech_name': 'Vee',
+                'maker_specialty': 'fabrication', 'manual_confirm': True,
+                'reason': 'Fabrication Expertise at the table',
+            })
+        self.assertEqual(no_blueprint.exception.status, 400)
+        # A blueprint cannot be run under invention.
+        with self.assertRaises(server.ApiError) as wrong_specialty:
+            self.call(server.Handler.api_character_tech_maker_fabricate, {}, self.match(1), {
+                'revision': 0, 'name': 'Ghost', 'tech_name': 'Vee',
+                'blueprint_catalog_id': 'guns-0', 'maker_specialty': 'invention',
+                'manual_confirm': True, 'reason': 'Invention Expertise at the table',
+            })
+        self.assertEqual(wrong_specialty.exception.status, 400)
+
+
+if __name__ == '__main__':
+    unittest.main()
