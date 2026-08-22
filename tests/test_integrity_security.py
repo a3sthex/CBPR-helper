@@ -3852,6 +3852,15 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
             'SELECT data FROM characters WHERE id=1').fetchone()['data'])
         character['cash'] = market_item['street_price'] * 2
         self.conn.execute('UPDATE characters SET data=? WHERE id=1', (json.dumps(character),))
+        # Deterministic finite stock: seed enough units so the test focuses on
+        # instance-splitting rather than the daily stock lottery.
+        now = server.time.time()
+        self.conn.execute(
+            'INSERT OR REPLACE INTO market_stock(market_day,vendor_id,item_id,'
+            'stock_initial,stock_remaining,reserved_character_id,reserved_note,'
+            'created,updated) VALUES(?,?,?,?,?,NULL,\'\',?,?)',
+            (server.nm_day(), market_item['vendor_id'], market_item['id'],
+             10, 10, now, now))
         self.conn.commit()
 
         self.call(server.Handler.api_buy, body={

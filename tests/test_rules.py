@@ -2056,3 +2056,78 @@ class CharacterImportTests(unittest.TestCase):
         with self.assertRaises(server.ApiError) as not_object:
             server.canonical_import_character([1, 2, 3])
         self.assertEqual(not_object.exception.status, 400)
+
+
+class MarketStockTests(unittest.TestCase):
+    def test_night_market_exposes_finite_stock_and_availability(self):
+        market = server.night_market()
+        self.assertEqual(len(market['vendors']), len(server.NIGHT_MARKET_VENDORS))
+        for item in market['items']:
+            self.assertIsInstance(item['stock'], int)
+            self.assertGreaterEqual(item['stock'], 1)
+            self.assertLessEqual(item['stock'], 5)
+            self.assertEqual(item['stock_remaining'], item['stock'])
+            self.assertFalse(item['sold_out'])
+            self.assertFalse(item['reserved'])
+            self.assertIsNone(item['reserved_character_id'])
+            self.assertIsInstance(item['new_today'], bool)
+        self.assertTrue(all('location' in vendor for vendor in market['vendors']))
+        self.assertTrue(all(vendor['location'] for vendor in market['vendors']))
+
+    def test_night_market_rotation_is_deterministic_per_day(self):
+        self.assertEqual(server.nm_rotation('2026-08-22'), server.nm_rotation('2026-08-22'))
+        a = server.nm_rotation('2026-08-22')
+        b = server.nm_rotation('2026-08-23')
+        self.assertNotEqual(a['items'], b['items'])
+
+    def test_nm_day_offset_rolls_forward_and_back(self):
+        self.assertEqual(server.nm_day_offset('2026-08-22', -1), '2026-08-21')
+        self.assertEqual(server.nm_day_offset('2026-08-22', 1), '2026-08-23')
+        self.assertEqual(server.nm_day_offset('2026-03-01', -1), '2026-02-28')
+
+    def test_stock_seed_is_bounded_and_deterministic(self):
+        seed = server.nm_stock_seed('2026-08-22', 'gunmart-after-dark', 'guns-0')
+        self.assertGreaterEqual(seed, 1)
+        self.assertLessEqual(seed, 5)
+        self.assertEqual(seed, server.nm_stock_seed('2026-08-22', 'gunmart-after-dark', 'guns-0'))
+
+    def test_market_stock_seeding_is_idempotent(self):
+        conn = sqlite3.connect(':memory:')
+        conn.row_factory = sqlite3.Row
+        conn.executescript(server.MARKET_STOCK_SCHEMA)
+        rotation = server.ensure_market_stock(conn, '2026-08-22')
+        first_count = conn.execute('SELECT COUNT(*) n FROM market_stock').fetchone()['n']
+        self.assertEqual(first_count, len(rotation['items']))
+        # Re-seeding must not duplicate rows or reset already-decremented stock.
+        conn.execute('UPDATE market_stock SET stock_remaining=stock_remaining-1 WHERE item_id=?',
+                     (rotation['items'][0]['id'],))
+        conn.commit()
+        server.ensure_market_stock(conn, '2026-08-22')
+        self.assertEqual(conn.execute('SELECT COUNT(*) n FROM market_stock').fetchone()['n'], first_count)
+        first_item = rotation['items'][0]
+        seed = server.nm_stock_seed('2026-08-22', first_item['vendor_id'], first_item['id'])
+        remaining = conn.execute('SELECT stock_remaining FROM market_stock WHERE item_id=?',
+                                 (first_item['id'],)).fetchone()['stock_remaining']
+        self.assertEqual(remaining, seed - 1)
+        conn.close()
+
+    def test_night_market_with_conn_reflects_purchases_and_reservations(self):
+        conn = sqlite3.connect(':memory:')
+        conn.row_factory = sqlite3.Row
+        conn.executescript(server.MARKET_STOCK_SCHEMA)
+        rotation = server.ensure_market_stock(conn, '2026-08-22')
+        target = rotation['items'][0]
+        conn.execute('UPDATE market_stock SET stock_remaining=0,reserved_character_id=7,'
+                     'reserved_note=\'held\' WHERE item_id=?', (target['id'],))
+        conn.execute('CREATE TABLE IF NOT EXISTS characters('
+                     'id INTEGER PRIMARY KEY, data TEXT NOT NULL)')
+        conn.execute('INSERT INTO characters(id,data) VALUES(7,?)',
+                     (json.dumps({'handle': 'Reserved V'}),))
+        conn.commit()
+        market = server.night_market(day='2026-08-22', conn=conn)
+        item = next(i for i in market['items'] if i['id'] == target['id'])
+        self.assertTrue(item['sold_out'])
+        self.assertTrue(item['reserved'])
+        self.assertEqual(item['reserved_character_id'], 7)
+        self.assertEqual(item['reserved_handle'], 'Reserved V')
+        conn.close()

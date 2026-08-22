@@ -882,3 +882,172 @@ class CharacterImportFlowTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MarketStockFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = sqlite3.connect(str(Path(self.tmp.name) / 'ncnet.db'))
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(server.SCHEMA)
+        server.apply_schema_migrations(self.conn, make_backup=False)
+        for username, display, role in (('gm', 'GM', 'gm'),
+                                        ('runner1', 'Runner One', 'player'),
+                                        ('runner2', 'Runner Two', 'player')):
+            self.conn.execute(
+                'INSERT INTO users(username,display_name,pass_hash,is_gm,account_role,created) '
+                'VALUES(?,?,?,?,?,?)',
+                (username, display, 'x', 1 if role in ('gm', 'admin') else 0, role, 1))
+        base = {
+            'handle': 'V', 'role': 'Solo', 'role_rank': 4,
+            'roles': [{'name': 'Solo', 'rank': 4, 'primary': True}], 'active_role': 'Solo',
+            'stats': {'BODY': 6, 'WILL': 6, 'LUCK': 5, 'MOVE': 6}, 'skills': {},
+            'inventory': [], 'cyberware': [], 'armor': {},
+            'cash': 100000, 'ip_available': 0, 'ip_total_earned': 0,
+            'ip_total_spent': 0, 'luck_cur': 5, 'reputation': 0,
+        }
+        self.conn.execute(
+            'INSERT INTO characters(owner_id,public,data,created,updated) VALUES(2,1,?,1,1)',
+            (json.dumps(dict(base)),))
+        k = dict(base)
+        k['handle'] = 'K'
+        self.conn.execute(
+            'INSERT INTO characters(owner_id,public,data,created,updated) VALUES(3,1,?,1,1)',
+            (json.dumps(k),))
+        self.conn.commit()
+        self.handler = object.__new__(server.Handler)
+        self.response = {}
+        self.current = self.user('gm')
+        self.handler.current_user = lambda conn: self.current
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def user(self, username):
+        return self.conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
+
+    def call(self, method, *args):
+        self.response = {}
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+        method(self.handler, self.conn, *args)
+        return self.response
+
+    def market_item(self):
+        return server.night_market()['items'][0]
+
+    def seed_stock(self, item, remaining):
+        now = server.time.time()
+        self.conn.execute(
+            'INSERT OR REPLACE INTO market_stock(market_day,vendor_id,item_id,'
+            'stock_initial,stock_remaining,reserved_character_id,reserved_note,'
+            'created,updated) VALUES(?,?,?,?,?,NULL,\'\',?,?)',
+            (server.nm_day(), item['vendor_id'], item['id'],
+             remaining, remaining, now, now))
+        self.conn.commit()
+
+    def char_cash(self, char_id):
+        return json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=?', (char_id,)).fetchone()['data'])['cash']
+
+    def test_buy_decrements_stock_then_sells_out(self):
+        item = self.market_item()
+        self.seed_stock(item, 2)
+        self.current = self.user('runner1')
+        body = {'char_id': 1, 'items': [{'id': item['id'], 'qty': 1, 'mode': 'nm'}]}
+        self.call(server.Handler.api_buy, {}, None, body)
+        self.assertEqual(self.response['status'], 200)
+        self.call(server.Handler.api_buy, {}, None, body)
+        self.assertEqual(self.response['status'], 200)
+        with self.assertRaises(server.ApiError) as sold_out:
+            self.call(server.Handler.api_buy, {}, None, body)
+        self.assertEqual(sold_out.exception.status, 400)
+        remaining = self.conn.execute(
+            'SELECT stock_remaining FROM market_stock WHERE item_id=?',
+            (item['id'],)).fetchone()['stock_remaining']
+        self.assertEqual(remaining, 0)
+
+    def test_reserve_blocks_others_and_allows_reserved_character(self):
+        item = self.market_item()
+        self.seed_stock(item, 3)
+        self.current = self.user('gm')
+        self.call(server.Handler.api_nightmarket_reserve, {}, None, {
+            'item_id': item['id'], 'character_id': 2, 'note': 'held for K'})
+        self.assertEqual(self.response['status'], 200)
+        # Player V (character 1) is blocked.
+        self.current = self.user('runner1')
+        with self.assertRaises(server.ApiError) as blocked:
+            self.call(server.Handler.api_buy, {}, None, {
+                'char_id': 1, 'items': [{'id': item['id'], 'qty': 1, 'mode': 'nm'}]})
+        self.assertEqual(blocked.exception.status, 400)
+        # Reserved character can buy.
+        self.current = self.user('runner2')
+        self.call(server.Handler.api_buy, {}, None, {
+            'char_id': 2, 'items': [{'id': item['id'], 'qty': 1, 'mode': 'nm'}]})
+        self.assertEqual(self.response['status'], 200)
+
+    def test_reserve_is_gm_only(self):
+        item = self.market_item()
+        self.seed_stock(item, 2)
+        self.current = self.user('runner1')
+        with self.assertRaises(server.ApiError) as denied:
+            self.call(server.Handler.api_nightmarket_reserve, {}, None, {
+                'item_id': item['id'], 'character_id': 1})
+        self.assertEqual(denied.exception.status, 403)
+
+    def test_fixer_request_fulfill_grants_catalog_item(self):
+        self.current = self.user('runner1')
+        self.call(server.Handler.api_fixer_request_create, {}, None, {
+            'char_id': 1, 'item_id': 'gear-0', 'note': 'Need a flashlight'})
+        self.assertEqual(self.response['status'], 201)
+        request_id = self.response['payload']['request_id']
+        self.current = self.user('gm')
+        listing = self.call(server.Handler.api_fixer_requests, {}, None, {})['payload']
+        self.assertEqual(len(listing['requests']), 1)
+        self.assertEqual(listing['requests'][0]['status'], 'pending')
+        self.call(server.Handler.api_fixer_request_resolve, {}, self.match(request_id), {
+            'action': 'fulfill', 'price': 0})
+        self.assertEqual(self.response['status'], 200)
+        data = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])
+        self.assertTrue(any(i.get('catalog_item_id') == 'gear-0' for i in data['inventory']))
+        status = self.conn.execute(
+            'SELECT status FROM fixer_requests WHERE id=?', (request_id,)).fetchone()['status']
+        self.assertEqual(status, 'fulfilled')
+
+    def test_fixer_request_free_text_creates_custom_item(self):
+        self.current = self.user('runner1')
+        self.call(server.Handler.api_fixer_request_create, {}, None, {
+            'char_id': 1, 'item_name': 'Prototype Scanner', 'note': 'Something off the books'})
+        request_id = self.response['payload']['request_id']
+        self.current = self.user('gm')
+        self.call(server.Handler.api_fixer_request_resolve, {}, self.match(request_id), {
+            'action': 'fulfill', 'price': 0})
+        data = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])
+        self.assertTrue(any(i.get('is_custom') and i.get('custom_name') == 'Prototype Scanner'
+                            for i in data['inventory']))
+
+    def test_fixer_request_decline(self):
+        self.current = self.user('runner1')
+        self.call(server.Handler.api_fixer_request_create, {}, None, {
+            'char_id': 1, 'item_id': 'gear-0'})
+        request_id = self.response['payload']['request_id']
+        self.current = self.user('gm')
+        self.call(server.Handler.api_fixer_request_resolve, {}, self.match(request_id), {
+            'action': 'decline', 'note': 'No stock'})
+        status = self.conn.execute(
+            'SELECT status FROM fixer_requests WHERE id=?', (request_id,)).fetchone()['status']
+        self.assertEqual(status, 'declined')
+
+    @staticmethod
+    def match(*values):
+        pattern = '^' + '/'.join('(\\d+)' for _ in values) + '$'
+        return re.match(pattern, '/'.join(str(value) for value in values))
+
+
+if __name__ == '__main__':
+    unittest.main()

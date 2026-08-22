@@ -161,6 +161,8 @@ body[data-workspace="gm"] .system-bar{border-bottom-color:var(--magenta)}body[da
 .tag.price { color: var(--green); border-color: rgba(60, 242, 138, .4); font-weight: 700; }
 .tag.disc { color: var(--magenta); border-color: rgba(255, 45, 120, .5); font-weight: 700; }
 .tag.warn-tag { color: var(--yellow); border-color: rgba(255, 213, 0, .5); }
+.item-card.unavailable { opacity: .55; }
+.item-card.unavailable .btn-primary { pointer-events: none; }
 .transfer-action { display: flex; align-items: flex-end; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg2); margin-bottom: 8px; flex-wrap: wrap; }
 .transfer-action .f { flex: 1; min-width: 180px; margin: 0; }
 .muted { color: var(--muted); }

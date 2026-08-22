@@ -2829,6 +2829,38 @@ CREATE INDEX IF NOT EXISTS idx_item_loans_owner ON item_loans(owner_character_id
 CREATE INDEX IF NOT EXISTS idx_item_loans_borrower ON item_loans(borrower_character_id, returned_at);
 """
 
+MARKET_STOCK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS market_stock(
+  market_day TEXT NOT NULL,
+  vendor_id TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  stock_initial INTEGER NOT NULL DEFAULT 0,
+  stock_remaining INTEGER NOT NULL DEFAULT 0,
+  reserved_character_id INTEGER,
+  reserved_note TEXT NOT NULL DEFAULT '',
+  created REAL NOT NULL,
+  updated REAL NOT NULL,
+  PRIMARY KEY(market_day, vendor_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_market_stock_day ON market_stock(market_day);
+
+CREATE TABLE IF NOT EXISTS fixer_requests(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  character_id INTEGER NOT NULL,
+  requested_by INTEGER NOT NULL,
+  item_id TEXT,
+  item_name TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  created REAL NOT NULL,
+  updated REAL NOT NULL,
+  resolved_by INTEGER,
+  resolved_at REAL,
+  resolution_note TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_fixer_requests_status ON fixer_requests(status, created);
+"""
+
 NOTIFICATION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS notifications(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2876,6 +2908,7 @@ MIGRATION_ITEM_MODIFICATIONS = 10
 MIGRATION_SESSION_NET = 11
 MIGRATION_CAMPAIGN_CLOCK = 12
 MIGRATION_CREW_STASH = 13
+MIGRATION_MARKET_STOCK = 14
 DB_BACKUP_LIMIT = 5
 _RATE_LIMIT_BUCKETS = {}
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -4205,6 +4238,7 @@ def apply_schema_migrations(conn, make_backup=True):
         (MIGRATION_SESSION_NET, 'live session NET context'),
         (MIGRATION_CAMPAIGN_CLOCK, 'campaign clock and service timing'),
         (MIGRATION_CREW_STASH, 'crew stash and item transfers'),
+        (MIGRATION_MARKET_STOCK, 'market finite stock and fixer requests'),
     ]
     pending = [version for version, _ in migrations if version not in applied]
     if make_backup and pending:
@@ -4259,6 +4293,8 @@ def apply_schema_migrations(conn, make_backup=True):
         conn.executescript(CAMPAIGN_CLOCK_SCHEMA)
     if MIGRATION_CREW_STASH not in applied:
         conn.executescript(CREW_STASH_SCHEMA)
+    if MIGRATION_MARKET_STOCK not in applied:
+        conn.executescript(MARKET_STOCK_SCHEMA)
     # Re-run additive CREATE IF NOT EXISTS blocks so patch-level tables added to an
     # already-applied migration remain safe during development and rolling deploys.
     conn.executescript(NETWORK_SCHEMA)
@@ -4270,6 +4306,7 @@ def apply_schema_migrations(conn, make_backup=True):
     conn.executescript(ITEM_MODIFICATION_SCHEMA)
     conn.executescript(CAMPAIGN_CLOCK_SCHEMA)
     conn.executescript(CREW_STASH_SCHEMA)
+    conn.executescript(MARKET_STOCK_SCHEMA)
     # Recover safely if a rolling/patch deployment recorded the migration before
     # every additive column reached a particular database.
     ensure_column(conn, 'users', 'avatar_media_id', 'TEXT')
@@ -5804,30 +5841,35 @@ NIGHT_MARKET_VENDORS = [
         'tagline_en': 'Weapons, ammunition, explosives, and questionable rebuilds.',
         'tagline_ru': 'Оружие, боеприпасы, взрывчатка и сомнительные переделки.',
         'cats': ['guns', 'melee', 'gun_upgrades', 'ammo', 'grenades'],
+        'location': 'Watson',
     },
     {
         'id': 'iron-shell', 'handle': 'iron-shell', 'accent_color': '#8fa0bd', 'name_en': 'Iron Shell', 'name_ru': 'Iron Shell', 'icon': '🛡️',
         'tagline_en': 'Armor, shields, and the confidence to get shot twice.',
         'tagline_ru': 'Броня, щиты и уверенность, что переживёшь второй выстрел.',
         'cats': ['armor'],
+        'location': 'Westbrook',
     },
     {
         'id': 'chrome-saint', 'handle': 'chrome-saint', 'accent_color': '#ff2d78', 'name_en': 'Chrome Saint', 'name_ru': 'Chrome Saint', 'icon': '🦾',
         'tagline_en': 'Fashionware, chrome, and discreet installation referrals.',
         'tagline_ru': 'Fashionware, хром и контакты для неброской установки.',
         'cats': ['cyberware'],
+        'location': 'City Center',
     },
     {
         'id': 'ghost-packet', 'handle': 'ghost-packet', 'accent_color': '#00e5ff', 'name_en': 'Ghost Packet', 'name_ru': 'Ghost Packet', 'icon': '💾',
         'tagline_en': 'Cyberdecks, Programs, Black ICE, and NET hardware.',
         'tagline_ru': 'Cyberdeck, Programs, Black ICE и NET-железо.',
         'cats': ['net_stuff', 'programs'],
+        'location': 'Heywood',
     },
     {
         'id': 'nomad-exchange', 'handle': 'nomad-exchange', 'accent_color': '#ffd500', 'name_en': 'Nomad Exchange', 'name_ru': 'Nomad Exchange', 'icon': '🏍️',
         'tagline_en': 'Vehicles, upgrades, cargo solutions, no fixed address.',
         'tagline_ru': 'Транспорт, апгрейды, грузовые решения и никакого адреса.',
         'cats': ['vehicles', 'vehicles_upgrades'],
+        'location': 'Badlands',
     },
     {
         'id': 'back-alley-general', 'handle': 'back-alley-general', 'accent_color': '#3cf28a', 'name_en': 'Back-Alley General',
@@ -5835,6 +5877,7 @@ NIGHT_MARKET_VENDORS = [
         'tagline_en': 'Gear, fashion, services, and everything nobody admits buying.',
         'tagline_ru': 'Снаряжение, мода, услуги и всё, в покупке чего не признаются.',
         'cats': ['gear', 'fashion', 'services'],
+        'location': 'Pacifica',
     },
 ]
 
@@ -5847,9 +5890,42 @@ def nm_day():
     return datetime.now(MOSCOW).strftime('%Y-%m-%d')
 
 
-def night_market():
+def nm_day_offset(day, delta_days):
+    try:
+        base = datetime.strptime(str(day or ''), '%Y-%m-%d')
+    except ValueError:
+        return day
+    return (base + timedelta(days=int(delta_days))).strftime('%Y-%m-%d')
+
+
+def nm_stock_seed(day, vendor_id, item_id):
+    """Deterministic 1..5 unit stock seed for a daily vendor+item offer."""
+    return 1 + _h(f'stock|{day}|{vendor_id}|{item_id}') % 5
+
+
+def nm_offer_payload(item, day, vendor_id):
+    multiplier = NM_MULTS[
+        _h(f'price|{day}|{vendor_id}|{item["id"]}') % len(NM_MULTS)]
+    street = round(item['price'] * multiplier)
+    return {
+        'id': item['id'], 'cat': item['cat'], 'name': item['name'],
+        'price': item['price'], 'street_price': street,
+        'discount': street < item['price'], 'multiplier': multiplier,
+        'fields': item.get('fields') or {},
+        'mechanics': item.get('mechanics') or {},
+        'requirements': item.get('requirements') or [],
+        'capacity': item.get('capacity'),
+        'source': item.get('source'), 'desc': item.get('desc'),
+        'armor_locations': item.get('armor_locations'),
+        'armor_bundled': item.get('armor_bundled'),
+        'effect_coverage': item_effect_coverage(item.get('id')),
+        'vendor_id': vendor_id,
+    }
+
+
+def nm_rotation(day):
+    """Deterministic per-day vendor rotation with no persistent state."""
     cat = catalog()
-    day = nm_day()
     all_items = []
     vendors = []
     for vendor in NIGHT_MARKET_VENDORS:
@@ -5860,29 +5936,77 @@ def night_market():
             pool.sort(key=lambda item: _h(
                 f'{day}|{vendor["id"]}|{category_id}|{item["id"]}'))
             for item in pool[:NM_PER_CAT]:
-                multiplier = NM_MULTS[
-                    _h(f'price|{day}|{vendor["id"]}|{item["id"]}') % len(NM_MULTS)]
-                street = round(item['price'] * multiplier)
-                payload = {
-                    'id': item['id'], 'cat': item['cat'], 'name': item['name'],
-                    'price': item['price'], 'street_price': street,
-                    'discount': street < item['price'], 'multiplier': multiplier,
-                    'fields': item.get('fields') or {},
-                    'mechanics': item.get('mechanics') or {},
-                    'requirements': item.get('requirements') or [],
-                    'capacity': item.get('capacity'),
-                    'source': item.get('source'), 'desc': item.get('desc'),
-                    'armor_locations': item.get('armor_locations'),
-                    'armor_bundled': item.get('armor_bundled'),
-                    'effect_coverage': item_effect_coverage(item.get('id')),
-                    'vendor_id': vendor['id'],
-                }
+                payload = nm_offer_payload(item, day, vendor['id'])
                 stock.append(payload)
                 all_items.append(payload)
         vendor_payload = {key: value for key, value in vendor.items() if key != 'cats'}
         vendor_payload.update({'categories': list(vendor['cats']), 'items': stock})
         vendors.append(vendor_payload)
-    return {'date': day, 'items': all_items, 'vendors': vendors}
+    return {'items': all_items, 'vendors': vendors}
+
+
+def market_stock_rows(conn, day):
+    rows = conn.execute(
+        'SELECT * FROM market_stock WHERE market_day=?', (day,)).fetchall()
+    return {row['item_id']: dict(row) for row in rows}
+
+
+def ensure_market_stock(conn, day=None):
+    """Idempotently seed the persistent finite stock for a market day."""
+    day = day or nm_day()
+    rotation = nm_rotation(day)
+    now = time.time()
+    for item in rotation['items']:
+        seed = nm_stock_seed(day, item['vendor_id'], item['id'])
+        conn.execute(
+            'INSERT INTO market_stock(market_day,vendor_id,item_id,stock_initial,'
+            'stock_remaining,reserved_character_id,reserved_note,created,updated) '
+            'VALUES(?,?,?,?,?,NULL,\'\',?,?) '
+            'ON CONFLICT(market_day,vendor_id,item_id) DO NOTHING',
+            (day, item['vendor_id'], item['id'], seed, seed, now, now))
+    return rotation
+
+
+def night_market(day=None, conn=None):
+    """Assemble the daily market with deterministic rotation and stock state."""
+    day = day or nm_day()
+    rotation = nm_rotation(day)
+    yesterday_keys = {
+        (item['vendor_id'], item['id']) for item in nm_rotation(nm_day_offset(day, -1))['items']
+    }
+    stock_rows = market_stock_rows(conn, day) if conn is not None else {}
+    reserved_handles = {}
+    if conn is not None:
+        reserved_ids = {
+            row['reserved_character_id'] for row in stock_rows.values()
+            if row.get('reserved_character_id')
+        }
+        if reserved_ids:
+            marks = ','.join('?' for _ in reserved_ids)
+            for row in conn.execute(
+                    f'SELECT id,data FROM characters WHERE id IN ({marks})',
+                    tuple(sorted(reserved_ids))):
+                reserved_handles[row['id']] = (
+                    parse_json_object(row['data']).get('handle') or 'Unknown Edgerunner')
+    for item in rotation['items']:
+        seed = nm_stock_seed(day, item['vendor_id'], item['id'])
+        item['new_today'] = (item['vendor_id'], item['id']) not in yesterday_keys
+        item['stock'] = seed
+        state_row = stock_rows.get(item['id'])
+        if state_row is not None:
+            item['stock'] = state_row['stock_initial']
+            item['stock_remaining'] = max(0, state_row['stock_remaining'])
+            item['reserved_character_id'] = state_row.get('reserved_character_id')
+            item['reserved_note'] = state_row.get('reserved_note') or ''
+        else:
+            item['stock_remaining'] = seed
+            item['reserved_character_id'] = None
+            item['reserved_note'] = ''
+        item['sold_out'] = item['stock_remaining'] <= 0
+        item['reserved'] = bool(item.get('reserved_character_id'))
+        item['reserved_handle'] = reserved_handles.get(item['reserved_character_id'])
+    rotation['date'] = day
+    return rotation
 
 
 def nm_price_map():
@@ -6099,6 +6223,7 @@ TRUST_EDIT_TEXT_LIMITS = {
 }
 ITEM_ACQUISITION_SOURCES = {
     'loot', 'gift', 'crafted', 'role_access', 'gm_award', 'custom', 'other',
+    'fixer',
 }
 
 
@@ -8765,6 +8890,20 @@ SERVER_ERROR_EN = {
     'Некорректный JSON импорта': 'Invalid import JSON',
     'Импорт должен быть JSON-объектом': 'Import must be a JSON object',
     'Неизвестный предмет в импорте': 'Unknown item in the import',
+    'Market reserve содержит неподдерживаемые поля': 'Market reserve contains unsupported fields',
+    'Неизвестный предмет Night Market': 'Unknown Night Market item',
+    'Предмет не в текущем Night Market': 'Item is not in the current Night Market',
+    'Досье зарезервированного персонажа заархивировано': 'The reserved character Dossier is archived',
+    'Fixer request содержит неподдерживаемые поля': 'Fixer request contains unsupported fields',
+    'Укажите предмет или название запроса': 'Provide an item or a request name',
+    'Неизвестный предмет для запроса': 'Unknown item for the request',
+    'Запрос Fixer не найден': 'Fixer request not found',
+    'Запрос Fixer уже обработан': 'Fixer request is already resolved',
+    'Fixer resolve action: fulfill/decline': 'Fixer resolve action: fulfill/decline',
+    'Досье заказчика заархивировано': 'The requester Dossier is archived',
+    'Некорректная цена Fixer': 'Invalid Fixer price',
+    'Укажите название выдаваемого предмета': 'Provide a name for the granted item',
+    'Некорректное количество': 'Invalid quantity',
 }
 
 def server_error_message(message, language):
@@ -8773,6 +8912,10 @@ def server_error_message(message, language):
     if message in SERVER_ERROR_EN:
         return SERVER_ERROR_EN[message]
     replacements = [
+        ('Распродано:', 'Sold out:'),
+        ('Зарезервировано для другого персонажа:', 'Reserved for another character:'),
+        ('Недостаточно единиц:', 'Not enough units:'),
+        ('(доступно ', '(available '),
         ('Неизвестный навык:', 'Unknown Skill:'),
         ('Обязательный навык', 'Required Skill'),
         ('должен быть минимум', 'must be at least'),
@@ -10601,7 +10744,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(catalog_item_payload(it))
 
     def api_nightmarket(self, conn, qs, m, body):
-        payload = night_market()
+        ensure_market_stock(conn)
+        payload = night_market(conn=conn)
         persona_rows = conn.execute(
             "SELECT id,handle FROM personas WHERE handle IN (%s)" %
             ','.join('?' for _ in NIGHT_MARKET_VENDORS),
@@ -10610,6 +10754,200 @@ class Handler(BaseHTTPRequestHandler):
         for vendor in payload['vendors']:
             vendor['persona_id'] = persona_ids.get(vendor.get('handle'))
         self.send_json(payload)
+
+    @atomic_endpoint
+    def api_nightmarket_reserve(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        allowed = {'item_id', 'character_id', 'note'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Market reserve содержит неподдерживаемые поля')
+        item_id = str((body or {}).get('item_id') or '').strip()
+        character_id = _num((body or {}).get('character_id'))
+        note = str((body or {}).get('note') or '').strip()[:200]
+        if not item_by_id(item_id):
+            raise ApiError(400, 'Неизвестный предмет Night Market')
+        ensure_market_stock(conn)
+        day = nm_day()
+        state_row = conn.execute(
+            'SELECT * FROM market_stock WHERE market_day=? AND item_id=?',
+            (day, item_id)).fetchone()
+        if not state_row:
+            raise ApiError(400, 'Предмет не в текущем Night Market')
+        if character_id:
+            target = self.get_char(conn, character_id)
+            if parse_json_object(target['data']).get('archived'):
+                raise ApiError(409, 'Досье зарезервированного персонажа заархивировано')
+            conn.execute(
+                'UPDATE market_stock SET reserved_character_id=?,reserved_note=?,updated=? '
+                'WHERE market_day=? AND item_id=?',
+                (target['id'], note, time.time(), day, item_id))
+        else:
+            conn.execute(
+                'UPDATE market_stock SET reserved_character_id=NULL,reserved_note=?,updated=? '
+                'WHERE market_day=? AND item_id=?',
+                (note, time.time(), day, item_id))
+        conn.commit()
+        self.send_json({'ok': True, 'item_id': item_id,
+                        'reserved_character_id': character_id})
+
+    @atomic_endpoint
+    def api_fixer_request_create(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        allowed = {'char_id', 'item_id', 'item_name', 'note'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Fixer request содержит неподдерживаемые поля')
+        row = self.get_char(conn, (body or {}).get('char_id'))
+        if row['owner_id'] != user['id'] and not user_is_gm(user):
+            raise ApiError(403, 'Это не ваш персонаж')
+        if parse_json_object(row['data']).get('archived'):
+            raise ApiError(409, 'Архивное досье доступно только для чтения')
+        item_id = str((body or {}).get('item_id') or '').strip()
+        item_name = str((body or {}).get('item_name') or '').strip()[:160]
+        note = str((body or {}).get('note') or '').strip()[:1000]
+        if not item_id and len(item_name) < 2:
+            raise ApiError(400, 'Укажите предмет или название запроса')
+        if item_id and not item_by_id(item_id):
+            raise ApiError(400, 'Неизвестный предмет для запроса')
+        if item_id:
+            item_name = item_by_id(item_id)['name']
+        now = time.time()
+        cur = conn.execute(
+            'INSERT INTO fixer_requests(character_id,requested_by,item_id,item_name,'
+            'note,status,created,updated) VALUES(?,?,?,?,?,?,?,?)',
+            (row['id'], user['id'], item_id or None, item_name, note, 'pending', now, now))
+        conn.commit()
+        self.send_json({'ok': True, 'request_id': cur.lastrowid}, status=201)
+
+    def api_fixer_requests(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        base = ('SELECT f.*,u.display_name requester,c.data character_data '
+                'FROM fixer_requests f JOIN users u ON u.id=f.requested_by '
+                'JOIN characters c ON c.id=f.character_id ')
+        if user_is_gm(user):
+            rows = conn.execute(
+                base + "ORDER BY (f.status='pending') DESC,f.created DESC,f.id DESC LIMIT 300").fetchall()
+        else:
+            rows = conn.execute(
+                base + 'WHERE f.requested_by=? '
+                'ORDER BY f.created DESC,f.id DESC LIMIT 300', (user['id'],)).fetchall()
+        payload = []
+        for row in rows:
+            item = dict(row)
+            character_data = parse_json_object(item.pop('character_data'))
+            item['character_name'] = character_data.get('handle') or 'Unknown Edgerunner'
+            payload.append(item)
+        self.send_json({'requests': payload})
+
+    @atomic_endpoint
+    def api_fixer_request_resolve(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        request = conn.execute('SELECT * FROM fixer_requests WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not request:
+            raise ApiError(404, 'Запрос Fixer не найден')
+        if request['status'] != 'pending':
+            raise ApiError(409, 'Запрос Fixer уже обработан')
+        action = str((body or {}).get('action') or '').strip().lower()
+        if action not in ('fulfill', 'decline'):
+            raise ApiError(400, 'Fixer resolve action: fulfill/decline')
+        note = str((body or {}).get('note') or '').strip()[:1000]
+        now = time.time()
+        if action == 'decline':
+            conn.execute('UPDATE fixer_requests SET status=?,resolved_by=?,resolved_at=?,'
+                         'resolution_note=?,updated=? WHERE id=?',
+                         ('declined', user['id'], now, note, now, request['id']))
+            conn.commit()
+            self.send_json({'ok': True, 'action': action})
+            return
+        row = self.get_char(conn, request['character_id'])
+        if parse_json_object(row['data']).get('archived'):
+            raise ApiError(409, 'Досье заказчика заархивировано')
+        before = json.loads(row['data'])
+        data = copy.deepcopy(before)
+        ensure_character_item_instances(data)
+        ensure_progression(data)
+        try:
+            qty = max(1, min(99, int((body or {}).get('qty') or 1)))
+        except (TypeError, ValueError):
+            raise ApiError(400, 'Некорректное количество')
+        raw_price = (body or {}).get('price')
+        item_id = str((body or {}).get('grant_item_id') or request['item_id'] or '').strip()
+        if item_id and item_by_id(item_id):
+            it = item_by_id(item_id)
+            if raw_price is None:
+                price = it.get('price') or 0
+            else:
+                try:
+                    price = float(raw_price)
+                except (TypeError, ValueError):
+                    raise ApiError(400, 'Некорректная цена Fixer')
+            price = max(0.0, min(9_999_999.0, price))
+            if price * qty > float(data.get('cash') or 0) + 1e-9:
+                raise ApiError(400, f'Не хватает €$: нужно {price * qty:,.0f}, '
+                                    f'есть {float(data.get("cash") or 0):,.0f}')
+            owned = {
+                'key': it['id'], 'catalog_item_id': it['id'], 'cat': it['cat'],
+                'name': it['name'], 'price': price, 'qty': 1, 'state': 'carried',
+                'damage': it.get('damage'), 'sp': it.get('sp'), 'hl': it.get('hl'),
+                'fields': copy.deepcopy(it.get('fields') or {}),
+                'mechanics': copy.deepcopy(it.get('mechanics') or {}),
+                'source': it.get('source'), 'acquisition_source': 'fixer',
+            }
+            owned.update(catalog_interaction_data(it))
+            owned.update({key: copy.deepcopy(it[key]) for key in ITEM_MODIFICATION_FIELDS if key in it})
+            coverage = item_effect_coverage(it.get('id'))
+            if coverage:
+                owned['effect_coverage'] = coverage
+            inv = data.setdefault('inventory', [])
+            if item_entry_stackable(owned):
+                owned['instance_id'] = new_item_instance_id()
+                owned['qty'] = qty
+                if it['cat'] == 'ammo':
+                    owned['ammo_rounds'] = qty * ammo_pack_size(owned)
+                inv.append(owned)
+            else:
+                if len(inv) + qty > 500:
+                    raise ApiError(400, 'Инвентарь не может содержать больше 500 экземпляров')
+                for _ in range(qty):
+                    instance = copy.deepcopy(owned)
+                    instance['instance_id'] = new_item_instance_id()
+                    inv.append(instance)
+        else:
+            name = str(request['item_name'] or (body or {}).get('item_name') or '').strip()[:120]
+            if len(name) < 2:
+                raise ApiError(400, 'Укажите название выдаваемого предмета')
+            if raw_price is None:
+                price = 0.0
+            else:
+                try:
+                    price = float(raw_price)
+                except (TypeError, ValueError):
+                    raise ApiError(400, 'Некорректная цена Fixer')
+            price = max(0.0, min(9_999_999.0, price))
+            if price * qty > float(data.get('cash') or 0) + 1e-9:
+                raise ApiError(400, f'Не хватает €$: нужно {price * qty:,.0f}, '
+                                    f'есть {float(data.get("cash") or 0):,.0f}')
+            owned = {
+                'is_custom': True, 'key': 'custom', 'cat': 'custom', 'name': name,
+                'custom_name': name, 'price': price, 'qty': qty, 'state': 'carried',
+                'stackable': False, 'desc': '', 'source': 'Fixer Request',
+                'manual_resolution_required': True, 'acquisition_source': 'fixer',
+                'acquisition_note': str(note or '')[:160],
+            }
+            owned['instance_id'] = new_item_instance_id()
+            data.setdefault('inventory', []).append(owned)
+        data['cash'] = round(float(data.get('cash') or 0) - price * qty, 2)
+        persist_character_item_instances(
+            conn, row['id'], data, 'fixer_request', source_ref=f'fixer:{request["id"]}')
+        record_character_changes(conn, row['id'], user['id'], before, data,
+                                 f'Fixer request #{request["id"]}: {request["item_name"]}')
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now, row['id']))
+        conn.execute('UPDATE fixer_requests SET status=?,resolved_by=?,resolved_at=?,'
+                     'resolution_note=?,updated=? WHERE id=?',
+                     ('fulfilled', user['id'], now, note, now, request['id']))
+        conn.commit()
+        self.send_json({'ok': True, 'action': action})
 
     # ------------------------------------------------------------ персонажи
 
@@ -14689,8 +15027,12 @@ class Handler(BaseHTTPRequestHandler):
         if not cart or not isinstance(cart, list):
             raise ApiError(400, 'Пустая корзина')
         nm = nm_price_map()
+        ensure_market_stock(conn)
+        day = nm_day()
+        stock_rows = market_stock_rows(conn, day)
         total = 0.0
         bought = []
+        wanted = {}
         for entry in cart[:50]:
             it = item_by_id(str(entry.get('id') or ''))
             if not it or not it.get('price'):
@@ -14699,10 +15041,25 @@ class Handler(BaseHTTPRequestHandler):
             if entry.get('mode') != 'nm' or it['id'] not in nm:
                 raise ApiError(400, 'Покупка доступна только из текущего Night Market')
             price = nm[it['id']]
+            wanted[it['id']] = wanted.get(it['id'], 0) + qty
             total += price * qty
             bought.append((it, qty, price))
         if not bought:
             raise ApiError(400, 'В корзине нет известных товаров')
+        # Finite stock and reservations only apply to offers actually seeded today.
+        for item_id, qty in wanted.items():
+            state_row = stock_rows.get(item_id)
+            if state_row is None:
+                continue
+            name = item_by_id(item_id)['name']
+            remaining = max(0, int(state_row['stock_remaining'] or 0))
+            if remaining <= 0:
+                raise ApiError(400, f'Распродано: {name}')
+            if (state_row.get('reserved_character_id') and
+                    int(state_row['reserved_character_id']) != int(row['id'])):
+                raise ApiError(400, f'Зарезервировано для другого персонажа: {name}')
+            if qty > remaining:
+                raise ApiError(400, f'Недостаточно единиц: {name} (доступно {remaining})')
         cash = float(data.get('cash') or 0)
         if total > cash + 1e-9:
             raise ApiError(400, f'Не хватает €$: нужно {total:,.0f}, есть {cash:,.0f}')
@@ -14750,6 +15107,13 @@ class Handler(BaseHTTPRequestHandler):
                     target_bucket.append(instance)
                     if it['cat'] == 'guns':
                         purchased_weapon_ids.append(instance['instance_id'])
+        for item_id, qty in wanted.items():
+            state_row = stock_rows.get(item_id)
+            if state_row is not None:
+                conn.execute(
+                    'UPDATE market_stock SET stock_remaining=stock_remaining-?,updated=? '
+                    'WHERE market_day=? AND item_id=?',
+                    (qty, time.time(), day, item_id))
         data['cash'] = round(cash - total, 2)
         ensure_progression(data)
         for instance_id in purchased_weapon_ids:
@@ -17298,6 +17662,10 @@ ROUTES = [
     ('GET', rx(r'/api/items'), Handler.api_items),
     ('GET', rx(r'/api/items/([\w-]+)'), Handler.api_item),
     ('GET', rx(r'/api/nightmarket'), Handler.api_nightmarket),
+    ('POST', rx(r'/api/nightmarket/reserve'), Handler.api_nightmarket_reserve),
+    ('GET', rx(r'/api/fixer-requests'), Handler.api_fixer_requests),
+    ('POST', rx(r'/api/fixer-requests'), Handler.api_fixer_request_create),
+    ('POST', rx(r'/api/fixer-requests/(\d+)/resolve'), Handler.api_fixer_request_resolve),
     ('GET', rx(r'/api/characters'), Handler.api_my_characters),
     ('POST', rx(r'/api/characters'), Handler.api_create_character),
     ('POST', rx(r'/api/characters/import'), Handler.api_character_import),

@@ -52,7 +52,7 @@ class AccessRoleMigrationTests(unittest.TestCase):
             self.assertEqual(roles, {'alice': 'gm', 'bob': 'player'})
             self.assertEqual(
                 conn.execute('SELECT COUNT(*) n FROM schema_migrations').fetchone()['n'],
-                server.MIGRATION_CREW_STASH)
+                server.MIGRATION_MARKET_STOCK)
             self.assertEqual(len(list(Path(directory).glob('campaign.db.backup-*'))), 1)
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(users)')}
             self.assertTrue({'account_role', 'show_display_name', 'vk_user_id',

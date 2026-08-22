@@ -97,18 +97,18 @@
 
 Главное решение: **Full Catalog перестаёт быть универсальным магазином**. Он остаётся справочником. Реальная покупка идёт через постоянную розницу или конкретных продавцов Night Market. Это делает Showcase полезным и усиливает атмосферу.
 
-### Продолжение Market — пакет A.2 (запланировано, не реализовано)
+### Продолжение Market — пакет A.2 (частично реализовано в B.15)
 
-**Проверка статуса 2026-08-21:** все восемь пунктов ниже подтверждены как идеи и пока не реализованы.
+**Проверка статуса 2026-08-22:** базовый слой реализован этапом **B.15** (finite stock, New Today, Sold Out/Reserved, Vendor Locations, Fixer Requests); остальные пункты отложены и описаны ниже.
 
-1. ☐ **Finite Stock по количеству.** Каждое предложение получает собственный `offer_id` и серверные количества `available`, `reserved`, `sold`. Покупка атомарно уменьшает остаток, чтобы две вкладки не могли забрать последнюю единицу одновременно.
-2. ☐ **New Today.** Метка и фильтр сравнивают новый snapshot с предыдущим ассортиментом продавца. Это именно новое предложение/возврат в продажу, а не любой предмет текущего дня.
-3. ☐ **Vendor Locations.** У продавца появляется связь с Location/POI, кнопка перехода на карту и возможные location-specific offers. Геометрия и страницы локаций реализуются вместе с пакетом E, но Market хранит стабильный `location_id`.
-4. ☐ **Reputation / Favor requirements.** Offer может требовать отношение к конкретной Organization/Vendor. Проверка выполняется сервером; скрытые требования не отправляются обычному игроку. Полная механика зависит от Organization Reputation/Favor/Heat.
-5. ☐ **Один предмет у нескольких продавцов.** Один `catalog_item_id` может одновременно иметь несколько независимых offers с разной ценой, количеством, требованиями и Vendor Persona. Покупка адресуется по `offer_id`, а не только по item ID.
-6. ☐ **Legal Retail / Common Supply.** Опциональная постоянная розница с явным campaign allowlist, фиксированной ценой и отдельными правилами доступности. Она не должна снова превращать весь Codex в универсальный магазин.
-7. ☐ **Fixer Item Requests.** Character отправляет запрос на catalog/custom item, количество, бюджет и срок. Fixer/GM может принять запрос, назначить цену/продавца/время и превратить его в персональный либо Crew offer с ledger/history.
-8. ☐ **Reserved / Sold Out.** Карточка остаётся видимой после исчерпания товара с понятным статусом. Reservation имеет владельца, срок действия и освобождается после отмены/таймаута; простое добавление в локальную корзину не считается резервом.
+1. ✅ **Finite Stock по количеству.** Persisted `market_stock` (day+vendor+item), детерминированный сид 1–5 единиц, атомарное уменьшение при покупке, блокировка «недостаточно единиц».
+2. ✅ **New Today.** Метка сравнивает сегодняшнюю ротацию продавца со вчерашней (детерминированно, без истории snapshots).
+3. ◐ **Vendor Locations.** У каждого продавца есть текстовый `location` (район Night City), выводится на карточке. Стабильный `location_id` и страницы локаций реализуются вместе с пакетом E (Map POIs).
+4. ☐ **Reputation / Favor requirements.** Отложено до Organization Reputation/Favor/Heat (пакет 16.4).
+5. ☐ **Один предмет у нескольких продавцов.** Отложено: требует `offer_id`-адресацию в корзине/покупке вместо item→vendor 1:1.
+6. ☐ **Legal Retail / Common Supply.** Отложено: отдельная постоянная розница с campaign allowlist.
+7. ✅ **Fixer Item Requests.** `POST/GET /api/fixer-requests` и `POST /api/fixer-requests/{id}/resolve`; Character запрашивает catalog item (через кнопку на карточке) или free-text предмет; GM выполняет (выдаёт catalog/custom предмет, списывает цену) или отклоняет.
+8. ✅ **Reserved / Sold Out.** GM резервирует/снимает резерв на предмет для конкретного персонажа; карточка показывает SOLD OUT / RESERVED · handle, покупка чужим заблокирована (зарезервированный персонаж может купить). Резерв без TTL (ручное снятие GM); добавление в корзину резервом не считается.
 
 ### Подтверждённое поведение покупки оружия
 
@@ -3271,6 +3271,18 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - UI: кнопка `⬆ Import JSON` в списке «My Characters» с модалкой (файл или вставка текста, валидация JSON, переход к новому Dossier);
 - 8 новых тестов: unit (strip runtime/private, id+armor rebind, ресурсы/qty, envelope+string, reject unknown/invalid) + интеграционные (endpoint создаёт owned-private персонажа с ledger, требует логин, отклоняет malformed);
 - остаётся: привязка портрета при импорте в пределах одного деплоя (media id отбрасывается, перезагрузка вручную).
+
+**Статус B.15 — реализованы Market Finite Stock и Fixer Requests:**
+
+- additive migration 14 создаёт `market_stock` (day+vendor+item, stock_initial/stock_remaining, reserved_character_id/note) и `fixer_requests` (character, item_id/item_name, note, status pending/fulfilled/declined);
+- ротация Night Market детерминирована по дню (`nm_rotation(day)`), сид стока 1–5 единиц (`nm_stock_seed`), `New Today` вычисляется сравнением со вчерашней ротацией;
+- `GET /api/nightmarket` сидит сток (`ensure_market_stock`) и отдаёт `stock/stock_remaining/sold_out/reserved/reserved_handle/new_today`; у каждого vendor появился `location` (район Night City);
+- `POST /api/buy` атомарно проверяет и уменьшает `stock_remaining`, блокирует `sold out`/`reserved` (зарезервированный персонаж может купить), ошибки 400;
+- `POST /api/nightmarket/reserve` (GM): зарезервировать/снять резерв на предмет для персонажа;
+- Fixer Requests: `POST /api/fixer-requests` (catalog `item_id` или free-text `item_name`), `GET /api/fixer-requests` (GM — все, игрок — свои), `POST /api/fixer-requests/{id}/resolve` (fulfill с выдачей catalog/custom предмета и списанием цены, или decline);
+- UI: карточка Market показывает сток / NEW TODAY / SOLD OUT / RESERVED, кнопки «Через Fixer» и (GM) «Резерв»; новая вкладка «Запросы Fixer» с формой запроса и (GM) модалкой решения с поиском Database предмета;
+- 12 новых тестов (206 total): unit (сток/New Today/детерминизм/idempotent seeding/резерв в payload) + интеграционные (покупка уменьшает сток и распродаёт, резерв блокирует чужих, резерв GM-only, fixer fulfill catalog/custom/decline);
+- отложено: несколько offers одного item у разных vendors (offer_id-адресация), Legal Retail, Reputation/Favor gates (до Organization системы), reservation TTL и location_id/POI-связь (до пакета E).
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
 4. ✅ Добавить custom/found items и acquisition provenance.

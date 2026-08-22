@@ -593,6 +593,7 @@ async function viewMarket(view) {
   <div class="tabs">
     <button data-tab="nm" class="${marketState.tab === 'nm' ? 'active' : ''}">🌙 ${T('Night Market Vendors','Продавцы Night Market')}</button>
     <button data-tab="sell" class="${marketState.tab === 'sell' ? 'active' : ''}">♻️ ${T('Sell Used Gear','Скупка хлама')}</button>
+    <button data-tab="fixer" class="${marketState.tab === 'fixer' ? 'active' : ''}">🕵️ ${T('Fixer Requests','Запросы Fixer')}</button>
   </div>
   <div id="market-body">${spinner()}</div>
   <div id="cart-slot"></div>`;
@@ -606,6 +607,7 @@ async function loadMarketBody() {
   const box = $('#market-body');
   if (!box) return;
   if (marketState.tab === 'sell') return loadSellTab(box);
+  if (marketState.tab === 'fixer') return loadFixerTab(box);
   return loadNightMarket(box);
 }
 
@@ -620,6 +622,7 @@ async function loadNightMarket(box) {
   const vendorName=vendor=>APP_I18N.current()==='ru'?vendor.name_ru:vendor.name_en;
   const vendorTagline=vendor=>APP_I18N.current()==='ru'?vendor.tagline_ru:vendor.tagline_en;
   const categoryName=id=>{const category=state.meta.cats.find(item=>item.id===id);return category?`${category.emoji} ${catalogCategoryName(category)}`:id;};
+  const itemCard=item=>{const reservedForOther=item.reserved&&selectedBuyer&&item.reserved_character_id!==selectedBuyer.id;const canBuy=!item.sold_out&&!reservedForOther;const stockLabel=item.sold_out?T('SOLD OUT','РАСПРОДАНО'):`${T('In stock','В наличии')}: ${item.stock_remaining}`;const buyLabel=item.sold_out?T('SOLD OUT','РАСПРОДАНО'):(reservedForOther?T('RESERVED','ЗАРЕЗЕРВИРОВАНО'):`${T('Add to Cart','В корзину')} · ${money(item.street_price)}`);return `<article class="card item-card ${canBuy?'':'unavailable'}"><div class="head"><button class="item-name-button name" data-market-info="${item.id}">${esc(item.name)}</button><span>${item.discount?`<span class="market-price-old">${money(item.price)}</span>`:''}<span class="price">${money(item.street_price)}</span></span></div><div class="chips"><span class="chip">${esc(categoryName(item.cat))}</span>${itemMechanicChips(item)}${item.new_today?`<span class="tag">${T('NEW TODAY','НОВИНКА')}</span>`:''}<span class="chip">${stockLabel}</span>${item.reserved?`<span class="tag warn-tag">${T('RESERVED','РЕЗЕРВ')}${item.reserved_handle?` · ${esc(item.reserved_handle)}`:''}</span>`:''}</div>${item.desc?`<details class="desc-wrap"><summary>${T('Description','Описание')}</summary><div class="desc preserve-lines">${esc(itemDescription(item))}</div></details>`:''}<div class="small muted">${item.source?`📖 ${esc(item.source)} · `:''}${item.discount?`<span class="green-text">${Math.round((1-item.multiplier)*100)}% ${T('below list','ниже каталога')}</span>`:`${Math.round((item.multiplier-1)*100)}% ${T('markup','наценка')}`}</div><div class="row"><button class="info-btn" data-market-info="${item.id}" aria-label="${T('Item details','Описание предмета')}">i</button><button class="btn-sm btn-primary" data-buy-nm="${item.id}" data-price="${item.street_price}" ${canBuy?'':'disabled'}>${buyLabel}</button>${state.me?`<button class="btn-sm" data-fixer-request="${item.id}">${T('Ask Fixer','Через Fixer')}</button>`:''}${state.me&&state.me.is_gm?`<button class="btn-sm" data-market-reserve="${item.id}">${item.reserved?T('Release','Снять резерв'):T('Reserve','Резерв')}</button>`:''}</div></article>`;};
   const filterItems=vendor=>{
     const query=marketState.q.trim().toLowerCase();
     let items=vendor.items.filter(item=>(!marketState.cat||item.cat===marketState.cat)&&(!query||`${item.name} ${item.desc||''} ${item.source||''}`.toLowerCase().includes(query))&&(!marketState.affordable||!selectedBuyer||Number(item.street_price)<=Number(selectedBuyer.data.cash||0)));
@@ -627,7 +630,7 @@ async function loadNightMarket(box) {
     return [...items].sort(compare);
   };
   const visibleVendors=data.vendors.filter(vendor=>!marketState.vendor||vendor.id===marketState.vendor);
-  box.innerHTML=`<div class="market-toolbar panel mb"><div class="grid cols-4"><label class="f"><span>${T('Vendor','Продавец')}</span><select id="nm-vendor"><option value="">${T('All Vendors','Все продавцы')}</option>${data.vendors.map(vendor=>`<option value="${vendor.id}" ${marketState.vendor===vendor.id?'selected':''}>${vendor.icon} ${esc(vendorName(vendor))}</option>`).join('')}</select></label><label class="f"><span>${T('Category','Категория')}</span><select id="nm-cat"><option value="">${T('All Categories','Все категории')}</option>${allCategories.map(id=>`<option value="${id}" ${marketState.cat===id?'selected':''}>${esc(categoryName(id))}</option>`).join('')}</select></label><label class="f"><span>${T('Sort','Сортировка')}</span><select id="nm-sort"><option value="discount" ${marketState.sort==='discount'?'selected':''}>${T('Best Deal','Лучшая цена')}</option><option value="price_asc" ${marketState.sort==='price_asc'?'selected':''}>${T('Price: Low to High','Цена: по возрастанию')}</option><option value="price_desc" ${marketState.sort==='price_desc'?'selected':''}>${T('Price: High to Low','Цена: по убыванию')}</option><option value="name" ${marketState.sort==='name'?'selected':''}>${T('Name','Название')}</option><option value="category" ${marketState.sort==='category'?'selected':''}>${T('Category','Категория')}</option></select></label>${characters.length?`<label class="f"><span>${T('Buyer','Покупатель')}</span><select id="nm-buyer">${characters.map(character=>`<option value="${character.id}" ${selectedBuyer?.id===character.id?'selected':''}>${esc(character.data.handle)} · ${money(character.data.cash)}</option>`).join('')}</select></label>`:'<div></div>'}</div><div class="searchbar"><input id="nm-q" value="${esc(marketState.q)}" placeholder="${T('Search current stock…','Поиск по текущему ассортименту…')}"><button id="nm-search">${T('Search','Найти')}</button><label class="checkbox"><input id="nm-affordable" type="checkbox" ${marketState.affordable?'checked':''}> ${T('Affordable only','Только доступное по цене')}</label><span class="small muted">${T('Stock date','Дата ассортимента')}: ${esc(data.date)}</span></div></div>${visibleVendors.map(vendor=>{const items=filterItems(vendor);return `<section class="market-vendor panel mb" style="--vendor:${esc(vendor.accent_color||'#00e5ff')}"><header class="market-vendor-head"><div><h2>${vendor.icon} ${esc(vendorName(vendor))}</h2><p class="muted user-content">${esc(vendorTagline(vendor))}</p></div><div class="row">${vendor.persona_id?`<a class="btn-sm" href="#/personas/${vendor.persona_id}">${T('Vendor Profile','Профиль продавца')}</a>`:''}<span class="tag">${items.length} ${T('offers','предложений')}</span></div></header>${items.length?`<div class="item-grid">${items.map(item=>`<article class="card item-card"><div class="head"><button class="item-name-button name" data-market-info="${item.id}">${esc(item.name)}</button><span>${item.discount?`<span class="market-price-old">${money(item.price)}</span>`:''}<span class="price">${money(item.street_price)}</span></span></div><div class="chips"><span class="chip">${esc(categoryName(item.cat))}</span>${itemMechanicChips(item)}</div>${item.desc?`<details class="desc-wrap"><summary>${T('Description','Описание')}</summary><div class="desc preserve-lines">${esc(itemDescription(item))}</div></details>`:''}<div class="small muted">${item.source?`📖 ${esc(item.source)} · `:''}${item.discount?`<span class="green-text">${Math.round((1-item.multiplier)*100)}% ${T('below list','ниже каталога')}</span>`:`${Math.round((item.multiplier-1)*100)}% ${T('markup','наценка')}`}</div><div class="row"><button class="info-btn" data-market-info="${item.id}" aria-label="${T('Item details','Описание предмета')}">i</button><button class="btn-sm btn-primary" data-buy-nm="${item.id}" data-price="${item.street_price}">${T('Add to Cart','В корзину')} · ${money(item.street_price)}</button></div></article>`).join('')}</div>`:`<div class="empty">${T('No stock matches these filters.','Нет товаров по выбранным фильтрам.')}</div>`}</section>`;}).join('')}`;
+  box.innerHTML=`<div class="market-toolbar panel mb"><div class="grid cols-4"><label class="f"><span>${T('Vendor','Продавец')}</span><select id="nm-vendor"><option value="">${T('All Vendors','Все продавцы')}</option>${data.vendors.map(vendor=>`<option value="${vendor.id}" ${marketState.vendor===vendor.id?'selected':''}>${vendor.icon} ${esc(vendorName(vendor))}</option>`).join('')}</select></label><label class="f"><span>${T('Category','Категория')}</span><select id="nm-cat"><option value="">${T('All Categories','Все категории')}</option>${allCategories.map(id=>`<option value="${id}" ${marketState.cat===id?'selected':''}>${esc(categoryName(id))}</option>`).join('')}</select></label><label class="f"><span>${T('Sort','Сортировка')}</span><select id="nm-sort"><option value="discount" ${marketState.sort==='discount'?'selected':''}>${T('Best Deal','Лучшая цена')}</option><option value="price_asc" ${marketState.sort==='price_asc'?'selected':''}>${T('Price: Low to High','Цена: по возрастанию')}</option><option value="price_desc" ${marketState.sort==='price_desc'?'selected':''}>${T('Price: High to Low','Цена: по убыванию')}</option><option value="name" ${marketState.sort==='name'?'selected':''}>${T('Name','Название')}</option><option value="category" ${marketState.sort==='category'?'selected':''}>${T('Category','Категория')}</option></select></label>${characters.length?`<label class="f"><span>${T('Buyer','Покупатель')}</span><select id="nm-buyer">${characters.map(character=>`<option value="${character.id}" ${selectedBuyer?.id===character.id?'selected':''}>${esc(character.data.handle)} · ${money(character.data.cash)}</option>`).join('')}</select></label>`:'<div></div>'}</div><div class="searchbar"><input id="nm-q" value="${esc(marketState.q)}" placeholder="${T('Search current stock…','Поиск по текущему ассортименту…')}"><button id="nm-search">${T('Search','Найти')}</button><label class="checkbox"><input id="nm-affordable" type="checkbox" ${marketState.affordable?'checked':''}> ${T('Affordable only','Только доступное по цене')}</label><span class="small muted">${T('Stock date','Дата ассортимента')}: ${esc(data.date)}</span></div></div>${visibleVendors.map(vendor=>{const items=filterItems(vendor);return `<section class="market-vendor panel mb" style="--vendor:${esc(vendor.accent_color||'#00e5ff')}"><header class="market-vendor-head"><div><h2>${vendor.icon} ${esc(vendorName(vendor))}</h2><p class="muted user-content">${esc(vendorTagline(vendor))}</p></div><div class="row">${vendor.persona_id?`<a class="btn-sm" href="#/personas/${vendor.persona_id}">${T('Vendor Profile','Профиль продавца')}</a>`:''}${vendor.location?`<span class="chip">📍 ${esc(vendor.location)}</span>`:''}<span class="tag">${items.length} ${T('offers','предложений')}</span></div></header>${items.length?`<div class="item-grid">${items.map(itemCard).join('')}</div>`:`<div class="empty">${T('No stock matches these filters.','Нет товаров по выбранным фильтрам.')}</div>`}</section>`;}).join('')}`;
   const reload=()=>loadNightMarket(box);
   $('#nm-vendor').onchange=event=>{marketState.vendor=event.target.value;reload();};
   $('#nm-cat').onchange=event=>{marketState.cat=event.target.value;reload();};
@@ -639,6 +642,8 @@ async function loadNightMarket(box) {
   $('#nm-q').onkeydown=event=>{if(event.key==='Enter')runSearch();};
   $$('[data-market-info]',box).forEach(button=>button.onclick=()=>showItemModal(button.dataset.marketInfo));
   $$('[data-buy-nm]', box).forEach(button=>button.onclick=()=>{const card=button.closest('.item-card');addToCart(button.dataset.buyNm,Number(button.dataset.price),'nm',$('.name',card).textContent);});
+  $$('[data-fixer-request]', box).forEach(button=>button.onclick=()=>openFixerRequestModal(button.dataset.fixerRequest));
+  $$('[data-market-reserve]', box).forEach(button=>button.onclick=()=>openMarketReserveModal(button.dataset.marketReserve, data));
   renderCart();
 }
 
@@ -676,6 +681,130 @@ async function loadSellTab(box) {
     });
   };
   renderList(chars);
+}
+
+async function marketCharacters() {
+  if (!state.me) return [];
+  if (state.me.is_gm) {
+    const data = await api('/api/roster');
+    return (data.characters || []).filter(c => !c.data.archived);
+  }
+  const data = await api('/api/characters');
+  return (data.characters || []).filter(c => !c.data.archived);
+}
+
+async function openFixerRequestModal(itemId) {
+  const chars = await marketCharacters();
+  if (!chars.length) { toast(T('Create a Character first.','Сначала создайте персонажа.'), true); go('/char/new'); return; }
+  const modal = openModal(`<h2>🕵️ ${T('Ask Fixer','Запрос через Fixer')}</h2>
+    <p class="muted small">${T('Ask a Fixer to source this item. The GM reviews and fulfils the request.','Попросите Fixer достать этот предмет. ГМ рассматривает и выполняет запрос.')}</p>
+    <label class="f"><span>${T('Character','Персонаж')}</span><select id="fxr-char">${chars.map(c=>`<option value="${c.id}">${esc(c.data.handle)}</option>`).join('')}</select></label>
+    <label class="f"><span>${T('Note','Заметка')}</span><textarea id="fxr-note" maxlength="1000" rows="2"></textarea></label>
+    <div class="row"><button id="fxr-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="fxr-send">${T('Send Request','Отправить')}</button></div>`, true);
+  $('#fxr-cancel', modal).onclick = closeModal;
+  $('#fxr-send', modal).onclick = async () => {
+    try {
+      await api('/api/fixer-requests', { method: 'POST', body: { char_id: Number($('#fxr-char', modal).value), item_id: itemId, note: $('#fxr-note', modal).value.trim() } });
+      closeModal();
+      toast(T('Request sent.','Запрос отправлен.'));
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+async function openMarketReserveModal(itemId, marketData) {
+  const item = (marketData.items || []).find(i => i.id === itemId);
+  if (!item) return;
+  const chars = await marketCharacters();
+  const modal = openModal(`<h2>${T('Reserve Item','Зарезервировать предмет')}</h2>
+    <p class="muted small">${esc(item.name)} · ${money(item.street_price)}</p>
+    ${item.reserved ? `<p class="small warn-text">${T('Currently reserved','Сейчас зарезервировано')}${item.reserved_handle ? ': ' + esc(item.reserved_handle) : ''}</p>` : ''}
+    <label class="f"><span>${T('For character','Для персонажа')}</span><select id="rs-char"><option value="">— ${T('Release','Снять резерв')} —</option>${chars.map(c=>`<option value="${c.id}" ${item.reserved_character_id===c.id?'selected':''}>${esc(c.data.handle)}</option>`).join('')}</select></label>
+    <label class="f"><span>${T('Note','Заметка')}</span><input id="rs-note" maxlength="200"></label>
+    <div class="row"><button id="rs-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="rs-save">${T('Save','Сохранить')}</button></div>`, true);
+  $('#rs-cancel', modal).onclick = closeModal;
+  $('#rs-save', modal).onclick = async () => {
+    const cid = $('#rs-char', modal).value;
+    try {
+      await api('/api/nightmarket/reserve', { method: 'POST', body: { item_id: itemId, character_id: cid ? Number(cid) : null, note: $('#rs-note', modal).value.trim() } });
+      closeModal();
+      toast(T('Reservation updated.','Резерв обновлён.'));
+      const box = $('#market-body'); if (box) loadNightMarket(box);
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+function fixerRequestRow(r) {
+  const statusLabel = { pending: T('PENDING','ОЖИДАЕТ'), fulfilled: T('FULFILLED','ВЫПОЛНЕНО'), declined: T('DECLINED','ОТКЛОНЕНО') }[r.status] || r.status;
+  const isGm = state.me && state.me.is_gm;
+  return `<div class="inv-row"><span class="iname">${esc(r.item_name || 'Item')}</span><span class="small muted">${esc(r.character_name || '')}</span><span class="tag">${esc(statusLabel)}</span>${r.note ? `<span class="small muted">${esc(r.note)}</span>` : ''}${isGm && r.status === 'pending' ? `<button class="btn-sm" data-fixer-resolve="${r.id}">${T('Resolve','Решить')}</button>` : ''}</div>`;
+}
+
+async function loadFixerTab(box) {
+  if (!state.me) { box.innerHTML = `<div class="empty">${T('Sign in to work with Fixer requests.','Войдите, чтобы работать с запросами Fixer.')} <a href="#/login">${T('Sign in','Войти')}</a></div>`; return; }
+  box.innerHTML = spinner();
+  const data = await api('/api/fixer-requests');
+  const chars = await marketCharacters();
+  const requests = data.requests || [];
+  box.innerHTML = `
+    <div class="panel mb">
+      <h2>🕵️ ${T('Request via Fixer','Запрос через Fixer')}</h2>
+      <p class="muted small">${T('Ask a Fixer to source an item that is not in the current Night Market. The GM reviews and fulfils requests.','Попросите Fixer достать предмет, которого нет в текущем Night Market. ГМ рассматривает и выполняет запросы.')}</p>
+      ${chars.length ? `<div class="row"><label class="f"><span>${T('Character','Персонаж')}</span><select id="fixer-char">${chars.map(c=>`<option value="${c.id}">${esc(c.data.handle)}</option>`).join('')}</select></label><label class="f"><span>${T('What do you need?','Что нужно?')}</span><input id="fixer-item" maxlength="160" placeholder="${T('Item name or description','Название или описание предмета')}"></label></div><label class="f"><span>${T('Note','Заметка')}</span><textarea id="fixer-note" maxlength="1000" rows="2"></textarea></label><div class="row"><button class="btn-primary" id="fixer-send">${T('Send Request','Отправить запрос')}</button></div>` : `<div class="empty">${T('Create a Character to request items.','Создайте персонажа, чтобы отправлять запросы.')}</div>`}
+    </div>
+    <div class="panel">
+      <h3>${T('Requests','Запросы')} (${requests.length})</h3>
+      ${requests.length ? requests.map(fixerRequestRow).join('') : `<div class="empty">${T('No requests yet.','Запросов пока нет.')}</div>`}
+    </div>`;
+  const send = $('#fixer-send', box);
+  if (send) send.onclick = async () => {
+    const itemName = $('#fixer-item', box).value.trim();
+    if (itemName.length < 2) { toast(T('Describe the item.','Опишите предмет.'), true); return; }
+    try {
+      await api('/api/fixer-requests', { method: 'POST', body: { char_id: Number($('#fixer-char', box).value), item_name: itemName, note: $('#fixer-note', box).value.trim() } });
+      toast(T('Request sent to the Fixer.','Запрос отправлен Fixer.'));
+      loadFixerTab(box);
+    } catch (e) { toast(e.message, true); }
+  };
+  $$('[data-fixer-resolve]', box).forEach(b => b.onclick = () => openFixerResolveModal(Number(b.dataset.fixerResolve), () => loadFixerTab(box)));
+}
+
+async function openFixerResolveModal(id, refresh) {
+  const modal = openModal(`<h2>${T('Resolve Fixer Request','Обработать запрос Fixer')}</h2>
+    <label class="f"><span>${T('Price (€$)','Цена (€$)')}</span><input id="fx-price" type="number" min="0" max="9999999" value="0"></label>
+    <label class="f"><span>${T('Quantity','Количество')}</span><input id="fx-qty" type="number" min="1" max="99" value="1"></label>
+    <label class="f"><span>${T('Grant Database item (optional)','Выдать предмет из Database (необязательно)')}</span><input id="fx-grant" maxlength="120" placeholder="${T('Search item name…','Поиск названия…')}"><div id="fx-results"></div></label>
+    <label class="f"><span>${T('Note','Заметка')}</span><textarea id="fx-note" maxlength="1000" rows="2"></textarea></label>
+    <div class="row"><button class="btn-danger" id="fx-decline">${T('Decline','Отклонить')}</button><button class="btn-primary" id="fx-fulfill">${T('Fulfill','Выполнить')}</button></div>`, true);
+  let grantItemId = '';
+  const grantInput = $('#fx-grant', modal);
+  const search = async () => {
+    const q = grantInput.value.trim();
+    if (q.length < 2) { $('#fx-results', modal).innerHTML = ''; return; }
+    try {
+      const data = await api('/api/items?q=' + encodeURIComponent(q) + '&limit=8');
+      $('#fx-results', modal).innerHTML = (data.items || []).map(it => `<button class="btn-sm" data-grant-pick="${esc(it.id)}" data-grant-name="${esc(it.name)}">${esc(it.name)} · ${money(it.price || 0)}</button>`).join('');
+      $$('[data-grant-pick]', modal).forEach(b => b.onclick = () => { grantItemId = b.dataset.grantPick; grantInput.value = b.dataset.grantName; $('#fx-results', modal).innerHTML = `<span class="tag">${T('Granting','Выдаём')}: ${esc(b.dataset.grantName)}</span>`; });
+    } catch (e) { /* пусто */ }
+  };
+  grantInput.oninput = () => { clearTimeout(grantInput._t); grantInput._t = setTimeout(search, 300); };
+  $('#fx-fulfill', modal).onclick = async () => {
+    try {
+      const body = { action: 'fulfill', price: Number($('#fx-price', modal).value) || 0, qty: Number($('#fx-qty', modal).value) || 1, note: $('#fx-note', modal).value.trim() };
+      if (grantItemId) body.grant_item_id = grantItemId;
+      await api(`/api/fixer-requests/${id}/resolve`, { method: 'POST', body });
+      closeModal();
+      toast(T('Request fulfilled.','Запрос выполнен.'));
+      refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+  $('#fx-decline', modal).onclick = async () => {
+    try {
+      await api(`/api/fixer-requests/${id}/resolve`, { method: 'POST', body: { action: 'decline', note: $('#fx-note', modal).value.trim() } });
+      closeModal();
+      toast(T('Request declined.','Запрос отклонён.'));
+      refresh();
+    } catch (e) { toast(e.message, true); }
+  };
 }
 
 function addToCart(id, price, mode, name) {
