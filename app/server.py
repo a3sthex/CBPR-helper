@@ -2783,6 +2783,52 @@ CREATE INDEX IF NOT EXISTS idx_campaign_clock_audit
   ON campaign_clock_audit(created);
 """
 
+CREW_STASH_SCHEMA = """
+CREATE TABLE IF NOT EXISTS crew_stash(
+  instance_id TEXT PRIMARY KEY,
+  catalog_item_id TEXT,
+  custom_name TEXT,
+  state TEXT NOT NULL DEFAULT 'stored',
+  quantity INTEGER NOT NULL DEFAULT 1,
+  notes TEXT NOT NULL DEFAULT '',
+  stored_at REAL NOT NULL,
+  data_json TEXT NOT NULL DEFAULT '{}',
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_crew_stash_stored ON crew_stash(stored_at);
+
+CREATE TABLE IF NOT EXISTS item_transfers(
+  transfer_id TEXT PRIMARY KEY,
+  instance_id TEXT NOT NULL,
+  from_character_id INTEGER,
+  to_character_id INTEGER,
+  from_bucket TEXT,
+  to_bucket TEXT,
+  quantity INTEGER NOT NULL DEFAULT 1,
+  kind TEXT NOT NULL,
+  actor_user_id INTEGER NOT NULL,
+  notes TEXT NOT NULL DEFAULT '',
+  created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_item_transfers_instance ON item_transfers(instance_id, created);
+
+CREATE TABLE IF NOT EXISTS item_loans(
+  loan_id TEXT PRIMARY KEY,
+  instance_id TEXT NOT NULL,
+  owner_character_id INTEGER NOT NULL,
+  borrower_character_id INTEGER NOT NULL,
+  quantity INTEGER NOT NULL DEFAULT 1,
+  loaned_by INTEGER NOT NULL,
+  loaned_at REAL NOT NULL,
+  returned_at REAL,
+  returned_by INTEGER,
+  notes TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_item_loans_owner ON item_loans(owner_character_id, returned_at);
+CREATE INDEX IF NOT EXISTS idx_item_loans_borrower ON item_loans(borrower_character_id, returned_at);
+"""
+
 NOTIFICATION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS notifications(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2829,6 +2875,7 @@ MIGRATION_EFFECT_PRESETS = 9
 MIGRATION_ITEM_MODIFICATIONS = 10
 MIGRATION_SESSION_NET = 11
 MIGRATION_CAMPAIGN_CLOCK = 12
+MIGRATION_CREW_STASH = 13
 DB_BACKUP_LIMIT = 5
 _RATE_LIMIT_BUCKETS = {}
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -4157,6 +4204,7 @@ def apply_schema_migrations(conn, make_backup=True):
         (MIGRATION_ITEM_MODIFICATIONS, 'host item modifications'),
         (MIGRATION_SESSION_NET, 'live session NET context'),
         (MIGRATION_CAMPAIGN_CLOCK, 'campaign clock and service timing'),
+        (MIGRATION_CREW_STASH, 'crew stash and item transfers'),
     ]
     pending = [version for version, _ in migrations if version not in applied]
     if make_backup and pending:
@@ -4209,6 +4257,8 @@ def apply_schema_migrations(conn, make_backup=True):
         ensure_column(conn, 'nc_sessions', 'net_state_json', "TEXT NOT NULL DEFAULT '{}'")
     if MIGRATION_CAMPAIGN_CLOCK not in applied:
         conn.executescript(CAMPAIGN_CLOCK_SCHEMA)
+    if MIGRATION_CREW_STASH not in applied:
+        conn.executescript(CREW_STASH_SCHEMA)
     # Re-run additive CREATE IF NOT EXISTS blocks so patch-level tables added to an
     # already-applied migration remain safe during development and rolling deploys.
     conn.executescript(NETWORK_SCHEMA)
@@ -4219,6 +4269,7 @@ def apply_schema_migrations(conn, make_backup=True):
     conn.executescript(ACTIVE_EFFECT_SCHEMA)
     conn.executescript(ITEM_MODIFICATION_SCHEMA)
     conn.executescript(CAMPAIGN_CLOCK_SCHEMA)
+    conn.executescript(CREW_STASH_SCHEMA)
     # Recover safely if a rolling/patch deployment recorded the migration before
     # every additive column reached a particular database.
     ensure_column(conn, 'users', 'avatar_media_id', 'TEXT')
@@ -5371,6 +5422,240 @@ def campaign_pending_services(conn):
     pending.sort(key=lambda item: (item['campaign_due_at'] is None,
                                     item['campaign_due_at'] or 0))
     return pending
+
+
+# -------------------------------------------------------- Crew Stash & transfers
+
+TRANSFER_KINDS = {'give', 'stash', 'take', 'loan', 'return', 'recall', 'trade', 'split'}
+
+
+def crew_stash_payload(conn):
+    rows = conn.execute(
+        'SELECT * FROM crew_stash ORDER BY stored_at,instance_id').fetchall()
+    payload = []
+    for row in rows:
+        item = dict(row)
+        item['item'] = parse_json_object(item.pop('data_json'))
+        item['item'].pop('_runtime', None)
+        item['item'].pop('_tech_maker', None)
+        item['transfers'] = item_transfer_history(conn, item['instance_id'])
+        payload.append(item)
+    return payload
+
+
+def item_transfer_history(conn, instance_id, limit=50):
+    rows = conn.execute(
+        'SELECT t.*,u.display_name actor FROM item_transfers t '
+        'JOIN users u ON u.id=t.actor_user_id WHERE t.instance_id=? '
+        'ORDER BY t.created DESC,t.transfer_id LIMIT ?',
+        (str(instance_id), max(1, min(500, int(limit))))).fetchall()
+    return [dict(row) for row in rows]
+
+
+def character_open_loans(conn, character_id):
+    rows = conn.execute(
+        'SELECT * FROM item_loans WHERE (owner_character_id=? OR borrower_character_id=?) '
+        'AND returned_at IS NULL ORDER BY loaned_at,loan_id',
+        (int(character_id), int(character_id))).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        instance = conn.execute(
+            'SELECT * FROM item_instances WHERE instance_id=?',
+            (row['instance_id'],)).fetchone()
+        entry = parse_json_object(instance['data_json']) if instance else {}
+        item['item_name'] = entry.get('custom_name') or entry.get('name') or 'Item'
+        owner = conn.execute(
+            'SELECT data FROM characters WHERE id=?',
+            (row['owner_character_id'],)).fetchone()
+        borrower = conn.execute(
+            'SELECT data FROM characters WHERE id=?',
+            (row['borrower_character_id'],)).fetchone()
+        item['owner_handle'] = (parse_json_object(owner['data']) if owner else {}).get('handle') or '?'
+        item['borrower_handle'] = (parse_json_object(borrower['data']) if borrower else {}).get('handle') or '?'
+        out.append(item)
+    return out
+
+
+def active_loan_for_instance(conn, instance_id):
+    return conn.execute(
+        'SELECT * FROM item_loans WHERE instance_id=? AND returned_at IS NULL',
+        (str(instance_id),)).fetchone()
+
+
+def transfer_targets(conn, user):
+    """Characters an actor may hand items to: own + public for players, all for GM."""
+    if user_is_gm(user):
+        rows = conn.execute(
+            'SELECT c.id,c.owner_id,c.data,u.display_name owner_name '
+            'FROM characters c JOIN users u ON u.id=c.owner_id '
+            'ORDER BY u.id,c.id').fetchall()
+    else:
+        rows = conn.execute(
+            'SELECT c.id,c.owner_id,c.data,u.display_name owner_name '
+            'FROM characters c JOIN users u ON u.id=c.owner_id '
+            'WHERE c.public=1 OR c.owner_id=? ORDER BY u.id,c.id',
+            (user['id'],)).fetchall()
+    out = []
+    for row in rows:
+        data = parse_json_object(row['data'])
+        out.append({
+            'id': row['id'], 'handle': data.get('handle') or 'Unknown Edgerunner',
+            'owner_id': row['owner_id'], 'owner_name': row['owner_name'],
+            'archived': bool(data.get('archived')), 'role': data.get('role') or '',
+        })
+    return out
+
+
+def _inventory_entry(data, instance_id):
+    for index, entry in enumerate(data.get('inventory') or []):
+        if isinstance(entry, dict) and entry.get('instance_id') == instance_id:
+            return index, entry
+    return None, None
+
+
+def _character_item_name(entry):
+    return str(entry.get('custom_name') or entry.get('name') or 'Item')
+
+
+def _transferable_item_error(conn, character_id, entry, data, loan=None, loan_ok=False):
+    """Return a translated ApiError when the instance cannot leave the character."""
+    if entry.get('state') in ('equipped', 'installed', 'consumed', 'broken'):
+        raise ApiError(409, 'Передавать можно только carried предмет (сначала снимите его)')
+    armor = data.get('armor') if isinstance(data.get('armor'), dict) else {}
+    for location in ('head', 'body', 'shield'):
+        piece = armor.get(location)
+        if isinstance(piece, dict) and piece.get('instance_id') == entry.get('instance_id'):
+            raise ApiError(409, 'Сначала снимите броню из слота')
+    modifications = character_modifications(conn, character_id)
+    if any(mod.get('host_instance_id') == entry.get('instance_id') for mod in modifications):
+        raise ApiError(409, 'Сначала снимите установленные модификации с предмета')
+    if not loan_ok and loan is not None and loan['borrower_character_id'] == int(character_id):
+        raise ApiError(409, 'Предмет взят в долг — его можно только вернуть владельцу')
+    if not loan_ok and loan is not None and loan['owner_character_id'] == int(character_id):
+        raise ApiError(409, 'Предмет сейчас в долгу у другого персонажа')
+
+
+_RUNTIME_STATE_KEYS = ('weapon_state', 'vehicle_state', 'armor_repair_state', 'armor_tech_state')
+
+
+def _detach_runtime_state(source_data, entry, instance_id):
+    """Pull per-instance server-owned runtime containers into the moving entry."""
+    packed = {}
+    for key in _RUNTIME_STATE_KEYS:
+        source_map = source_data.get(key) if isinstance(source_data.get(key), dict) else {}
+        if instance_id in source_map:
+            packed[key] = source_map.pop(instance_id)
+    if packed:
+        entry['_runtime'] = packed
+
+
+def _attach_runtime_state(target_data, entry, instance_id):
+    packed = entry.pop('_runtime', None)
+    if isinstance(packed, dict):
+        for key, value in packed.items():
+            if key in _RUNTIME_STATE_KEYS and isinstance(value, dict):
+                target_data.setdefault(key, {})[instance_id] = value
+
+
+def _detach_tech_maker_modifications(source_data, entry, instance_id):
+    """Tech Maker work stays on the item; detach its records with the host."""
+    source_state = source_data.get('tech_maker_state')
+    if not isinstance(source_state, dict):
+        return
+    mods = source_state.get('modifications') if isinstance(source_state.get('modifications'), dict) else {}
+    moved = {mod_id: mod for mod_id, mod in mods.items()
+             if isinstance(mod, dict) and mod.get('host_instance_id') == instance_id}
+    if not moved:
+        return
+    for mod_id in moved:
+        mods.pop(mod_id)
+    source_history = source_state.get('history') if isinstance(source_state.get('history'), list) else []
+    keep, history = [], []
+    for record in source_history:
+        if isinstance(record, dict) and record.get('modification_id') in moved:
+            history.append(record)
+        else:
+            keep.append(record)
+    source_state['history'] = keep
+    entry['_tech_maker'] = {'modifications': moved, 'history': history}
+
+
+def _attach_tech_maker_modifications(target_data, entry):
+    packed = entry.pop('_tech_maker', None)
+    if not isinstance(packed, dict):
+        return
+    mods = packed.get('modifications') if isinstance(packed.get('modifications'), dict) else {}
+    history = packed.get('history') if isinstance(packed.get('history'), list) else []
+    if not mods:
+        return
+    target_state = target_data.setdefault('tech_maker_state', {})
+    target_mods = target_state.setdefault('modifications', {})
+    target_mods.update(mods)
+    target_history = target_state.setdefault('history', [])
+    target_history.extend(history)
+    target_state['history'] = target_history[-50:]
+
+
+def _split_stack(entry, take_qty):
+    """Return (remaining_entry_or_None, taken_entry) where taken is a fresh copy."""
+    full_qty = max(1, int(entry.get('qty') or 1))
+    take_qty = max(1, min(full_qty, int(take_qty or 0) or full_qty))
+    if take_qty >= full_qty:
+        return None, copy.deepcopy(entry)
+    remaining = copy.deepcopy(entry)
+    taken = copy.deepcopy(entry)
+    remaining['qty'] = full_qty - take_qty
+    taken['qty'] = take_qty
+    if entry.get('cat') == 'ammo':
+        pack = ammo_pack_size(entry)
+        rounds = ammo_rounds(entry)
+        taken['ammo_rounds'] = take_qty * pack
+        remaining['ammo_rounds'] = max(0, rounds - take_qty * pack)
+    return remaining, taken
+
+
+def _prepare_entry_for_holder(entry, holder_kind):
+    """Normalise an entry before it lands in a stash or another character."""
+    cleaned = copy.deepcopy(entry)
+    cleaned['qty'] = max(1, int(cleaned.get('qty') or 1))
+    cleaned['state'] = 'stored' if holder_kind == 'stash' else 'carried'
+    for key in ('equipped_mode', 'equipped_slot', 'active', 'host_instance_id',
+                'host_instances', 'mounted_modification_id', 'mounted_vehicle_id'):
+        cleaned.pop(key, None)
+    return cleaned
+
+
+def _record_item_transfer(conn, instance_id, kind, actor_user_id, notes,
+                          from_character_id=None, to_character_id=None,
+                          from_bucket=None, to_bucket=None, quantity=1):
+    conn.execute(
+        'INSERT INTO item_transfers(transfer_id,instance_id,from_character_id,'
+        'to_character_id,from_bucket,to_bucket,quantity,kind,actor_user_id,notes,created) '
+        'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+        (secrets.token_hex(16), str(instance_id), from_character_id, to_character_id,
+         from_bucket, to_bucket, max(1, int(quantity or 1)), kind,
+         int(actor_user_id), str(notes or '')[:500], time.time()))
+
+
+def _record_transfer_ledger(conn, character_id, actor_user_id, before, after,
+                            reason, revision_before, revision_after):
+    ledger_id = record_character_change_set(
+        conn, character_id, actor_user_id, before, after, reason,
+        revision_before, revision_after, category='transfer')
+    row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                       (ledger_id,)).fetchone()
+    delta = parse_json_object(row['delta_json'])
+    delta['revertible'] = False
+    conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                 (json.dumps(delta, ensure_ascii=False), ledger_id))
+    return ledger_id
+
+
+def _persist_transfer_side(conn, character_id, data, source_type, source_ref):
+    ensure_progression(data)
+    persist_character_item_instances(
+        conn, character_id, data, source_type, source_ref=source_ref, prune=True)
 
 
 def db():
@@ -8396,6 +8681,37 @@ SERVER_ERROR_EN = {
     'advance содержит неподдерживаемые поля': 'advance contains unsupported fields',
     'advance должен быть от 1 минуты до 365 дней': 'advance must be from 1 minute to 365 days',
     'Некорректное set_to время Campaign Clock': 'Invalid set_to Campaign Clock time',
+    'Item transfer содержит неподдерживаемые поля': 'Item transfer contains unsupported fields',
+    'Неизвестный тип передачи предмета': 'Unknown item transfer type',
+    'Некорректный идентификатор предмета': 'Invalid item identifier',
+    'Передавать можно только carried предмет (сначала снимите его)': 'Only carried items can be transferred (unequip it first)',
+    'Сначала снимите броню из слота': 'Unequip the armor from its slot first',
+    'Сначала снимите установленные модификации с предмета': 'Remove installed modifications from the item first',
+    'Предмет взят в долг — его можно только вернуть владельцу': 'The item is borrowed — it can only be returned to its owner',
+    'Предмет сейчас в долгу у другого персонажа': 'The item is currently loaned out to another character',
+    'Некорректное количество для передачи': 'Invalid transfer quantity',
+    'Этот предмет передаётся поштучно (не stackable)': 'This item transfers one at a time (not stackable)',
+    'Инвентарь получателя переполнен': 'The recipient inventory is full',
+    'Делить можно только stackable предметы': 'Only stackable items can be split',
+    'Предмет взят в долг — его нельзя делить': 'A borrowed item cannot be split',
+    'Для разделения укажите количество меньше размера стека': 'To split, choose an amount smaller than the stack size',
+    'Укажите получателя (to_char_id)': 'Provide a recipient (to_char_id)',
+    'Нельзя передать предмет самому себе': 'You cannot transfer an item to yourself',
+    'Досье получателя заархивировано': 'The recipient Dossier is archived',
+    'Досье партнёра заархивировано': 'The trade partner Dossier is archived',
+    'Предмет взят в долг — сначала верните владельцу': 'The item is borrowed — return it to its owner first',
+    'Предмет не числится за вами как долг': 'The item is not listed as borrowed by you',
+    'Досье владельца заархивировано': 'The owner Dossier is archived',
+    'Предмет не числится как выданный вами в долг': 'The item is not listed as loaned out by you',
+    'Укажите партнёра обмена (to_char_id)': 'Provide a trade partner (to_char_id)',
+    'Укажите предмет партнёра (to_instance_id)': 'Provide the partner item (to_instance_id)',
+    'Нельзя обменять предмет на самого себя': 'You cannot trade an item with itself',
+    'Нельзя обменяться с самим собой': 'You cannot trade with yourself',
+    'Dossier партнёра изменён в другой вкладке; обновите страницу': 'The partner Dossier changed in another tab; refresh the page',
+    'Crew Stash take содержит неподдерживаемые поля': 'Crew Stash take contains unsupported fields',
+    'Предмет не найден в Crew Stash': 'Item not found in the Crew Stash',
+    'Недостаточно единиц в Crew Stash': 'Not enough units in the Crew Stash',
+    'Этот предмет берётся поштучно (не stackable)': 'This item is taken one at a time (not stackable)',
 }
 
 def server_error_message(message, language):
@@ -10264,6 +10580,9 @@ class Handler(BaseHTTPRequestHandler):
             derived['tech_maker'] = tech_maker_payload(full_data)
             derived['campaign_services'] = character_campaign_services(full_data, conn)
             derived['campaign_time'] = campaign_now(conn)
+            derived['loans'] = character_open_loans(conn, row['id'])
+        if public_view:
+            derived.pop('loans', None)
         if public_view and not visibility['combat']:
             derived = {}
         elif public_view:
@@ -13616,6 +13935,350 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     @atomic_endpoint
+    def api_character_item_transfer(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        allowed = {'revision', 'action', 'to_char_id', 'to_instance_id',
+                   'to_revision', 'quantity', 'notes'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Item transfer содержит неподдерживаемые поля')
+        action = str((body or {}).get('action') or '').strip().lower()
+        if action not in TRANSFER_KINDS:
+            raise ApiError(400, 'Неизвестный тип передачи предмета')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        instance_id = str(m.group(2)).lower()
+        if not INSTANCE_ID_RE.fullmatch(instance_id):
+            raise ApiError(400, 'Некорректный идентификатор предмета')
+        notes = str((body or {}).get('notes') or '').strip()[:500]
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        sides = []
+
+        def load_side(target_row):
+            target_before = enrich_owned_item_interactions(
+                ensure_progression(json.loads(target_row['data'])))
+            return target_before, copy.deepcopy(target_before)
+
+        def parse_qty():
+            raw = (body or {}).get('quantity')
+            if raw is None:
+                return None
+            try:
+                return max(1, int(raw))
+            except (TypeError, ValueError):
+                raise ApiError(400, 'Некорректное количество')
+
+        def move(source_data, source_row_id, target_instance_id, qty, dest,
+                 loan_ok=False, force_unequip=False):
+            """Move one instance out of ``source_data`` into stash or a character.
+
+            ``dest`` is ``('stash',)`` or ``('char', target_data, target_char_id)``.
+            Returns ``(moved_instance_id, moved_qty, name)``.
+            """
+            index, entry = _inventory_entry(source_data, target_instance_id)
+            if index is None:
+                raise ApiError(404, 'Экземпляр предмета не найден')
+            if force_unequip and entry.get('state') in ('equipped', 'installed'):
+                entry['state'] = 'carried'
+                for key in ('equipped_mode', 'equipped_slot', 'active',
+                            'host_instance_id', 'host_instances'):
+                    entry.pop(key, None)
+            loan = active_loan_for_instance(conn, target_instance_id)
+            _transferable_item_error(conn, source_row_id, entry, source_data,
+                                     loan, loan_ok=loan_ok)
+            full_qty = max(1, int(entry.get('qty') or 1))
+            qty = full_qty if qty is None else int(qty)
+            if qty <= 0 or qty > full_qty:
+                raise ApiError(400, 'Некорректное количество для передачи')
+            if not item_entry_stackable(entry) and qty > 1:
+                raise ApiError(400, 'Этот предмет передаётся поштучно (не stackable)')
+            name = _character_item_name(entry)
+            partial = qty < full_qty
+            if partial:
+                remaining, taken = _split_stack(entry, qty)
+                source_data['inventory'][index] = remaining
+                moved_id = new_item_instance_id()
+                taken['instance_id'] = moved_id
+            else:
+                source_data['inventory'].pop(index)
+                taken = entry
+                moved_id = target_instance_id
+                _detach_runtime_state(source_data, taken, target_instance_id)
+                _detach_tech_maker_modifications(source_data, taken, target_instance_id)
+                # Rehome the relational row now so persist never regenerates the
+                # stable instance_id across characters.
+                if dest[0] == 'stash':
+                    conn.execute('DELETE FROM item_instances WHERE instance_id=?',
+                                 (moved_id,))
+                else:
+                    conn.execute(
+                        'UPDATE item_instances SET character_id=? WHERE instance_id=?',
+                        (dest[2], moved_id))
+            if dest[0] == 'stash':
+                cleaned = _prepare_entry_for_holder(taken, 'stash')
+                cleaned['instance_id'] = moved_id
+                now = time.time()
+                conn.execute(
+                    'INSERT INTO crew_stash(instance_id,catalog_item_id,custom_name,'
+                    'state,quantity,notes,stored_at,data_json,created,updated) '
+                    'VALUES(?,?,?,?,?,?,?,?,?,?)',
+                    (moved_id, catalog_item_id_for_entry(taken),
+                     str(cleaned.get('custom_name') or '')[:120] or None, 'stored',
+                     cleaned['qty'], '', now, json.dumps(cleaned, ensure_ascii=False),
+                     now, now))
+            else:
+                target_data = dest[1]
+                if len(target_data.get('inventory') or []) + 1 > 500:
+                    raise ApiError(400, 'Инвентарь получателя переполнен')
+                cleaned = _prepare_entry_for_holder(taken, 'char')
+                cleaned['instance_id'] = moved_id
+                _attach_runtime_state(target_data, cleaned, moved_id)
+                _attach_tech_maker_modifications(target_data, cleaned)
+                target_data.setdefault('inventory', []).append(cleaned)
+            return moved_id, qty, name
+
+        message = ''
+        if action == 'split':
+            index, entry = _inventory_entry(data, instance_id)
+            if index is None:
+                raise ApiError(404, 'Экземпляр предмета не найден')
+            if not item_entry_stackable(entry):
+                raise ApiError(400, 'Делить можно только stackable предметы')
+            loan = active_loan_for_instance(conn, instance_id)
+            if loan is not None and loan['borrower_character_id'] == row['id']:
+                raise ApiError(409, 'Предмет взят в долг — его нельзя делить')
+            full_qty = max(1, int(entry.get('qty') or 1))
+            try:
+                take_qty = max(1, int((body or {}).get('quantity') or 0))
+            except (TypeError, ValueError):
+                raise ApiError(400, 'Некорректное количество')
+            if take_qty >= full_qty:
+                raise ApiError(400, 'Для разделения укажите количество меньше размера стека')
+            remaining, taken = _split_stack(entry, take_qty)
+            data['inventory'][index] = remaining
+            new_id = new_item_instance_id()
+            taken['instance_id'] = new_id
+            data['inventory'].append(taken)
+            message = f'Split {_character_item_name(entry)} ×{take_qty}'
+            _record_item_transfer(
+                conn, new_id, 'split', user['id'], notes,
+                from_character_id=row['id'], to_character_id=row['id'],
+                from_bucket='inventory', to_bucket='inventory', quantity=take_qty)
+            sides.append({'id': row['id'], 'before': before, 'data': data, 'reason': message})
+        elif action == 'stash':
+            moved_id, qty, name = move(data, row['id'], instance_id, parse_qty(), ('stash',))
+            message = f'Move {name} ×{qty} to Crew Stash'
+            _record_item_transfer(
+                conn, moved_id, 'stash', user['id'], notes,
+                from_character_id=row['id'], to_character_id=None,
+                from_bucket='inventory', to_bucket='stash', quantity=qty)
+            sides.append({'id': row['id'], 'before': before, 'data': data, 'reason': message})
+        elif action in ('give', 'loan'):
+            to_char_id = _num((body or {}).get('to_char_id'))
+            if not to_char_id:
+                raise ApiError(400, 'Укажите получателя (to_char_id)')
+            target_row = self.get_char(conn, to_char_id)
+            if target_row['id'] == row['id']:
+                raise ApiError(400, 'Нельзя передать предмет самому себе')
+            if parse_json_object(target_row['data']).get('archived'):
+                raise ApiError(409, 'Досье получателя заархивировано')
+            target_before, target_data = load_side(target_row)
+            moved_id, qty, name = move(data, row['id'], instance_id, parse_qty(),
+                                       ('char', target_data, target_row['id']))
+            if action == 'loan':
+                conn.execute(
+                    'INSERT INTO item_loans(loan_id,instance_id,owner_character_id,'
+                    'borrower_character_id,quantity,loaned_by,loaned_at,notes) '
+                    'VALUES(?,?,?,?,?,?,?,?)',
+                    (secrets.token_hex(16), moved_id, row['id'], target_row['id'], qty,
+                     user['id'], time.time(), notes))
+            message = f'{"Loan" if action == "loan" else "Give"} {name} ×{qty}'
+            _record_item_transfer(
+                conn, moved_id, action, user['id'], notes,
+                from_character_id=row['id'], to_character_id=target_row['id'],
+                from_bucket='inventory', to_bucket='inventory', quantity=qty)
+            sides.append({'id': row['id'], 'before': before, 'data': data, 'reason': message})
+            sides.append({'id': target_row['id'], 'before': target_before,
+                          'data': target_data, 'reason': message})
+        elif action == 'return':
+            loan = active_loan_for_instance(conn, instance_id)
+            if not loan or loan['borrower_character_id'] != row['id']:
+                raise ApiError(409, 'Предмет не числится за вами как долг')
+            owner_row = self.get_char(conn, loan['owner_character_id'])
+            if parse_json_object(owner_row['data']).get('archived'):
+                raise ApiError(409, 'Досье владельца заархивировано')
+            owner_before, owner_data = load_side(owner_row)
+            moved_id, qty, name = move(data, row['id'], instance_id, None,
+                                       ('char', owner_data, owner_row['id']), loan_ok=True)
+            conn.execute('UPDATE item_loans SET returned_at=?,returned_by=? WHERE loan_id=?',
+                         (time.time(), user['id'], loan['loan_id']))
+            message = f'Return {name} ×{qty} to owner'
+            _record_item_transfer(
+                conn, moved_id, 'return', user['id'], notes,
+                from_character_id=row['id'], to_character_id=owner_row['id'],
+                from_bucket='inventory', to_bucket='inventory', quantity=qty)
+            sides.append({'id': row['id'], 'before': before, 'data': data, 'reason': message})
+            sides.append({'id': owner_row['id'], 'before': owner_before,
+                          'data': owner_data, 'reason': message})
+        elif action == 'recall':
+            loan = active_loan_for_instance(conn, instance_id)
+            if not loan or loan['owner_character_id'] != row['id']:
+                raise ApiError(409, 'Предмет не числится как выданный вами в долг')
+            borrower_row = self.get_char(conn, loan['borrower_character_id'])
+            borrower_before, borrower_data = load_side(borrower_row)
+            moved_id, qty, name = move(borrower_data, borrower_row['id'], instance_id,
+                                       None, ('char', data, row['id']), loan_ok=True,
+                                       force_unequip=True)
+            conn.execute('UPDATE item_loans SET returned_at=?,returned_by=? WHERE loan_id=?',
+                         (time.time(), user['id'], loan['loan_id']))
+            message = f'Recall {name} ×{qty} from borrower'
+            _record_item_transfer(
+                conn, moved_id, 'recall', user['id'], notes,
+                from_character_id=borrower_row['id'], to_character_id=row['id'],
+                from_bucket='inventory', to_bucket='inventory', quantity=qty)
+            # The losing side must persist first so the stable instance_id is freed.
+            sides.append({'id': borrower_row['id'], 'before': borrower_before,
+                          'data': borrower_data, 'reason': message})
+            sides.append({'id': row['id'], 'before': before, 'data': data, 'reason': message})
+        elif action == 'trade':
+            to_char_id = _num((body or {}).get('to_char_id'))
+            to_instance_id = str((body or {}).get('to_instance_id') or '').lower()
+            if not to_char_id:
+                raise ApiError(400, 'Укажите партнёра обмена (to_char_id)')
+            if not INSTANCE_ID_RE.fullmatch(to_instance_id):
+                raise ApiError(400, 'Укажите предмет партнёра (to_instance_id)')
+            if to_instance_id == instance_id:
+                raise ApiError(400, 'Нельзя обменять предмет на самого себя')
+            target_row = self.get_char(conn, to_char_id)
+            if target_row['id'] == row['id']:
+                raise ApiError(400, 'Нельзя обменяться с самим собой')
+            if parse_json_object(target_row['data']).get('archived'):
+                raise ApiError(409, 'Досье партнёра заархивировано')
+            target_revision = _row_value(target_row, 'revision', 0) or 0
+            if _num((body or {}).get('to_revision')) != target_revision:
+                raise ApiError(409, 'Dossier партнёра изменён в другой вкладке; обновите страницу')
+            target_before, target_data = load_side(target_row)
+            moved_id, qty, name = move(data, row['id'], instance_id, None,
+                                       ('char', target_data, target_row['id']))
+            other_id, other_qty, other_name = move(
+                target_data, target_row['id'], to_instance_id, None,
+                ('char', data, row['id']))
+            message = f'Trade {name} ↔ {other_name}'
+            _record_item_transfer(
+                conn, moved_id, 'trade', user['id'], notes,
+                from_character_id=row['id'], to_character_id=target_row['id'],
+                from_bucket='inventory', to_bucket='inventory', quantity=qty)
+            _record_item_transfer(
+                conn, other_id, 'trade', user['id'], notes,
+                from_character_id=target_row['id'], to_character_id=row['id'],
+                from_bucket='inventory', to_bucket='inventory', quantity=other_qty)
+            sides.append({'id': row['id'], 'before': before, 'data': data, 'reason': message})
+            sides.append({'id': target_row['id'], 'before': target_before,
+                          'data': target_data, 'reason': message})
+
+        if not sides:
+            raise ApiError(400, 'Неизвестный тип передачи предмета')
+        for side in sides:
+            _persist_transfer_side(conn, side['id'], side['data'],
+                                   'item_transfer', side['reason'])
+            side_row = self.get_char(conn, side['id'])
+            revision = _row_value(side_row, 'revision', 0) or 0
+            _record_transfer_ledger(conn, side['id'], user['id'], side['before'],
+                                    side['data'], side['reason'], revision, revision + 1)
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                         (json.dumps(side['data'], ensure_ascii=False), time.time(),
+                          revision + 1, side['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({'ok': True, 'action': action, 'message': message,
+                        'character': self.char_payload(fresh, fresh['owner'], conn=conn)})
+
+    def api_crew_stash(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        self.send_json({
+            'stash': crew_stash_payload(conn),
+            'characters': transfer_targets(conn, user),
+        })
+
+    @atomic_endpoint
+    def api_crew_stash_take(self, conn, qs, m, body):
+        user, target_row = self.require_character_editor(
+            conn, _num((body or {}).get('char_id')), allow_gm=True)
+        allowed = {'char_id', 'instance_id', 'quantity', 'notes'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Crew Stash take содержит неподдерживаемые поля')
+        instance_id = str((body or {}).get('instance_id') or '').lower()
+        if not INSTANCE_ID_RE.fullmatch(instance_id):
+            raise ApiError(400, 'Некорректный идентификатор предмета')
+        stash_row = conn.execute(
+            'SELECT * FROM crew_stash WHERE instance_id=?', (instance_id,)).fetchone()
+        if not stash_row:
+            raise ApiError(404, 'Предмет не найден в Crew Stash')
+        notes = str((body or {}).get('notes') or '').strip()[:500]
+        target_before = enrich_owned_item_interactions(
+            ensure_progression(json.loads(target_row['data'])))
+        target_data = copy.deepcopy(target_before)
+        entry = parse_json_object(stash_row['data_json'])
+        full_qty = max(1, int(entry.get('qty') or 1))
+        try:
+            qty = max(1, int((body or {}).get('quantity') or 0)) \
+                if (body or {}).get('quantity') is not None else full_qty
+        except (TypeError, ValueError):
+            raise ApiError(400, 'Некорректное количество')
+        if qty > full_qty:
+            raise ApiError(400, 'Недостаточно единиц в Crew Stash')
+        if not item_entry_stackable(entry) and qty > 1:
+            raise ApiError(400, 'Этот предмет берётся поштучно (не stackable)')
+        partial = qty < full_qty
+        taken = copy.deepcopy(entry)
+        taken['qty'] = qty
+        if entry.get('cat') == 'ammo':
+            pack = ammo_pack_size(entry)
+            rounds = ammo_rounds(entry)
+            taken['ammo_rounds'] = qty * pack
+            remaining_rounds = max(0, rounds - qty * pack)
+        else:
+            remaining_rounds = None
+        moved_id = instance_id
+        if partial:
+            remaining = copy.deepcopy(entry)
+            remaining['qty'] = full_qty - qty
+            if remaining_rounds is not None:
+                remaining['ammo_rounds'] = remaining_rounds
+            moved_id = new_item_instance_id()
+            taken['instance_id'] = moved_id
+            conn.execute(
+                'UPDATE crew_stash SET quantity=?,data_json=?,updated=? WHERE instance_id=?',
+                (remaining['qty'], json.dumps(remaining, ensure_ascii=False),
+                 time.time(), instance_id))
+        else:
+            conn.execute('DELETE FROM crew_stash WHERE instance_id=?', (instance_id,))
+        taken['instance_id'] = moved_id
+        _attach_runtime_state(target_data, taken, moved_id)
+        _attach_tech_maker_modifications(target_data, taken)
+        cleaned = _prepare_entry_for_holder(taken, 'char')
+        cleaned['instance_id'] = moved_id
+        target_data.setdefault('inventory', []).append(cleaned)
+        message = f'Take {_character_item_name(taken)} ×{qty} from Crew Stash'
+        _record_item_transfer(
+            conn, moved_id, 'take', user['id'], notes,
+            from_character_id=None, to_character_id=target_row['id'],
+            from_bucket='stash', to_bucket='inventory', quantity=qty)
+        _persist_transfer_side(conn, target_row['id'], target_data,
+                               'crew_stash_take', message)
+        revision = _row_value(target_row, 'revision', 0) or 0
+        _record_transfer_ledger(conn, target_row['id'], user['id'], target_before,
+                                target_data, message, revision, revision + 1)
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(target_data, ensure_ascii=False), time.time(),
+                      revision + 1, target_row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, target_row['id'])
+        self.send_json({'ok': True, 'action': 'take', 'message': message,
+                        'character': self.char_payload(fresh, fresh['owner'], conn=conn)})
+
+    @atomic_endpoint
     def api_character_improve(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
         data = ensure_progression(json.loads(row['data']))
@@ -14066,6 +14729,10 @@ class Handler(BaseHTTPRequestHandler):
         if index is None:
             raise ApiError(404, 'Предмет не найден в инвентаре')
         ent = bucket[index]
+        if ent.get('instance_id'):
+            loan = active_loan_for_instance(conn, ent.get('instance_id'))
+            if loan and loan['borrower_character_id'] == row['id']:
+                raise ApiError(409, 'Предмет взят в долг — сначала верните владельцу')
         linked = conn.execute(
             'SELECT 1 FROM item_modifications WHERE character_id=? AND active=1 '
             'AND (host_instance_id=? OR upgrade_instance_id=?)',
@@ -16566,6 +17233,9 @@ ROUTES = [
     ('POST', rx(r'/api/characters/(\d+)/ledger/(\d+)/revert'), Handler.api_character_ledger_revert),
     ('GET', rx(r'/api/characters/(\d+)/items'), Handler.api_character_items),
     ('POST', rx(r'/api/characters/(\d+)/items/([a-f0-9]{32})/action'), Handler.api_character_item_action),
+    ('POST', rx(r'/api/characters/(\d+)/items/([a-f0-9]{32})/transfer'), Handler.api_character_item_transfer),
+    ('GET', rx(r'/api/crew-stash'), Handler.api_crew_stash),
+    ('POST', rx(r'/api/crew-stash/take'), Handler.api_crew_stash_take),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/action'), Handler.api_character_cyberware_action),
     ('POST', rx(r'/api/characters/(\d+)/therapy/action'), Handler.api_character_therapy_action),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/popup-shield/action'), Handler.api_character_popup_shield_action),

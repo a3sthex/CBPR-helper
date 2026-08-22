@@ -167,7 +167,7 @@ broken
 - `Repair`;
 - `Move to Stash`;
 - `Discard`;
-- `Give to Character` (будущее расширение).
+- `Give to Character` (реализовано B.13: Give/Loan/Stash/Take/Split/Trade/Return/Recall).
 
 Каждое постоянное действие попадает в Character Ledger.
 
@@ -1725,6 +1725,8 @@ Recap автоматически пополняет:
 
 Игрокам нужна возможность передавать найденные предметы без ручного удаления у одного Character и добавления другому.
 
+**Статус: реализовано в B.13** (Give/Loan/Stash/Take/Split/Trade/Return/Recall + история владельцев через `item_transfers`).
+
 Функции:
 
 - `Give to Character`;
@@ -1736,7 +1738,7 @@ Recap автоматически пополняет:
 - `Trade`;
 - история владельцев предмета.
 
-Crew Stash может быть связан с Housing/Location: квартира, гараж, база команды, Nomad vehicle cargo. Все движения попадают в ledger обеих сторон.
+Crew Stash может быть связан с Housing/Location: квартира, гараж, база команды, Nomad vehicle cargo. Все движения попадают в ledger обеих сторон. Пока склад один общий на кампанию; привязка к конкретному Location и vehicle cargo остаётся будущей интеграцией.
 
 ### 16.3 Downtime Planner
 
@@ -2651,7 +2653,7 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 8. Notifications badge.
 9. Fillable PDF import.
 10. Session Recap / Chronicle.
-11. Crew Stash и item transfer.
+11. ✅ Crew Stash и item transfer (реализовано B.13).
 12. Downtime Planner.
 13. Organization Reputation / Favor / Heat.
 14. Intel / Case Board.
@@ -3243,6 +3245,20 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - GM OPS получил панель `Campaign Clock` с быстрыми шагами +1h/+6h/+1d/+7d, кастомным продвижением и списком pending-сервисов;
 - 5 новых тестов: duration/service status, сбор активных работ, severity→duration mapping, GM-only advance + audit, GM pending vs player payload;
 - Campaign Clock auto-completion (автоприменение результатов) остаётся осознанно ручным: неоднозначные проверки и броски не симулируются автоматически.
+
+**Статус B.13 — реализованы Crew Stash и передача предметов:**
+
+- additive migration 13 создаёт `crew_stash` (общий склад), `item_transfers` (история владельцев/передач) и `item_loans` (долги); база не сбрасывается, pending migration делает авто-backup;
+- операции: `Give to Character`, `Loan to Character`, `Move to Crew Stash`, `Take from Crew Stash`, `Split Stack`, `Trade`, `Return Item`, `Recall Item`; все атомарны, revision-guarded и пишутся в `item_transfers` + Trust + Audit Ledger обеих сторон (category `transfer`, без revert — кросс-персонажный откат не автоматизируется);
+- `instance_id` предмета стабилен между персонажами и складом: явное переселение строки `item_instances` при полном переносе, новые `instance_id` только при разделении stack; история владельцев собирается по `instance_id`;
+- `Split Stack` / частичная передача работают для stackable (ammo с корректным `ammo_rounds`), не-stackable передаются поштучно;
+- вместе с предметом переносятся server-owned runtime-контейнеры (`weapon_state`, `vehicle_state`, `armor_repair_state`, `armor_tech_state`) и Tech Maker modifications хоста — модифицированный предмет сохраняет свою доработку;
+- блокировки: `equipped/installed/consumed/broken`, предмет в слоте брони, активные модификации, чужие долги; borrowed предмет можно только вернуть, loaned-out — отозвать; заёмщик не может продать borrowed предмет;
+- `Recall` принудительно снимает экипировку у должника; `Loan`/`Return`/`Recall` живут в `item_loans` с quantity/loaned_at/returned_at;
+- `GET /api/crew-stash` отдаёт склад + список персонажей для передачи (игроку — свои и публичные, GM — все); `POST /api/crew-stash/take` забирает предмет в выбранного персонажа;
+- `derived.loans` на Character Sheet (скрыт в public view); UI: кнопка `Transfer` у предметов, модалка Give/Loan/Stash/Split/Trade/Return, панель `Loans` (взято/выдано) и страница `Crew Stash` с выбором персонажа и историей;
+- 10 новых тестов: unit (split/pack/roundtrip runtime state) + интеграционные (give→stash→take, split, loan→return→recall, trade, права, блокировка equipped);
+- остаётся: привязка Crew Stash к конкретному Housing/Location и vehicle cargo stash (Nomad) — пока склад один общий на кампанию.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
 4. ✅ Добавить custom/found items и acquisition provenance.
@@ -3260,8 +3276,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - готово: instance binding, slot pools, lifecycle, Magazines/Smartgun/Bayonet/scopes, Underbarrels, Autofire/Rebuild profiles и host-specific Range Table choices;
     - дальше: contextual ricochet/charge, full Autofire action/ammo и Tech overrides.
 12. ◐ Vehicle Upgrades и Garage integration.
-    - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer и Vehicle Repair Workflow;
-    - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
+    - готово: vehicle instances, compatibility/access/prerequisites, lifecycle, effective durability, NOS, Onboard/Heavy Mount profiles, Housing/rooms/cargo modules, real shared ammo transfer, Vehicle Repair Workflow и Crew Stash/item transfer (B.13);
+    - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и привязка Crew Stash к vehicle cargo.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
     - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, concrete Cyberware/Popup weapons/Popup Shield, Therapy, concrete Armor/Shield hosts, Tech Upgrade, manual/Jeeves/paid Armor Repair, curated special cyberweapons (Net Launcher / Dartguns / Gas Jet) с special-ammo lifecycle, Manual Shield Tech Upgrade Polish и Tech Maker Custom Modifications (allowlisted upgrade/invention effects на weapon/armor/vehicle/cyberware);
     - дальше: более широкий allowlisted effect surface (Campaign Clock services реализованы в B.12).
@@ -3305,7 +3321,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 ### Пакет G — Campaign Operations
 
 1. Session Recap / Chronicle и автоматические history links.
-2. Crew Stash, item transfer и ownership history.
+2. ✅ Crew Stash, item transfer и ownership history (реализовано B.13).
 3. Downtime Planner с лечением, Therapy, Crafting и поиском предметов.
 4. Organization Reputation / Favor / Heat.
 5. Storyline/Faction Clocks.
@@ -3365,8 +3381,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 18. Какие POI входят в обязательный seed первой версии и по какому источнику сверяются координаты?
 19. Могут ли игроки создавать свои Location markers или только предлагать их GM?
 20. Нужна ли история контроля территории/владельца Location по датам?
-21. Crew Stash принадлежит конкретному Crew, Housing или всей кампании?
-22. Item transfer происходит сразу или требует подтверждения получателя?
+21. Crew Stash принадлежит конкретному Crew, Housing или всей кампании? → **Решено (B.13):** пока один общий склад на кампанию; привязка к Housing/Location и Nomad vehicle cargo — будущее расширение.
+22. Item transfer происходит сразу или требует подтверждения получателя? → **Решено (B.13):** сразу, в модели Trust + Audit — каждая передача атомарна, revision-guarded и пишется в `item_transfers` и Ledger обеих сторон; получатель видит предмет и запись без отдельного подтверждения.
 23. Downtime длится фиксированную неделю или произвольный отрезок календаря?
 24. Reputation/Favor/Heat индивидуальны для Character или могут принадлежать Crew?
 25. Intel Board общий для Crew или каждый Character имеет собственную картину расследования?

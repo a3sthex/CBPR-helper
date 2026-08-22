@@ -296,6 +296,7 @@ const routeAliases = {
 const routes = {
   '': viewHome, database: viewCodex, guides: viewGuides, market: viewMarket,
   'quick-reference': viewCalc, dossiers: viewCharacters, crew: viewRoster,
+  stash: viewCrewStash,
   feed: viewCityFeed, contracts: viewContracts, personas: viewPersonas,
   gm: viewGMOperations, session: viewSessionPlayer, admin: viewAdmin,
   // Compatibility aliases keep old bookmarks and links working during migration.
@@ -316,7 +317,7 @@ async function route() {
     else anchor.removeAttribute('aria-current');
   });
   document.body.dataset.workspace = activeRoute === 'gm' ? 'gm' : 'network';
-  const moreButton=$('#mobile-more-toggle');if(moreButton)moreButton.classList.toggle('active',['database','market','quick-reference','crew','personas','guides','profile','gm','admin'].includes(activeRoute));
+  const moreButton=$('#mobile-more-toggle');if(moreButton)moreButton.classList.toggle('active',['database','market','quick-reference','crew','stash','personas','guides','profile','gm','admin'].includes(activeRoute));
   $$('[data-workspace]').forEach(button=>button.classList.toggle('active',button.dataset.workspace===(activeRoute==='gm'?'gm':'network')));
   const mobileMore=$('#mobile-more-menu');if(mobileMore)mobileMore.hidden=true;
   window.scrollTo(0, 0);
@@ -380,7 +381,7 @@ async function refreshShellDossiers(){
 }
 
 function openCommandPalette(){
-  const commands=[['','⌂',T('City Network','Городская сеть')],['contracts','◎',T('Contracts','Контракты')],['feed','≋',T('City Feed','Городская лента')],['dossiers','◇',T('Dossiers','Досье')],['database','▦',T('Database','База данных')],['market','◈',T('Night Market','Ночной рынок')],['quick-reference','◫',T('Quick Reference','Быстрые правила')],['crew','⌘',T('Crew Registry','Реестр команд')],['personas','◉','Personas'],['guides','▤',T('Archive','Архив')]];if(state.me?.is_gm)commands.push(['gm','⚙','GM OPS']);if(state.me?.is_admin)commands.push(['admin','⚿',T('Admin Console','Панель Admin')]);
+  const commands=[['','⌂',T('City Network','Городская сеть')],['contracts','◎',T('Contracts','Контракты')],['feed','≋',T('City Feed','Городская лента')],['dossiers','◇',T('Dossiers','Досье')],['database','▦',T('Database','База данных')],['market','◈',T('Night Market','Ночной рынок')],['quick-reference','◫',T('Quick Reference','Быстрые правила')],['crew','⌘',T('Crew Registry','Реестр команд')],['stash','🎒',T('Crew Stash','Общий склад')],['personas','◉','Personas'],['guides','▤',T('Archive','Архив')]];if(state.me?.is_gm)commands.push(['gm','⚙','GM OPS']);if(state.me?.is_admin)commands.push(['admin','⚿',T('Admin Console','Панель Admin')]);
   const modal=openModal(`<h2>${T('Command Palette','Командная строка')}</h2><input id="command-search" type="search" autofocus placeholder="${T('Jump to a network module…','Перейти к модулю сети…')}" aria-label="${T('Search commands','Поиск команд')}"><div id="command-list" class="command-list mt">${commands.map(([route,icon,label])=>`<button data-command-route="${route}" data-command-search="${esc(label.toLowerCase())}"><span>${icon}</span><b>${esc(label)}</b><small>#/${route}</small></button>`).join('')}</div>`);const search=$('#command-search',modal);search.oninput=()=>{const query=search.value.trim().toLowerCase();$$('[data-command-route]',modal).forEach(button=>button.hidden=Boolean(query&&!button.dataset.commandSearch.includes(query)));};$$('[data-command-route]',modal).forEach(button=>button.onclick=()=>{closeModal();go('/'+button.dataset.commandRoute);});
 }
 
@@ -2759,6 +2760,205 @@ function effectDurationLabel(effect){if(effect.duration_type==='real_time')retur
 async function performEffectAction(character,effect,action){if(action==='archive'&&!confirm(T('Archive this effect instance?','Архивировать этот эффект?')))return;try{await api(`/api/characters/${character.id}/effects/${effect.effect_id}/action`,{method:'POST',body:{revision:character.revision,action}});toast(T('Effect updated.','Эффект обновлён.'));viewSheet(character.id);}catch(error){toast(error.message,true);}}
 function openCustomEffectModal(character){const statOptions=(state.meta.stats||[]).map(stat=>`<option value="character.stat.${stat}">STAT ${stat}</option>`).join(''),skillOptions=(state.meta.skills||[]).map(row=>`<option value="skill.${esc(row[1])}.check">${esc(row[1])} Check</option>`).join('');const modal=openModal(`<h2>${T('Add Custom Effect','Добавить Custom Effect')}</h2><div class="panel accent mb"><b>TRUST + AUDIT</b><p class="small">${T('Only allowlisted numeric modifiers are accepted. No JavaScript or executable expressions.','Разрешены только числовые модификаторы из allowlist. JavaScript и исполняемые выражения запрещены.')}</p></div><div class="grid cols-2"><label class="f"><span>${T('Effect name *','Название эффекта *')}</span><input id="effect-label" maxlength="120" placeholder="Tech optics calibration"></label><label class="f"><span>Target</span><select id="effect-target"><optgroup label="STATs">${statOptions}</optgroup><optgroup label="Skill Checks">${skillOptions}</optgroup></select></label><label class="f"><span>Operation</span><select id="effect-operation">${['add','set','minimum','maximum','multiply'].map(value=>`<option value="${value}">${value}</option>`).join('')}</select></label><label class="f"><span>Value</span><input id="effect-value" type="number" min="-100" max="100" step="0.1" value="1"></label><label class="f"><span>Stacking</span><select id="effect-stack-policy">${['stack','highest','lowest','unique','replace'].map(value=>`<option value="${value}">${value}</option>`).join('')}</select></label><label class="f"><span>${T('Stack group (optional)','Stack group (необязательно)')}</span><input id="effect-stack-group" maxlength="80" placeholder="night_vision_bonus"></label><label class="f"><span>${T('Duration','Длительность')}</span><select id="effect-duration"><option value="manual">${T('Manual','Ручная')}</option><option value="real_time">${T('Real time, minutes','Реальное время, минуты')}</option><option value="rounds">${T('Rounds, manual tick','Раунды, ручной отсчёт')}</option></select></label><label class="f" id="effect-duration-value-wrap" hidden><span id="effect-duration-value-label">Value</span><input id="effect-duration-value" type="number" min="1" max="10080" value="1"></label></div><label class="f"><span>${T('Reason *','Причина *')}</span><textarea id="effect-reason" maxlength="500" rows="3" placeholder="Session effect, Tech upgrade, GM ruling…"></textarea></label><div class="row"><button id="effect-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="effect-create">${T('Create Effect','Создать эффект')}</button></div>`,true);const duration=$('#effect-duration',modal),wrap=$('#effect-duration-value-wrap',modal),durationValue=$('#effect-duration-value',modal),durationLabel=$('#effect-duration-value-label',modal);duration.onchange=()=>{wrap.hidden=duration.value==='manual';durationValue.max=duration.value==='real_time'?'10080':'100';durationLabel.textContent=duration.value==='real_time'?T('Minutes','Минуты'):T('Rounds','Раунды');};$('#effect-cancel',modal).onclick=closeModal;$('#effect-create',modal).onclick=async()=>{const body={revision:character.revision,label:$('#effect-label',modal).value.trim(),target:$('#effect-target',modal).value,operation:$('#effect-operation',modal).value,value:Number($('#effect-value',modal).value),stack_policy:$('#effect-stack-policy',modal).value,stack_group:$('#effect-stack-group',modal).value.trim(),duration_type:duration.value,duration_value:duration.value==='manual'?null:Number(durationValue.value),reason:$('#effect-reason',modal).value.trim()};const button=$('#effect-create',modal);button.disabled=true;try{await api(`/api/characters/${character.id}/effects`,{method:'POST',body});closeModal();toast(T('Effect created.','Эффект создан.'));viewSheet(character.id);}catch(error){button.disabled=false;toast(error.message,true);}};}
 
+function isStackableItem(item) {
+  return item.stackable === true || item.cat === 'ammo';
+}
+
+function loanStatusFor(loans, charId, instanceId) {
+  const loan = (loans || []).find(l => l.instance_id === instanceId);
+  if (!loan) return null;
+  if (loan.borrower_character_id === charId) return 'borrower';
+  if (loan.owner_character_id === charId) return 'owner';
+  return null;
+}
+
+async function performItemTransfer(c, instanceId, body) {
+  try {
+    const res = await api(`/api/characters/${c.id}/items/${instanceId}/transfer`, { method: 'POST', body });
+    closeModal(true);
+    toast(res.message || T('Item transferred.','Предмет передан.'));
+    viewSheet(c.id);
+  } catch (error) { toast(error.message, true); }
+}
+
+async function performLoanAction(c, loan, action) {
+  const verb = action === 'return' ? T('Return','Вернуть') : T('Recall','Забрать');
+  if (!confirm(`${verb} ${loan.item_name || 'item'}?`)) return;
+  try {
+    const res = await api(`/api/characters/${c.id}/items/${loan.instance_id}/transfer`, {
+      method: 'POST',
+      body: { revision: c.revision, action, notes: verb + ' loan' },
+    });
+    toast(res.message || `${verb} ${T('ok','готово')}`);
+    viewSheet(c.id);
+  } catch (error) { toast(error.message, true); }
+}
+
+function loansSheetHtml(c, d, canManage) {
+  const loans = d.loans || [];
+  if (!loans.length) return '';
+  const owed = loans.filter(l => l.borrower_character_id === c.id);
+  const given = loans.filter(l => l.owner_character_id === c.id);
+  const row = (l, side) => {
+    const action = side === 'borrower' ? 'return' : 'recall';
+    const other = side === 'borrower' ? l.owner_handle : l.borrower_handle;
+    const tag = side === 'borrower' ? T('BORROWED','ВЗЯТО') : T('LOANED OUT','ВЫДАНО');
+    const label = side === 'borrower' ? T('Return to','Вернуть') : T('Recall from','Забрать у');
+    return `<div class="inv-row"><span class="iname">🔁 ${esc(l.item_name || 'Item')} ×${l.quantity || 1}</span>
+      <span class="tag">${esc(tag)}</span><span class="small muted user-content">${esc(other || '—')}</span>
+      ${canManage ? `<button class="btn-sm" data-loan-action="${esc(l.instance_id)}|${action}">${label} ${esc(other || '')}</button>` : ''}
+    </div>`;
+  };
+  return `<div class="mt mb"><h3>🔁 ${T('Loans','Долги')}</h3>
+    ${owed.length ? `<div class="small muted">${T('Borrowed items','Взято в долг')}</div>${owed.map(l => row(l, 'borrower')).join('')}` : ''}
+    ${given.length ? `<div class="small muted mt">${T('Items loaned out','Выдано в долг')}</div>${given.map(l => row(l, 'owner')).join('')}` : ''}
+  </div>`;
+}
+
+async function openItemTransferModal(c, item) {
+  const d = c.derived || {};
+  const loans = d.loans || [];
+  const stackable = isStackableItem(item);
+  const fullQty = Math.max(1, Number(item.qty) || 1);
+  const loanStatus = loanStatusFor(loans, c.id, item.instance_id);
+  let chars = [];
+  try {
+    const stashData = await api('/api/crew-stash');
+    chars = (stashData.characters || []).filter(x => !x.archived && x.id !== c.id);
+  } catch (e) { /* пусто */ }
+  const charOptions = chars.map(x => `<option value="${x.id}">${esc(x.handle || '?')}${x.owner_name ? ' · ' + esc(x.owner_name) : ''}</option>`).join('');
+  const modal = openModal(`
+    <h2>⇄ ${T('Transfer Item','Передача предмета')}</h2>
+    <div class="panel mb"><b>${esc(item.custom_name || item.name)}</b> ×${fullQty}
+      ${loanStatus === 'borrower' ? `<span class="tag">${T('BORROWED','ВЗЯТО')}</span>` : ''}</div>
+    <div class="grid cols-1">
+      <div class="transfer-action">
+        <label class="f"><span>${T('Give to character','Отдать персонажу')}</span><select id="tr-give-target">${charOptions}</select></label>
+        ${stackable && fullQty > 1 ? `<label class="f"><span>${T('Quantity','Количество')}</span><input id="tr-give-qty" type="number" min="1" max="${fullQty}" value="${fullQty}"></label>` : ''}
+        <button class="btn-sm" id="tr-give" ${chars.length ? '' : 'disabled'}>${T('Give','Отдать')}</button>
+      </div>
+      <div class="transfer-action">
+        <label class="f"><span>${T('Loan to character','Дать в долг персонажу')}</span><select id="tr-loan-target">${charOptions}</select></label>
+        <button class="btn-sm" id="tr-loan" ${chars.length ? '' : 'disabled'}>${T('Loan','В долг')}</button>
+      </div>
+      <div class="transfer-action">
+        <span class="f">${T('Move to Crew Stash','Переместить в Crew Stash')}</span>
+        ${stackable && fullQty > 1 ? `<label class="f"><span>${T('Quantity','Количество')}</span><input id="tr-stash-qty" type="number" min="1" max="${fullQty}" value="${fullQty}"></label>` : ''}
+        <button class="btn-sm" id="tr-stash">${T('Stash','В общак')}</button>
+      </div>
+      ${stackable && fullQty > 1 ? `<div class="transfer-action">
+        <span class="f">${T('Split stack','Разделить стек')}</span>
+        <button class="btn-sm" id="tr-split">${T('Split','Разделить')}</button>
+      </div>` : ''}
+      <div class="transfer-action">
+        <label class="f"><span>${T('Trade with character','Обмен с персонажем')}</span><select id="tr-trade-target">${charOptions}</select></label>
+        <button class="btn-sm" id="tr-trade" ${chars.length ? '' : 'disabled'}>${T('Trade','Обменять')}</button>
+      </div>
+    </div>
+    ${loanStatus === 'borrower' ? `<button class="btn-primary mt" id="tr-return">↩ ${T('Return to owner','Вернуть владельцу')}</button>` : ''}
+    <label class="f mt"><span>${T('Note (optional)','Заметка (необязательно)')}</span><input id="tr-notes" maxlength="500" placeholder="${T('Why is it moving?','Почему предмет перемещается?')}"></label>
+  `, true);
+  const notes = () => { const el = $('#tr-notes', modal); return el ? el.value.trim() : ''; };
+  const qty = (id) => { const el = $(id, modal); return el ? Math.max(1, Math.min(fullQty, Number(el.value) || fullQty)) : fullQty; };
+  $('#tr-give', modal).onclick = () => {
+    const sel = $('#tr-give-target', modal);
+    if (!sel || !sel.value) return;
+    performItemTransfer(c, item.instance_id, { revision: c.revision, action: 'give', to_char_id: Number(sel.value), quantity: qty('#tr-give-qty'), notes: notes() });
+  };
+  $('#tr-loan', modal).onclick = () => {
+    const sel = $('#tr-loan-target', modal);
+    if (!sel || !sel.value) return;
+    performItemTransfer(c, item.instance_id, { revision: c.revision, action: 'loan', to_char_id: Number(sel.value), notes: notes() });
+  };
+  $('#tr-stash', modal).onclick = () => {
+    performItemTransfer(c, item.instance_id, { revision: c.revision, action: 'stash', quantity: qty('#tr-stash-qty'), notes: notes() });
+  };
+  const splitButton = $('#tr-split', modal);
+  if (splitButton) splitButton.onclick = () => {
+    const amount = Number(prompt(T(`Split amount (1–${fullQty - 1})`,`Количество для разделения (1–${fullQty - 1})`), '1'));
+    if (!Number.isInteger(amount) || amount < 1 || amount >= fullQty) return;
+    performItemTransfer(c, item.instance_id, { revision: c.revision, action: 'split', quantity: amount, notes: notes() || 'Split stack' });
+  };
+  $('#tr-trade', modal).onclick = async () => {
+    const sel = $('#tr-trade-target', modal);
+    if (!sel || !sel.value) return;
+    const partnerId = Number(sel.value);
+    let partner;
+    try { partner = await api('/api/characters/' + partnerId); }
+    catch (e) { toast(e.message, true); return; }
+    const theirItems = (partner.data.inventory || []).filter(i => i.state === 'carried' && i.instance_id && i.instance_id !== item.instance_id);
+    if (!theirItems.length) { toast(T('Partner has no carried items to trade.','У партнёра нет carried предметов для обмена.'), true); return; }
+    const pick = await new Promise(resolve => {
+      const m2 = openModal(`<h2>${T('Choose their item','Выберите их предмет')}</h2><div class="choice-card-grid">${theirItems.map(i => `<button class="choice-card" data-tr-partner-item="${esc(i.instance_id)}"><b>${esc(i.custom_name || i.name)}</b><span>${esc(i.cat || '')} ×${i.qty || 1}</span></button>`).join('')}</div>`, true);
+      $$('[data-tr-partner-item]', m2).forEach(b => b.onclick = () => { resolve(b.dataset.trPartnerItem); closeModal(); });
+      const close = $('.close', m2); if (close) close.onclick = () => { resolve(null); };
+    });
+    if (!pick) return;
+    performItemTransfer(c, item.instance_id, { revision: c.revision, action: 'trade', to_char_id: partnerId, to_instance_id: pick, to_revision: partner.revision, notes: notes() || 'Trade' });
+  };
+  const returnButton = $('#tr-return', modal);
+  if (returnButton) returnButton.onclick = () => {
+    performItemTransfer(c, item.instance_id, { revision: c.revision, action: 'return', notes: notes() || 'Return loan' });
+  };
+}
+
+function stashRowHtml(item, hasTargets) {
+  const stackable = isStackableItem(item);
+  const fullQty = Math.max(1, Number(item._stashQty) || Number(item.qty) || 1);
+  const last = (item._stashTransfers || [])[0];
+  return `<div class="inv-row"><span class="iname">${esc(item.custom_name || item.name)} ×${fullQty}</span>
+    ${item.cat === 'ammo' ? `<span class="chip">${ammoRoundsForItem(item)} ${T('rounds','патронов')}</span>` : ''}
+    <span class="chip">${T('STASH','СКЛАД')}</span>
+    ${last ? `<span class="small muted">${esc(last.actor || '')} · ${timeAgo(last.created)}</span>` : ''}
+    <span class="muted small">${money((item.price || 0) * fullQty)}</span>
+    ${hasTargets ? `<button class="btn-sm" data-stash-take="${fullQty}" data-stash-instance="${esc(item.instance_id)}">${T('Take','Взять')}</button>` : ''}
+    ${hasTargets && stackable && fullQty > 1 ? `<button class="btn-sm" data-stash-take="1" data-stash-instance="${esc(item.instance_id)}">${T('Take 1','Взять 1')}</button>` : ''}
+    ${(item._stashTransfers || []).length ? `<button class="info-btn" data-stash-history="${esc(item.instance_id)}">i</button>` : ''}
+  </div>`;
+}
+
+async function viewCrewStash(view) {
+  if (!state.me) {
+    view.innerHTML = `<div class="empty">${T('Sign in to use the Crew Stash.','Войдите, чтобы пользоваться Crew Stash.')} <a href="#/login">${T('Sign in','Войти')}</a></div>`;
+    return;
+  }
+  view.innerHTML = spinner();
+  let data;
+  try { data = await api('/api/crew-stash'); }
+  catch (e) { view.innerHTML = `<div class="empty">⚠️ ${esc(e.message)}</div>`; return; }
+  const targets = (data.characters || []).filter(x => !x.archived);
+  const takeTargets = state.me.is_gm ? targets : targets.filter(x => x.owner_id === state.me.id);
+  const opts = takeTargets.map(x => `<option value="${x.id}">${esc(x.handle)}${state.me.is_gm && x.owner_name ? ' · ' + esc(x.owner_name) : ''}</option>`).join('');
+  const stash = data.stash || [];
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h1>🎒 ${T('Crew Stash','Общий склад')}</h1><div class="sub">${T('Shared gear pool for the crew. Every move is written to the audit log.','Общий склад снаряжения команды. Каждое перемещение записывается в журнал.')}</div></div>
+      <button onclick="location.hash='#/dossiers'">← ${T('Characters','Персонажи')}</button>
+    </div>
+    <div class="panel mb">
+      <div class="row">
+        <label class="f"><span>${T('Take as','Взять как')}</span><select id="stash-take-char">${opts}</select></label>
+        <span class="muted small">${T('Items are placed into the selected character inventory.','Предметы попадают в инвентарь выбранного персонажа.')}</span>
+      </div>
+    </div>
+    ${stash.length ? groupedItemsHtml(stash.map(s => ({ ...s.item, instance_id: s.instance_id, _stashQty: s.quantity, _stashTransfers: s.transfers })), item => stashRowHtml(item, takeTargets.length > 0), T('Stash','Склад')) : `<div class="empty">${T('The Crew Stash is empty.','Crew Stash пуст.')}</div>`}
+  `;
+  $$('[data-stash-take]', view).forEach(btn => btn.onclick = async () => {
+    const charId = Number($('#stash-take-char', view).value);
+    if (!charId) { toast(T('Choose a character first.','Сначала выберите персонажа.'), true); return; }
+    try {
+      const res = await api('/api/crew-stash/take', { method: 'POST', body: { char_id: charId, instance_id: btn.dataset.stashInstance, quantity: Number(btn.dataset.stashTake) || 1, notes: T('Crew Stash take','Взято из Crew Stash') } });
+      toast(res.message || T('Item taken.','Предмет взят.'));
+      viewCrewStash(view);
+    } catch (e) { toast(e.message, true); }
+  });
+  $$('[data-stash-history]', view).forEach(btn => btn.onclick = () => {
+    const item = stash.find(s => s.instance_id === btn.dataset.stashHistory);
+    const transfers = item ? item.transfers : [];
+    openModal(`<h2>${T('Transfer history','История передач')}</h2><div class="kv">${transfers.map(t => `<b>${esc(String(t.kind || '').toUpperCase())} · ${timeAgo(t.created)}</b><span class="user-content">${esc(t.actor || '')}${t.notes ? ' · ' + esc(t.notes) : ''}</span>`).join('') || `<span class="muted small">${T('No recorded transfers.','Передач не записано.')}</span>`}</div>`, true);
+  });
+}
+
 async function viewSheet(id) {
   const view = $('#view');
   view.innerHTML = spinner();
@@ -2772,10 +2972,12 @@ async function viewSheet(id) {
   const ch = c.data, d = c.derived;
   const owner = state.me && state.me.id === c.owner_id;
   const mine = owner && !ch.archived;
+  const canTransfer = !!(state.me && !ch.archived && (owner || state.me.is_gm));
   const ab = ROLE_ABILITIES[ch.role] || { name: state.meta.roles[ch.role] || '', desc: '' };
   const hpCur = ch.hp_cur == null ? d.hp_max : ch.hp_cur;
   const cw = ch.cyberware || [];
   const inv = ch.inventory || [];
+  const loanByInstance = new Map((d.loans || []).map(l => [l.instance_id, l]));
   const activeGear=inv.filter(item=>item.state==='equipped'&&item.equippable);
   const vehicles=inv.filter(item=>item.cat==='vehicles');
   const synergies=d.effects?.synergies||[],itemEffectSources=d.effects?.item_sources||[],effectInstances=d.effects?.instances||[];
@@ -2848,7 +3050,7 @@ async function viewSheet(id) {
           <div class="inv-row"><span class="iname">${esc(i.custom_name || i.display_name || i.name)} ×${i.qty || 1}</span>${i.cat==='ammo'?`<span class="chip">${ammoRoundsForItem(i)} rounds</span>`:''}${i.is_custom?'<span class="tag">CUSTOM · MANUAL</span>':''}
             ${itemMechanicChips(i)}<span class="chip">${esc(i.state||'carried')}</span>${i.consumable?`<span class="tag">${T('CONSUMABLE','РАСХОДНИК')}</span>`:''}${i.equippable?`<span class="tag">${T('EQUIPPABLE','ЭКИПИРУЕТСЯ')}</span>`:''}${i.acquisition_source?`<span class="chip">${esc(acquisitionSourceLabel(i.acquisition_source))}</span>`:''}
             ${i.sp != null && !(i.mechanics || {}).sp ? `<span class="chip">SP ${i.sp}</span>` : ''}
-            ${i.is_custom&&i.desc?`<span class="small muted user-content">${esc(i.desc)}</span>`:''}<span class="muted small">${money((i.price || 0) * (i.qty || 1))}</span><button class="info-btn" data-owned-item="${i._sheetIndex}">i</button>${mine&&i.consumable&&i.state!=='stored'?`<button class="btn-sm" data-item-use="${i.instance_id}">${T('Use','Использовать')}</button>`:''}${mine&&i.equippable&&i.state==='carried'?`<button class="btn-sm" data-item-equip="${i.instance_id}">${T('Equip','Экипировать')}</button>`:''}
+            ${i.is_custom&&i.desc?`<span class="small muted user-content">${esc(i.desc)}</span>`:''}${loanByInstance.has(i.instance_id)&&loanByInstance.get(i.instance_id).borrower_character_id===c.id?`<span class="tag warn-tag">${T('BORROWED','ВЗЯТО')}</span>`:''}<span class="muted small">${money((i.price || 0) * (i.qty || 1))}</span><button class="info-btn" data-owned-item="${i._sheetIndex}">i</button>${mine&&i.consumable&&i.state!=='stored'?`<button class="btn-sm" data-item-use="${i.instance_id}">${T('Use','Использовать')}</button>`:''}${mine&&i.equippable&&i.state==='carried'?`<button class="btn-sm" data-item-equip="${i.instance_id}">${T('Equip','Экипировать')}</button>`:''}${canTransfer?`<button class="btn-sm" data-item-transfer="${i.instance_id}">⇄ ${T('Transfer','Передать')}</button>`:''}
           </div>`, T('Gear','Снаряжение')) : `<div class="muted small">${T('Empty.','Пусто. Совсем.')}</div>`}
         ${armorSlots.length ? `<h3 class="mt">🛡️ ${T('Equipped Armor','Надетая броня')}</h3>${armorSlots.map(([piece, ru]) => `
           <div class="inv-row"><span class="iname">${ru}: ${esc(piece.name)}</span>
@@ -2857,6 +3059,8 @@ async function viewSheet(id) {
           </div>`).join('')}` : ''}
         ${armorHostLifecycleHtml(d.effective_armor_hosts,mine)}
         ${techMakerSheetHtml(ch,d,mine)}
+        ${loansSheetHtml(c,d,canTransfer)}
+        ${canTransfer?`<div class="row mt"><button class="btn-sm" onclick="location.hash='#/stash'">🎒 ${T('Crew Stash','Общий склад')}</button></div>`:''}
       </div>
       <div class="panel mb" id="sheet-cyberdecks">
         <h2>💻 ${T('Cyberdeck Loadout','Загрузка Cyberdeck')}</h2>
@@ -2912,6 +3116,8 @@ async function viewSheet(id) {
   $$('[data-tech-maker-action]',view).forEach(button=>button.onclick=async()=>{const [modificationId,action]=button.dataset.techMakerAction.split('|');if(action!=='remove')return;if(!confirm(T('Remove this Tech Maker modification?','Снять эту Tech Maker modification?')))return;const reason=(prompt(T('Tech Maker removal reason','Причина снятия Tech Maker modification'),T('Removed during downtime','Снято во время downtime'))||'').trim();if(reason.length<3)return;button.disabled=true;try{await api(`/api/characters/${c.id}/tech-maker/modifications/${modificationId}/action`,{method:'POST',body:{revision:c.revision,action:'remove',reason}});toast(T('Tech Maker modification removed.','Tech Maker modification снята.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
   $$('[data-item-equip]',view).forEach(button=>button.onclick=()=>{const item=inv.find(entry=>entry.instance_id===button.dataset.itemEquip);if(item)chooseEquipMode(c,item);});
   $$('[data-item-use]',view).forEach(button=>button.onclick=()=>{const item=inv.find(entry=>entry.instance_id===button.dataset.itemUse);if(!item)return;const maximum=Math.max(1,Number(item.qty)||1),amount=maximum>1?Number(prompt(T(`How many uses? 1–${maximum}`,`Сколько использовать? 1–${maximum}`),'1')):1;if(!Number.isInteger(amount)||amount<1||amount>maximum)return;if(confirm(`${T('Use','Использовать')} ${item.custom_name||item.name} ×${amount}?`))performSheetItemAction(c,item,'use',{amount});});
+  $$('[data-item-transfer]',view).forEach(button=>button.onclick=()=>{const item=inv.find(entry=>entry.instance_id===button.dataset.itemTransfer);if(item)openItemTransferModal(c,item);});
+  $$('[data-loan-action]',view).forEach(button=>button.onclick=()=>{const [instanceId,action]=button.dataset.loanAction.split('|');const loan=(d.loans||[]).find(l=>l.instance_id===instanceId);if(loan)performLoanAction(c,loan,action);});
   $$('[data-sheet-jump]',view).forEach(button=>button.onclick=()=>document.getElementById(button.dataset.sheetJump)?.scrollIntoView({behavior:'smooth',block:'start'}));
   $$('[data-manage-upgrades]',view).forEach(button=>button.onclick=()=>openWeaponUpgradeManager(c,button.dataset.manageUpgrades));
   $$('[data-manage-cyberdeck]',view).forEach(button=>button.onclick=()=>openCyberdeckManager(c,button.dataset.manageCyberdeck));
@@ -3001,7 +3207,7 @@ async function viewCharacters(view) {
   view.innerHTML = `
     <div class="page-head">
       <div><h1>🧬 ${T('My Characters','Мои персонажи')}</h1><div class="sub">${T('Active Dossiers','Активные досье')}: ${activeCount}/50${archivedCount ? ` · ${archivedCount} ${T('archived','в архиве')}` : ''}</div></div>
-      <button class="btn-primary" onclick="location.hash='#/char/new'">+ ${T('New Edgerunner','Новый эджраннер')}</button>
+      <div class="row"><button class="btn-sm" onclick="location.hash='#/stash'">🎒 ${T('Crew Stash','Общий склад')}</button><button class="btn-primary" onclick="location.hash='#/char/new'">+ ${T('New Edgerunner','Новый эджраннер')}</button></div>
     </div>`;
   const listEl = document.createElement('div');
   listEl.className = 'grid cols-3';

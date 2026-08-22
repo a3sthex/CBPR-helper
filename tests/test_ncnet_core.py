@@ -581,5 +581,214 @@ class TechMakerFlowTests(unittest.TestCase):
         self.assertEqual(wrong_specialty.exception.status, 400)
 
 
+class CrewStashFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = sqlite3.connect(str(Path(self.tmp.name) / 'ncnet.db'))
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(server.SCHEMA)
+        server.apply_schema_migrations(self.conn, make_backup=False)
+        for username, display, role in (('gm', 'GM', 'gm'),
+                                        ('runner1', 'Runner One', 'player'),
+                                        ('runner2', 'Runner Two', 'player')):
+            self.conn.execute(
+                'INSERT INTO users(username,display_name,pass_hash,is_gm,account_role,created) '
+                'VALUES(?,?,?,?,?,?)',
+                (username, display, 'x', 1 if role in ('gm', 'admin') else 0, role, 1))
+        self.weapon_id = 'a' * 32
+        self.ammo_id = 'b' * 32
+        self.grenade_id = 'c' * 32
+        weapon = {
+            'key': 'guns-0', 'catalog_item_id': 'guns-0', 'instance_id': self.weapon_id,
+            'cat': 'guns', 'name': 'Medium Pistol', 'qty': 1, 'state': 'carried',
+            'mechanics': {'type': 'Medium Pistol', 'skill': 'Handgun',
+                          'damage': {'notation': '2d6'}, 'magazine': 12,
+                          'concealable': 'YES'},
+        }
+        ammo = {
+            'key': 'ammo-0', 'catalog_item_id': 'ammo-0', 'instance_id': self.ammo_id,
+            'cat': 'ammo', 'name': 'Basic Handgun Ammo', 'qty': 3, 'state': 'carried',
+            'mechanics': {'quantity_per_purchase': 10}, 'ammo_rounds': 30,
+        }
+        base = {
+            'handle': 'V', 'role': 'Solo', 'role_rank': 4,
+            'roles': [{'name': 'Solo', 'rank': 4, 'primary': True}], 'active_role': 'Solo',
+            'stats': {'BODY': 6, 'WILL': 6, 'LUCK': 5, 'MOVE': 6}, 'skills': {},
+            'inventory': [weapon, ammo], 'cyberware': [], 'armor': {},
+            'cash': 100, 'ip_available': 0, 'ip_total_earned': 0,
+            'ip_total_spent': 0, 'luck_cur': 5, 'reputation': 0,
+        }
+        self.conn.execute(
+            'INSERT INTO characters(owner_id,public,data,created,updated) VALUES(2,1,?,1,1)',
+            (json.dumps(base),))
+        k = dict(base)
+        k['handle'] = 'K'
+        k['inventory'] = [{
+            'key': 'grenade-0', 'catalog_item_id': 'grenade-0', 'instance_id': self.grenade_id,
+            'cat': 'grenades', 'name': 'Frag Grenade', 'qty': 1, 'state': 'carried',
+        }]
+        self.conn.execute(
+            'INSERT INTO characters(owner_id,public,data,created,updated) VALUES(3,1,?,1,1)',
+            (json.dumps(k),))
+        self.conn.commit()
+        server.persist_character_item_instances(
+            self.conn, 1, base, 'test_seed', prune=True)
+        server.persist_character_item_instances(
+            self.conn, 2, k, 'test_seed', prune=True)
+        self.conn.commit()
+        self.handler = object.__new__(server.Handler)
+        self.response = {}
+        self.current = self.user('gm')
+        self.handler.current_user = lambda conn: self.current
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def user(self, username):
+        return self.conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
+
+    def call(self, method, *args):
+        self.response = {}
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+        method(self.handler, self.conn, *args)
+        return self.response
+
+    def char_data(self, char_id):
+        return json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=?', (char_id,)).fetchone()['data'])
+
+    def revision(self, char_id):
+        return self.conn.execute(
+            'SELECT revision FROM characters WHERE id=?', (char_id,)).fetchone()['revision']
+
+    def transfer(self, char_id, instance_id, body):
+        self.current = self.user(body.pop('_as', 'gm'))
+        return self.call(server.Handler.api_character_item_transfer, {},
+                         self.transfer_match(char_id, instance_id), body)
+
+    @staticmethod
+    def transfer_match(char_id, instance_id):
+        return re.match(r'^(\d+)/([a-f0-9]{32})$', f'{char_id}/{instance_id}')
+
+    def test_give_stash_take_roundtrip(self):
+        self.current = self.user('gm')
+        self.transfer(1, self.weapon_id, {
+            'revision': self.revision(1), 'action': 'give', 'to_char_id': 2,
+            'notes': 'hand it over', '_as': 'gm',
+        })
+        self.assertEqual(self.response['status'], 200)
+        self.assertFalse(any(i['instance_id'] == self.weapon_id
+                             for i in self.char_data(1)['inventory']))
+        self.assertTrue(any(i['instance_id'] == self.weapon_id
+                            for i in self.char_data(2)['inventory']))
+        # K stashes the weapon.
+        self.transfer(2, self.weapon_id, {
+            'revision': self.revision(2), 'action': 'stash', 'notes': 'pool it', '_as': 'gm',
+        })
+        stash = server.crew_stash_payload(self.conn)
+        self.assertEqual(len(stash), 1)
+        self.assertEqual(stash[0]['instance_id'], self.weapon_id)
+        # V takes it back from the stash.
+        self.call(server.Handler.api_crew_stash_take, {}, None, {
+            'char_id': 1, 'instance_id': self.weapon_id, 'notes': 'mine again',
+        })
+        self.assertEqual(self.response['status'], 200)
+        self.assertTrue(any(i['instance_id'] == self.weapon_id
+                            for i in self.char_data(1)['inventory']))
+        self.assertEqual(len(server.crew_stash_payload(self.conn)), 0)
+        history = server.item_transfer_history(self.conn, self.weapon_id)
+        kinds = [entry['kind'] for entry in history]
+        self.assertEqual(kinds, ['take', 'stash', 'give'])
+
+    def test_split_stack_and_partial_stash(self):
+        self.current = self.user('gm')
+        self.transfer(1, self.ammo_id, {
+            'revision': self.revision(1), 'action': 'stash', 'quantity': 1,
+            'notes': 'pool one pack', '_as': 'gm',
+        })
+        self.assertEqual(self.response['status'], 200)
+        stash = server.crew_stash_payload(self.conn)
+        self.assertEqual(stash[0]['item']['qty'], 1)
+        remaining = next(i for i in self.char_data(1)['inventory']
+                         if i['cat'] == 'ammo')
+        self.assertEqual(remaining['qty'], 2)
+        self.assertNotEqual(stash[0]['instance_id'], self.ammo_id)
+
+    def test_loan_return_and_recall(self):
+        self.current = self.user('gm')
+        self.transfer(1, self.weapon_id, {
+            'revision': self.revision(1), 'action': 'loan', 'to_char_id': 2,
+            'notes': 'borrow for the run', '_as': 'gm',
+        })
+        self.assertEqual(self.response['status'], 200)
+        loans = server.character_open_loans(self.conn, 1)
+        self.assertEqual(len(loans), 1)
+        self.assertEqual(loans[0]['borrower_character_id'], 2)
+        # Borrower returns it.
+        self.transfer(2, self.weapon_id, {
+            'revision': self.revision(2), 'action': 'return', 'notes': 'thanks', '_as': 'gm',
+        })
+        self.assertEqual(self.response['status'], 200)
+        self.assertEqual(len(server.character_open_loans(self.conn, 1)), 0)
+        self.assertTrue(any(i['instance_id'] == self.weapon_id
+                            for i in self.char_data(1)['inventory']))
+        # Loan again, then the owner recalls from the borrower.
+        self.transfer(1, self.weapon_id, {
+            'revision': self.revision(1), 'action': 'loan', 'to_char_id': 2,
+            'notes': 'once more', '_as': 'gm',
+        })
+        self.transfer(1, self.weapon_id, {
+            'revision': self.revision(1), 'action': 'recall', 'notes': 'need it back',
+            '_as': 'gm',
+        })
+        self.assertEqual(self.response['status'], 200)
+        self.assertFalse(any(i['instance_id'] == self.weapon_id
+                             for i in self.char_data(2)['inventory']))
+        self.assertTrue(any(i['instance_id'] == self.weapon_id
+                            for i in self.char_data(1)['inventory']))
+
+    def test_trade_two_items(self):
+        self.current = self.user('gm')
+        self.transfer(1, self.weapon_id, {
+            'revision': self.revision(1), 'action': 'trade', 'to_char_id': 2,
+            'to_instance_id': self.grenade_id, 'to_revision': self.revision(2),
+            'notes': 'pistol for a grenade', '_as': 'gm',
+        })
+        self.assertEqual(self.response['status'], 200)
+        self.assertTrue(any(i['instance_id'] == self.grenade_id
+                            for i in self.char_data(1)['inventory']))
+        self.assertTrue(any(i['instance_id'] == self.weapon_id
+                            for i in self.char_data(2)['inventory']))
+
+    def test_player_cannot_transfer_other_character_item(self):
+        self.current = self.user('runner2')
+        with self.assertRaises(server.ApiError) as denied:
+            self.transfer(1, self.weapon_id, {
+                'revision': self.revision(1), 'action': 'give', 'to_char_id': 2,
+                'notes': 'sneaky', '_as': 'runner2',
+            })
+        self.assertEqual(denied.exception.status, 403)
+
+    def test_equipped_item_cannot_be_transferred(self):
+        self.current = self.user('gm')
+        data = self.char_data(1)
+        for item in data['inventory']:
+            if item['instance_id'] == self.weapon_id:
+                item['state'] = 'equipped'
+        self.conn.execute('UPDATE characters SET data=? WHERE id=?',
+                          (json.dumps(data), 1))
+        self.conn.commit()
+        with self.assertRaises(server.ApiError) as blocked:
+            self.transfer(1, self.weapon_id, {
+                'revision': self.revision(1), 'action': 'give', 'to_char_id': 2,
+                'notes': 'nope', '_as': 'gm',
+            })
+        self.assertEqual(blocked.exception.status, 409)
+
+
 if __name__ == '__main__':
     unittest.main()

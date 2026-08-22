@@ -1925,3 +1925,47 @@ class CampaignClockTests(unittest.TestCase):
         self.assertEqual(server.VEHICLE_REPAIR_RULES['destroyed']['duration_key'], '1_week')
         self.assertIsNotNone(server.campaign_duration_seconds(
             server.VEHICLE_REPAIR_RULES['destroyed']['duration_key']))
+
+
+class CrewStashUnitTests(unittest.TestCase):
+    def test_split_stack_preserves_ammo_rounds(self):
+        entry = {
+            'instance_id': 'a' * 32, 'cat': 'ammo', 'name': 'Basic Handgun Ammo',
+            'qty': 3, 'mechanics': {'quantity_per_purchase': 10}, 'ammo_rounds': 25,
+        }
+        remaining, taken = server._split_stack(entry, 1)
+        self.assertEqual(remaining['qty'], 2)
+        self.assertEqual(taken['qty'], 1)
+        self.assertEqual(taken['ammo_rounds'], 10)
+        self.assertEqual(remaining['ammo_rounds'], 15)
+
+    def test_split_stack_full_move_returns_none_remaining(self):
+        entry = {'instance_id': 'a' * 32, 'cat': 'ammo', 'qty': 2,
+                 'mechanics': {'quantity_per_purchase': 10}, 'ammo_rounds': 20}
+        remaining, taken = server._split_stack(entry, 2)
+        self.assertIsNone(remaining)
+        self.assertEqual(taken['qty'], 2)
+
+    def test_prepare_entry_for_holder_normalises_state_and_keeps_id(self):
+        entry = {'instance_id': 'a' * 32, 'qty': 4, 'state': 'equipped',
+                 'equipped_mode': 'held', 'active': True}
+        stashed = server._prepare_entry_for_holder(entry, 'stash')
+        self.assertEqual(stashed['state'], 'stored')
+        self.assertEqual(stashed['qty'], 4)
+        self.assertNotIn('equipped_mode', stashed)
+        self.assertNotIn('active', stashed)
+        self.assertEqual(stashed['instance_id'], 'a' * 32)
+        carried = server._prepare_entry_for_holder(entry, 'char')
+        self.assertEqual(carried['state'], 'carried')
+
+    def test_detach_and_attach_runtime_state_roundtrip(self):
+        source = {'weapon_state': {'a' * 32: {'magazine': 7, 'magazine_max': 12}},
+                  'inventory': []}
+        entry = {'instance_id': 'a' * 32}
+        server._detach_runtime_state(source, entry, 'a' * 32)
+        self.assertNotIn('a' * 32, source['weapon_state'])
+        self.assertIn('_runtime', entry)
+        target = {}
+        server._attach_runtime_state(target, entry, 'a' * 32)
+        self.assertEqual(target['weapon_state']['a' * 32]['magazine'], 7)
+        self.assertNotIn('_runtime', entry)
