@@ -2889,6 +2889,28 @@ CREATE INDEX IF NOT EXISTS idx_session_recaps_date ON session_recaps(session_dat
 CREATE INDEX IF NOT EXISTS idx_session_recaps_storyline ON session_recaps(storyline_id, session_date);
 """
 
+LOCATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS locations(
+  id TEXT PRIMARY KEY,
+  name_en TEXT NOT NULL,
+  name_ru TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT 'other',
+  district_id TEXT NOT NULL DEFAULT '',
+  x REAL NOT NULL DEFAULT 500,
+  y REAL NOT NULL DEFAULT 500,
+  description_en TEXT NOT NULL DEFAULT '',
+  description_ru TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT '',
+  custom INTEGER NOT NULL DEFAULT 0,
+  owner_user_id INTEGER,
+  archived INTEGER NOT NULL DEFAULT 0,
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_locations_district ON locations(district_id, archived);
+CREATE INDEX IF NOT EXISTS idx_locations_kind ON locations(kind, archived);
+"""
+
 NOTIFICATION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS notifications(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2939,6 +2961,7 @@ MIGRATION_CREW_STASH = 13
 MIGRATION_MARKET_STOCK = 14
 MIGRATION_NPC_STATBLOCKS = 15
 MIGRATION_SESSION_RECAPS = 16
+MIGRATION_LOCATIONS = 17
 DB_BACKUP_LIMIT = 5
 _RATE_LIMIT_BUCKETS = {}
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -4271,6 +4294,7 @@ def apply_schema_migrations(conn, make_backup=True):
         (MIGRATION_MARKET_STOCK, 'market finite stock and fixer requests'),
         (MIGRATION_NPC_STATBLOCKS, 'npc full statblocks and session snapshots'),
         (MIGRATION_SESSION_RECAPS, 'session recaps and campaign chronicle'),
+        (MIGRATION_LOCATIONS, 'map points of interest and key locations'),
     ]
     pending = [version for version, _ in migrations if version not in applied]
     if make_backup and pending:
@@ -4331,6 +4355,8 @@ def apply_schema_migrations(conn, make_backup=True):
         ensure_column(conn, 'session_combatants', 'statblock_json', "TEXT NOT NULL DEFAULT '{}'")
     if MIGRATION_SESSION_RECAPS not in applied:
         conn.executescript(SESSION_RECAP_SCHEMA)
+    if MIGRATION_LOCATIONS not in applied:
+        conn.executescript(LOCATION_SCHEMA)
     # Re-run additive CREATE IF NOT EXISTS blocks so patch-level tables added to an
     # already-applied migration remain safe during development and rolling deploys.
     conn.executescript(NETWORK_SCHEMA)
@@ -4344,6 +4370,7 @@ def apply_schema_migrations(conn, make_backup=True):
     conn.executescript(CREW_STASH_SCHEMA)
     conn.executescript(MARKET_STOCK_SCHEMA)
     conn.executescript(SESSION_RECAP_SCHEMA)
+    conn.executescript(LOCATION_SCHEMA)
     # Recover safely if a rolling/patch deployment recorded the migration before
     # every additive column reached a particular database.
     ensure_column(conn, 'users', 'avatar_media_id', 'TEXT')
@@ -5857,6 +5884,178 @@ def downtime_payload(data, conn=None):
             'activities': DOWNTIME_ACTIVITIES}
 
 
+# -------------------------------------------------------- Map POIs / Key Locations
+
+LOCATION_KINDS = {
+    'bar', 'club', 'clinic', 'market', 'restaurant', 'corporate',
+    'gang', 'landmark', 'service', 'other',
+}
+
+# Seed points of interest for the 2070s campaign. Coordinates use the same
+# 0..1000 viewBox as the client-side NC_MAP_COORDS overlay. Source metadata is
+# explicit so the GM can tell canonical landmarks from campaign inventions.
+NC_SEED_LOCATIONS = [
+    {'id': 'afterlife', 'name_en': 'Afterlife', 'name_ru': 'Afterlife', 'kind': 'bar',
+     'district_id': 'heywood-the-glen', 'x': 530, 'y': 640,
+     'description_en': 'The legendary edgerunner bar where mercs drink to their fallen.',
+     'description_ru': 'Легендарный бар эджраннеров, где наёмники пьют за павших.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'lizzies-bar', 'name_en': "Lizzie's Bar", 'name_ru': 'Бар Лиззи', 'kind': 'club',
+     'district_id': 'watson-kabuki', 'x': 600, 'y': 265,
+     'description_en': 'Mox-owned club and braindance den in Kabuki.',
+     'description_ru': 'Клуб Mox и точка брейнданса в Кабуки.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'clouds', 'name_en': 'Clouds', 'name_ru': 'Clouds', 'kind': 'club',
+     'district_id': 'westbrook-japantown', 'x': 668, 'y': 340,
+     'description_en': 'High-end dolls club above Japantown.',
+     'description_ru': 'Элитный клуб кукол над Джапантауном.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'totentanz', 'name_en': 'Totentanz', 'name_ru': 'Totentanz', 'kind': 'club',
+     'district_id': 'watson', 'x': 555, 'y': 175,
+     'description_en': 'Maelstrom-run industrial club in Watson.',
+     'description_ru': 'Индустриальный клуб Maelstrom в Уотсоне.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'riot', 'name_en': 'Riot', 'name_ru': 'Riot', 'kind': 'club',
+     'district_id': 'westbrook-japantown', 'x': 645, 'y': 372,
+     'description_en': 'Music club where the top edgerunners perform.',
+     'description_ru': 'Музыкальный клуб, где выступают топовые эджраннеры.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'embers', 'name_en': 'Embers', 'name_ru': 'Embers', 'kind': 'club',
+     'district_id': 'westbrook-charter-hill', 'x': 782, 'y': 512,
+     'description_en': 'Exclusive Charter Hill lounge with a view.',
+     'description_ru': 'Эксклюзивный лаунж в Чартер-Хилл с видом.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'konpeki-plaza', 'name_en': 'Konpeki Plaza', 'name_ru': 'Конпеки-Плаза', 'kind': 'corporate',
+     'district_id': 'city-center-downtown', 'x': 425, 'y': 452,
+     'description_en': 'Arasaka luxury hotel and corpo fortress.',
+     'description_ru': 'Люксовый отель Arasaka и корпоративная крепость.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'arasaka-tower', 'name_en': 'Arasaka Tower', 'name_ru': 'Башня Арасака', 'kind': 'corporate',
+     'district_id': 'city-center-corpo-plaza', 'x': 558, 'y': 486,
+     'description_en': 'The monolithic heart of Arasaka in Night City.',
+     'description_ru': 'Монолитное сердце Arasaka в Найт-Сити.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'megabuilding-h10', 'name_en': 'Megabuilding H10', 'name_ru': 'Мегаздание H10', 'kind': 'landmark',
+     'district_id': 'watson-little-china', 'x': 520, 'y': 280,
+     'description_en': 'Residential megabuilding in Little China.',
+     'description_ru': 'Жилое мегаздание в Маленьком Китае.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'megabuilding-h8', 'name_en': 'Megabuilding H8', 'name_ru': 'Мегаздание H8', 'kind': 'landmark',
+     'district_id': 'heywood-vista-del-rey', 'x': 610, 'y': 550,
+     'description_en': 'Residential megabuilding in Vista del Rey.',
+     'description_ru': 'Жилое мегаздание в Виста-дель-Рей.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'grand-imperial-mall', 'name_en': 'Grand Imperial Mall', 'name_ru': 'Гранд Империал Молл', 'kind': 'market',
+     'district_id': 'pacifica-coastview', 'x': 485, 'y': 705,
+     'description_en': 'Ruined Pacifica mall taken over by the Voodoo Boys.',
+     'description_ru': 'Разрушенный молл Пасифики под контролем Voodoo Boys.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'viktor-clinic', 'name_en': "Viktor's Clinic", 'name_ru': 'Клиника Виктора', 'kind': 'clinic',
+     'district_id': 'watson-little-china', 'x': 508, 'y': 300,
+     'description_en': 'Ripperdoc clinic trusted by local mercs.',
+     'description_ru': 'Клиника риппердока, которой доверяют местные наёмники.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'mistys-esoterica', 'name_en': "Misty's Esoterica", 'name_ru': 'Эзотерика Мисти', 'kind': 'service',
+     'district_id': 'watson-little-china', 'x': 535, 'y': 288,
+     'description_en': 'Occult shop and tarot readings.',
+     'description_ru': 'Оккультная лавка и расклады Таро.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'no-tell-motel', 'name_en': 'No-Tell Motel', 'name_ru': 'Мотель No-Tell', 'kind': 'service',
+     'district_id': 'watson-northside-industrial', 'x': 640, 'y': 120,
+     'description_en': 'Cheap no-questions-asked motel.',
+     'description_ru': 'Дешёвый мотель без лишних вопросов.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'delamain-hq', 'name_en': 'Delamain HQ', 'name_ru': 'Штаб Delamain', 'kind': 'service',
+     'district_id': 'city-center-downtown', 'x': 450, 'y': 470,
+     'description_en': 'Delamain taxi corporation headquarters.',
+     'description_ru': 'Штаб корпорации такси Delamain.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'biotechnica-flats', 'name_en': 'Biotechnica Flats', 'name_ru': 'Поля Biotechnica', 'kind': 'corporate',
+     'district_id': 'badlands-near-santo-domingo', 'x': 885, 'y': 700,
+     'description_en': 'Biotechnica protein farms in the Badlands.',
+     'description_ru': 'Протеиновые фермы Biotechnica в Пустошах.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'maelstrom-hangout', 'name_en': 'Maelstrom Hangout', 'name_ru': 'База Maelstrom', 'kind': 'gang',
+     'district_id': 'watson-northside-industrial', 'x': 600, 'y': 150,
+     'description_en': 'Chrome-obsessed Maelstrom turf in Northside.',
+     'description_ru': 'Территория помешанных на хроме Maelstrom в Нортсайде.',
+     'source': 'Campaign seed'},
+    {'id': 'tyger-claws-den', 'name_en': 'Tyger Claws Den', 'name_ru': 'Логово Tyger Claws', 'kind': 'gang',
+     'district_id': 'westbrook-japantown', 'x': 675, 'y': 360,
+     'description_en': 'Tyger Claws operation in Japantown.',
+     'description_ru': 'Точка Tyger Claws в Джапантауне.',
+     'source': 'Campaign seed'},
+    {'id': 'voodoo-boys-temple', 'name_en': 'Voodoo Boys Temple', 'name_ru': 'Храм Voodoo Boys', 'kind': 'gang',
+     'district_id': 'pacifica-west-wind-estate', 'x': 435, 'y': 820,
+     'description_en': 'The Voodoo Boys hold their turf in Pacifica.',
+     'description_ru': 'Voodoo Boys держат свою территорию в Пасифике.',
+     'source': 'Campaign seed'},
+    {'id': 'dynalar-clinic', 'name_en': 'Dynalar Clinic', 'name_ru': 'Клиника Dynalar', 'kind': 'clinic',
+     'district_id': 'city-center-corpo-plaza', 'x': 545, 'y': 505,
+     'description_en': 'Corporate-grade ripperdoc services.',
+     'description_ru': 'Риппердок-услуги корпоративного уровня.',
+     'source': 'Campaign seed'},
+]
+
+
+def ensure_seed_locations(conn):
+    """Idempotently seed canonical Night City points of interest."""
+    now = time.time()
+    for item in NC_SEED_LOCATIONS:
+        conn.execute(
+            'INSERT OR IGNORE INTO locations(id,name_en,name_ru,kind,district_id,x,y,'
+            'description_en,description_ru,source,custom,owner_user_id,archived,created,updated) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?,0,NULL,0,?,?)',
+            (item['id'], item['name_en'], item['name_ru'], item['kind'],
+             item['district_id'], item['x'], item['y'],
+             item['description_en'], item['description_ru'], item['source'], now, now))
+
+
+def clean_location_input(body, existing=None):
+    base = dict(existing or {})
+    get = lambda key, default='': (body or {}).get(key, base.get(key, default))
+    name_en = str(get('name_en') or '').strip()[:120]
+    if len(name_en) < 2:
+        raise ApiError(400, 'Локации нужно название')
+    kind = str(get('kind') or 'other').strip().lower()
+    if kind not in LOCATION_KINDS:
+        raise ApiError(400, 'Неизвестный тип локации')
+    district_id = str(get('district_id') or '').strip().lower()
+    if district_id and district_id not in NC_LOCATION_IDS:
+        raise ApiError(400, 'Некорректная локация Night City')
+    try:
+        x = float(get('x', 500))
+        y = float(get('y', 500))
+    except (TypeError, ValueError):
+        raise ApiError(400, 'Некорректные координаты локации')
+    if not math.isfinite(x) or not math.isfinite(y):
+        raise ApiError(400, 'Некорректные координаты локации')
+    return {
+        'name_en': name_en,
+        'name_ru': str(get('name_ru') or '').strip()[:120],
+        'kind': kind,
+        'district_id': district_id,
+        'x': max(0.0, min(1000.0, x)),
+        'y': max(0.0, min(1000.0, y)),
+        'description_en': str(get('description_en') or '').strip()[:5000],
+        'description_ru': str(get('description_ru') or '').strip()[:5000],
+        'source': str(get('source') or '').strip()[:160],
+    }
+
+
+def location_payload(row, user):
+    return {
+        'id': row['id'], 'name_en': row['name_en'], 'name_ru': row['name_ru'],
+        'kind': row['kind'], 'district_id': row['district_id'],
+        'x': row['x'], 'y': row['y'],
+        'description_en': row['description_en'], 'description_ru': row['description_ru'],
+        'source': row['source'], 'custom': bool(row['custom']),
+        'archived': bool(row['archived']),
+        'can_edit': bool(user and user_is_gm(user) and row['custom']),
+        'created': row['created'], 'updated': row['updated'],
+    }
+
+
 # -------------------------------------------------------- Crew Stash & transfers
 
 TRANSFER_KINDS = {'give', 'stash', 'take', 'loan', 'return', 'recall', 'trade', 'split'}
@@ -6112,6 +6311,7 @@ def init_db():
     conn.executescript(SCHEMA)
     apply_schema_migrations(conn, make_backup=had_users_table)
     ensure_campaign_clock(conn)
+    ensure_seed_locations(conn)
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     stale = conn.execute('SELECT * FROM media WHERE attached_type IS NULL AND created < ?', (time.time() - 7 * 86400,)).fetchall()
     for media in stale:
@@ -9332,6 +9532,14 @@ SERVER_ERROR_EN = {
     'Downtime activity уже отмечена выполненной': 'Downtime activity is already resolved',
     'Некорректная сумма Hustle': 'Invalid Hustle amount',
     'Некорректное восстановление HP': 'Invalid HP recovery',
+    'Локации нужно название': 'Location requires a name',
+    'Неизвестный тип локации': 'Unknown location type',
+    'Некорректные координаты локации': 'Invalid location coordinates',
+    'Локация не найдена': 'Location not found',
+    'Некорректный идентификатор локации': 'Invalid location identifier',
+    'Локация с таким идентификатором уже существует': 'A location with this identifier already exists',
+    'Seed локации можно редактировать только через custom копию': 'Seed locations can only be edited via a custom copy',
+    'Seed локации нельзя удалить': 'Seed locations cannot be deleted',
 }
 
 def server_error_message(message, language):
@@ -16715,6 +16923,97 @@ class Handler(BaseHTTPRequestHandler):
         conn.commit()
         self.send_json({'ok': True, 'deleted': True})
 
+    # ------------------------------------------------------------ Map POIs / Key Locations
+
+    def api_locations(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        gm = user_is_gm(user)
+        query = ('SELECT * FROM locations WHERE (? OR archived=0) '
+                 'ORDER BY custom,name_en')
+        rows = conn.execute(query, (1 if gm else 0,)).fetchall()
+        q = (q1(qs.get('q')) or '').strip().lower()
+        district = q1(qs.get('district')) or ''
+        kind = q1(qs.get('kind')) or ''
+        out = []
+        for row in rows:
+            if district and row['district_id'] != district:
+                continue
+            if kind and row['kind'] != kind:
+                continue
+            if q:
+                hay = ' '.join(filter(None, [row['name_en'], row['name_ru'],
+                                             row['description_en'], row['description_ru']])).lower()
+                if q not in hay:
+                    continue
+            out.append(location_payload(row, user))
+        self.send_json({'locations': out, 'kinds': sorted(LOCATION_KINDS)})
+
+    def api_location_detail(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        row = conn.execute('SELECT * FROM locations WHERE id=?', (m.group(1),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Локация не найдена')
+        if row['archived'] and not user_is_gm(user):
+            raise ApiError(404, 'Локация не найдена')
+        self.send_json(location_payload(row, user))
+
+    @atomic_endpoint
+    def api_location_create(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        cleaned = clean_location_input(body or {})
+        location_id = str((body or {}).get('id') or '').strip().lower() or None
+        if location_id:
+            if not re.fullmatch(r'[a-z0-9-]{2,80}', location_id):
+                raise ApiError(400, 'Некорректный идентификатор локации')
+            if conn.execute('SELECT 1 FROM locations WHERE id=?', (location_id,)).fetchone():
+                raise ApiError(409, 'Локация с таким идентификатором уже существует')
+        else:
+            location_id = f'custom-{secrets.token_hex(8)}'
+        now = time.time()
+        conn.execute(
+            'INSERT INTO locations(id,name_en,name_ru,kind,district_id,x,y,'
+            'description_en,description_ru,source,custom,owner_user_id,archived,created,updated) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?,1,?,0,?,?)',
+            (location_id, cleaned['name_en'], cleaned['name_ru'], cleaned['kind'],
+             cleaned['district_id'], cleaned['x'], cleaned['y'],
+             cleaned['description_en'], cleaned['description_ru'], cleaned['source'] or 'Custom',
+             user['id'], now, now))
+        conn.commit()
+        row = conn.execute('SELECT * FROM locations WHERE id=?', (location_id,)).fetchone()
+        self.send_json(location_payload(row, user), status=201)
+
+    @atomic_endpoint
+    def api_location_update(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM locations WHERE id=?', (m.group(1),)).fetchone()
+        if not row or row['archived']:
+            raise ApiError(404, 'Локация не найдена')
+        if not row['custom']:
+            raise ApiError(403, 'Seed локации можно редактировать только через custom копию')
+        cleaned = clean_location_input(body or {}, row)
+        conn.execute(
+            'UPDATE locations SET name_en=?,name_ru=?,kind=?,district_id=?,x=?,y=?,'
+            'description_en=?,description_ru=?,source=?,updated=? WHERE id=?',
+            (cleaned['name_en'], cleaned['name_ru'], cleaned['kind'], cleaned['district_id'],
+             cleaned['x'], cleaned['y'], cleaned['description_en'], cleaned['description_ru'],
+             cleaned['source'] or row['source'], time.time(), row['id']))
+        conn.commit()
+        fresh = conn.execute('SELECT * FROM locations WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(location_payload(fresh, user))
+
+    @atomic_endpoint
+    def api_location_delete(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM locations WHERE id=?', (m.group(1),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Локация не найдена')
+        if not row['custom']:
+            raise ApiError(403, 'Seed локации нельзя удалить')
+        conn.execute('UPDATE locations SET archived=1,updated=? WHERE id=?',
+                     (time.time(), row['id']))
+        conn.commit()
+        self.send_json({'ok': True, 'archived': True})
+
     def api_session_access(self, conn, qs, m, body):
         user = self.require_user(conn)
         session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
@@ -18586,6 +18885,11 @@ ROUTES = [
     ('POST', rx(r'/api/npc-templates/(\d+)/clone'), Handler.api_npc_template_clone),
     ('DELETE', rx(r'/api/npc-templates/(\d+)'), Handler.api_npc_template_delete),
     ('GET', rx(r'/api/recaps'), Handler.api_recaps),
+    ('GET', rx(r'/api/locations'), Handler.api_locations),
+    ('POST', rx(r'/api/locations'), Handler.api_location_create),
+    ('GET', rx(r'/api/locations/([a-z0-9-]+)'), Handler.api_location_detail),
+    ('PUT', rx(r'/api/locations/([a-z0-9-]+)'), Handler.api_location_update),
+    ('DELETE', rx(r'/api/locations/([a-z0-9-]+)'), Handler.api_location_delete),
     ('POST', rx(r'/api/recaps'), Handler.api_recap_create),
     ('GET', rx(r'/api/recaps/(\d+)'), Handler.api_recap_detail),
     ('PUT', rx(r'/api/recaps/(\d+)'), Handler.api_recap_update),

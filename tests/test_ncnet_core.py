@@ -1568,3 +1568,102 @@ class PublishingPreviewFlowTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MapLocationsFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = sqlite3.connect(str(Path(self.tmp.name) / 'ncnet.db'))
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(server.SCHEMA)
+        server.apply_schema_migrations(self.conn, make_backup=False)
+        for username, display, role in (('gm', 'GM', 'gm'), ('runner1', 'Runner One', 'player')):
+            self.conn.execute(
+                'INSERT INTO users(username,display_name,pass_hash,is_gm,account_role,created) '
+                'VALUES(?,?,?,?,?,?)',
+                (username, display, 'x', 1 if role in ('gm', 'admin') else 0, role, 1))
+        server.ensure_seed_locations(self.conn)
+        self.conn.commit()
+        self.handler = object.__new__(server.Handler)
+        self.response = {}
+        self.current = self.user('gm')
+        self.handler.current_user = lambda conn: self.current
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def user(self, username):
+        return self.conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
+
+    def call(self, method, *args):
+        self.response = {}
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+        method(self.handler, self.conn, *args)
+        return self.response
+
+    @staticmethod
+    def match(value):
+        return re.match(r'^([a-z0-9-]+)$', value)
+
+    def test_seed_locations_public_listing_and_detail(self):
+        self.current = self.user('runner1')
+        listing = self.call(server.Handler.api_locations, {}, None, None)['payload']
+        self.assertGreaterEqual(len(listing['locations']), 15)
+        detail = self.call(server.Handler.api_location_detail, {}, self.match('afterlife'), None)['payload']
+        self.assertEqual(detail['name_en'], 'Afterlife')
+        self.assertEqual(detail['kind'], 'bar')
+        self.assertFalse(detail['custom'])
+        self.assertFalse(detail['can_edit'])
+
+    def test_location_filters(self):
+        self.current = self.user('runner1')
+        kabuki = self.call(server.Handler.api_locations,
+                           {'q': [], 'district': ['watson-kabuki'], 'kind': []}, None, None)['payload']
+        self.assertTrue(all(l['district_id'] == 'watson-kabuki' for l in kabuki['locations']))
+        bars = self.call(server.Handler.api_locations,
+                         {'q': [], 'district': [], 'kind': ['bar']}, None, None)['payload']
+        self.assertTrue(all(l['kind'] == 'bar' for l in bars['locations']))
+        search = self.call(server.Handler.api_locations,
+                           {'q': ['afterlife'], 'district': [], 'kind': []}, None, None)['payload']
+        self.assertEqual(len(search['locations']), 1)
+
+    def test_gm_crud_custom_location(self):
+        self.current = self.user('gm')
+        created = self.call(server.Handler.api_location_create, {}, None, {
+            'id': 'crew-hideout', 'name_en': 'Crew Hideout', 'name_ru': 'База',
+            'kind': 'other', 'district_id': 'heywood-wellsprings', 'x': 450, 'y': 560,
+            'description_en': 'Our place',
+        })
+        self.assertEqual(created['status'], 201)
+        location = created['payload']
+        self.assertTrue(location['custom'])
+        self.assertTrue(location['can_edit'])
+        self.assertEqual(location['id'], 'crew-hideout')
+        updated = self.call(server.Handler.api_location_update, {},
+                            self.match('crew-hideout'), {'name_en': 'The Hideout'})['payload']
+        self.assertEqual(updated['name_en'], 'The Hideout')
+        self.call(server.Handler.api_location_delete, {}, self.match('crew-hideout'), {})
+        self.assertEqual(self.conn.execute(
+            "SELECT archived FROM locations WHERE id='crew-hideout'").fetchone()['archived'], 1)
+
+    def test_seed_location_is_read_only_and_player_cannot_write(self):
+        self.current = self.user('gm')
+        with self.assertRaises(server.ApiError) as seed_edit:
+            self.call(server.Handler.api_location_update, {}, self.match('afterlife'),
+                      {'name_en': 'Changed'})
+        self.assertEqual(seed_edit.exception.status, 403)
+        with self.assertRaises(server.ApiError) as seed_delete:
+            self.call(server.Handler.api_location_delete, {}, self.match('afterlife'), {})
+        self.assertEqual(seed_delete.exception.status, 403)
+        self.current = self.user('runner1')
+        with self.assertRaises(server.ApiError) as player_create:
+            self.call(server.Handler.api_location_create, {}, None, {'name_en': 'Sneaky'})
+        self.assertEqual(player_create.exception.status, 403)
+
+
+if __name__ == '__main__':
+    unittest.main()

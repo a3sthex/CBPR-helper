@@ -3326,6 +3326,16 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - preview использует те же render-функции (`ncFeedCard`/`ncContractCard`), что и опубликованные карточки; publish повторно валидирует данные и закрывает все модалки одним действием (защита от double publish);
 - 4 новых интеграционных теста (236 total): feed preview нормализует без записи, валидирует автора/тело, contract preview нормализует без записи, требует GM и валидную персону;
 - отложено: mobile/desktop width toggle и reply/related контекст в feed preview; map-signal и service/GM view в contract preview.
+
+**Статус B.20 — реализованы Map POIs и Key Locations:**
+
+- additive migration 17 создаёт таблицу `locations` (id, name_en/ru, kind, district_id, x/y, description, source, custom, owner, archived);
+- `ensure_seed_locations` idempotent-сеет 20 канонических мест 2070-х (Afterlife, Lizzie's, Clouds, Totentanz, Riot, Embers, Konpeki Plaza, Arasaka Tower, Megabuildings H10/H8, Grand Imperial Mall, клиники, No-Tell Motel, Delamain HQ, Biotechnica Flats, территории банд) с явным `source` (Cyberpunk 2077 / Campaign seed);
+- `clean_location_input` валидирует name, kind (allowlist), district_id, и ограничивает координаты X/Y рамками карты (0–1000);
+- эндпоинты: `GET /api/locations` (фильтры q/district/kind; публика видит активные, GM — все), `GET /api/locations/{id}`, `POST/PUT/DELETE /api/locations/{id}` (GM; seed-локации read-only, custom — полный CRUD с архивом);
+- UI: страница `🗺️ Map` (интерактивная SVG-карта с POI-маркерами по типам, palette toggle, фильтры район/тип/поиск, список), страница `#/map/{id}` (описание, район, тип, координаты, source), GM-редактор custom локаций с координатами;
+- 7 новых тестов (243 total): unit (clean/bounds/seed shape) + интеграционные (seed listing/detail, фильтры, GM CRUD custom, seed read-only + player deny);
+- отложено: zoom/pan слоёв, Housing, связь Vendor locations с POI `location_id`, location-specific offers.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 
 **Статус B.18 — реализован Downtime Planner:**
@@ -3387,12 +3397,14 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 ### Пакет E — World Layer
 
-1. Zoomable layered map.
-2. Key Locations / POI data model, filters and Location pages.
-3. Seed основных мест 2070-х с source metadata.
-4. GM coordinate editor и custom campaign locations.
+1. ◐ Zoomable layered map.
+   - готово (B.20): интерактивная SVG-карта с POI-маркерами, palette toggle, фильтры по району/типу и поиск;
+   - дальше: zoom/pan, слои (Contracts/POI), location-specific offers.
+2. ✅ Key Locations / POI data model, filters и Location pages (реализовано B.20).
+3. ✅ Seed основных мест 2070-х с source metadata (реализовано B.20: 20 seed POI + `source`).
+4. ✅ GM coordinate editor и custom campaign locations (реализовано B.20: create/edit/delete custom, координаты X/Y).
 5. Housing.
-6. Vendor locations.
+6. ◐ Vendor locations (текстовый район добавлен в B.15; связь с POI `location_id` остаётся).
 7. Contract Crew Channel.
 
 ### Пакет F — Organizations & Legacy

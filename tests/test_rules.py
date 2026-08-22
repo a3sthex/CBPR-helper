@@ -2285,3 +2285,42 @@ class DowntimePlannerTests(unittest.TestCase):
                'downtime_state': {'active': {'note': 'sneaky'}}}
         cleaned = server.clean_character(raw)
         self.assertNotIn('downtime_state', cleaned)
+
+
+class MapLocationsTests(unittest.TestCase):
+    def test_clean_location_input_normalizes_and_bounds(self):
+        cleaned = server.clean_location_input({
+            'name_en': 'Crew Hideout', 'name_ru': 'База', 'kind': 'other',
+            'district_id': 'heywood-wellsprings', 'x': 450, 'y': 560,
+            'description_en': 'Our place', 'source': 'Campaign',
+        })
+        self.assertEqual(cleaned['name_en'], 'Crew Hideout')
+        self.assertEqual(cleaned['kind'], 'other')
+        self.assertEqual(cleaned['x'], 450.0)
+        # Out-of-range coordinates are bounded to the map.
+        bounded = server.clean_location_input({'name_en': 'Xx', 'x': 5000, 'y': -50})
+        self.assertEqual(bounded['x'], 1000.0)
+        self.assertEqual(bounded['y'], 0.0)
+
+    def test_clean_location_input_rejects_invalid(self):
+        with self.assertRaises(server.ApiError) as no_name:
+            server.clean_location_input({'name_en': ''})
+        self.assertEqual(no_name.exception.status, 400)
+        with self.assertRaises(server.ApiError) as bad_kind:
+            server.clean_location_input({'name_en': 'X', 'kind': 'not-a-kind'})
+        self.assertEqual(bad_kind.exception.status, 400)
+        with self.assertRaises(server.ApiError) as bad_district:
+            server.clean_location_input({'name_en': 'X', 'district_id': 'mars'})
+        self.assertEqual(bad_district.exception.status, 400)
+
+    def test_seed_locations_have_valid_shape(self):
+        self.assertGreaterEqual(len(server.NC_SEED_LOCATIONS), 15)
+        ids = set()
+        for item in server.NC_SEED_LOCATIONS:
+            self.assertIn(item['kind'], server.LOCATION_KINDS)
+            self.assertIn(item['district_id'], server.NC_LOCATION_IDS)
+            self.assertTrue(0 <= item['x'] <= 1000)
+            self.assertTrue(0 <= item['y'] <= 1000)
+            self.assertNotIn(item['id'], ids)
+            ids.add(item['id'])
+            self.assertTrue(item['source'])

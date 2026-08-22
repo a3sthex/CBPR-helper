@@ -359,3 +359,70 @@ async function openRecapEditor(existing){
     try{await api(existing?`/api/recaps/${existing.id}`:'/api/recaps',{method:existing?'PUT':'POST',body});closeModal();toast(T('Recap saved.','Recap сохранён.'));if(existing)route();else go('/chronicle');}catch(e){toast(e.message,true);}
   };
 }
+
+/* ============================== Map POIs / Key Locations ============================== */
+
+const LOCATION_KIND_ICONS = {
+  bar:'🍸',club:'🎶',clinic:'⚕️',market:'🛒',restaurant:'🍜',
+  corporate:'🏢',gang:'💀',landmark:'🗼',service:'🔧',other:'📌',
+};
+const LOCATION_KIND_LABELS = {
+  bar:['Bar','Бар'],club:['Club','Клуб'],clinic:['Clinic','Клиника'],market:['Market','Рынок'],
+  restaurant:['Restaurant','Ресторан'],corporate:['Corporate','Корпоративный'],gang:['Gang turf','Территория банды'],
+  landmark:['Landmark','Достопримечательность'],service:['Service','Сервис'],other:['Other','Другое'],
+};
+function locationName(location){return APP_I18N.current()==='ru'&&location.name_ru?location.name_ru:location.name_en;}
+function locationKindLabel(kind){const pair=LOCATION_KIND_LABELS[kind]||[kind,kind];return APP_I18N.current()==='ru'?pair[1]:pair[0];}
+function locationKindIcon(kind){return LOCATION_KIND_ICONS[kind]||'📌';}
+
+function ncPoiMapHtml(locations){
+  const markers=locations.map((location,index)=>{const x=Math.max(24,Math.min(976,Number(location.x)||500)),y=Math.max(24,Math.min(976,Number(location.y)||500));return `<g class="nc-poi-marker poi-${esc(location.kind)}" data-poi-open="${esc(location.id)}" role="button" tabindex="0" aria-label="${esc(T('Open Location: ','Открыть локацию: ')+locationName(location))}" transform="translate(${x} ${y})" filter="url(#mapGlow)"><circle r="13"></circle><text y="5" text-anchor="middle" font-size="15">${locationKindIcon(location.kind)}</text><title>${esc(locationName(location))}</title></g>`;}).join('');
+  const themed=ncMapThemeMode();return `<figure class="nc-map-wrap"><div class="nc-map-stage ${themed?'theme-map':''}"><img class="nc-map-image" src="/maps/night-city-v04-nightcityio.jpg" alt="${T('Detailed district map of Night City','Подробная карта районов Найт-Сити')}"><div class="nc-map-tint" aria-hidden="true"></div><button class="nc-map-palette" type="button" data-map-palette aria-pressed="${themed?'true':'false'}">${themed?T('THEME MAP','ЦВЕТА ТЕМЫ'):T('ORIGINAL MAP','ОРИГИНАЛ')}</button><svg class="nc-map-overlay" viewBox="0 0 1000 1000" role="group" aria-label="${T('Points of interest','Точки интереса')}"><defs><filter id="mapGlow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${markers}</svg></div><figcaption class="small muted nc-map-source">${T('NightCity.io v0.04 district artwork · supplied by the campaign owner · POI overlay by NC//NET','Карта районов NightCity.io v0.04 · предоставлена владельцем кампании · слой точек интереса — NC//NET')} · <a href="https://nightcity.io/" target="_blank" rel="noopener">NightCity.io ↗</a></figcaption></figure>`;
+}
+
+async function viewMap(view){
+  view.innerHTML=spinner();
+  const data=await api('/api/locations');
+  const kinds=data.kinds||[];
+  view.innerHTML=`<div class="page-head"><div><h1>🗺️ ${T('Night City Map','Карта Найт-Сити')}</h1><div class="sub">${T('Points of interest and key locations.','Точки интереса и ключевые места.')} · ${data.locations.length} ${T('locations','локаций')}</div></div>${state.me?.is_gm?`<button class="btn-primary" id="map-loc-new">＋ ${T('New Location','Новая локация')}</button>`:''}</div><div class="nc-contract-layout"><aside class="panel nc-map-filters"><h3>${T('Filters','Фильтры')}</h3><label class="f"><span>${T('District','Район')}</span><select id="map-district"><option value="">${T('All Night City','Весь Найт-Сити')}</option>${ncLocationOptions('')}</select></label><label class="f"><span>${T('Kind','Тип')}</span><select id="map-kind"><option value="">${T('All kinds','Все типы')}</option>${kinds.map(kind=>`<option value="${esc(kind)}">${locationKindIcon(kind)} ${esc(locationKindLabel(kind))}</option>`).join('')}</select></label><label class="f"><span>${T('Search','Поиск')}</span><input id="map-q" placeholder="${T('Search locations…','Поиск локаций…')}"></label></aside><section id="map-stage">${ncPoiMapHtml(data.locations)}</section><section class="nc-contract-list" id="map-list">${renderLocationList(data.locations)}</section></div>`;
+  const apply=()=>{
+    const district=$('#map-district',view).value,kind=$('#map-kind',view).value,q=$('#map-q',view).value.trim().toLowerCase();
+    const filtered=data.locations.filter(location=>(!district||location.district_id===district)&&(!kind||location.kind===kind)&&(!q||`${location.name_en} ${location.name_ru} ${location.description_en} ${location.description_ru}`.toLowerCase().includes(q)));
+    $('#map-stage',view).innerHTML=ncPoiMapHtml(filtered);
+    $('#map-list',view).innerHTML=renderLocationList(filtered);
+    bindMapPoi(view);
+  };
+  const bindMapPoi=root=>{ncBindActivation('[data-poi-open]',root,element=>go(`/map/${element.dataset.poiOpen}`));ncBindMapControls(root);$$('[data-loc-open]',root).forEach(el=>el.onclick=()=>go(`/map/${el.dataset.locOpen}`));};
+  bindMapPoi(view);
+  ['map-district','map-kind'].forEach(id=>{const el=$('#'+id,view);if(el)el.onchange=apply;});
+  const search=$('#map-q',view);if(search){search.oninput=apply;}
+  if($('#map-loc-new',view))$('#map-loc-new',view).onclick=()=>openLocationEditor();
+}
+
+function renderLocationList(locations){
+  if(!locations.length)return `<div class="empty">${T('No locations match these filters.','Нет локаций по выбранным фильтрам.')}</div>`;
+  return locations.map(location=>`<div class="inv-row" data-loc-open="${esc(location.id)}"><span class="iname">${locationKindIcon(location.kind)} <b class="user-content">${esc(locationName(location))}</b>${location.custom?` <span class="tag">${T('CUSTOM','СВОЯ')}</span>`:''}<div class="small muted">${esc(locationKindLabel(location.kind))}${location.district_id?` · ${esc(ncDistrictName(location.district_id))}`:''}${location.source?` · 📖 ${esc(location.source)}`:''}</div></span><button class="btn-sm">→</button></div>`).join('');
+}
+
+async function viewLocationDetail(view,id){
+  view.innerHTML=spinner();
+  let location;
+  try{location=await api('/api/locations/'+encodeURIComponent(id));}catch(e){view.innerHTML=`<div class="empty">⚠️ ${esc(e.message)}</div>`;return;}
+  const description=APP_I18N.current()==='ru'?(location.description_ru||location.description_en):(location.description_en||location.description_ru);
+  view.innerHTML=`<div class="page-head"><div><div class="small muted">NC//NET MAP // ${esc(ncDistrictName(location.district_id)||T('Unspecified','Без района'))}</div><h1 class="user-content">${locationKindIcon(location.kind)} ${esc(locationName(location))}</h1><div class="sub"><span class="tag">${esc(locationKindLabel(location.kind))}</span>${location.custom?` <span class="tag">${T('CUSTOM','СВОЯ')}</span>`:''}${location.source?` <span class="chip">📖 ${esc(location.source)}</span>`:''}</div></div><div class="row"><button onclick="location.hash='#/map'">← ${T('Map','Карта')}</button>${location.can_edit?`<button class="btn-sm" id="loc-edit">✏️ ${T('Edit','Изменить')}</button><button class="btn-danger" id="loc-delete">🗑️ ${T('Delete','Удалить')}</button>`:''}</div></div><div class="grid cols-2"><section><div class="panel"><h2>${T('About','Описание')}</h2>${description?`<div class="desc user-content" style="white-space:pre-wrap">${esc(description)}</div>`:`<div class="muted small">${T('No description yet.','Описания пока нет.')}</div>`}</div></section><aside><div class="panel"><div class="kv"><b>${T('District','Район')}</b><span>${esc(ncDistrictName(location.district_id)||'—')}</span><b>${T('Type','Тип')}</b><span>${esc(locationKindLabel(location.kind))}</span><b>${T('Coordinates','Координаты')}</b><span>${Math.round(location.x)} / ${Math.round(location.y)}</span><b>${T('Source','Источник')}</b><span class="user-content">${esc(location.source||'—')}</span></div></div></aside></div>`;
+  if(location.can_edit){
+    $('#loc-edit',view).onclick=()=>openLocationEditor(location);
+    $('#loc-delete',view).onclick=async()=>{if(!confirm(T('Delete this custom location?','Удалить эту custom локацию?')))return;try{await api(`/api/locations/${encodeURIComponent(id)}`,{method:'DELETE'});toast(T('Location deleted.','Локация удалена.'));go('/map');}catch(e){toast(e.message,true);}};
+  }
+}
+
+async function openLocationEditor(existing){
+  const location=existing||{};
+  const modal=openModal(`<h2>${existing?T('Edit Location','Изменить локацию'):T('New Location','Новая локация')}</h2><div class="grid cols-2"><label class="f"><span>${T('Name (EN) *','Название (EN) *')}</span><input id="lc-name-en" maxlength="120" value="${esc(location.name_en||'')}"></label><label class="f"><span>${T('Name (RU)','Название (RU)')}</span><input id="lc-name-ru" maxlength="120" value="${esc(location.name_ru||'')}"></label><label class="f"><span>${T('Type','Тип')}</span><select id="lc-kind">${Object.keys(LOCATION_KIND_LABELS).map(kind=>`<option value="${kind}" ${location.kind===kind?'selected':''}>${locationKindIcon(kind)} ${esc(locationKindLabel(kind))}</option>`).join('')}</select></label><label class="f"><span>${T('District','Район')}</span><select id="lc-district">${ncLocationOptions(location.district_id||'',T('None','Нет'))}</select></label><label class="f"><span>${T('Map X (0–1000)','X на карте (0–1000)')}</span><input id="lc-x" type="number" min="0" max="1000" value="${location.x??500}"></label><label class="f"><span>${T('Map Y (0–1000)','Y на карте (0–1000)')}</span><input id="lc-y" type="number" min="0" max="1000" value="${location.y??500}"></label><label class="f"><span>${T('Source','Источник')}</span><input id="lc-source" maxlength="160" value="${esc(location.source||'Campaign')}" placeholder="Campaign / Cyberpunk 2077"></label></div><label class="f"><span>${T('Description (EN)','Описание (EN)')}</span><textarea id="lc-desc-en" rows="3">${esc(location.description_en||'')}</textarea></label><label class="f"><span>${T('Description (RU)','Описание (RU)')}</span><textarea id="lc-desc-ru" rows="3">${esc(location.description_ru||'')}</textarea></label>${!existing?`<label class="f"><span>${T('Identifier (optional)','Идентификатор (необязательно)')}</span><input id="lc-id" maxlength="80" placeholder="crew-hideout"></label>`:''}<div class="row"><button id="lc-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="lc-save">${existing?T('Save Location','Сохранить локацию'):T('Create Location','Создать локацию')}</button></div>`,true);
+  $('#lc-cancel',modal).onclick=closeModal;
+  $('#lc-save',modal).onclick=async()=>{
+    const body={name_en:$('#lc-name-en',modal).value.trim(),name_ru:$('#lc-name-ru',modal).value.trim(),kind:$('#lc-kind',modal).value,district_id:$('#lc-district',modal).value,x:Number($('#lc-x',modal).value)||500,y:Number($('#lc-y',modal).value)||500,description_en:$('#lc-desc-en',modal).value.trim(),description_ru:$('#lc-desc-ru',modal).value.trim(),source:$('#lc-source',modal).value.trim()};
+    if(!existing){const id=$('#lc-id',modal).value.trim();if(id)body.id=id;}
+    try{await api(existing?`/api/locations/${encodeURIComponent(existing.id)}`:'/api/locations',{method:existing?'PUT':'POST',body});closeModal();toast(existing?T('Location saved.','Локация сохранена.'):T('Location created.','Локация создана.'));route();}catch(e){toast(e.message,true);}
+  };
+}
