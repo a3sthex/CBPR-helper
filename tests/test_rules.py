@@ -3,6 +3,7 @@ import copy
 import importlib.util
 import json
 import re
+import sqlite3
 import unittest
 from pathlib import Path
 
@@ -1872,3 +1873,55 @@ class TechMakerModificationTests(unittest.TestCase):
         evaluated = server.evaluate_effective_vehicle(vehicle, [], owned, vchar)
         self.assertEqual(evaluated['effective']['sdp'],
                          evaluated['base']['sdp'] + 20)
+
+
+class CampaignClockTests(unittest.TestCase):
+    def test_duration_seconds_and_service_status(self):
+        self.assertEqual(server.campaign_duration_seconds('1_hour'), 3600)
+        self.assertEqual(server.campaign_duration_seconds('1_week'), 7 * 86400)
+        self.assertIsNone(server.campaign_duration_seconds('manual'))
+        status = server.campaign_service_status(1000, 1000 + 3600)
+        self.assertFalse(status['ready'])
+        self.assertEqual(status['label'], '1h')
+        due = server.campaign_service_status(1000 + 7200, 1000 + 3600)
+        self.assertTrue(due['ready'])
+        self.assertEqual(due['label'], 'DUE')
+        manual = server.campaign_service_status(1000, None)
+        self.assertIsNone(manual['ready'])
+        self.assertEqual(manual['label'], 'MANUAL TIME')
+
+    def test_character_campaign_services_collects_active_work(self):
+        now = 1_700_000_000.0
+        conn = sqlite3.connect(':memory:')
+        conn.row_factory = sqlite3.Row
+        conn.executescript(server.CAMPAIGN_CLOCK_SCHEMA)
+        conn.execute('INSERT INTO campaign_state(id,campaign_time,timezone,updated) '
+                     'VALUES(1,?,?,?)', (now, 'Europe/Moscow', now))
+        conn.commit()
+        character = {
+            'therapy_state': {'active': {
+                'label': 'Therapy (Standard HL)', 'started_at': now,
+                'campaign_due_at': now + 7 * 86400,
+            }},
+            'armor_repair_state': {'a' * 32: {'active': {
+                'method': 'jeeves', 'started_at': now,
+                'campaign_due_at': now + 3600,
+            }}},
+            'vehicle_state': {'b' * 32: {'repair': {
+                'severity': 'major', 'started_at': now,
+                'campaign_due_at': now + 86400,
+            }}},
+        }
+        services = server.character_campaign_services(character, conn)
+        kinds = {service['kind'] for service in services}
+        self.assertEqual(kinds, {'therapy', 'armor_repair', 'vehicle_repair'})
+        therapy = next(service for service in services if service['kind'] == 'therapy')
+        self.assertFalse(therapy['ready'])
+        conn.close()
+
+    def test_vehicle_repair_severity_duration_key_maps(self):
+        self.assertEqual(server.VEHICLE_REPAIR_RULES['minor']['duration_key'], '3_hours')
+        self.assertEqual(server.VEHICLE_REPAIR_RULES['major']['duration_key'], '1_day')
+        self.assertEqual(server.VEHICLE_REPAIR_RULES['destroyed']['duration_key'], '1_week')
+        self.assertIsNotNone(server.campaign_duration_seconds(
+            server.VEHICLE_REPAIR_RULES['destroyed']['duration_key']))

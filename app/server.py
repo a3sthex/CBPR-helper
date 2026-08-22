@@ -2763,6 +2763,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_item_modifications_active_upgrade
   ON item_modifications(upgrade_instance_id) WHERE active=1;
 """
 
+CAMPAIGN_CLOCK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS campaign_state(
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  campaign_time REAL NOT NULL,
+  timezone TEXT NOT NULL DEFAULT 'Europe/Moscow',
+  updated REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS campaign_clock_audit(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_user_id INTEGER NOT NULL,
+  delta_seconds REAL NOT NULL,
+  before_time REAL NOT NULL,
+  after_time REAL NOT NULL,
+  reason TEXT NOT NULL,
+  created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_campaign_clock_audit
+  ON campaign_clock_audit(created);
+"""
+
 NOTIFICATION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS notifications(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2808,6 +2828,7 @@ MIGRATION_ACTIVE_EFFECTS = 8
 MIGRATION_EFFECT_PRESETS = 9
 MIGRATION_ITEM_MODIFICATIONS = 10
 MIGRATION_SESSION_NET = 11
+MIGRATION_CAMPAIGN_CLOCK = 12
 DB_BACKUP_LIMIT = 5
 _RATE_LIMIT_BUCKETS = {}
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -4135,6 +4156,7 @@ def apply_schema_migrations(conn, make_backup=True):
         (MIGRATION_EFFECT_PRESETS, 'effect preset snapshots'),
         (MIGRATION_ITEM_MODIFICATIONS, 'host item modifications'),
         (MIGRATION_SESSION_NET, 'live session NET context'),
+        (MIGRATION_CAMPAIGN_CLOCK, 'campaign clock and service timing'),
     ]
     pending = [version for version, _ in migrations if version not in applied]
     if make_backup and pending:
@@ -4185,6 +4207,8 @@ def apply_schema_migrations(conn, make_backup=True):
         conn.executescript(ITEM_MODIFICATION_SCHEMA)
     if MIGRATION_SESSION_NET not in applied:
         ensure_column(conn, 'nc_sessions', 'net_state_json', "TEXT NOT NULL DEFAULT '{}'")
+    if MIGRATION_CAMPAIGN_CLOCK not in applied:
+        conn.executescript(CAMPAIGN_CLOCK_SCHEMA)
     # Re-run additive CREATE IF NOT EXISTS blocks so patch-level tables added to an
     # already-applied migration remain safe during development and rolling deploys.
     conn.executescript(NETWORK_SCHEMA)
@@ -4194,6 +4218,7 @@ def apply_schema_migrations(conn, make_backup=True):
     conn.executescript(ITEM_INSTANCE_SCHEMA)
     conn.executescript(ACTIVE_EFFECT_SCHEMA)
     conn.executescript(ITEM_MODIFICATION_SCHEMA)
+    conn.executescript(CAMPAIGN_CLOCK_SCHEMA)
     # Recover safely if a rolling/patch deployment recorded the migration before
     # every additive column reached a particular database.
     ensure_column(conn, 'users', 'avatar_media_id', 'TEXT')
@@ -5188,6 +5213,166 @@ def deliver_vk_outbox(conn, limit=20):
     return {'configured': True, 'sent': sent, 'failed': failed}
 
 
+# -------------------------------------------------------- Campaign Clock
+
+CAMPAIGN_CLOCK_TZ = 'Europe/Moscow'
+# Source-defined campaign-time durations for services that complete on the
+# Campaign Clock. Manual times remain unbounded until the table confirms them.
+CAMPAIGN_DURATION_SECONDS = {
+    '1_hour': 3600,
+    '3_hours': 3 * 3600,
+    '6_hours': 6 * 3600,
+    '1_day': 24 * 3600,
+    '1_week': 7 * 24 * 3600,
+    '2_weeks': 14 * 24 * 3600,
+}
+
+
+def campaign_timezone():
+    return os.environ.get('CBPR_CAMPAIGN_TZ') or CAMPAIGN_CLOCK_TZ
+
+
+def ensure_campaign_clock(conn):
+    """Seed the single campaign clock row if it does not exist yet."""
+    row = conn.execute('SELECT * FROM campaign_state WHERE id=1').fetchone()
+    if not row:
+        conn.execute(
+            'INSERT INTO campaign_state(id,campaign_time,timezone,updated) '
+            'VALUES(1,?,?,?)',
+            (time.time(), campaign_timezone(), time.time()))
+    return row or conn.execute('SELECT * FROM campaign_state WHERE id=1').fetchone()
+
+
+def campaign_now(conn):
+    ensure_campaign_clock(conn)
+    return float(conn.execute(
+        'SELECT campaign_time FROM campaign_state WHERE id=1').fetchone()['campaign_time'])
+
+
+def campaign_time_label(ts):
+    try:
+        return datetime.fromtimestamp(float(ts), MOSCOW).strftime('%Y-%m-%d %H:%M')
+    except (TypeError, ValueError, OverflowError, OSError):
+        return '—'
+
+
+def campaign_duration_seconds(key):
+    return CAMPAIGN_DURATION_SECONDS.get(str(key or ''))
+
+
+def campaign_clock_payload(conn):
+    state = conn.execute('SELECT * FROM campaign_state WHERE id=1').fetchone()
+    if not state:
+        state = ensure_campaign_clock(conn)
+        state = conn.execute('SELECT * FROM campaign_state WHERE id=1').fetchone()
+    changes = conn.execute(
+        'SELECT a.*,u.display_name actor FROM campaign_clock_audit a '
+        'JOIN users u ON u.id=a.actor_user_id ORDER BY a.id DESC LIMIT 30').fetchall()
+    return {
+        'campaign_time': float(state['campaign_time']),
+        'timezone': state['timezone'],
+        'label': campaign_time_label(state['campaign_time']),
+        'changes': [{
+            'delta_seconds': row['delta_seconds'], 'before_time': row['before_time'],
+            'after_time': row['after_time'], 'reason': row['reason'],
+            'actor': row['actor'], 'created': row['created'],
+        } for row in changes],
+    }
+
+
+def campaign_service_status(now, due_at):
+    """Return a campaign-clock readiness label for a started service."""
+    if due_at is None:
+        return {'ready': None, 'label': 'MANUAL TIME', 'due_label': None}
+    remaining = float(due_at) - float(now)
+    ready = remaining <= 0
+    if ready:
+        return {'ready': True, 'label': 'DUE', 'due_label': campaign_time_label(due_at)}
+    if remaining < 3600:
+        minutes = max(1, int(remaining // 60))
+        return {'ready': False, 'label': f'{minutes}m', 'due_label': campaign_time_label(due_at)}
+    if remaining < 86400:
+        hours = int(remaining // 3600)
+        return {'ready': False, 'label': f'{hours}h', 'due_label': campaign_time_label(due_at)}
+    days = int(remaining // 86400)
+    return {'ready': False, 'label': f'{days}d', 'due_label': campaign_time_label(due_at)}
+
+
+def character_campaign_services(character, conn):
+    """Collect this character's active clock-tracked services."""
+    now = campaign_now(conn)
+    out = []
+    data = character if isinstance(character, dict) else json.loads(character.get('data') or '{}')
+    therapy = (data.get('therapy_state') or {}).get('active')
+    if isinstance(therapy, dict):
+        status = campaign_service_status(now, therapy.get('campaign_due_at'))
+        out.append({
+            'kind': 'therapy', 'label': therapy.get('label') or 'Therapy',
+            'started_at': therapy.get('started_at'),
+            'campaign_due_at': therapy.get('campaign_due_at'),
+            'status': status['label'], 'ready': status['ready'],
+            'due_label': status['due_label'],
+            'manual_resolution_required': True,
+        })
+    repair = data.get('armor_repair_state') if isinstance(data.get('armor_repair_state'), dict) else {}
+    for instance_id, workflow in repair.items():
+        active = workflow.get('active') if isinstance(workflow, dict) else None
+        if not isinstance(active, dict):
+            continue
+        status = campaign_service_status(now, active.get('campaign_due_at'))
+        out.append({
+            'kind': 'armor_repair', 'label': f'Armor Repair · {active.get("method")}',
+            'started_at': active.get('started_at'),
+            'campaign_due_at': active.get('campaign_due_at'),
+            'status': status['label'], 'ready': status['ready'],
+            'due_label': status['due_label'],
+            'manual_resolution_required': True,
+        })
+    vehicle_state = data.get('vehicle_state') if isinstance(data.get('vehicle_state'), dict) else {}
+    for instance_id, state in vehicle_state.items():
+        active = state.get('repair') if isinstance(state, dict) else None
+        if not isinstance(active, dict):
+            continue
+        status = campaign_service_status(now, active.get('campaign_due_at'))
+        out.append({
+            'kind': 'vehicle_repair', 'label': f'Vehicle Repair · {active.get("severity")}',
+            'started_at': active.get('started_at'),
+            'campaign_due_at': active.get('campaign_due_at'),
+            'status': status['label'], 'ready': status['ready'],
+            'due_label': status['due_label'],
+            'manual_resolution_required': True,
+        })
+    return out
+
+
+def campaign_pending_services(conn):
+    """GM view: every active clock-tracked service across the campaign."""
+    now = campaign_now(conn)
+    rows = conn.execute(
+        'SELECT c.id character_id,c.owner_id,c.data,u.display_name owner_name '
+        'FROM characters c JOIN users u ON u.id=c.owner_id '
+        'WHERE c.data NOT LIKE \'%"archived": true%\' OR c.data NOT LIKE \'%"archived":true%\'').fetchall()
+    pending = []
+    for row in rows:
+        try:
+            data = json.loads(row['data'])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if data.get('archived'):
+            continue
+        services = character_campaign_services(data, conn)
+        for service in services:
+            pending.append({
+                'character_id': row['character_id'],
+                'character_name': data.get('handle') or 'Unknown Edgerunner',
+                'owner_name': row['owner_name'],
+                **service,
+            })
+    pending.sort(key=lambda item: (item['campaign_due_at'] is None,
+                                    item['campaign_due_at'] or 0))
+    return pending
+
+
 def db():
     conn = sqlite3.connect(DB_PATH, timeout=20)
     conn.row_factory = sqlite3.Row
@@ -5208,6 +5393,7 @@ def init_db():
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone())
     conn.executescript(SCHEMA)
     apply_schema_migrations(conn, make_backup=had_users_table)
+    ensure_campaign_clock(conn)
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     stale = conn.execute('SELECT * FROM media WHERE attached_type IS NULL AND created < ?', (time.time() - 7 * 86400,)).fetchall()
     for media in stale:
@@ -8202,6 +8388,14 @@ SERVER_ERROR_EN = {
     'Blueprint fabrication требует maker_specialty fabrication': 'Blueprint fabrication requires maker_specialty fabrication',
     'Fabrication Expertise требует blueprint item': 'Fabrication Expertise requires a blueprint item',
     'Некорректная стоимость материалов': 'Invalid material cost',
+    'Campaign Clock содержит неподдерживаемые поля': 'Campaign Clock contains unsupported fields',
+    'Укажите причину изменения Campaign Clock': 'Provide a reason for changing the Campaign Clock',
+    'Укажите либо advance, либо set_to': 'Provide either advance or set_to',
+    'Укажите advance или set_to': 'Provide advance or set_to',
+    'advance должен быть объектом': 'advance must be an object',
+    'advance содержит неподдерживаемые поля': 'advance contains unsupported fields',
+    'advance должен быть от 1 минуты до 365 дней': 'advance must be from 1 minute to 365 days',
+    'Некорректное set_to время Campaign Clock': 'Invalid set_to Campaign Clock time',
 }
 
 def server_error_message(message, language):
@@ -9956,6 +10150,62 @@ class Handler(BaseHTTPRequestHandler):
                         'news': nw, 'open_jobs': jb,
                         'feed_posts': feed, 'open_contracts': contracts})
 
+    def api_campaign_clock(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        ensure_campaign_clock(conn)
+        payload = campaign_clock_payload(conn)
+        if user and user_is_gm(user):
+            payload['pending'] = campaign_pending_services(conn)
+        self.send_json(payload)
+
+    @atomic_endpoint
+    def api_campaign_clock_advance(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        allowed = {'advance', 'set_to', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Campaign Clock содержит неподдерживаемые поля')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину изменения Campaign Clock')
+        before = campaign_now(conn)
+        advance = (body or {}).get('advance')
+        set_to = (body or {}).get('set_to')
+        if advance is not None and set_to is not None:
+            raise ApiError(400, 'Укажите либо advance, либо set_to')
+        if advance is not None:
+            if not isinstance(advance, dict):
+                raise ApiError(400, 'advance должен быть объектом')
+            if set(advance) - {'days', 'hours', 'minutes'}:
+                raise ApiError(400, 'advance содержит неподдерживаемые поля')
+            days = _num(advance.get('days')) or 0
+            hours = _num(advance.get('hours')) or 0
+            minutes = _num(advance.get('minutes')) or 0
+            delta = days * 86400 + hours * 3600 + minutes * 60
+            if not 0 < delta <= 365 * 86400:
+                raise ApiError(400, 'advance должен быть от 1 минуты до 365 дней')
+            after = before + delta
+        elif set_to is not None:
+            try:
+                after = float(set_to)
+            except (TypeError, ValueError):
+                raise ApiError(400, 'Некорректное set_to время Campaign Clock')
+            if not math.isfinite(after) or after < 0:
+                raise ApiError(400, 'Некорректное set_to время Campaign Clock')
+            delta = after - before
+        else:
+            raise ApiError(400, 'Укажите advance или set_to')
+        now = time.time()
+        conn.execute('UPDATE campaign_state SET campaign_time=?,updated=? WHERE id=1',
+                     (after, now))
+        conn.execute(
+            'INSERT INTO campaign_clock_audit(actor_user_id,delta_seconds,before_time,'
+            'after_time,reason,created) VALUES(?,?,?,?,?,?)',
+            (user['id'], delta, before, after, reason, now))
+        conn.commit()
+        payload = campaign_clock_payload(conn)
+        payload['pending'] = campaign_pending_services(conn)
+        self.send_json(payload)
+
     def api_items(self, conn, qs, m, body):
         cat = catalog()
         q = (q1(qs.get('q')) or '').strip().lower()
@@ -10012,6 +10262,8 @@ class Handler(BaseHTTPRequestHandler):
             derived['effective_cyberdecks'] = character_effective_cyberdecks(
                 full_data, modifications)
             derived['tech_maker'] = tech_maker_payload(full_data)
+            derived['campaign_services'] = character_campaign_services(full_data, conn)
+            derived['campaign_time'] = campaign_now(conn)
         if public_view and not visibility['combat']:
             derived = {}
         elif public_view:
@@ -10019,7 +10271,7 @@ class Handler(BaseHTTPRequestHandler):
                 for private_key in ('modifications', 'effective_weapons',
                                     'effective_vehicles', 'effective_cyberdecks',
                                     'effective_cyberware', 'effective_armor_hosts',
-                                    'tech_maker'):
+                                    'tech_maker', 'campaign_services'):
                     derived.pop(private_key, None)
             for effect in (derived.get('effects') or {}).get('instances') or []:
                 for private_key in ('reason', 'actor', 'source_item_instance_id'):
@@ -12240,6 +12492,7 @@ class Handler(BaseHTTPRequestHandler):
             if therapy_type == 'addiction' and len(addiction_label) < 2:
                 raise ApiError(400, 'Укажите addiction для Therapy')
             data['cash'] = round(cash - profile['cost'], 2)
+            campaign_started = campaign_now(conn)
             active = {
                 'therapy_id': secrets.token_hex(16), 'therapy_type': therapy_type,
                 'label': profile['label'], 'catalog_id': profile['catalog_id'],
@@ -12248,6 +12501,8 @@ class Handler(BaseHTTPRequestHandler):
                 'therapist': therapist, 'addiction_label': addiction_label or None,
                 'started_at': now, 'status': 'active', 'source': profile['source'],
                 'manual_time_required': True,
+                'campaign_started_at': campaign_started,
+                'campaign_due_at': campaign_started + campaign_duration_seconds('1_week'),
             }
             therapy_state['active'] = active
             result['therapy'] = copy.deepcopy(active)
@@ -12453,6 +12708,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(technician) < 2:
                 raise ApiError(400, 'Укажите Armor repair technician')
             duration_label = 'MANUAL TECH TIME'
+            duration_key = None
             jeeves_id = None
             if method == 'jeeves':
                 jeeves_id = str((body or {}).get('jeeves_instance_id') or '').lower()
@@ -12468,6 +12724,9 @@ class Handler(BaseHTTPRequestHandler):
                 duration_label = ('1 Hour' if price <= 20 else '6 Hours' if price <= 50 else
                                   '1 Day' if price <= 100 else '1 Week' if price <= 500 else
                                   '2 Weeks')
+                duration_key = ('1_hour' if price <= 20 else '6_hours' if price <= 50 else
+                                '1_day' if price <= 100 else '1_week' if price <= 500 else
+                                '2_weeks')
             service_cost = 0
             if method == 'paid_service':
                 service_cost = _num((body or {}).get('service_cost'))
@@ -12480,6 +12739,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError(409, 'Недостаточно средств для Armor Repair service')
                 data['cash'] = round(cash - service_cost, 2)
                 duration_label = 'MANUAL PAID SERVICE TIME'
+            campaign_started = campaign_now(conn)
             active = {
                 'repair_id': secrets.token_hex(16), 'method': method,
                 'technician': technician, 'jeeves_instance_id': jeeves_id,
@@ -12491,6 +12751,10 @@ class Handler(BaseHTTPRequestHandler):
                 'target_maximum': host['effective_sp'], 'started_at': now,
                 'status': 'active', 'source': 'CP:R 140 / BC 43',
                 'manual_resolution_required': True,
+                'campaign_started_at': campaign_started,
+                'campaign_due_at': (
+                    campaign_started + campaign_duration_seconds(duration_key)
+                    if duration_key else None),
             }
             workflow['active'] = active
             result['repair'] = copy.deepcopy(active)
@@ -13478,6 +13742,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(400, 'Укажите техника для Vehicle repair')
             severity = vehicle_repair_severity(current, maximum)
             rule = VEHICLE_REPAIR_RULES[severity]
+            campaign_started = campaign_now(conn)
             active = {
                 'repair_id': secrets.token_hex(16), 'status': 'in_progress',
                 'severity': severity, 'skill': vehicle_repair_skill(vehicle),
@@ -13487,6 +13752,8 @@ class Handler(BaseHTTPRequestHandler):
                 'technician': technician, 'sdp_before': current,
                 'sdp_target': maximum, 'started_at': now,
                 'source': 'CP:R 140', 'manual_resolution_required': True,
+                'campaign_started_at': campaign_started,
+                'campaign_due_at': campaign_started + campaign_duration_seconds(rule['duration_key']),
             }
             state['repair'] = active
             reason = (
@@ -16282,6 +16549,8 @@ ROUTES = [
     ('DELETE', rx(r'/api/media/([a-f0-9]{32})'), Handler.api_media_delete),
     ('GET', rx(r'/api/meta'), Handler.api_meta),
     ('GET', rx(r'/api/stats'), Handler.api_stats),
+    ('GET', rx(r'/api/campaign-clock'), Handler.api_campaign_clock),
+    ('POST', rx(r'/api/campaign-clock'), Handler.api_campaign_clock_advance),
     ('GET', rx(r'/api/items'), Handler.api_items),
     ('GET', rx(r'/api/items/([\w-]+)'), Handler.api_item),
     ('GET', rx(r'/api/nightmarket'), Handler.api_nightmarket),

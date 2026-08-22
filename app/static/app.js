@@ -2329,6 +2329,13 @@ function therapyLifecycleHtml(character,derived,mine){
   return `<div class="therapy-panel mt"><div class="row" style="justify-content:space-between"><div><b>🧠 Therapy</b><div class="small muted">${T('One campaign week · server Humanity roll · capped by Maximum Humanity','Одна игровая неделя · серверный бросок Humanity · не выше Maximum Humanity')}</div></div>${mine?`<button data-therapy-action="start">${T('Start Therapy','Начать Therapy')}</button>`:''}</div>${latestHtml}</div>`;
 }
 
+function campaignServicesHtml(d){
+  const services=(d.campaign_services||[]).filter(service=>service.ready!==null);
+  if(!services.length)return '';
+  const nowLabel=d.campaign_time?` · ${T('clock','часы')} ${new Date(d.campaign_time*1000).toLocaleString(APP_I18N.current()==='ru'?'ru-RU':'en-US',{dateStyle:'medium',timeStyle:'short'})}`:'';
+  return `<div class="panel mb" id="sheet-campaign-services"><h2>⏳ ${T('Campaign Clock','Campaign Clock')}</h2><div class="small muted mb">${T('Active services are tracked against campaign time. Completion checks are still resolved at the table.','Активные сервисы отслеживаются по игровому времени. Проверки завершения по-прежнему выполняются за столом.')}${esc(nowLabel)}</div>${services.map(service=>`<div class="inv-row"><span class="iname"><b>${esc(service.label)}</b></span>${service.ready===true?`<span class="tag">${T('DUE','ГОТОВО')}</span>`:service.ready===false?`<span class="tag">${T('IN PROGRESS','ИДЁТ')} · ${esc(service.status)}</span>`:`<span class="tag">${T('MANUAL','ВРУЧНУЮ')}</span>`}${service.due_label?`<span class="small muted">${esc(service.due_label)}</span>`:''}</div>`).join('')}</div>`;
+}
+
 function makerRanks(ch){
   const roles=ch.roles||[];
   const active=ch.active_role||ch.role;
@@ -2811,6 +2818,7 @@ async function viewSheet(id) {
   </div>
 
   <div class="panel mb" id="sheet-combat">${combatSheetHtml(ch,d,mine)}</div>
+  ${campaignServicesHtml(d)}
   <div class="grid cols-2 sheet-layout" style="gap:18px">
     <div>
       <div class="panel mb" id="sheet-overview">

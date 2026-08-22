@@ -388,6 +388,35 @@ class NCNetCoreFlowTests(unittest.TestCase):
         post_after_archive = self.call(server.Handler.api_feed_detail, {}, self.match(post['id']), {})['payload']
         self.assertEqual(post_after_archive['author']['display_name'], 'K')
 
+    def test_campaign_clock_gm_advance_and_player_denied(self):
+        server.ensure_campaign_clock(self.conn)
+        self.current = self.user('gm')
+        before = server.campaign_now(self.conn)
+        payload = self.call(server.Handler.api_campaign_clock_advance, {}, None, {
+            'advance': {'days': 2}, 'reason': 'Downtime passed'})
+        self.assertEqual(payload['status'], 200)
+        after = server.campaign_now(self.conn)
+        self.assertAlmostEqual(after - before, 2 * 86400, delta=5)
+        audit = self.conn.execute('SELECT COUNT(*) n FROM campaign_clock_audit').fetchone()['n']
+        self.assertEqual(audit, 1)
+        self.current = self.user('runner1')
+        with self.assertRaises(server.ApiError) as denied:
+            self.call(server.Handler.api_campaign_clock_advance, {}, None, {
+                'advance': {'days': 1}, 'reason': 'Cheat'})
+        self.assertEqual(denied.exception.status, 403)
+
+    def test_campaign_clock_get_exposes_pending_for_gm(self):
+        server.ensure_campaign_clock(self.conn)
+        self.current = self.user('gm')
+        payload = self.call(server.Handler.api_campaign_clock, {}, None, {})['payload']
+        self.assertIn('pending', payload)
+        self.assertIn('campaign_time', payload)
+        self.current = self.user('runner1')
+        player_payload = self.call(server.Handler.api_campaign_clock, {}, None, {})['payload']
+        self.assertNotIn('pending', player_payload)
+
+
+
 class TechMakerFlowTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

@@ -3231,7 +3231,18 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - Character Sheet Tech Maker панель показывает историю Fabricated/Invented Items и кнопку `Fabricate / Invent Item` с модалкой;
 - 3 новых теста: fabricable категории + интеграционные blueprint/invention и gate-проверки.
 
-1. ✅ Вернуть безопасное свободное редактирование владельцем.
+**Статус B.12 — реализован Campaign Clock и service timing:**
+
+- additive migration 12 создаёт `campaign_state` (одиночная строка: campaign_time, timezone) и `campaign_clock_audit` (GM-изменения времени); база не сбрасывается, pending migration делает авто-backup;
+- GM может двигать Campaign Clock: `POST /api/campaign-clock` с `advance {days/hours/minutes}` или `set_to` + обязательная reason; изменения аудируются;
+- `GET /api/campaign-clock` возвращает текущее время/лейбл/таймзону и историю; для GM добавляется `pending` — список активных clock-tracked сервисов всей кампании;
+- Therapy (1 неделя), Vehicle Repair (3 часа / 1 день / 1 неделя) и Armor Repair через Jeeves (по Price Category) записывают `campaign_started_at` и `campaign_due_at`;
+- manual_tech и paid_service Armor Repair остаются `MANUAL TECH TIME` / `MANUAL PAID SERVICE TIME` без автовычисляемого due;
+- сервисы с реальным сроком получают статус `DUE / IN PROGRESS (Xd Xh Xm) / MANUAL` по кампанийному времени; завершение по-прежнему требует подтверждения проверки за столом;
+- `derived.campaign_services` и `derived.campaign_time` на Character Sheet; публичный Dossier скрывает campaign_services при приватном Equipment;
+- GM OPS получил панель `Campaign Clock` с быстрыми шагами +1h/+6h/+1d/+7d, кастомным продвижением и списком pending-сервисов;
+- 5 новых тестов: duration/service status, сбор активных работ, severity→duration mapping, GM-only advance + audit, GM pending vs player payload;
+- Campaign Clock auto-completion (автоприменение результатов) остаётся осознанно ручным: неоднозначные проверки и броски не симулируются автоматически.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
 4. ✅ Добавить custom/found items и acquisition provenance.
@@ -3253,7 +3264,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
     - дальше: ammo unload/type-change flow, paid repair services, Campaign Clock completion и Crew cargo/ammo stash.
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
     - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, concrete Cyberware/Popup weapons/Popup Shield, Therapy, concrete Armor/Shield hosts, Tech Upgrade, manual/Jeeves/paid Armor Repair, curated special cyberweapons (Net Launcher / Dartguns / Gas Jet) с special-ammo lifecycle, Manual Shield Tech Upgrade Polish и Tech Maker Custom Modifications (allowlisted upgrade/invention effects на weapon/armor/vehicle/cyberware);
-    - дальше: Campaign Clock services и более широкий allowlisted effect surface.
+    - дальше: более широкий allowlisted effect surface (Campaign Clock services реализованы в B.12).
 14. JSON import.
 
 ### Пакет C — Publishing Preview
