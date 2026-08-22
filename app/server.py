@@ -10547,6 +10547,54 @@ class Handler(BaseHTTPRequestHandler):
         updated = conn.execute('SELECT * FROM contracts WHERE id=?', (row['id'],)).fetchone()
         self.send_json(self.contract_payload(conn, updated, user))
 
+    def api_contract_preview(self, conn, qs, m, body):
+        """Normalise and permission-check a Contract draft without writing anything."""
+        user = self.require_gm(conn)
+        data = self.clean_contract_input(body or {})
+        if data['storyline_id']:
+            storyline = conn.execute('SELECT * FROM storylines WHERE id=?', (data['storyline_id'],)).fetchone()
+            if not storyline or not can_edit_storyline(conn, user, storyline):
+                raise ApiError(400, 'Недоступная сюжетная линия')
+        participants = []
+        for index, item in enumerate((body or {}).get('participants') or []):
+            persona = conn.execute('SELECT * FROM personas WHERE id=?',
+                                   (_num(item.get('persona_id')),)).fetchone()
+            if not persona or not can_manage_persona(user, persona):
+                raise ApiError(400, 'Недоступная персона в контракте')
+            participants.append({
+                'persona_id': persona['id'],
+                'role_key': str(item.get('role_key') or 'custom')[:40],
+                'role_label': str(item.get('role_label') or '')[:100],
+                'visibility': 'classified' if item.get('visibility') == 'classified' else 'public',
+                'note': str(item.get('note') or '')[:1000],
+                'sort_order': index,
+                'display_name': persona['display_name'], 'handle': persona['handle'],
+                'kind': persona['kind'], 'avatar_media_id': persona['avatar_media_id'],
+                'accent_color': persona['accent_color'],
+            })
+        now = time.time()
+        payload = {
+            'id': None, 'preview': True,
+            'storyline_id': data['storyline_id'], 'status': data['status'],
+            'title': data['title'], 'teaser': data['teaser'],
+            'public_brief': data['public_brief'], 'classified_brief': data['classified_brief'],
+            'district_id': data['district_id'] or None, 'risk_level': data['risk_level'],
+            'reward_mode': data['reward_mode'],
+            'reward_exact': data['reward_exact'], 'reward_min': data['reward_min'],
+            'reward_max': data['reward_max'], 'reward_text': data['reward_text'],
+            'scheduled_at': data['scheduled_at'], 'crew_capacity': data['crew_capacity'],
+            'requirements': data['requirements'], 'content_notes': data['content_notes'],
+            'service_format': data['service_format'], 'service_contact': data['service_contact'],
+            'service_vtt_url': data['service_vtt_url'], 'service_notes': data['service_notes'],
+            'cover_media_id': data['cover_media_id'],
+            'participants': participants,
+            'crew_count': 0, 'waitlist_count': 0, 'signups': [],
+            'has_classified_access': True, 'can_edit': True,
+            'gm_display_name': user['display_name'],
+            'created': now, 'updated': now,
+        }
+        self.send_json(payload)
+
     @atomic_endpoint
     def api_contract_join(self, conn, qs, m, body):
         user = self.require_user(conn)
@@ -10878,6 +10926,86 @@ class Handler(BaseHTTPRequestHandler):
         after = self.feed_post_payload(conn, updated, user)
         record_feed_revision(conn, row['id'], user['id'], 'update', before, after)
         conn.commit(); self.send_json(after)
+
+    def api_feed_preview(self, conn, qs, m, body):
+        """Normalise and permission-check a draft post without writing anything."""
+        user = self.require_user(conn)
+        persona_id, character_id = self.resolve_feed_author(conn, user, body or {})
+        fmt = str((body or {}).get('format') or 'short').lower()
+        if fmt not in FEED_FORMATS:
+            raise ApiError(400, 'Некорректный формат публикации')
+        headline = str((body or {}).get('headline') or '').strip()[:240] or None
+        text = str((body or {}).get('body') or '').strip()[:30000]
+        if not text or (fmt in ('article', 'blog', 'bulletin') and not headline):
+            raise ApiError(400, 'Публикации нужен текст и, для длинного формата, заголовок')
+        contract_id = _num((body or {}).get('contract_id'))
+        if contract_id:
+            contract = conn.execute('SELECT * FROM contracts WHERE id=?', (contract_id,)).fetchone()
+            if not contract or (contract['status'] in ('draft', 'archived') and
+                                not can_edit_contract(conn, user, contract)):
+                raise ApiError(400, 'Контракт не найден')
+            can_link_contract = can_edit_contract(conn, user, contract)
+            if character_id and not can_link_contract:
+                can_link_contract = bool(conn.execute(
+                    "SELECT 1 FROM contract_signups WHERE contract_id=? AND character_id=? "
+                    "AND user_id=? AND status='crew'",
+                    (contract_id, character_id, user['id'])).fetchone())
+            if not can_link_contract:
+                raise ApiError(403, 'Связать публикацию с контрактом может его GM или участник Crew')
+        storyline_id = _num((body or {}).get('storyline_id'))
+        if storyline_id:
+            storyline = conn.execute('SELECT * FROM storylines WHERE id=?', (storyline_id,)).fetchone()
+            if not storyline or storyline['status'] == 'archived':
+                raise ApiError(400, 'Недоступная сюжетная линия')
+            can_link_storyline = can_edit_storyline(conn, user, storyline)
+            if (not can_link_storyline and contract_id and can_link_contract and
+                    contract['storyline_id'] == storyline['id']):
+                can_link_storyline = True
+            if not can_link_storyline:
+                raise ApiError(403, 'Сюжетную линию может связать её GM или Crew связанного контракта')
+        reply_to_post_id = _num((body or {}).get('reply_to_post_id'))
+        if reply_to_post_id and not conn.execute(
+                "SELECT 1 FROM feed_posts WHERE id=? AND status='published'",
+                (reply_to_post_id,)).fetchone():
+            raise ApiError(400, 'Публикация не найдена')
+        truth = 'unknown'
+        if user_is_gm(user):
+            candidate = str((body or {}).get('truth_status') or 'unknown')
+            truth = candidate if candidate in FEED_TRUTH else 'unknown'
+        now = time.time()
+        preview_row = {
+            'id': None, 'format': fmt, 'status': 'preview',
+            'creator_user_id': user['id'],
+            'author_persona_id': persona_id, 'author_character_id': character_id,
+            'storyline_id': storyline_id, 'contract_id': contract_id,
+            'reply_to_post_id': reply_to_post_id,
+            'district_id': clean_location_id((body or {}).get('district_id')),
+            'headline': headline, 'lead': str((body or {}).get('lead') or '')[:500] or None,
+            'body': text,
+            'image_media_id': str((body or {}).get('image_media_id') or '')[:64] or None,
+            'truth_status': truth, 'hidden_reason': None,
+            'event_at': optional_timestamp((body or {}).get('event_at')),
+            'published_at': None, 'created': now, 'updated': now,
+        }
+        persona = conn.execute('SELECT * FROM personas WHERE id=?',
+                               (persona_id,)).fetchone() if persona_id else None
+        character = conn.execute('SELECT * FROM characters WHERE id=?',
+                                 (character_id,)).fetchone() if character_id else None
+        payload = {
+            'id': None, 'format': fmt, 'status': 'preview',
+            'creator_user_id': user['id'],
+            'author_persona_id': persona_id, 'author_character_id': character_id,
+            'author': persona_payload(persona, False) if persona else character_author_payload(character),
+            'storyline_id': storyline_id, 'contract_id': contract_id,
+            'reply_to_post_id': reply_to_post_id, 'district_id': preview_row['district_id'],
+            'headline': headline, 'lead': preview_row['lead'], 'body': text,
+            'image_media_id': preview_row['image_media_id'],
+            'event_at': preview_row['event_at'], 'published_at': None,
+            'created': now, 'updated': now, 'can_edit': True, 'preview': True,
+        }
+        if user_is_gm(user):
+            payload['truth_status'] = truth
+        self.send_json(payload)
 
     def api_feed_truth_update(self, conn, qs, m, body):
         user = self.require_gm(conn)
@@ -18436,6 +18564,7 @@ ROUTES = [
     ('POST', rx(r'/api/storylines/(\d+)/timeline'), Handler.api_storyline_timeline_create),
     ('GET', rx(r'/api/contracts'), Handler.api_contracts),
     ('POST', rx(r'/api/contracts'), Handler.api_contract_create),
+    ('POST', rx(r'/api/contracts/preview'), Handler.api_contract_preview),
     ('GET', rx(r'/api/contracts/(\d+)'), Handler.api_contract_detail),
     ('PUT', rx(r'/api/contracts/(\d+)'), Handler.api_contract_update),
     ('DELETE', rx(r'/api/contracts/(\d+)'), Handler.api_contract_delete),
@@ -18444,6 +18573,7 @@ ROUTES = [
     ('POST', rx(r'/api/contracts/(\d+)/aftermath'), Handler.api_contract_aftermath),
     ('GET', rx(r'/api/feed'), Handler.api_feed),
     ('POST', rx(r'/api/feed'), Handler.api_feed_create),
+    ('POST', rx(r'/api/feed/preview'), Handler.api_feed_preview),
     ('GET', rx(r'/api/feed/(\d+)'), Handler.api_feed_detail),
     ('PUT', rx(r'/api/feed/(\d+)'), Handler.api_feed_update),
     ('POST', rx(r'/api/feed/(\d+)/truth'), Handler.api_feed_truth_update),

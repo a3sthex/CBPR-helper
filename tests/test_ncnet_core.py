@@ -1453,3 +1453,118 @@ class DowntimeFlowTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class PublishingPreviewFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = sqlite3.connect(str(Path(self.tmp.name) / 'ncnet.db'))
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(server.SCHEMA)
+        server.apply_schema_migrations(self.conn, make_backup=False)
+        for username, display, role in (('gm', 'GM', 'gm'), ('runner1', 'Runner One', 'player')):
+            self.conn.execute(
+                'INSERT INTO users(username,display_name,pass_hash,is_gm,account_role,created) '
+                'VALUES(?,?,?,?,?,?)',
+                (username, display, 'x', 1 if role in ('gm', 'admin') else 0, role, 1))
+        self.conn.execute(
+            "INSERT INTO personas(owner_user_id,access,kind,handle,display_name,short_bio,"
+            "public_bio,status,created,updated) VALUES(1,'shared','person','fixer','Dex','','','active',1,1)")
+        self.conn.execute(
+            "INSERT INTO storylines(owner_user_id,title,code_name,public_summary,private_summary,"
+            "status,created,updated) VALUES(1,'Arc','ARC','','','active',1,1)")
+        base = {'handle': 'V', 'role': 'Solo', 'role_rank': 4,
+                'roles': [{'name': 'Solo', 'rank': 4, 'primary': True}], 'active_role': 'Solo',
+                'stats': {'BODY': 6, 'WILL': 6, 'LUCK': 5, 'MOVE': 6}, 'skills': {},
+                'inventory': [], 'cyberware': [], 'armor': {}, 'cash': 100,
+                'ip_available': 0, 'ip_total_earned': 0, 'ip_total_spent': 0,
+                'luck_cur': 5, 'reputation': 0}
+        self.conn.execute(
+            'INSERT INTO characters(owner_id,public,data,created,updated) VALUES(2,1,?,1,1)',
+            (json.dumps(base),))
+        self.conn.commit()
+        self.handler = object.__new__(server.Handler)
+        self.response = {}
+        self.current = self.user('gm')
+        self.handler.current_user = lambda conn: self.current
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def user(self, username):
+        return self.conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
+
+    def call(self, method, *args):
+        self.response = {}
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+        method(self.handler, self.conn, *args)
+        return self.response
+
+    def test_feed_preview_normalizes_without_writing(self):
+        self.current = self.user('gm')
+        payload = self.call(server.Handler.api_feed_preview, {}, None, {
+            'author_persona_id': 1, 'format': 'article', 'headline': 'Big News',
+            'body': 'Body text', 'district_id': 'watson', 'storyline_id': 1,
+            'truth_status': 'true',
+        })
+        self.assertEqual(payload['status'], 200)
+        preview = payload['payload']
+        self.assertTrue(preview['preview'])
+        self.assertEqual(preview['author']['display_name'], 'Dex')
+        self.assertEqual(preview['district_id'], 'watson')
+        self.assertEqual(preview['truth_status'], 'true')
+        # Nothing written to the database.
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) n FROM feed_posts').fetchone()['n'], 0)
+
+    def test_feed_preview_validates_author_and_body(self):
+        self.current = self.user('runner1')
+        with self.assertRaises(server.ApiError) as denied:
+            self.call(server.Handler.api_feed_preview, {}, None, {
+                'author_persona_id': 1, 'format': 'short', 'body': 'x'})
+        self.assertEqual(denied.exception.status, 403)
+        self.current = self.user('gm')
+        with self.assertRaises(server.ApiError) as bad_body:
+            self.call(server.Handler.api_feed_preview, {}, None, {
+                'author_persona_id': 1, 'format': 'article', 'headline': 'H', 'body': ''})
+        self.assertEqual(bad_body.exception.status, 400)
+
+    def test_contract_preview_normalizes_without_writing(self):
+        self.current = self.user('gm')
+        payload = self.call(server.Handler.api_contract_preview, {}, None, {
+            'title': 'Heist', 'status': 'open', 'risk_level': 'moderate',
+            'reward_mode': 'range', 'reward_min': 1000, 'reward_max': 2000,
+            'district_id': 'watson', 'storyline_id': 1, 'teaser': 'Teaser',
+            'public_brief': 'Public brief', 'classified_brief': 'Classified',
+            'crew_capacity': 4,
+            'participants': [{'persona_id': 1, 'role_key': 'poster',
+                              'role_label': 'Fixer', 'visibility': 'public'}],
+        })
+        self.assertEqual(payload['status'], 200)
+        preview = payload['payload']
+        self.assertTrue(preview['preview'])
+        self.assertEqual(preview['title'], 'Heist')
+        self.assertEqual(preview['participants'][0]['display_name'], 'Dex')
+        self.assertEqual(preview['participants'][0]['visibility'], 'public')
+        self.assertEqual(preview['has_classified_access'], True)
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) n FROM contracts').fetchone()['n'], 0)
+        self.assertEqual(self.conn.execute(
+            'SELECT COUNT(*) n FROM contract_participants').fetchone()['n'], 0)
+
+    def test_contract_preview_requires_gm_and_valid_persona(self):
+        self.current = self.user('runner1')
+        with self.assertRaises(server.ApiError) as denied:
+            self.call(server.Handler.api_contract_preview, {}, None, {'title': 'X'})
+        self.assertEqual(denied.exception.status, 403)
+        self.current = self.user('gm')
+        with self.assertRaises(server.ApiError) as bad_persona:
+            self.call(server.Handler.api_contract_preview, {}, None, {
+                'title': 'X', 'participants': [{'persona_id': 9999}]})
+        self.assertEqual(bad_persona.exception.status, 400)
+
+
+if __name__ == '__main__':
+    unittest.main()

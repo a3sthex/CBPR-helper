@@ -1447,6 +1447,8 @@ checksums
 
 ## 14. Preview перед публикацией Feed post и Contract
 
+**Статус 2026-08-22 (B.19):** реализовано ядро — серверные preview-эндпоинты без записи в БД и Preview-кнопки в Feed composer / Contract editor с плашкой `PREVIEW — NOT PUBLISHED`. См. статус B.19 ниже.
+
 ### Требование
 
 Перед окончательной публикацией пользователь должен увидеть материал так, как его увидят остальные. Это особенно важно для изображений, длинного текста, выбранной Persona/Character, classified-полей и карточки Contract на карте.
@@ -3316,6 +3318,16 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - 9 новых тестов (223 total): unit (clean input, списки bounded, payload gating) + интеграционные (автоучастники + feed/timeline links, приватность для игроков, GM-only создание, unpublished скрыт, update/delete);
 - отложено: автосвязь Location/Organization history и Memorial achievements (появятся вместе с этими модулями).
 
+**Статус B.19 — реализован Publishing Preview (Feed & Contract):**
+
+- `POST /api/feed/preview` — нормализует и проверяет draft post (author persona/character, формат, headline/body, связи contract/storyline/reply, district, truth-status) и возвращает `preview: true` payload в форме `feed_post_payload` — **ничего не пишет в БД**;
+- `POST /api/contracts/preview` — GM-only, прогоняет `clean_contract_input` + проверку storyline и доступных personas участников, возвращает `preview: true` payload в форме `contract_payload` (card + public/classified + participants) без записи;
+- UI: кнопка `Preview` в Feed composer и Contract editor; preview-модалка поверх редактора с плашкой `PREVIEW — NOT PUBLISHED`, кнопками `Back to Edit` (форма не теряется) и `Publish Now`/`Transmit Contract`;
+- preview использует те же render-функции (`ncFeedCard`/`ncContractCard`), что и опубликованные карточки; publish повторно валидирует данные и закрывает все модалки одним действием (защита от double publish);
+- 4 новых интеграционных теста (236 total): feed preview нормализует без записи, валидирует автора/тело, contract preview нормализует без записи, требует GM и валидную персону;
+- отложено: mobile/desktop width toggle и reply/related контекст в feed preview; map-signal и service/GM view в contract preview.
+2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
+
 **Статус B.18 — реализован Downtime Planner:**
 
 - сервер-owned контейнер `downtime_state` (active период + bounded history до 50) в Character JSON; не принимается из Character Creation и сбрасывается при JSON import;
@@ -3353,11 +3365,17 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 ### Пакет C — Publishing Preview
 
-1. Вынести Feed/Contract cards и detail views в общие render functions.
-2. Добавить серверную validation preview без записи в БД.
-3. Сделать Feed preview: card/detail/mobile/desktop.
-4. Сделать Contract preview: card/map/public/classified/service.
-5. Сохранять состояние формы при возврате из preview и блокировать double publish.
+**Статус 2026-08-22 (B.19):** реализованы серверные preview-эндпоинты и Preview-кнопки в Feed composer и Contract editor (card + public/classified view с плашкой `PREVIEW — NOT PUBLISHED`). Feed/Contract card render-функции уже общие (`ncFeedCard`/`ncContractCard`) и переиспользуются в preview.
+
+1. ✅ Вынести Feed/Contract cards и detail views в общие render functions (уже было: `ncFeedCard`/`ncContractCard`).
+2. ✅ Добавить серверную validation preview без записи в БД (`POST /api/feed/preview`, `POST /api/contracts/preview`).
+3. ◐ Сделать Feed preview: card/detail/mobile/desktop.
+   - готово: card preview с автором/портретом, форматом, headline/lead/body, изображением, district, event time, truth-status (GM);
+   - дальше: mobile/desktop width toggle и контекст reply/related post.
+4. ◐ Сделать Contract preview: card/map/public/classified/service.
+   - готово: card + public briefing + classified package + participants + reward/risk/crew;
+   - дальше: map-signal и service/GM view (реальные участники).
+5. ✅ Сохранять состояние формы при возврате из preview (preview открывается поверх редактора — Back to Edit возвращает форму без потери данных) и блокировать double publish (publish закрывает все модалки одним действием).
 
 ### Пакет D — Visual/Print/Roster
 
