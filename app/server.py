@@ -2911,6 +2911,40 @@ CREATE INDEX IF NOT EXISTS idx_locations_district ON locations(district_id, arch
 CREATE INDEX IF NOT EXISTS idx_locations_kind ON locations(kind, archived);
 """
 
+MEMORIAL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS memorials(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  character_id INTEGER,
+  handle TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT '',
+  role_rank INTEGER NOT NULL DEFAULT 0,
+  portrait_media_id TEXT,
+  status TEXT NOT NULL DEFAULT 'deceased',
+  death_date REAL,
+  location TEXT NOT NULL DEFAULT '',
+  cause TEXT NOT NULL DEFAULT '',
+  epitaph TEXT NOT NULL DEFAULT '',
+  last_words TEXT NOT NULL DEFAULT '',
+  obituary TEXT NOT NULL DEFAULT '',
+  gm_notes TEXT NOT NULL DEFAULT '',
+  visibility TEXT NOT NULL DEFAULT 'public',
+  legacy_drink_name TEXT NOT NULL DEFAULT '',
+  legacy_ingredients TEXT NOT NULL DEFAULT '',
+  legacy_preparation TEXT NOT NULL DEFAULT '',
+  legacy_glass TEXT NOT NULL DEFAULT '',
+  legacy_garnish TEXT NOT NULL DEFAULT '',
+  legacy_quote TEXT NOT NULL DEFAULT '',
+  legacy_legend TEXT NOT NULL DEFAULT '',
+  legacy_awarded_by INTEGER,
+  legacy_awarded_at REAL,
+  feed_post_id INTEGER,
+  created_by INTEGER NOT NULL,
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memorials_status ON memorials(status, death_date);
+"""
+
 NOTIFICATION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS notifications(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2962,6 +2996,7 @@ MIGRATION_MARKET_STOCK = 14
 MIGRATION_NPC_STATBLOCKS = 15
 MIGRATION_SESSION_RECAPS = 16
 MIGRATION_LOCATIONS = 17
+MIGRATION_MEMORIAL = 18
 DB_BACKUP_LIMIT = 5
 _RATE_LIMIT_BUCKETS = {}
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -4295,6 +4330,7 @@ def apply_schema_migrations(conn, make_backup=True):
         (MIGRATION_NPC_STATBLOCKS, 'npc full statblocks and session snapshots'),
         (MIGRATION_SESSION_RECAPS, 'session recaps and campaign chronicle'),
         (MIGRATION_LOCATIONS, 'map points of interest and key locations'),
+        (MIGRATION_MEMORIAL, 'fallen edgerunners memorial and afterlife legacy'),
     ]
     pending = [version for version, _ in migrations if version not in applied]
     if make_backup and pending:
@@ -4357,6 +4393,8 @@ def apply_schema_migrations(conn, make_backup=True):
         conn.executescript(SESSION_RECAP_SCHEMA)
     if MIGRATION_LOCATIONS not in applied:
         conn.executescript(LOCATION_SCHEMA)
+    if MIGRATION_MEMORIAL not in applied:
+        conn.executescript(MEMORIAL_SCHEMA)
     # Re-run additive CREATE IF NOT EXISTS blocks so patch-level tables added to an
     # already-applied migration remain safe during development and rolling deploys.
     conn.executescript(NETWORK_SCHEMA)
@@ -4371,6 +4409,7 @@ def apply_schema_migrations(conn, make_backup=True):
     conn.executescript(MARKET_STOCK_SCHEMA)
     conn.executescript(SESSION_RECAP_SCHEMA)
     conn.executescript(LOCATION_SCHEMA)
+    conn.executescript(MEMORIAL_SCHEMA)
     # Recover safely if a rolling/patch deployment recorded the migration before
     # every additive column reached a particular database.
     ensure_column(conn, 'users', 'avatar_media_id', 'TEXT')
@@ -6054,6 +6093,89 @@ def location_payload(row, user):
         'can_edit': bool(user and user_is_gm(user) and row['custom']),
         'created': row['created'], 'updated': row['updated'],
     }
+
+
+# -------------------------------------------------------- Memorial / Afterlife
+
+MEMORIAL_STATUSES = {'deceased', 'retired', 'missing'}
+MEMORIAL_VISIBILITIES = {'public', 'private'}
+
+
+def clean_memorial_input(body, existing=None):
+    base = dict(existing or {})
+    get = lambda key, default='': (body or {}).get(key, base.get(key, default))
+    status = str(get('status', 'deceased')).lower()
+    if status not in MEMORIAL_STATUSES:
+        raise ApiError(400, 'Неизвестный статус memorial')
+    handle = str(get('handle') or '').strip()[:60]
+    if len(handle) < 1:
+        raise ApiError(400, 'Memorial требует handle')
+    visibility = str(get('visibility') or 'public').lower()
+    if visibility not in MEMORIAL_VISIBILITIES:
+        visibility = 'public'
+    death_date = None
+    if get('death_date') not in (None, ''):
+        death_date = optional_timestamp(get('death_date'))
+    return {
+        'status': status,
+        'handle': handle,
+        'role': str(get('role') or '').strip()[:80],
+        'role_rank': max(0, min(10, _num(get('role_rank')) or 0)),
+        'death_date': death_date,
+        'location': str(get('location') or '').strip()[:240],
+        'cause': str(get('cause') or '').strip()[:2000],
+        'epitaph': str(get('epitaph') or '').strip()[:1000],
+        'last_words': str(get('last_words') or '').strip()[:2000],
+        'obituary': str(get('obituary') or '').strip()[:10000],
+        'gm_notes': str(get('gm_notes') or '').strip()[:10000],
+        'visibility': visibility,
+    }
+
+
+def clean_legacy_input(body):
+    if not isinstance(body, dict):
+        raise ApiError(400, 'Afterlife Legacy должен быть объектом')
+    drink_name = str(body.get('drink_name') or '').strip()[:120]
+    if len(drink_name) < 2:
+        raise ApiError(400, 'Напиток требует название')
+    return {
+        'drink_name': drink_name,
+        'ingredients': str(body.get('ingredients') or '').strip()[:2000],
+        'preparation': str(body.get('preparation') or '').strip()[:4000],
+        'glass': str(body.get('glass') or '').strip()[:200],
+        'garnish': str(body.get('garnish') or '').strip()[:500],
+        'quote': str(body.get('quote') or '').strip()[:2000],
+        'legend': str(body.get('legend') or '').strip()[:6000],
+    }
+
+
+def memorial_payload(row, user=None, full=False):
+    payload = {
+        'id': row['id'], 'character_id': row['character_id'],
+        'handle': row['handle'], 'role': row['role'], 'role_rank': row['role_rank'],
+        'portrait_media_id': row['portrait_media_id'],
+        'status': row['status'], 'death_date': row['death_date'],
+        'location': row['location'], 'cause': row['cause'],
+        'epitaph': row['epitaph'], 'last_words': row['last_words'],
+        'obituary': row['obituary'],
+        'visibility': row['visibility'],
+        'feed_post_id': row['feed_post_id'],
+        'legacy': {
+            'drink_name': row['legacy_drink_name'],
+            'ingredients': row['legacy_ingredients'],
+            'preparation': row['legacy_preparation'],
+            'glass': row['legacy_glass'],
+            'garnish': row['legacy_garnish'],
+            'quote': row['legacy_quote'],
+            'legend': row['legacy_legend'],
+            'awarded_at': row['legacy_awarded_at'],
+        } if row['legacy_drink_name'] else None,
+        'created': row['created'], 'updated': row['updated'],
+    }
+    if full:
+        payload['gm_notes'] = row['gm_notes']
+        payload['created_by'] = row['created_by']
+    return payload
 
 
 # -------------------------------------------------------- Crew Stash & transfers
@@ -9540,6 +9662,15 @@ SERVER_ERROR_EN = {
     'Локация с таким идентификатором уже существует': 'A location with this identifier already exists',
     'Seed локации можно редактировать только через custom копию': 'Seed locations can only be edited via a custom copy',
     'Seed локации нельзя удалить': 'Seed locations cannot be deleted',
+    'Неизвестный статус memorial': 'Unknown memorial status',
+    'Memorial требует handle': 'Memorial requires a handle',
+    'Персонаж уже помечен memorial': 'The character is already memorialized',
+    'Memorial для персонажа уже существует': 'A memorial already exists for this character',
+    'Укажите причину memorial': 'Provide a reason for the memorial',
+    'Memorial не найден': 'Memorial not found',
+    'Укажите причину отмены memorial': 'Provide a reason for restoring the character',
+    'Afterlife Legacy должен быть объектом': 'Afterlife Legacy must be an object',
+    'Напиток требует название': 'The drink requires a name',
 }
 
 def server_error_message(message, language):
@@ -17014,6 +17145,164 @@ class Handler(BaseHTTPRequestHandler):
         conn.commit()
         self.send_json({'ok': True, 'archived': True})
 
+    # ------------------------------------------------------------ Memorial / Afterlife
+
+    @atomic_endpoint
+    def api_character_memorialize(self, conn, qs, m, body):
+        """Mark a Character as fallen (deceased/retired/missing)."""
+        user = self.require_gm(conn)
+        row = self.get_char(conn, m.group(1))
+        data = ensure_progression(json.loads(row['data']))
+        status = str((body or {}).get('status') or 'deceased').lower()
+        if status not in MEMORIAL_STATUSES:
+            raise ApiError(400, 'Неизвестный статус memorial')
+        if data.get('archived') or data.get('status') in MEMORIAL_STATUSES:
+            raise ApiError(409, 'Персонаж уже помечен memorial')
+        existing = conn.execute('SELECT * FROM memorials WHERE character_id=?',
+                                (row['id'],)).fetchone()
+        if existing:
+            raise ApiError(409, 'Memorial для персонажа уже существует')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину memorial')
+        # Identity fields are always taken from the Dossier for a memorial.
+        source = dict(body or {})
+        source.setdefault('handle', data.get('handle'))
+        source.setdefault('role', data.get('role'))
+        source.setdefault('role_rank', _num(data.get('role_rank')) or 0)
+        cleaned = clean_memorial_input(source)
+        now = time.time()
+        cur = conn.execute(
+            'INSERT INTO memorials(character_id,handle,role,role_rank,portrait_media_id,status,'
+            'death_date,location,cause,epitaph,last_words,obituary,gm_notes,visibility,'
+            'created_by,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (row['id'], cleaned['handle'], cleaned['role'], cleaned['role_rank'],
+             str(data.get('portrait_media_id') or '')[:64] or None, cleaned['status'],
+             cleaned['death_date'], cleaned['location'], cleaned['cause'],
+             cleaned['epitaph'], cleaned['last_words'], cleaned['obituary'],
+             cleaned['gm_notes'], cleaned['visibility'], user['id'], now, now))
+        memorial_id = cur.lastrowid
+        # Optional obituary draft in the City Feed.
+        feed_post_id = None
+        if (body or {}).get('publish_obituary') and cleaned['obituary']:
+            cur_feed = conn.execute(
+                'INSERT INTO feed_posts(format,status,creator_user_id,headline,body,'
+                'truth_status,event_at,created,updated) '
+                "VALUES('article','draft',?,?,?,'unknown',?,?,?)",
+                (user['id'], f'In Memoriam: {cleaned["handle"]}', cleaned['obituary'],
+                 cleaned['death_date'] or now, now, now))
+            feed_post_id = cur_feed.lastrowid
+        conn.execute('UPDATE memorials SET feed_post_id=? WHERE id=?',
+                     (feed_post_id, memorial_id))
+        before = json.loads(row['data'])
+        after = copy.deepcopy(before)
+        after['status'] = status
+        after['archived'] = True
+        after['public'] = False
+        after['archive_reason'] = reason
+        conn.execute('UPDATE characters SET data=?,public=0,updated=?,revision=revision+1 WHERE id=?',
+                     (json.dumps(after, ensure_ascii=False), now, row['id']))
+        record_character_changes(conn, row['id'], user['id'], before, after,
+                                 f'Memorialized as {status}: {reason}')
+        conn.commit()
+        fresh = conn.execute('SELECT * FROM memorials WHERE id=?', (memorial_id,)).fetchone()
+        self.send_json(memorial_payload(fresh, user, full=True), status=201)
+
+    def api_memorial_list(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        gm = user_is_gm(user)
+        rows = conn.execute(
+            'SELECT * FROM memorials WHERE (? OR visibility=\'public\') '
+            'ORDER BY (status=\'deceased\') DESC,death_date DESC,id DESC',
+            (1 if gm else 0,)).fetchall()
+        self.send_json({'memorials': [memorial_payload(row, user, full=gm) for row in rows]})
+
+    def api_memorial_detail(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        row = conn.execute('SELECT * FROM memorials WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Memorial не найден')
+        if row['visibility'] != 'public' and not user_is_gm(user):
+            raise ApiError(404, 'Memorial не найден')
+        self.send_json(memorial_payload(row, user, full=user_is_gm(user)))
+
+    @atomic_endpoint
+    def api_memorial_update(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM memorials WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Memorial не найден')
+        cleaned = clean_memorial_input(body or {}, row)
+        conn.execute(
+            'UPDATE memorials SET status=?,handle=?,role=?,role_rank=?,death_date=?,location=?,'
+            'cause=?,epitaph=?,last_words=?,obituary=?,gm_notes=?,visibility=?,updated=? WHERE id=?',
+            (cleaned['status'], cleaned['handle'], cleaned['role'], cleaned['role_rank'],
+             cleaned['death_date'], cleaned['location'], cleaned['cause'],
+             cleaned['epitaph'], cleaned['last_words'], cleaned['obituary'],
+             cleaned['gm_notes'], cleaned['visibility'], time.time(), row['id']))
+        if row['feed_post_id'] and cleaned['obituary']:
+            conn.execute(
+                "UPDATE feed_posts SET headline=?,body=?,event_at=?,updated=? "
+                "WHERE id=? AND status='draft'",
+                (f'In Memoriam: {cleaned["handle"]}', cleaned['obituary'],
+                 cleaned['death_date'] or row['death_date'] or time.time(),
+                 time.time(), row['feed_post_id']))
+        conn.commit()
+        fresh = conn.execute('SELECT * FROM memorials WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(memorial_payload(fresh, user, full=True))
+
+    @atomic_endpoint
+    def api_memorial_legacy(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM memorials WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Memorial не найден')
+        cleaned = clean_legacy_input(body or {})
+        conn.execute(
+            'UPDATE memorials SET legacy_drink_name=?,legacy_ingredients=?,legacy_preparation=?,'
+            'legacy_glass=?,legacy_garnish=?,legacy_quote=?,legacy_legend=?,'
+            'legacy_awarded_by=?,legacy_awarded_at=?,updated=? WHERE id=?',
+            (cleaned['drink_name'], cleaned['ingredients'], cleaned['preparation'],
+             cleaned['glass'], cleaned['garnish'], cleaned['quote'], cleaned['legend'],
+             user['id'], time.time(), time.time(), row['id']))
+        conn.commit()
+        fresh = conn.execute('SELECT * FROM memorials WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(memorial_payload(fresh, user, full=True))
+
+    @atomic_endpoint
+    def api_memorial_restore(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM memorials WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Memorial не найден')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину отмены memorial')
+        if row['character_id']:
+            character = conn.execute('SELECT * FROM characters WHERE id=?',
+                                     (row['character_id'],)).fetchone()
+            if character:
+                before = json.loads(character['data'])
+                after = copy.deepcopy(before)
+                after.pop('status', None)
+                after.pop('archive_reason', None)
+                after['archived'] = False
+                conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
+                             (json.dumps(after, ensure_ascii=False), time.time(),
+                              row['character_id']))
+                record_character_changes(conn, row['character_id'], user['id'],
+                                         before, after, f'Memorial restored: {reason}')
+        if row['feed_post_id']:
+            conn.execute("DELETE FROM feed_posts WHERE id=? AND status='draft'",
+                         (row['feed_post_id'],))
+        conn.execute('DELETE FROM memorials WHERE id=?', (row['id'],))
+        conn.commit()
+        self.send_json({'ok': True, 'restored': True})
+
     def api_session_access(self, conn, qs, m, body):
         user = self.require_user(conn)
         session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
@@ -18886,6 +19175,11 @@ ROUTES = [
     ('DELETE', rx(r'/api/npc-templates/(\d+)'), Handler.api_npc_template_delete),
     ('GET', rx(r'/api/recaps'), Handler.api_recaps),
     ('GET', rx(r'/api/locations'), Handler.api_locations),
+    ('GET', rx(r'/api/memorial'), Handler.api_memorial_list),
+    ('GET', rx(r'/api/memorial/(\d+)'), Handler.api_memorial_detail),
+    ('PUT', rx(r'/api/memorial/(\d+)'), Handler.api_memorial_update),
+    ('POST', rx(r'/api/memorial/(\d+)/legacy'), Handler.api_memorial_legacy),
+    ('DELETE', rx(r'/api/memorial/(\d+)'), Handler.api_memorial_restore),
     ('POST', rx(r'/api/locations'), Handler.api_location_create),
     ('GET', rx(r'/api/locations/([a-z0-9-]+)'), Handler.api_location_detail),
     ('PUT', rx(r'/api/locations/([a-z0-9-]+)'), Handler.api_location_update),
@@ -18940,6 +19234,7 @@ ROUTES = [
     ('PUT', rx(r'/api/characters/(\d+)'), Handler.api_save_character),
     ('PUT', rx(r'/api/characters/(\d+)/sheet'), Handler.api_character_sheet_update),
     ('DELETE', rx(r'/api/characters/(\d+)'), Handler.api_delete_character),
+    ('POST', rx(r'/api/characters/(\d+)/memorial'), Handler.api_character_memorialize),
     ('POST', rx(r'/api/characters/(\d+)/ip'), Handler.api_character_ip),
     ('GET', rx(r'/api/characters/(\d+)/ip'), Handler.api_character_ip_history),
     ('GET', rx(r'/api/characters/(\d+)/ledger'), Handler.api_character_ledger),

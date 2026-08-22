@@ -1588,6 +1588,8 @@ persona_memberships
 
 ### 15.3 Fallen Edgerunners / Memorial Wall
 
+**Статус 2026-08-22 (B.21):** реализовано — таблица `memorials` (миграция 18), `POST /api/characters/{id}/memorial` (GM помечает персонажа deceased/retired/missing: Dossier становится archived+read-only, death event в Ledger, опциональный obituary-draft в City Feed), `GET /api/memorial`, `GET/PUT/DELETE /api/memorial/{id}` (обратимо GM/Admin с причиной), Afterlife Legacy (`POST /api/memorial/{id}/legacy`), страницы `#/memorial` (Memorial Wall + Afterlife Menu) и кнопка `🥃 Memorial` на Character Sheet у GM. Осталось: отдельные секции retired/missing в Registry и связи с Contract/Feed events.
+
 Смерть персонажа не должна выглядеть как обычное удаление. Нужен отдельный lifecycle status:
 
 ```text
@@ -1627,6 +1629,8 @@ Related Contract / Session / Feed post
 Для `retired` и `missing` лучше иметь отдельные секции, чтобы не приравнивать уход игрока к смерти персонажа.
 
 ### 15.4 Afterlife Legacy Drink
+
+**Статус 2026-08-22 (B.21):** реализовано — напиток не выдаётся автоматически, назначается GM/Admin через `POST /api/memorial/{id}/legacy` (drink_name, ingredients, preparation, glass, garnish, quote, legend); badge `AFTERLIFE LEGEND · drink` на карточке Memorial; секция Afterlife Menu на странице `#/memorial`.
 
 Особо отличившимся Fallen Edgerunners GM/Admin может присвоить Afterlife Legacy.
 
@@ -3336,6 +3340,16 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - UI: страница `🗺️ Map` (интерактивная SVG-карта с POI-маркерами по типам, palette toggle, фильтры район/тип/поиск, список), страница `#/map/{id}` (описание, район, тип, координаты, source), GM-редактор custom локаций с координатами;
 - 7 новых тестов (243 total): unit (clean/bounds/seed shape) + интеграционные (seed listing/detail, фильтры, GM CRUD custom, seed read-only + player deny);
 - отложено: zoom/pan слоёв, Housing, связь Vendor locations с POI `location_id`, location-specific offers.
+
+**Статус B.21 — реализованы Fallen Edgerunners Memorial и Afterlife Legacy:**
+
+- additive migration 18 создаёт таблицу `memorials` (character_id nullable, handle/role/portrait снапшот, status deceased/retired/missing, death_date, location, cause, epitaph, last_words, obituary, gm_notes, visibility, legacy-поля напитка, feed_post_id);
+- `POST /api/characters/{id}/memorial` (GM): помечает персонажа deceased/retired/missing — Dossier становится archived+read-only (`status` в data), пишет death event в Ledger, опционально создаёт obituary-draft в City Feed;
+- `GET /api/memorial` (публика видит public, GM — все), `GET /api/memorial/{id}`, `PUT /api/memorial/{id}` (GM редактирует текст, обновляет obituary-draft), `DELETE /api/memorial/{id}` (обратимо GM/Admin с причиной: восстанавливает персонажа, удаляет draft и memorial);
+- Afterlife Legacy: `POST /api/memorial/{id}/legacy` (GM/Admin, drink_name обязателен; ingredients/preparation/glass/garnish/quote/legend) — напиток НЕ выдаётся автоматически;
+- UI: пункт навигации `🥃 Memorial` (страница `#/memorial` = Memorial Wall + секция Afterlife Menu с легендами), badge `AFTERLIFE LEGEND · drink`, модалки Edit Memorial / Award Legacy, кнопка `🥃 Memorial` на Character Sheet у GM (модалка memorialize с obituary/feed);
+- 9 новых тестов (252 total): unit (clean memorial/legacy, payload gating) + интеграционные (memorialize замораживает Dossier и публикует obituary, legacy award + публичная видимость, player deny, private hidden, restore обратим);
+- отложено: отдельные секции retired/missing в Registry, связь memorial с Contract/Session events.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 
 **Статус B.18 — реализован Downtime Planner:**
@@ -3411,10 +3425,12 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 1. Добавить Persona memberships и organization roster.
 2. Перенести строковый `affiliation` в структурированные связи.
-3. Добавить Dossier statuses: active/retired/missing/deceased/archived.
-4. Реализовать death flow и Memorial Wall в Crew Registry.
-5. Добавить obituary preview и связь с Feed/Contract/Session.
-6. Реализовать Afterlife Legacy award и Afterlife Menu.
+3. ✅ Добавить Dossier statuses: active/retired/missing/deceased/archived (реализовано B.21: `status` в data + `archived`).
+4. ✅ Реализовать death flow и Memorial Wall в Crew Registry (реализовано B.21: страница `#/memorial`).
+5. ◐ Добавить obituary preview и связь с Feed/Contract/Session.
+   - готово: obituary-draft в City Feed (`publish_obituary`) с `feed_post_id` и автообновлением при правке memorial;
+   - дальше: связь с Contract/Session и отдельные секции retired/missing.
+6. ✅ Реализовать Afterlife Legacy award и Afterlife Menu (реализовано B.21).
 
 ### Пакет G — Campaign Operations
 

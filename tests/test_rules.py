@@ -2324,3 +2324,53 @@ class MapLocationsTests(unittest.TestCase):
             self.assertNotIn(item['id'], ids)
             ids.add(item['id'])
             self.assertTrue(item['source'])
+
+
+class MemorialTests(unittest.TestCase):
+    def test_clean_memorial_input_normalizes(self):
+        cleaned = server.clean_memorial_input({
+            'status': 'deceased', 'handle': 'V', 'role': 'Solo', 'role_rank': 4,
+            'death_date': 1700000000, 'cause': 'Flatlined', 'visibility': 'public',
+        })
+        self.assertEqual(cleaned['handle'], 'V')
+        self.assertEqual(cleaned['status'], 'deceased')
+        self.assertEqual(cleaned['death_date'], 1700000000)
+        self.assertEqual(cleaned['visibility'], 'public')
+
+    def test_clean_memorial_input_rejects_invalid(self):
+        with self.assertRaises(server.ApiError) as bad_status:
+            server.clean_memorial_input({'handle': 'V', 'status': 'zombie'})
+        self.assertEqual(bad_status.exception.status, 400)
+        with self.assertRaises(server.ApiError) as no_handle:
+            server.clean_memorial_input({'status': 'deceased'})
+        self.assertEqual(no_handle.exception.status, 400)
+
+    def test_clean_legacy_input_requires_drink(self):
+        cleaned = server.clean_legacy_input({'drink_name': 'The V', 'ingredients': 'Vodka'})
+        self.assertEqual(cleaned['drink_name'], 'The V')
+        self.assertEqual(cleaned['ingredients'], 'Vodka')
+        with self.assertRaises(server.ApiError) as no_drink:
+            server.clean_legacy_input({'drink_name': ''})
+        self.assertEqual(no_drink.exception.status, 400)
+
+    def test_memorial_payload_gates_private_fields(self):
+        row = {
+            'id': 1, 'character_id': 5, 'handle': 'V', 'role': 'Solo', 'role_rank': 4,
+            'portrait_media_id': None, 'status': 'deceased', 'death_date': 1.0,
+            'location': 'Night City', 'cause': 'Flatlined', 'epitaph': 'Bright',
+            'last_words': '', 'obituary': 'Fell', 'gm_notes': 'Secret',
+            'visibility': 'public', 'legacy_drink_name': 'The V',
+            'legacy_ingredients': 'Vodka', 'legacy_preparation': '', 'legacy_glass': '',
+            'legacy_garnish': '', 'legacy_quote': '', 'legacy_legend': '',
+            'legacy_awarded_by': None, 'legacy_awarded_at': None, 'feed_post_id': None,
+            'created_by': 1, 'created': 1.0, 'updated': 1.0,
+        }
+        public = server.memorial_payload(row)
+        self.assertNotIn('gm_notes', public)
+        self.assertNotIn('created_by', public)
+        self.assertEqual(public['legacy']['drink_name'], 'The V')
+        full = server.memorial_payload(row, full=True)
+        self.assertEqual(full['gm_notes'], 'Secret')
+        self.assertEqual(full['created_by'], 1)
+        no_legacy = dict(row, legacy_drink_name='')
+        self.assertIsNone(server.memorial_payload(no_legacy)['legacy'])

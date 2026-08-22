@@ -1667,3 +1667,132 @@ class MapLocationsFlowTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MemorialFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = sqlite3.connect(str(Path(self.tmp.name) / 'ncnet.db'))
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(server.SCHEMA)
+        server.apply_schema_migrations(self.conn, make_backup=False)
+        for username, display, role in (('gm', 'GM', 'gm'), ('runner1', 'Runner One', 'player')):
+            self.conn.execute(
+                'INSERT INTO users(username,display_name,pass_hash,is_gm,account_role,created) '
+                'VALUES(?,?,?,?,?,?)',
+                (username, display, 'x', 1 if role in ('gm', 'admin') else 0, role, 1))
+        base = {
+            'handle': 'V', 'role': 'Solo', 'role_rank': 4,
+            'roles': [{'name': 'Solo', 'rank': 4, 'primary': True}], 'active_role': 'Solo',
+            'stats': {'BODY': 6, 'WILL': 6, 'LUCK': 5, 'MOVE': 6}, 'skills': {},
+            'inventory': [], 'cyberware': [], 'armor': {},
+            'cash': 100, 'ip_available': 0, 'ip_total_earned': 0,
+            'ip_total_spent': 0, 'luck_cur': 5, 'reputation': 0, 'public': 1,
+        }
+        self.conn.execute(
+            'INSERT INTO characters(owner_id,public,data,created,updated) VALUES(2,1,?,1,1)',
+            (json.dumps(base),))
+        self.conn.commit()
+        self.handler = object.__new__(server.Handler)
+        self.response = {}
+        self.current = self.user('gm')
+        self.handler.current_user = lambda conn: self.current
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def user(self, username):
+        return self.conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
+
+    def call(self, method, *args):
+        self.response = {}
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+        method(self.handler, self.conn, *args)
+        return self.response
+
+    @staticmethod
+    def match(*values):
+        pattern = '^' + '/'.join('(\\d+)' for _ in values) + '$'
+        return re.match(pattern, '/'.join(str(value) for value in values))
+
+    def char_data(self):
+        return json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])
+
+    def test_memorialize_freezes_dossier_and_publishes_obituary(self):
+        self.current = self.user('gm')
+        payload = self.call(server.Handler.api_character_memorialize, {}, self.match(1), {
+            'status': 'deceased', 'death_date': 1700000000, 'location': 'Night City',
+            'cause': 'Flatlined by Arasaka', 'epitaph': 'Burned bright',
+            'obituary': 'V fell doing what they loved.', 'reason': 'Session finale',
+            'publish_obituary': True,
+        })
+        self.assertEqual(payload['status'], 201)
+        memorial = payload['payload']
+        self.assertEqual(memorial['handle'], 'V')
+        self.assertEqual(memorial['status'], 'deceased')
+        self.assertTrue(memorial['feed_post_id'])
+        self.assertIsNone(memorial['legacy'])
+        data = self.char_data()
+        self.assertEqual(data['status'], 'deceased')
+        self.assertTrue(data['archived'])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) n FROM memorials').fetchone()['n'], 1)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) n FROM feed_posts WHERE status='draft'").fetchone()['n'], 1)
+
+    def test_legacy_award_and_public_visibility(self):
+        self.current = self.user('gm')
+        memorial = self.call(server.Handler.api_character_memorialize, {}, self.match(1), {
+            'status': 'deceased', 'reason': 'Finale', 'obituary': 'Fell'})['payload']
+        legacy = self.call(server.Handler.api_memorial_legacy, {}, self.match(memorial['id']), {
+            'drink_name': 'The V', 'ingredients': 'Vodka, synthblood', 'legend': 'Burned bright'})
+        self.assertEqual(legacy['status'], 200)
+        self.assertEqual(legacy['payload']['legacy']['drink_name'], 'The V')
+        # Player sees public memorial but not GM notes.
+        self.current = self.user('runner1')
+        listing = self.call(server.Handler.api_memorial_list, {}, None, None)['payload']
+        self.assertEqual(len(listing['memorials']), 1)
+        public = listing['memorials'][0]
+        self.assertEqual(public['handle'], 'V')
+        self.assertEqual(public['legacy']['drink_name'], 'The V')
+        self.assertNotIn('gm_notes', public)
+
+    def test_player_cannot_memorialize(self):
+        self.current = self.user('runner1')
+        with self.assertRaises(server.ApiError) as denied:
+            self.call(server.Handler.api_character_memorialize, {}, self.match(1),
+                      {'status': 'deceased', 'reason': 'x'})
+        self.assertEqual(denied.exception.status, 403)
+
+    def test_private_memorial_hidden_from_players(self):
+        self.current = self.user('gm')
+        self.call(server.Handler.api_character_memorialize, {}, self.match(1), {
+            'status': 'missing', 'reason': 'Gone', 'visibility': 'private'})
+        self.current = self.user('runner1')
+        listing = self.call(server.Handler.api_memorial_list, {}, None, None)['payload']
+        self.assertEqual(listing['memorials'], [])
+        self.current = self.user('gm')
+        gm_listing = self.call(server.Handler.api_memorial_list, {}, None, None)['payload']
+        self.assertEqual(len(gm_listing['memorials']), 1)
+
+    def test_restore_reverts_character_and_removes_obituary(self):
+        self.current = self.user('gm')
+        memorial = self.call(server.Handler.api_character_memorialize, {}, self.match(1), {
+            'status': 'deceased', 'reason': 'Finale', 'obituary': 'Fell',
+            'publish_obituary': True})['payload']
+        self.call(server.Handler.api_memorial_restore, {}, self.match(memorial['id']),
+                  {'reason': 'Story return'})
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) n FROM memorials').fetchone()['n'], 0)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) n FROM feed_posts WHERE status='draft'").fetchone()['n'], 0)
+        data = self.char_data()
+        self.assertNotIn('status', data)
+        self.assertFalse(data['archived'])
+
+
+if __name__ == '__main__':
+    unittest.main()

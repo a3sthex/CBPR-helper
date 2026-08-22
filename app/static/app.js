@@ -298,7 +298,7 @@ const routes = {
   'quick-reference': viewCalc, dossiers: viewCharacters, crew: viewRoster,
   stash: viewCrewStash,
   feed: viewCityFeed, contracts: viewContracts, personas: viewPersonas,
-  chronicle: viewChronicle, map: viewMap,
+  chronicle: viewChronicle, map: viewMap, memorial: viewMemorial,
   gm: viewGMOperations, session: viewSessionPlayer, admin: viewAdmin,
   // Compatibility aliases keep old bookmarks and links working during migration.
   codex: viewCodex, calc: viewCalc, characters: viewCharacters,
@@ -318,7 +318,7 @@ async function route() {
     else anchor.removeAttribute('aria-current');
   });
   document.body.dataset.workspace = activeRoute === 'gm' ? 'gm' : 'network';
-  const moreButton=$('#mobile-more-toggle');if(moreButton)moreButton.classList.toggle('active',['database','market','quick-reference','crew','stash','chronicle','map','personas','guides','profile','gm','admin'].includes(activeRoute));
+  const moreButton=$('#mobile-more-toggle');if(moreButton)moreButton.classList.toggle('active',['database','market','quick-reference','crew','stash','chronicle','map','memorial','personas','guides','profile','gm','admin'].includes(activeRoute));
   $$('[data-workspace]').forEach(button=>button.classList.toggle('active',button.dataset.workspace===(activeRoute==='gm'?'gm':'network')));
   const mobileMore=$('#mobile-more-menu');if(mobileMore)mobileMore.hidden=true;
   window.scrollTo(0, 0);
@@ -383,7 +383,7 @@ async function refreshShellDossiers(){
 }
 
 function openCommandPalette(){
-  const commands=[['','⌂',T('City Network','Городская сеть')],['contracts','◎',T('Contracts','Контракты')],['feed','≋',T('City Feed','Городская лента')],['dossiers','◇',T('Dossiers','Досье')],['database','▦',T('Database','База данных')],['market','◈',T('Night Market','Ночной рынок')],['quick-reference','◫',T('Quick Reference','Быстрые правила')],['crew','⌘',T('Crew Registry','Реестр команд')],['stash','🎒',T('Crew Stash','Общий склад')],['chronicle','📜',T('Chronicle','Хроника')],['map','🗺️',T('Map','Карта')],['personas','◉','Personas'],['guides','▤',T('Archive','Архив')]];if(state.me?.is_gm)commands.push(['gm','⚙','GM OPS']);if(state.me?.is_admin)commands.push(['admin','⚿',T('Admin Console','Панель Admin')]);
+  const commands=[['','⌂',T('City Network','Городская сеть')],['contracts','◎',T('Contracts','Контракты')],['feed','≋',T('City Feed','Городская лента')],['dossiers','◇',T('Dossiers','Досье')],['database','▦',T('Database','База данных')],['market','◈',T('Night Market','Ночной рынок')],['quick-reference','◫',T('Quick Reference','Быстрые правила')],['crew','⌘',T('Crew Registry','Реестр команд')],['stash','🎒',T('Crew Stash','Общий склад')],['chronicle','📜',T('Chronicle','Хроника')],['map','🗺️',T('Map','Карта')],['memorial','🥃',T('Memorial','Мемориал')],['personas','◉','Personas'],['guides','▤',T('Archive','Архив')]];if(state.me?.is_gm)commands.push(['gm','⚙','GM OPS']);if(state.me?.is_admin)commands.push(['admin','⚿',T('Admin Console','Панель Admin')]);
   const modal=openModal(`<h2>${T('Command Palette','Командная строка')}</h2><input id="command-search" type="search" autofocus placeholder="${T('Jump to a network module…','Перейти к модулю сети…')}" aria-label="${T('Search commands','Поиск команд')}"><div id="command-list" class="command-list mt">${commands.map(([route,icon,label])=>`<button data-command-route="${route}" data-command-search="${esc(label.toLowerCase())}"><span>${icon}</span><b>${esc(label)}</b><small>#/${route}</small></button>`).join('')}</div>`);const search=$('#command-search',modal);search.oninput=()=>{const query=search.value.trim().toLowerCase();$$('[data-command-route]',modal).forEach(button=>button.hidden=Boolean(query&&!button.dataset.commandSearch.includes(query)));};$$('[data-command-route]',modal).forEach(button=>button.onclick=()=>{closeModal();go('/'+button.dataset.commandRoute);});
 }
 
@@ -3160,7 +3160,7 @@ async function viewSheet(id) {
       <div class="sub">Character Sheet · ${(ch.roles||[]).map(role=>`${esc(role.name)} ${role.rank}${role.name===ch.active_role?' ★':''}`).join(' · ')||`${esc(ch.role||'—')} ${ch.role_rank||4}`} · ${T('owner','владелец')}: <span class="user-content">${esc(c.owner_name||'—')}</span>${ch.player?' · '+T('player','игрок')+': <span class="user-content">'+esc(ch.player)+'</span>':''}</div></div>
     <div class="row">
       <button id="sheet-back">← ${T('Characters','Персонажи')}</button>
-      <button class="btn-sm" id="sheet-print">🖨️ Print</button><button class="btn-sm" id="sheet-json">⬇ JSON</button><button class="btn-sm" id="sheet-network">◎ ${T('Network','Сеть')}</button>${owner||state.me?.is_gm?`<button class="btn-sm" id="sheet-ledger">◫ ${T('Ledger','Журнал')}</button>`:''}
+      <button class="btn-sm" id="sheet-print">🖨️ Print</button><button class="btn-sm" id="sheet-json">⬇ JSON</button><button class="btn-sm" id="sheet-network">◎ ${T('Network','Сеть')}</button>${owner||state.me?.is_gm?`<button class="btn-sm" id="sheet-ledger">◫ ${T('Ledger','Журнал')}</button>`:''}${state.me?.is_gm&&!ch.archived?`<button class="btn-sm" id="sheet-memorial">🥃 ${T('Memorial','Мемориал')}</button>`:''}
       ${mine ? `<button class="btn-primary" id="sheet-edit">✏️ ${T('Edit Sheet','Редактировать лист')}</button><label class="btn-sm">🖼️ Portrait<input id="sheet-portrait-file" type="file" accept="image/jpeg,image/png,image/webp" hidden></label><button class="btn-sm" id="sheet-privacy">◉ ${T('Dossier Privacy','Приватность Dossier')}</button>
                 <button class="btn-danger" id="sheet-del">🗑️ ${T('Delete','Удалить')}</button>` : ''}
     </div>
@@ -3351,6 +3351,8 @@ async function viewSheet(id) {
     $('#dossier-privacy-cancel',modal).onclick=closeModal;
     $('#dossier-privacy-save',modal).onclick=async()=>{const next={};$$('[data-dossier-visibility]',modal).forEach(input=>next[input.dataset.dossierVisibility]=input.checked);try{await api('/api/characters/'+c.id,{method:'PUT',body:{revision:c.revision,patch:{public:$('#dossier-public',modal).checked,visibility:next}}});closeModal();viewSheet(c.id);toast(T('Dossier privacy updated.','Приватность Dossier обновлена.'));}catch(e){toast(e.message,true);}};
   };
+  const memorialBtn = $('#sheet-memorial');
+  if (memorialBtn) memorialBtn.onclick = () => openMemorializeModal(c);
   const delBtn = $('#sheet-del');
   if (delBtn) delBtn.onclick = async () => {
     if (!confirm(T('Delete this Character? Dossiers with NC//NET history will be archived instead.','Удалить Character? Досье с историей NC//NET будет перемещено в архив.'))) return;
