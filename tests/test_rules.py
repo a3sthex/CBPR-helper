@@ -2131,3 +2131,62 @@ class MarketStockTests(unittest.TestCase):
         self.assertEqual(item['reserved_character_id'], 7)
         self.assertEqual(item['reserved_handle'], 'Reserved V')
         conn.close()
+
+
+class NPCStatblockTests(unittest.TestCase):
+    def test_clean_statblock_normalizes_stats_skills_weapons(self):
+        statblock = server.clean_npc_statblock({
+            'stats': {'REF': 8, 'DEX': 7, 'BODY': 6, 'BOGUS': 99},
+            'skills': {'Handgun': 6, 'Evasion': 7, 'Melee Weapon': 4},
+            'weapons': [
+                {'name': 'Medium Pistol', 'skill': 'Handgun', 'damage': '2d6', 'rof': '1'},
+            ],
+            'notes': 'Maelstrom guard',
+        })
+        self.assertNotIn('BOGUS', statblock['stats'])
+        self.assertEqual(statblock['stats']['REF'], 8)
+        self.assertEqual(statblock['skills']['Handgun'], 6)
+        self.assertEqual(statblock['weapons'][0]['name'], 'Medium Pistol')
+        self.assertEqual(statblock['notes'], 'Maelstrom guard')
+        # Out-of-range values are bounded.
+        self.assertEqual(server.clean_npc_statblock(
+            {'stats': {'REF': 99}, 'skills': {'Handgun': 99}, 'weapons': []})['stats']['REF'], 20)
+        self.assertEqual(server.clean_npc_statblock(
+            {'stats': {}, 'skills': {'Handgun': 99}, 'weapons': []})['skills']['Handgun'], 10)
+
+    def test_clean_statblock_rejects_unknown_skill_and_bad_weapons(self):
+        with self.assertRaises(server.ApiError) as bad_skill:
+            server.clean_npc_statblock({'stats': {}, 'skills': {'NotASkill': 3}, 'weapons': []})
+        self.assertEqual(bad_skill.exception.status, 400)
+        with self.assertRaises(server.ApiError) as bad_weapon:
+            server.clean_npc_statblock({'stats': {}, 'skills': {}, 'weapons': ['oops']})
+        self.assertEqual(bad_weapon.exception.status, 400)
+        with self.assertRaises(server.ApiError) as no_name:
+            server.clean_npc_statblock({'stats': {}, 'skills': {}, 'weapons': [{'skill': 'Handgun'}]})
+        self.assertEqual(no_name.exception.status, 400)
+
+    def test_derived_computes_attack_bases_and_saves(self):
+        statblock = server.clean_npc_statblock({
+            'stats': {'REF': 8, 'DEX': 7, 'BODY': 6},
+            'skills': {'Handgun': 6, 'Evasion': 6, 'Brawling': 4},
+            'weapons': [
+                {'name': 'Medium Pistol', 'skill': 'Handgun', 'damage': '2d6'},
+                {'name': 'Knife', 'skill': 'Melee Weapon', 'damage': '1d6'},
+            ],
+            'notes': '',
+        })
+        derived = server.npc_statblock_derived(statblock)
+        pistol = next(a for a in derived['attacks'] if a['name'] == 'Medium Pistol')
+        self.assertEqual(pistol['base'], 14)  # REF 8 + Handgun 6
+        self.assertEqual(pistol['stat'], 'REF')
+        self.assertEqual(derived['death_save'], 6)  # BODY
+        self.assertEqual(derived['evasion_base'], 13)  # DEX 7 + Evasion 6
+        skill_names = {s['name'] for s in derived['skills']}
+        self.assertIn('Handgun', skill_names)
+
+    def test_derived_empty_statblock_returns_zeros(self):
+        derived = server.npc_statblock_derived({})
+        self.assertEqual(derived['attacks'], [])
+        self.assertEqual(derived['skills'], [])
+        self.assertEqual(derived['death_save'], 0)
+        self.assertEqual(derived['evasion_base'], 0)

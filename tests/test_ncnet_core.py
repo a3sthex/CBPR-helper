@@ -1051,3 +1051,137 @@ class MarketStockFlowTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class NPCStatblockFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = sqlite3.connect(str(Path(self.tmp.name) / 'ncnet.db'))
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(server.SCHEMA)
+        server.apply_schema_migrations(self.conn, make_backup=False)
+        for username, display, role in (('gm', 'GM', 'gm'), ('runner1', 'Runner One', 'player')):
+            self.conn.execute(
+                'INSERT INTO users(username,display_name,pass_hash,is_gm,account_role,created) '
+                'VALUES(?,?,?,?,?,?)',
+                (username, display, 'x', 1 if role in ('gm', 'admin') else 0, role, 1))
+        self.conn.commit()
+        self.handler = object.__new__(server.Handler)
+        self.response = {}
+        self.current = self.user('gm')
+        self.handler.current_user = lambda conn: self.current
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def user(self, username):
+        return self.conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
+
+    def call(self, method, *args):
+        self.response = {}
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+        method(self.handler, self.conn, *args)
+        return self.response
+
+    @staticmethod
+    def match(*values):
+        pattern = '^' + '/'.join('(\\d+)' for _ in values) + '$'
+        return re.match(pattern, '/'.join(str(value) for value in values))
+
+    def statblock(self):
+        return {
+            'stats': {'REF': 8, 'DEX': 7, 'BODY': 6, 'INT': 4},
+            'skills': {'Handgun': 6, 'Evasion': 6, 'Brawling': 4},
+            'weapons': [{'name': 'Medium Pistol', 'skill': 'Handgun', 'damage': '2d6', 'rof': '1'}],
+            'notes': 'Maelstrom guard',
+        }
+
+    def create_template(self):
+        self.current = self.user('gm')
+        payload = self.call(server.Handler.api_npc_template_create, {}, None, {
+            'name': 'Maelstrom Guard', 'role': 'Ganger', 'access': 'shared',
+            'data': {'hp_max': 30, 'sp_body': 7, 'initiative': 10, 'statblock': self.statblock()},
+        })
+        self.assertEqual(payload['status'], 201)
+        return payload['payload']
+
+    def create_session(self, view_config=None):
+        self.current = self.user('gm')
+        body = {'title': 'Test Session'}
+        if view_config is not None:
+            body['player_view_config'] = view_config
+        payload = self.call(server.Handler.api_session_create, {}, None, body)
+        self.assertEqual(payload['status'], 201)
+        return payload['payload']
+
+    def add_combatant(self, session_id, template_id=None):
+        self.current = self.user('gm')
+        body = {'name': 'Maelstrom Guard', 'initiative': 10, 'hp_max': 30, 'hp_current': 30,
+                'sp_body': 7, 'sp_body_max': 7, 'sp_head': 7, 'sp_head_max': 7}
+        if template_id:
+            body['template_id'] = template_id
+        payload = self.call(server.Handler.api_session_combatant_create, {}, self.match(session_id), body)
+        self.assertEqual(payload['status'], 201)
+        return payload['payload']['id']
+
+    def test_template_exposes_derived_attacks(self):
+        template = self.create_template()
+        self.assertIn('derived', template)
+        attacks = template['derived']['attacks']
+        self.assertEqual(len(attacks), 1)
+        self.assertEqual(attacks[0]['base'], 14)  # REF 8 + Handgun 6
+        self.assertEqual(template['derived']['death_save'], 6)
+        self.assertEqual(template['derived']['evasion_base'], 13)
+
+    def test_combatant_snapshots_statblock_for_gm(self):
+        template = self.create_template()
+        session = self.create_session()
+        self.add_combatant(session['id'], template_id=template['id'])
+        self.current = self.user('gm')
+        payload = self.call(server.Handler.api_session_detail, {}, self.match(session['id']), {})['payload']
+        combatant = payload['combatants'][0]
+        self.assertIn('statblock', combatant)
+        self.assertEqual(combatant['statblock']['skills']['Handgun'], 6)
+        self.assertEqual(combatant['derived']['attacks'][0]['base'], 14)
+
+    def test_player_view_hides_statblock_unless_enabled(self):
+        template = self.create_template()
+        session = self.create_session(view_config={'show_npc_stats': False})
+        self.add_combatant(session['id'], template_id=template['id'])
+        row = self.conn.execute('SELECT * FROM nc_sessions WHERE id=?', (session['id'],)).fetchone()
+        runner = self.user('runner1')
+        player_payload = self.handler.session_payload(self.conn, row, runner, player_view=True)
+        combatant = player_payload['combatants'][0]
+        self.assertNotIn('statblock', combatant)
+        self.assertNotIn('derived', combatant)
+        # Enable the flag; the statblock becomes visible to players.
+        self.current = self.user('gm')
+        self.call(server.Handler.api_session_update, {}, self.match(session['id']), {
+            'player_view_config': {'show_npc_stats': True}, 'activity_note': 'reveal'})
+        row = self.conn.execute('SELECT * FROM nc_sessions WHERE id=?', (session['id'],)).fetchone()
+        revealed = self.handler.session_payload(self.conn, row, runner, player_view=True)
+        revealed_combatant = revealed['combatants'][0]
+        self.assertIn('derived', revealed_combatant)
+        self.assertEqual(revealed_combatant['derived']['attacks'][0]['base'], 14)
+
+    def test_custom_combatant_accepts_inline_statblock(self):
+        session = self.create_session()
+        self.current = self.user('gm')
+        payload = self.call(server.Handler.api_session_combatant_create, {}, self.match(session['id']), {
+            'name': 'Custom Heavy', 'initiative': 8, 'hp_max': 40, 'hp_current': 40,
+            'sp_body': 11, 'sp_body_max': 11, 'sp_head': 11, 'sp_head_max': 11,
+            'statblock': self.statblock(),
+        })
+        self.assertEqual(payload['status'], 201)
+        self.current = self.user('gm')
+        detail = self.call(server.Handler.api_session_detail, {}, self.match(session['id']), {})['payload']
+        combatant = detail['combatants'][0]
+        self.assertEqual(combatant['derived']['attacks'][0]['name'], 'Medium Pistol')
+
+
+if __name__ == '__main__':
+    unittest.main()

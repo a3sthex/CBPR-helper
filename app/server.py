@@ -2909,6 +2909,7 @@ MIGRATION_SESSION_NET = 11
 MIGRATION_CAMPAIGN_CLOCK = 12
 MIGRATION_CREW_STASH = 13
 MIGRATION_MARKET_STOCK = 14
+MIGRATION_NPC_STATBLOCKS = 15
 DB_BACKUP_LIMIT = 5
 _RATE_LIMIT_BUCKETS = {}
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -4239,6 +4240,7 @@ def apply_schema_migrations(conn, make_backup=True):
         (MIGRATION_CAMPAIGN_CLOCK, 'campaign clock and service timing'),
         (MIGRATION_CREW_STASH, 'crew stash and item transfers'),
         (MIGRATION_MARKET_STOCK, 'market finite stock and fixer requests'),
+        (MIGRATION_NPC_STATBLOCKS, 'npc full statblocks and session snapshots'),
     ]
     pending = [version for version, _ in migrations if version not in applied]
     if make_backup and pending:
@@ -4295,6 +4297,8 @@ def apply_schema_migrations(conn, make_backup=True):
         conn.executescript(CREW_STASH_SCHEMA)
     if MIGRATION_MARKET_STOCK not in applied:
         conn.executescript(MARKET_STOCK_SCHEMA)
+    if MIGRATION_NPC_STATBLOCKS not in applied:
+        ensure_column(conn, 'session_combatants', 'statblock_json', "TEXT NOT NULL DEFAULT '{}'")
     # Re-run additive CREATE IF NOT EXISTS blocks so patch-level tables added to an
     # already-applied migration remain safe during development and rolling deploys.
     conn.executescript(NETWORK_SCHEMA)
@@ -4321,6 +4325,7 @@ def apply_schema_migrations(conn, make_backup=True):
         ensure_column(conn, 'characters', 'revision', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'nc_sessions', 'safety_config', "TEXT NOT NULL DEFAULT '{}'")
     ensure_column(conn, 'nc_sessions', 'net_state_json', "TEXT NOT NULL DEFAULT '{}'")
+    ensure_column(conn, 'session_combatants', 'statblock_json', "TEXT NOT NULL DEFAULT '{}'")
     ensure_column(conn, 'npc_templates', 'archived', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'session_combatants', 'sp_head_max', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'session_combatants', 'sp_body_max', 'INTEGER NOT NULL DEFAULT 0')
@@ -4408,6 +4413,7 @@ SESSION_VIEW_DEFAULTS = {
     'show_luck': True,
     'show_conditions': True,
     'show_injuries': True,
+    'show_npc_stats': False,
 }
 SESSION_ACCESS_ROLES = {'co_gm', 'assistant', 'rules_helper', 'observer'}
 SESSION_ROLE_CAPABILITIES = {
@@ -4731,13 +4737,105 @@ def clean_npc_template_input(body, existing=None):
         raise ApiError(400, 'Некорректный NPC template')
     data['secret'] = secret
     data['visible'] = data.get('visible') is not False
-    if len(json.dumps(data, ensure_ascii=False)) > 20000:
+    data['statblock'] = clean_npc_statblock(data.get('statblock'))
+    if len(json.dumps(data, ensure_ascii=False)) > 40000:
         raise ApiError(400, 'Некорректный NPC template')
     return {
         'name': name,
         'access': access,
         'role': str((body or {}).get('role', base.get('role', '')) or '')[:80],
         'data': data,
+    }
+
+
+NPC_STAT_MAX = 20
+NPC_SKILL_MAX = 10
+
+
+def clean_npc_statblock(source):
+    """Validate the full-statblock portion of an NPC (STATs, Skills, Weapons, Notes)."""
+    if source is None:
+        source = {}
+    if not isinstance(source, dict):
+        raise ApiError(400, 'NPC statblock должен быть объектом')
+    stats = source.get('stats') if isinstance(source.get('stats'), dict) else {}
+    clean_stats = {}
+    for stat in STATS:
+        value = _num(stats.get(stat))
+        if value is not None:
+            clean_stats[stat] = max(0, min(NPC_STAT_MAX, value))
+    skills = source.get('skills') if isinstance(source.get('skills'), dict) else {}
+    if len(skills) > 200:
+        raise ApiError(400, 'NPC skills должен быть объектом до 200 записей')
+    clean_skills = {}
+    for name, value in skills.items():
+        name = str(name).strip()[:120]
+        if not skill_base(name):
+            raise ApiError(400, f'Неизвестный NPC Skill: {name}')
+        clean_skills[name] = max(0, min(NPC_SKILL_MAX, _num(value) or 0))
+    weapons = source.get('weapons') if isinstance(source.get('weapons'), list) else []
+    if len(weapons) > 30:
+        raise ApiError(400, 'NPC weapons должен быть списком до 30 записей')
+    clean_weapons = []
+    for weapon in weapons:
+        if not isinstance(weapon, dict):
+            raise ApiError(400, 'NPC weapon должен быть объектом')
+        weapon_name = str(weapon.get('name') or '').strip()[:120]
+        if not weapon_name:
+            raise ApiError(400, 'NPC weapon требует имя')
+        clean_weapons.append({
+            'name': weapon_name,
+            'skill': str(weapon.get('skill') or '').strip()[:120],
+            'damage': str(weapon.get('damage') or '')[:80],
+            'rof': str(weapon.get('rof') or '')[:20],
+            'notes': str(weapon.get('notes') or '')[:400],
+        })
+    return {
+        'stats': clean_stats,
+        'skills': clean_skills,
+        'weapons': clean_weapons,
+        'notes': str(source.get('notes') or '')[:4000],
+    }
+
+
+def npc_statblock_derived(statblock):
+    """Compute readable attack/skill bases from a validated NPC statblock."""
+    statblock = statblock if isinstance(statblock, dict) else {}
+    stats = statblock.get('stats') if isinstance(statblock.get('stats'), dict) else {}
+    skills = statblock.get('skills') if isinstance(statblock.get('skills'), dict) else {}
+    attacks = []
+    for weapon in statblock.get('weapons') or []:
+        if not isinstance(weapon, dict):
+            continue
+        skill_name = str(weapon.get('skill') or '')
+        base_name = skill_base(skill_name)
+        stat = SKILL_BY_NAME[base_name][2] if base_name else 'REF'
+        stat_value = _num(stats.get(stat)) or 0
+        skill_level = _num(skills.get(skill_name)) or 0
+        attacks.append({
+            'name': weapon.get('name'),
+            'skill': skill_name, 'stat': stat,
+            'stat_value': stat_value, 'skill_level': skill_level,
+            'base': stat_value + skill_level,
+            'damage': weapon.get('damage'), 'rof': weapon.get('rof'),
+            'notes': weapon.get('notes'),
+        })
+    skill_bases = []
+    for name, level in sorted(skills.items()):
+        base_name = skill_base(name)
+        if not base_name:
+            continue
+        stat = SKILL_BY_NAME[base_name][2]
+        stat_value = _num(stats.get(stat)) or 0
+        skill_bases.append({
+            'name': name, 'stat': stat, 'level': level,
+            'base': stat_value + level,
+        })
+    return {
+        'attacks': attacks,
+        'skills': skill_bases,
+        'death_save': _num(stats.get('BODY')) or 0,
+        'evasion_base': (_num(stats.get('DEX')) or 0) + (_num(skills.get('Evasion')) or 0),
     }
 
 
@@ -8904,6 +9002,11 @@ SERVER_ERROR_EN = {
     'Некорректная цена Fixer': 'Invalid Fixer price',
     'Укажите название выдаваемого предмета': 'Provide a name for the granted item',
     'Некорректное количество': 'Invalid quantity',
+    'NPC statblock должен быть объектом': 'NPC statblock must be an object',
+    'NPC skills должен быть объектом до 200 записей': 'NPC skills must be an object with up to 200 entries',
+    'NPC weapons должен быть списком до 30 записей': 'NPC weapons must be a list with up to 30 entries',
+    'NPC weapon должен быть объектом': 'NPC weapon must be an object',
+    'NPC weapon требует имя': 'NPC weapon requires a name',
 }
 
 def server_error_message(message, language):
@@ -8946,6 +9049,7 @@ def server_error_message(message, language):
         (' до ', ' to '),
         ('требуется число', 'must be numeric'),
         ('Неизвестный Skill:', 'Unknown Skill:'),
+        ('Неизвестный NPC Skill:', 'Unknown NPC Skill:'),
         ('ожидается список до 500 записей', 'must be a list with no more than 500 entries'),
         ('ожидается объект', 'must be an object'),
         ('Броня', 'Armor'),
@@ -15652,6 +15756,11 @@ class Handler(BaseHTTPRequestHandler):
                 if config['show_injuries']:
                     data['injuries'] = parse_json_list(item['injuries_json'])
                     data['death_penalty'] = item['death_penalty']
+            if item['kind'] == 'npc':
+                statblock = parse_json_object(item['statblock_json'])
+                if statblock and (not player_view or config['show_npc_stats']):
+                    data['statblock'] = statblock
+                    data['derived'] = npc_statblock_derived(statblock)
             out_combatants.append(data)
         visible_active_turn = next(
             (index for index, item in enumerate(out_combatants) if item['active']), None)
@@ -15683,10 +15792,13 @@ class Handler(BaseHTTPRequestHandler):
                     (user_is_admin(user) or template['owner_user_id'] == user['id']))
 
     def npc_template_payload(self, row, user):
+        data = parse_json_object(row['data_json'])
         return {
             'id': row['id'], 'owner_user_id': row['owner_user_id'],
             'access': row['access'], 'name': row['name'], 'role': row['role'],
-            'data': parse_json_object(row['data_json']), 'updated': row['updated'],
+            'data': data,
+            'derived': npc_statblock_derived(data.get('statblock') or {}),
+            'updated': row['updated'],
             'can_edit': self.can_edit_npc_template(user, row),
         }
 
@@ -17223,6 +17335,10 @@ class Handler(BaseHTTPRequestHandler):
         name = str((body or {}).get('name') or (template['name'] if template else '')).strip()[:120]
         if not name:
             raise ApiError(400, 'Участнику сессии нужно имя')
+        # Snapshot the full statblock (STATs/Skills/Weapons) when adding from a
+        # template, or accept an explicit statblock for a custom NPC.
+        statblock_source = (body or {}).get('statblock') if not template else source.get('statblock')
+        statblock = clean_npc_statblock(statblock_source)
         conditions = source.get('conditions') or []
         injuries = source.get('injuries') or []
         secret = source.get('secret') or {}
@@ -17250,8 +17366,9 @@ class Handler(BaseHTTPRequestHandler):
         cur = conn.execute(
             'INSERT INTO session_combatants(session_id,kind,template_id,name,initiative,hp_current,hp_max,'
             'sp_head,sp_head_max,sp_body,sp_body_max,shield_current,shield_max,ammo_current,ammo_max,'
-            'luck_current,luck_max,move,conditions_json,injuries_json,death_penalty,visible,secret_json,sort_order) '
-            'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            'luck_current,luck_max,move,conditions_json,injuries_json,death_penalty,visible,secret_json,'
+            'statblock_json,sort_order) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (session['id'], 'npc', template['id'] if template else None, name,
              max(-1000, min(1000, _num(source.get('initiative')) or 0)), current, maximum,
              sp_head, sp_head_max, sp_body, sp_body_max, shield_current, shield_max,
@@ -17259,7 +17376,8 @@ class Handler(BaseHTTPRequestHandler):
              max(0, _num(source.get('move')) or 0), json.dumps(conditions), json.dumps(injuries),
              max(0, _num(source.get('death_penalty')) or 0),
              0 if source.get('visible') is False else 1,
-             json.dumps(secret, ensure_ascii=False), order))
+             json.dumps(secret, ensure_ascii=False),
+             json.dumps(statblock, ensure_ascii=False), order))
         after_rows = self.ordered_session_combatants(conn, session['id'])
         active_turn = next((index for index, item in enumerate(after_rows) if item['id'] == active_id), 0)
         now = time.time()
@@ -17315,17 +17433,22 @@ class Handler(BaseHTTPRequestHandler):
         visible = (body or {}).get('visible', bool(combatant['visible']))
         visible = visible if isinstance(visible, bool) else bool(combatant['visible'])
         name = str((body or {}).get('name', combatant['name'])).strip()[:120] or combatant['name']
+        if 'statblock' in (body or {}):
+            statblock = clean_npc_statblock((body or {}).get('statblock'))
+        else:
+            statblock = parse_json_object(combatant['statblock_json'])
         conn.execute(
             'UPDATE session_combatants SET name=?,initiative=?,hp_current=?,hp_max=?,sp_head=?,sp_head_max=?,'
             'sp_body=?,sp_body_max=?,shield_current=?,shield_max=?,ammo_current=?,ammo_max=?,luck_current=?,'
             'luck_max=?,move=?,conditions_json=?,injuries_json=?,death_penalty=?,visible=?,secret_json=?,'
-            'sort_order=? WHERE id=?',
+            'statblock_json=?,sort_order=? WHERE id=?',
             (name, values['initiative'], values['hp_current'], values['hp_max'],
              values['sp_head'], values['sp_head_max'], values['sp_body'], values['sp_body_max'],
              values['shield_current'], values['shield_max'],
              values['ammo_current'], values['ammo_max'], values['luck_current'], values['luck_max'],
              values['move'], json.dumps(conditions), json.dumps(injuries), values['death_penalty'],
              1 if visible else 0, json.dumps(secret, ensure_ascii=False),
+             json.dumps(statblock, ensure_ascii=False),
              values['sort_order'], combatant['id']))
         ordered_after = self.ordered_session_combatants(conn, session['id'])
         active_turn = next((index for index, item in enumerate(ordered_after) if item['id'] == active_id), 0)

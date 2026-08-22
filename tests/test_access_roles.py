@@ -52,7 +52,7 @@ class AccessRoleMigrationTests(unittest.TestCase):
             self.assertEqual(roles, {'alice': 'gm', 'bob': 'player'})
             self.assertEqual(
                 conn.execute('SELECT COUNT(*) n FROM schema_migrations').fetchone()['n'],
-                server.MIGRATION_MARKET_STOCK)
+                server.MIGRATION_NPC_STATBLOCKS)
             self.assertEqual(len(list(Path(directory).glob('campaign.db.backup-*'))), 1)
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(users)')}
             self.assertTrue({'account_role', 'show_display_name', 'vk_user_id',
@@ -70,7 +70,7 @@ class AccessRoleMigrationTests(unittest.TestCase):
             combatant_columns = {row['name'] for row in conn.execute(
                 'PRAGMA table_info(session_combatants)')}
             self.assertTrue({'sp_head_max', 'sp_body_max', 'shield_max', 'ammo_max',
-                             'luck_current', 'luck_max'} <= combatant_columns)
+                             'luck_current', 'luck_max', 'statblock_json'} <= combatant_columns)
             template_columns = {row['name'] for row in conn.execute(
                 'PRAGMA table_info(npc_templates)')}
             self.assertIn('archived', template_columns)

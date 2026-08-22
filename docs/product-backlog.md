@@ -1892,6 +1892,8 @@ First published investigation
 
 ### 16.12 NPC Manager и полноценные statblocks
 
+**Статус 2026-08-22 (B.16):** реализован базовый слой full statblock — NPC Template и участники сессии получили `statblock` (10 STATs, Skills с расчётными базами, Weapons/Attacks, Notes), серверный расчёт attack base = STAT + skill, threat-пресеты в редакторе (Mook/Lieutenant/Mini-Boss/Boss) и снапшот statblock в `session_combatants` с Player View-флагом `show_npc_stats`. Остаётся (отложено): роли/Role Abilities, Cyberware/Humanity, Mag/Reload state и one-click Attack/Damage/Fire/Reload в Session Dashboard, portrait/token, связи с Persona/Organization/Location.
+
 Текущий NPC Template хранит в основном HP, SP, Shield, Ammo, LUCK, MOVE, Initiative, Conditions и Injuries. Этого хватает для счётчика ресурсов, но не для ведения боя: GM не видит характеристики, навыки, оружие, атаки, cyberware и специальные способности.
 
 Нужны два режима шаблона:
@@ -3283,6 +3285,18 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - UI: карточка Market показывает сток / NEW TODAY / SOLD OUT / RESERVED, кнопки «Через Fixer» и (GM) «Резерв»; новая вкладка «Запросы Fixer» с формой запроса и (GM) модалкой решения с поиском Database предмета;
 - 12 новых тестов (206 total): unit (сток/New Today/детерминизм/idempotent seeding/резерв в payload) + интеграционные (покупка уменьшает сток и распродаёт, резерв блокирует чужих, резерв GM-only, fixer fulfill catalog/custom/decline);
 - отложено: несколько offers одного item у разных vendors (offer_id-адресация), Legal Retail, Reputation/Favor gates (до Organization системы), reservation TTL и location_id/POI-связь (до пакета E).
+
+**Статус B.16 — реализованы NPC Full Statblocks:**
+
+- additive migration 15 добавляет `session_combatants.statblock_json` для снапшота полного statblock NPC в сессии;
+- `clean_npc_statblock` валидирует STATs (0–20), Skills (известные имена, 0–10), Weapons (до 30: name/skill/damage/rof/notes), Notes (до 4000) — всё declarative, без executable данных;
+- `npc_statblock_derived` считает attack base = STAT + skill (Handgun→REF, Melee Weapon→DEX и т.д.), Death Save (BODY) и Evasion base (DEX + Evasion);
+- NPC Template получил поле `statblock` и `derived` в payload; редактор в GM OPS — STAT-сетка, skills, weapons (строка на оружие), notes и threat-пресеты `Mook / Lieutenant / Mini-Boss / Boss`;
+- добавление NPC в сессию снапшотит statblock из шаблона (или принимает inline `statblock` у custom NPC); апдейт участника редактирует statblock;
+- `session_payload`: GM видит `statblock`+`derived` у NPC; игрок — только при включённом `show_npc_stats` (новый флаг Player View, по умолчанию выключен);
+- UI: карточка NPC в GM OPS и Session Dashboard показывает `⚔ Weapon +base · damage`; Player View показывает атаки при включённом флаге;
+- 8 новых тестов (214 total): unit (clean/derived/reject) + интеграционные (template derived, combatant snapshot, player view gating, inline statblock);
+- отложено: роли/Role Abilities, Cyberware/Humanity, Mag/Reload state и one-click Attack/Damage/Fire/Reload, portrait/token, связи Persona/Organization/Location.
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
 4. ✅ Добавить custom/found items и acquisition provenance.
@@ -3355,10 +3369,12 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 ### Пакет H — GM Combat & NET
 
-1. Расширить NPC Template до Quick/Full statblock.
-2. Добавить STATs, Skills, calculated Bases, Weapons и Attacks.
-3. Реализовать Session snapshot, one-click attacks и ammo/reload.
-4. Добавить NPC threat presets и Player View visibility.
+1. ✅ Расширить NPC Template до Quick/Full statblock (реализовано B.16).
+2. ✅ Добавить STATs, Skills, calculated Bases, Weapons и Attacks (реализовано B.16).
+3. ◐ Реализовать Session snapshot, one-click attacks и ammo/reload.
+   - готово: снапшот full statblock в `session_combatants` (statblock_json) и расчётные базы атак для GM/Player View;
+   - дальше: one-click Attack/Damage/Fire/Reload в Session Dashboard.
+4. ✅ Добавить NPC threat presets и Player View visibility (реализовано B.16: Mook/Lieutenant/Mini-Boss/Boss + флаг `show_npc_stats`).
 5. Нормализовать Programs/Black ICE/Hardware в каталоге.
 6. Добавить Cyberdeck loadout, slots, Program states и REZ.
 7. Реализовать Rezzed Black ICE как отдельные `net_entities` с target/floor/initiative.
