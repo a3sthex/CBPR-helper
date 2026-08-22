@@ -1694,6 +1694,8 @@ Mark Character as Deceased
 
 ### 16.1 Session Recap / Chronicle
 
+**Статус 2026-08-22 (B.17):** реализовано ядро — таблица `session_recaps` (миграция 16), CRUD-эндпоинты, автосбор участников из сессии/контракта, публичная хроника + приватные GM-детали, авто-черновик в City Feed (`publish_feed`) и авто-событие в Storyline timeline. Отложено: автосвязь с Location/Organization history и Memorial achievements (появятся вместе с этими модулями).
+
 Aftermath сейчас связывает Contract, Feed и награды, но полноценный итог сыгранной сессии заслуживает отдельной записи.
 
 ```text
@@ -3297,6 +3299,19 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - UI: карточка NPC в GM OPS и Session Dashboard показывает `⚔ Weapon +base · damage`; Player View показывает атаки при включённом флаге;
 - 8 новых тестов (214 total): unit (clean/derived/reject) + интеграционные (template derived, combatant snapshot, player view gating, inline statblock);
 - отложено: роли/Role Abilities, Cyberware/Humanity, Mag/Reload state и one-click Attack/Damage/Fire/Reload, portrait/token, связи Persona/Organization/Location.
+
+**Статус B.17 — реализованы Session Recap и Campaign Chronicle:**
+
+- additive migration 16 создаёт `session_recaps` (title, session_date, session/contract/storyline links, public_summary, gm_notes, participants, choices, npc_changes, locations, loot, injuries, quotes, published, feed_post_id, timeline_id);
+- `GET/POST /api/recaps`, `GET/PUT/DELETE /api/recaps/{id}`; создание/редактирование/удаление — только GM (owner или admin);
+- участники автособираются из `session_combatants` (character handle / NPC name) или из Crew signups контракта; ручной override возможен;
+- публичная хроника: игроки видят только `published` recap'ы (title, date, public_summary, participants, locations); `gm_notes`/`choices`/`npc_changes`/`loot`/`injuries`/`quotes` скрыты;
+- `publish_feed` создаёт/обновляет **draft** City Feed post (article) от GM; recap хранит `feed_post_id` и обновляет черновик при правках;
+- привязка к Storyline добавляет/обновляет запись `storyline_timeline` (event_at = session_date, public_text = summary, private_text = gm_notes);
+- удаление recap убирает связанный draft feed post и timeline entry;
+- UI: пункт навигации `📜 Chronicle` (публичная хроника) + кнопка `＋ Recap` в GM OPS; редактор recap (сессия/контракт/сюжет, дата, публичное описание, GM-заметки, списки решений/NPC/локаций/добычи/травм/цитат, published + City Feed);
+- 9 новых тестов (223 total): unit (clean input, списки bounded, payload gating) + интеграционные (автоучастники + feed/timeline links, приватность для игроков, GM-only создание, unpublished скрыт, update/delete);
+- отложено: автосвязь Location/Organization history и Memorial achievements (появятся вместе с этими модулями).
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
 4. ✅ Добавить custom/found items и acquisition provenance.
@@ -3358,7 +3373,9 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 ### Пакет G — Campaign Operations
 
-1. Session Recap / Chronicle и автоматические history links.
+1. ◐ Session Recap / Chronicle и автоматические history links (реализовано B.17).
+   - готово: CRUD recap'ов, автосбор участников, публичная хроника + приватные GM-детали, авто-черновик City Feed и авто-событие Storyline timeline;
+   - дальше: автосвязь Location/Organization history и Memorial achievements.
 2. ✅ Crew Stash, item transfer и ownership history (реализовано B.13).
 3. Downtime Planner с лечением, Therapy, Crafting и поиском предметов.
 4. Organization Reputation / Favor / Heat.

@@ -1185,3 +1185,138 @@ class NPCStatblockFlowTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SessionRecapFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = sqlite3.connect(str(Path(self.tmp.name) / 'ncnet.db'))
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(server.SCHEMA)
+        server.apply_schema_migrations(self.conn, make_backup=False)
+        for username, display, role in (('gm', 'GM', 'gm'), ('runner1', 'Runner One', 'player')):
+            self.conn.execute(
+                'INSERT INTO users(username,display_name,pass_hash,is_gm,account_role,created) '
+                'VALUES(?,?,?,?,?,?)',
+                (username, display, 'x', 1 if role in ('gm', 'admin') else 0, role, 1))
+        self.conn.execute(
+            "INSERT INTO storylines(owner_user_id,title,code_name,public_summary,private_summary,status,created,updated) "
+            "VALUES(1,'The Arc','ARC','','','active',1,1)")
+        self.conn.execute(
+            "INSERT INTO contracts(owner_user_id,status,title,storyline_id,created,updated) "
+            "VALUES(1,'in_progress','The Heist',1,1,1)")
+        self.conn.execute(
+            "INSERT INTO nc_sessions(contract_id,owner_user_id,title,status,created,updated) "
+            "VALUES(1,1,'Heist Session','active',1,1)")
+        self.conn.execute(
+            "INSERT INTO session_combatants(session_id,kind,name,initiative,visible,sort_order) "
+            "VALUES(1,'npc','Maelstrom Guard',10,1,0)")
+        self.conn.commit()
+        self.handler = object.__new__(server.Handler)
+        self.response = {}
+        self.current = self.user('gm')
+        self.handler.current_user = lambda conn: self.current
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def user(self, username):
+        return self.conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
+
+    def call(self, method, *args):
+        self.response = {}
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+        method(self.handler, self.conn, *args)
+        return self.response
+
+    @staticmethod
+    def match(*values):
+        pattern = '^' + '/'.join('(\\d+)' for _ in values) + '$'
+        return re.match(pattern, '/'.join(str(value) for value in values))
+
+    def test_create_recap_autocollects_participants_and_links(self):
+        self.current = self.user('gm')
+        payload = self.call(server.Handler.api_recap_create, {}, None, {
+            'title': 'The Watson Heist', 'session_id': 1, 'storyline_id': 1,
+            'public_summary': 'The crew cracked the vault.', 'gm_notes': 'NPC escaped.',
+            'choices': ['Betrayed the fixer'], 'loot': ['2000 eb'],
+            'published': True, 'publish_feed': True, 'session_date': 1700000000,
+        })
+        self.assertEqual(payload['status'], 201)
+        recap = payload['payload']
+        self.assertEqual([p['name'] for p in recap['participants']], ['Maelstrom Guard'])
+        self.assertTrue(recap['published'])
+        self.assertEqual(recap['choices'], ['Betrayed the fixer'])
+        self.assertTrue(recap['feed_post_id'])
+        self.assertTrue(recap['timeline_id'])
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) n FROM session_recaps').fetchone()['n'], 1)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) n FROM feed_posts WHERE status='draft'").fetchone()['n'], 1)
+        self.assertEqual(self.conn.execute(
+            'SELECT COUNT(*) n FROM storyline_timeline').fetchone()['n'], 1)
+
+    def test_recap_visibility_gates_private_fields_for_players(self):
+        self.current = self.user('gm')
+        self.call(server.Handler.api_recap_create, {}, None, {
+            'title': 'Secret Op', 'public_summary': 'Public summary',
+            'gm_notes': 'GM only', 'loot': ['100 eb'], 'published': True,
+            'session_date': 1700000000,
+        })
+        self.current = self.user('runner1')
+        listing = self.call(server.Handler.api_recaps, {}, None, {})['payload']
+        self.assertFalse(listing['full'])
+        self.assertEqual(len(listing['recaps']), 1)
+        public = listing['recaps'][0]
+        self.assertEqual(public['public_summary'], 'Public summary')
+        self.assertNotIn('gm_notes', public)
+        self.assertNotIn('loot', public)
+
+    def test_player_cannot_create_recap(self):
+        self.current = self.user('runner1')
+        with self.assertRaises(server.ApiError) as denied:
+            self.call(server.Handler.api_recap_create, {}, None, {'title': 'Cheat Recap'})
+        self.assertEqual(denied.exception.status, 403)
+
+    def test_unpublished_recap_hidden_from_players(self):
+        self.current = self.user('gm')
+        self.call(server.Handler.api_recap_create, {}, None, {
+            'title': 'Draft Recap', 'public_summary': 'Not yet public',
+            'published': False, 'session_date': 1700000000,
+        })
+        self.current = self.user('runner1')
+        listing = self.call(server.Handler.api_recaps, {}, None, {})['payload']
+        self.assertEqual(listing['recaps'], [])
+        self.current = self.user('gm')
+        gm_listing = self.call(server.Handler.api_recaps, {}, None, {})['payload']
+        self.assertEqual(len(gm_listing['recaps']), 1)
+
+    def test_update_and_delete_recap(self):
+        self.current = self.user('gm')
+        recap = self.call(server.Handler.api_recap_create, {}, None, {
+            'title': 'Old Title', 'public_summary': 'Summary', 'publish_feed': True,
+            'storyline_id': 1, 'session_date': 1700000000,
+        })['payload']
+        updated = self.call(server.Handler.api_recap_update, {}, self.match(recap['id']), {
+            'title': 'New Title', 'public_summary': 'Updated summary',
+            'gm_notes': 'Extra notes', 'published': True, 'publish_feed': True,
+            'session_date': 1700000100,
+        })['payload']
+        self.assertEqual(updated['title'], 'New Title')
+        self.assertEqual(updated['gm_notes'], 'Extra notes')
+        self.assertEqual(updated['feed_post_id'], recap['feed_post_id'])
+        self.assertEqual(updated['timeline_id'], recap['timeline_id'])
+        # Delete removes the recap, its draft feed post and timeline entry.
+        self.call(server.Handler.api_recap_delete, {}, self.match(recap['id']), {})
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) n FROM session_recaps').fetchone()['n'], 0)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) n FROM feed_posts WHERE status='draft'").fetchone()['n'], 0)
+        self.assertEqual(self.conn.execute(
+            'SELECT COUNT(*) n FROM storyline_timeline').fetchone()['n'], 0)
+
+
+if __name__ == '__main__':
+    unittest.main()

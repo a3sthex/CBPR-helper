@@ -2861,6 +2861,34 @@ CREATE TABLE IF NOT EXISTS fixer_requests(
 CREATE INDEX IF NOT EXISTS idx_fixer_requests_status ON fixer_requests(status, created);
 """
 
+SESSION_RECAP_SCHEMA = """
+CREATE TABLE IF NOT EXISTS session_recaps(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_user_id INTEGER NOT NULL,
+  session_id INTEGER,
+  contract_id INTEGER,
+  storyline_id INTEGER,
+  session_date REAL NOT NULL,
+  title TEXT NOT NULL,
+  public_summary TEXT NOT NULL DEFAULT '',
+  gm_notes TEXT NOT NULL DEFAULT '',
+  participants_json TEXT NOT NULL DEFAULT '[]',
+  choices_json TEXT NOT NULL DEFAULT '[]',
+  npc_changes_json TEXT NOT NULL DEFAULT '[]',
+  locations_json TEXT NOT NULL DEFAULT '[]',
+  loot_json TEXT NOT NULL DEFAULT '[]',
+  injuries_json TEXT NOT NULL DEFAULT '[]',
+  quotes_json TEXT NOT NULL DEFAULT '[]',
+  feed_post_id INTEGER,
+  timeline_id INTEGER,
+  published INTEGER NOT NULL DEFAULT 0,
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_recaps_date ON session_recaps(session_date);
+CREATE INDEX IF NOT EXISTS idx_session_recaps_storyline ON session_recaps(storyline_id, session_date);
+"""
+
 NOTIFICATION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS notifications(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2910,6 +2938,7 @@ MIGRATION_CAMPAIGN_CLOCK = 12
 MIGRATION_CREW_STASH = 13
 MIGRATION_MARKET_STOCK = 14
 MIGRATION_NPC_STATBLOCKS = 15
+MIGRATION_SESSION_RECAPS = 16
 DB_BACKUP_LIMIT = 5
 _RATE_LIMIT_BUCKETS = {}
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -4241,6 +4270,7 @@ def apply_schema_migrations(conn, make_backup=True):
         (MIGRATION_CREW_STASH, 'crew stash and item transfers'),
         (MIGRATION_MARKET_STOCK, 'market finite stock and fixer requests'),
         (MIGRATION_NPC_STATBLOCKS, 'npc full statblocks and session snapshots'),
+        (MIGRATION_SESSION_RECAPS, 'session recaps and campaign chronicle'),
     ]
     pending = [version for version, _ in migrations if version not in applied]
     if make_backup and pending:
@@ -4299,6 +4329,8 @@ def apply_schema_migrations(conn, make_backup=True):
         conn.executescript(MARKET_STOCK_SCHEMA)
     if MIGRATION_NPC_STATBLOCKS not in applied:
         ensure_column(conn, 'session_combatants', 'statblock_json', "TEXT NOT NULL DEFAULT '{}'")
+    if MIGRATION_SESSION_RECAPS not in applied:
+        conn.executescript(SESSION_RECAP_SCHEMA)
     # Re-run additive CREATE IF NOT EXISTS blocks so patch-level tables added to an
     # already-applied migration remain safe during development and rolling deploys.
     conn.executescript(NETWORK_SCHEMA)
@@ -4311,6 +4343,7 @@ def apply_schema_migrations(conn, make_backup=True):
     conn.executescript(CAMPAIGN_CLOCK_SCHEMA)
     conn.executescript(CREW_STASH_SCHEMA)
     conn.executescript(MARKET_STOCK_SCHEMA)
+    conn.executescript(SESSION_RECAP_SCHEMA)
     # Recover safely if a rolling/patch deployment recorded the migration before
     # every additive column reached a particular database.
     ensure_column(conn, 'users', 'avatar_media_id', 'TEXT')
@@ -4837,6 +4870,134 @@ def npc_statblock_derived(statblock):
         'death_save': _num(stats.get('BODY')) or 0,
         'evasion_base': (_num(stats.get('DEX')) or 0) + (_num(skills.get('Evasion')) or 0),
     }
+
+
+# ------------------------------------------------------------- Session Recap / Chronicle
+
+RECAP_TEXT_LIST_LIMIT = 50
+
+
+def _clean_recap_text_list(source):
+    if source is None:
+        return []
+    if not isinstance(source, list):
+        raise ApiError(400, 'Recap списки должны быть массивами')
+    return [str(value).strip()[:300] for value in source[:RECAP_TEXT_LIST_LIMIT]
+            if str(value).strip()]
+
+
+def _clean_recap_participants(source):
+    if source is None:
+        return []
+    if not isinstance(source, list):
+        raise ApiError(400, 'Recap participants должен быть списком')
+    out = []
+    for value in source[:RECAP_TEXT_LIST_LIMIT]:
+        if isinstance(value, dict):
+            kind = str(value.get('kind') or 'character')[:40]
+            name = str(value.get('name') or '').strip()[:120]
+            if name:
+                out.append({'kind': kind, 'name': name})
+        elif str(value).strip():
+            out.append({'kind': 'character', 'name': str(value).strip()[:120]})
+    return out
+
+
+def clean_session_recap_input(body):
+    if not isinstance(body, dict):
+        raise ApiError(400, 'Recap должен быть объектом')
+    title = str(body.get('title') or '').strip()[:240]
+    if len(title) < 2:
+        raise ApiError(400, 'Recap требует название')
+    try:
+        session_date = float(body.get('session_date') or time.time())
+    except (TypeError, ValueError):
+        raise ApiError(400, 'Некорректная дата Recap')
+    if not math.isfinite(session_date):
+        session_date = time.time()
+    return {
+        'title': title,
+        'session_date': session_date,
+        'session_id': _num(body.get('session_id')),
+        'contract_id': _num(body.get('contract_id')),
+        'storyline_id': _num(body.get('storyline_id')),
+        'public_summary': str(body.get('public_summary') or '')[:10000],
+        'gm_notes': str(body.get('gm_notes') or '')[:20000],
+        'participants': _clean_recap_participants(body.get('participants')),
+        'choices': _clean_recap_text_list(body.get('choices')),
+        'npc_changes': _clean_recap_text_list(body.get('npc_changes')),
+        'locations': _clean_recap_text_list(body.get('locations')),
+        'loot': _clean_recap_text_list(body.get('loot')),
+        'injuries': _clean_recap_text_list(body.get('injuries')),
+        'quotes': _clean_recap_text_list(body.get('quotes')),
+        'published': bool(body.get('published')),
+        'publish_feed': bool(body.get('publish_feed')),
+    }
+
+
+def recap_participants(conn, session_id=None, contract_id=None):
+    """Auto-collect participant names from a session or contract."""
+    participants = []
+    seen = set()
+    if session_id:
+        rows = conn.execute(
+            'SELECT sc.*,c.data character_data FROM session_combatants sc '
+            'LEFT JOIN characters c ON c.id=sc.character_id '
+            'WHERE sc.session_id=? ORDER BY sc.sort_order,sc.id', (session_id,)).fetchall()
+        for row in rows:
+            if row['character_id']:
+                character = parse_json_object(row['character_data']) if row['character_data'] else {}
+                name = character.get('handle') or row['name']
+                kind = 'character'
+            else:
+                name = row['name']
+                kind = 'npc'
+            key = (kind, name)
+            if key not in seen:
+                seen.add(key)
+                participants.append({'kind': kind, 'name': name})
+    if not participants and contract_id:
+        rows = conn.execute(
+            "SELECT c.data character_data FROM contract_signups s "
+            "JOIN characters c ON c.id=s.character_id WHERE s.contract_id=? AND s.status='crew' "
+            'ORDER BY s.queue_position,s.joined_at', (contract_id,)).fetchall()
+        for row in rows:
+            character = parse_json_object(row['character_data']) if row['character_data'] else {}
+            name = character.get('handle')
+            if name and ('character', name) not in seen:
+                seen.add(('character', name))
+                participants.append({'kind': 'character', 'name': name})
+    return participants
+
+
+def recap_public_payload(row):
+    """Public chronicle view: only shareable fields."""
+    return {
+        'id': row['id'], 'session_date': row['session_date'], 'title': row['title'],
+        'public_summary': row['public_summary'],
+        'participants': parse_json_list(row['participants_json']),
+        'locations': parse_json_list(row['locations_json']),
+        'session_id': row['session_id'], 'contract_id': row['contract_id'],
+        'storyline_id': row['storyline_id'], 'published': bool(row['published']),
+        'created': row['created'], 'updated': row['updated'],
+    }
+
+
+def session_recap_payload(row, full=False):
+    payload = recap_public_payload(row)
+    if full:
+        payload.update({
+            'owner_user_id': row['owner_user_id'],
+            'gm_notes': row['gm_notes'],
+            'choices': parse_json_list(row['choices_json']),
+            'npc_changes': parse_json_list(row['npc_changes_json']),
+            'loot': parse_json_list(row['loot_json']),
+            'injuries': parse_json_list(row['injuries_json']),
+            'quotes': parse_json_list(row['quotes_json']),
+            'feed_post_id': row['feed_post_id'],
+            'timeline_id': row['timeline_id'],
+        })
+    return payload
 
 
 def ensure_system_persona(conn, handle, display_name, kind):
@@ -9007,6 +9168,19 @@ SERVER_ERROR_EN = {
     'NPC weapons должен быть списком до 30 записей': 'NPC weapons must be a list with up to 30 entries',
     'NPC weapon должен быть объектом': 'NPC weapon must be an object',
     'NPC weapon требует имя': 'NPC weapon requires a name',
+    'Recap должен быть объектом': 'Recap must be an object',
+    'Recap требует название': 'Recap requires a title',
+    'Некорректная дата Recap': 'Invalid Recap date',
+    'Recap списки должны быть массивами': 'Recap lists must be arrays',
+    'Recap participants должен быть списком': 'Recap participants must be a list',
+    'Сессия Recap не найдена': 'Recap session not found',
+    'Нет доступа к сессии Recap': 'No access to the Recap session',
+    'Нет права связывать Recap с этим контрактом': 'Not allowed to link the Recap to this contract',
+    'Нет права связывать Recap с этой сюжетной линией': 'Not allowed to link the Recap to this storyline',
+    'Recap не найден': 'Recap not found',
+    'Recap не опубликован': 'Recap is not published',
+    'Нет права редактировать Recap': 'Not allowed to edit this Recap',
+    'Нет права удалять Recap': 'Not allowed to delete this Recap',
 }
 
 def server_error_message(message, language):
@@ -15882,6 +16056,195 @@ class Handler(BaseHTTPRequestHandler):
                      (time.time(), row['id']))
         conn.commit(); self.send_json({'ok': True, 'archived': True})
 
+    # ------------------------------------------------------------ Session Recap / Chronicle
+
+    def recap_links(self, conn, cleaned, user):
+        """Validate optional session/contract/storyline links for a recap."""
+        session_id, contract_id, storyline_id = (
+            cleaned['session_id'], cleaned['contract_id'], cleaned['storyline_id'])
+        if session_id:
+            session = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (session_id,)).fetchone()
+            if not session:
+                raise ApiError(400, 'Сессия Recap не найдена')
+            role, capabilities = self.session_capabilities(conn, user, session)
+            if 'view_gm' not in capabilities:
+                raise ApiError(403, 'Нет доступа к сессии Recap')
+            if contract_id is None and session['contract_id']:
+                contract_id = session['contract_id']
+        if contract_id:
+            contract = conn.execute('SELECT * FROM contracts WHERE id=?', (contract_id,)).fetchone()
+            if not contract or not can_edit_contract(conn, user, contract):
+                raise ApiError(403, 'Нет права связывать Recap с этим контрактом')
+            if storyline_id is None:
+                storyline_id = contract['storyline_id']
+        if storyline_id:
+            storyline = conn.execute('SELECT * FROM storylines WHERE id=?', (storyline_id,)).fetchone()
+            if not storyline or not can_edit_storyline(conn, user, storyline):
+                raise ApiError(403, 'Нет права связывать Recap с этой сюжетной линией')
+        return session_id, contract_id, storyline_id
+
+    def recap_apply_feed(self, conn, user, recap_id, cleaned, existing_feed_id=None):
+        """Create or refresh the City Feed draft linked to a recap."""
+        if not cleaned['publish_feed']:
+            return existing_feed_id
+        summary = cleaned['public_summary']
+        if not summary:
+            return existing_feed_id
+        now = time.time()
+        if existing_feed_id:
+            conn.execute(
+                "UPDATE feed_posts SET headline=?,body=?,event_at=?,storyline_id=?,contract_id=?,updated=? "
+                'WHERE id=? AND creator_user_id=?',
+                (cleaned['title'], summary, cleaned['session_date'],
+                 cleaned['storyline_id'], cleaned['contract_id'], now,
+                 existing_feed_id, user['id']))
+            return existing_feed_id
+        cur = conn.execute(
+            'INSERT INTO feed_posts(format,status,creator_user_id,storyline_id,contract_id,'
+            'headline,body,truth_status,event_at,created,updated) '
+            "VALUES('article','draft',?,?,?,?,?,'unknown',?,?,?)",
+            (user['id'], cleaned['storyline_id'], cleaned['contract_id'],
+             cleaned['title'], summary, cleaned['session_date'], now, now))
+        return cur.lastrowid
+
+    def recap_apply_timeline(self, conn, user, recap_id, cleaned, existing_timeline_id=None):
+        """Create or refresh the Storyline timeline entry linked to a recap."""
+        storyline_id = cleaned['storyline_id']
+        if not storyline_id:
+            return existing_timeline_id
+        now = time.time()
+        if existing_timeline_id:
+            conn.execute(
+                'UPDATE storyline_timeline SET event_at=?,public_text=?,private_text=? WHERE id=?',
+                (cleaned['session_date'], cleaned['public_summary'] or cleaned['title'],
+                 cleaned['gm_notes'], existing_timeline_id))
+            return existing_timeline_id
+        if not cleaned['public_summary'] and not cleaned['gm_notes']:
+            return None
+        cur = conn.execute(
+            'INSERT INTO storyline_timeline(storyline_id,event_at,public_text,private_text,'
+            'contract_id,created_by,created) VALUES(?,?,?,?,?,?,?)',
+            (storyline_id, cleaned['session_date'],
+             cleaned['public_summary'] or cleaned['title'], cleaned['gm_notes'],
+             cleaned['contract_id'], user['id'], now))
+        conn.execute('UPDATE storylines SET updated=? WHERE id=?', (now, storyline_id))
+        return cur.lastrowid
+
+    def api_recaps(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        full = user_is_gm(user)
+        if full:
+            rows = conn.execute(
+                'SELECT * FROM session_recaps ORDER BY session_date DESC,id DESC LIMIT 500').fetchall()
+            payload = [session_recap_payload(row, full=True) for row in rows]
+        else:
+            rows = conn.execute(
+                'SELECT * FROM session_recaps WHERE published=1 '
+                'ORDER BY session_date DESC,id DESC LIMIT 500').fetchall()
+            payload = [session_recap_payload(row) for row in rows]
+        self.send_json({'recaps': payload, 'full': full})
+
+    def api_recap_detail(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        row = conn.execute('SELECT * FROM session_recaps WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Recap не найден')
+        full = user_is_gm(user) or row['owner_user_id'] == user['id']
+        if not full and not row['published']:
+            raise ApiError(403, 'Recap не опубликован')
+        self.send_json(session_recap_payload(row, full=full))
+
+    @atomic_endpoint
+    def api_recap_create(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        cleaned = clean_session_recap_input(body or {})
+        session_id, contract_id, storyline_id = self.recap_links(conn, cleaned, user)
+        cleaned.update({'session_id': session_id, 'contract_id': contract_id,
+                        'storyline_id': storyline_id})
+        participants = cleaned['participants'] or \
+            recap_participants(conn, session_id=session_id, contract_id=contract_id)
+        now = time.time()
+        cur = conn.execute(
+            'INSERT INTO session_recaps(owner_user_id,session_id,contract_id,storyline_id,'
+            'session_date,title,public_summary,gm_notes,participants_json,choices_json,'
+            'npc_changes_json,locations_json,loot_json,injuries_json,quotes_json,published,'
+            'created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (user['id'], session_id, contract_id, storyline_id,
+             cleaned['session_date'], cleaned['title'], cleaned['public_summary'],
+             cleaned['gm_notes'], json.dumps(participants, ensure_ascii=False),
+             json.dumps(cleaned['choices'], ensure_ascii=False),
+             json.dumps(cleaned['npc_changes'], ensure_ascii=False),
+             json.dumps(cleaned['locations'], ensure_ascii=False),
+             json.dumps(cleaned['loot'], ensure_ascii=False),
+             json.dumps(cleaned['injuries'], ensure_ascii=False),
+             json.dumps(cleaned['quotes'], ensure_ascii=False),
+             1 if cleaned['published'] else 0, now, now))
+        recap_id = cur.lastrowid
+        feed_id = self.recap_apply_feed(conn, user, recap_id, cleaned)
+        timeline_id = self.recap_apply_timeline(conn, user, recap_id, cleaned)
+        conn.execute('UPDATE session_recaps SET feed_post_id=?,timeline_id=? WHERE id=?',
+                     (feed_id, timeline_id, recap_id))
+        conn.commit()
+        row = conn.execute('SELECT * FROM session_recaps WHERE id=?', (recap_id,)).fetchone()
+        self.send_json(session_recap_payload(row, full=True), status=201)
+
+    @atomic_endpoint
+    def api_recap_update(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM session_recaps WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Recap не найден')
+        if row['owner_user_id'] != user['id'] and not user_is_admin(user):
+            raise ApiError(403, 'Нет права редактировать Recap')
+        cleaned = clean_session_recap_input(body or {})
+        session_id, contract_id, storyline_id = self.recap_links(conn, cleaned, user)
+        cleaned.update({'session_id': session_id, 'contract_id': contract_id,
+                        'storyline_id': storyline_id})
+        participants = cleaned['participants'] or \
+            recap_participants(conn, session_id=session_id, contract_id=contract_id)
+        feed_id = self.recap_apply_feed(conn, user, row['id'], cleaned, row['feed_post_id'])
+        timeline_id = self.recap_apply_timeline(
+            conn, user, row['id'], cleaned, row['timeline_id'])
+        conn.execute(
+            'UPDATE session_recaps SET session_id=?,contract_id=?,storyline_id=?,session_date=?,'
+            'title=?,public_summary=?,gm_notes=?,participants_json=?,choices_json=?,'
+            'npc_changes_json=?,locations_json=?,loot_json=?,injuries_json=?,quotes_json=?,'
+            'feed_post_id=?,timeline_id=?,published=?,updated=? WHERE id=?',
+            (session_id, contract_id, storyline_id, cleaned['session_date'],
+             cleaned['title'], cleaned['public_summary'], cleaned['gm_notes'],
+             json.dumps(participants, ensure_ascii=False),
+             json.dumps(cleaned['choices'], ensure_ascii=False),
+             json.dumps(cleaned['npc_changes'], ensure_ascii=False),
+             json.dumps(cleaned['locations'], ensure_ascii=False),
+             json.dumps(cleaned['loot'], ensure_ascii=False),
+             json.dumps(cleaned['injuries'], ensure_ascii=False),
+             json.dumps(cleaned['quotes'], ensure_ascii=False),
+             feed_id, timeline_id, 1 if cleaned['published'] else 0,
+             time.time(), row['id']))
+        conn.commit()
+        fresh = conn.execute('SELECT * FROM session_recaps WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(session_recap_payload(fresh, full=True))
+
+    @atomic_endpoint
+    def api_recap_delete(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM session_recaps WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Recap не найден')
+        if row['owner_user_id'] != user['id'] and not user_is_admin(user):
+            raise ApiError(403, 'Нет права удалять Recap')
+        if row['feed_post_id']:
+            conn.execute("DELETE FROM feed_posts WHERE id=? AND status='draft' AND creator_user_id=?",
+                         (row['feed_post_id'], user['id']))
+        if row['timeline_id']:
+            conn.execute('DELETE FROM storyline_timeline WHERE id=?', (row['timeline_id'],))
+        conn.execute('DELETE FROM session_recaps WHERE id=?', (row['id'],))
+        conn.commit()
+        self.send_json({'ok': True, 'deleted': True})
+
     def api_session_access(self, conn, qs, m, body):
         user = self.require_user(conn)
         session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
@@ -17750,6 +18113,11 @@ ROUTES = [
     ('PUT', rx(r'/api/npc-templates/(\d+)'), Handler.api_npc_template_update),
     ('POST', rx(r'/api/npc-templates/(\d+)/clone'), Handler.api_npc_template_clone),
     ('DELETE', rx(r'/api/npc-templates/(\d+)'), Handler.api_npc_template_delete),
+    ('GET', rx(r'/api/recaps'), Handler.api_recaps),
+    ('POST', rx(r'/api/recaps'), Handler.api_recap_create),
+    ('GET', rx(r'/api/recaps/(\d+)'), Handler.api_recap_detail),
+    ('PUT', rx(r'/api/recaps/(\d+)'), Handler.api_recap_update),
+    ('DELETE', rx(r'/api/recaps/(\d+)'), Handler.api_recap_delete),
     ('GET', rx(r'/api/sessions'), Handler.api_sessions),
     ('POST', rx(r'/api/sessions'), Handler.api_session_create),
     ('GET', rx(r'/api/sessions/(\d+)'), Handler.api_session_detail),

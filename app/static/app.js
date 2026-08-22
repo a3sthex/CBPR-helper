@@ -298,6 +298,7 @@ const routes = {
   'quick-reference': viewCalc, dossiers: viewCharacters, crew: viewRoster,
   stash: viewCrewStash,
   feed: viewCityFeed, contracts: viewContracts, personas: viewPersonas,
+  chronicle: viewChronicle,
   gm: viewGMOperations, session: viewSessionPlayer, admin: viewAdmin,
   // Compatibility aliases keep old bookmarks and links working during migration.
   codex: viewCodex, calc: viewCalc, characters: viewCharacters,
@@ -317,7 +318,7 @@ async function route() {
     else anchor.removeAttribute('aria-current');
   });
   document.body.dataset.workspace = activeRoute === 'gm' ? 'gm' : 'network';
-  const moreButton=$('#mobile-more-toggle');if(moreButton)moreButton.classList.toggle('active',['database','market','quick-reference','crew','stash','personas','guides','profile','gm','admin'].includes(activeRoute));
+  const moreButton=$('#mobile-more-toggle');if(moreButton)moreButton.classList.toggle('active',['database','market','quick-reference','crew','stash','chronicle','personas','guides','profile','gm','admin'].includes(activeRoute));
   $$('[data-workspace]').forEach(button=>button.classList.toggle('active',button.dataset.workspace===(activeRoute==='gm'?'gm':'network')));
   const mobileMore=$('#mobile-more-menu');if(mobileMore)mobileMore.hidden=true;
   window.scrollTo(0, 0);
@@ -381,7 +382,7 @@ async function refreshShellDossiers(){
 }
 
 function openCommandPalette(){
-  const commands=[['','⌂',T('City Network','Городская сеть')],['contracts','◎',T('Contracts','Контракты')],['feed','≋',T('City Feed','Городская лента')],['dossiers','◇',T('Dossiers','Досье')],['database','▦',T('Database','База данных')],['market','◈',T('Night Market','Ночной рынок')],['quick-reference','◫',T('Quick Reference','Быстрые правила')],['crew','⌘',T('Crew Registry','Реестр команд')],['stash','🎒',T('Crew Stash','Общий склад')],['personas','◉','Personas'],['guides','▤',T('Archive','Архив')]];if(state.me?.is_gm)commands.push(['gm','⚙','GM OPS']);if(state.me?.is_admin)commands.push(['admin','⚿',T('Admin Console','Панель Admin')]);
+  const commands=[['','⌂',T('City Network','Городская сеть')],['contracts','◎',T('Contracts','Контракты')],['feed','≋',T('City Feed','Городская лента')],['dossiers','◇',T('Dossiers','Досье')],['database','▦',T('Database','База данных')],['market','◈',T('Night Market','Ночной рынок')],['quick-reference','◫',T('Quick Reference','Быстрые правила')],['crew','⌘',T('Crew Registry','Реестр команд')],['stash','🎒',T('Crew Stash','Общий склад')],['chronicle','📜',T('Chronicle','Хроника')],['personas','◉','Personas'],['guides','▤',T('Archive','Архив')]];if(state.me?.is_gm)commands.push(['gm','⚙','GM OPS']);if(state.me?.is_admin)commands.push(['admin','⚿',T('Admin Console','Панель Admin')]);
   const modal=openModal(`<h2>${T('Command Palette','Командная строка')}</h2><input id="command-search" type="search" autofocus placeholder="${T('Jump to a network module…','Перейти к модулю сети…')}" aria-label="${T('Search commands','Поиск команд')}"><div id="command-list" class="command-list mt">${commands.map(([route,icon,label])=>`<button data-command-route="${route}" data-command-search="${esc(label.toLowerCase())}"><span>${icon}</span><b>${esc(label)}</b><small>#/${route}</small></button>`).join('')}</div>`);const search=$('#command-search',modal);search.oninput=()=>{const query=search.value.trim().toLowerCase();$$('[data-command-route]',modal).forEach(button=>button.hidden=Boolean(query&&!button.dataset.commandSearch.includes(query)));};$$('[data-command-route]',modal).forEach(button=>button.onclick=()=>{closeModal();go('/'+button.dataset.commandRoute);});
 }
 

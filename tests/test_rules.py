@@ -2190,3 +2190,53 @@ class NPCStatblockTests(unittest.TestCase):
         self.assertEqual(derived['skills'], [])
         self.assertEqual(derived['death_save'], 0)
         self.assertEqual(derived['evasion_base'], 0)
+
+
+class SessionRecapTests(unittest.TestCase):
+    def test_clean_recap_input_normalizes_lists_and_fields(self):
+        cleaned = server.clean_session_recap_input({
+            'title': 'The Heist', 'session_date': 1700000000,
+            'public_summary': 'Vault opened', 'gm_notes': 'NPC fled',
+            'participants': [{'kind': 'npc', 'name': 'Guard'}, 'V'],
+            'choices': ['Betrayed fixer', ''], 'loot': ['2000 eb'],
+        })
+        self.assertEqual(cleaned['title'], 'The Heist')
+        self.assertEqual(cleaned['session_date'], 1700000000)
+        self.assertEqual(cleaned['participants'],
+                         [{'kind': 'npc', 'name': 'Guard'}, {'kind': 'character', 'name': 'V'}])
+        self.assertEqual(cleaned['choices'], ['Betrayed fixer'])
+        self.assertFalse(cleaned['published'])
+        self.assertFalse(cleaned['publish_feed'])
+
+    def test_clean_recap_input_requires_title(self):
+        with self.assertRaises(server.ApiError) as err:
+            server.clean_session_recap_input({'title': ''})
+        self.assertEqual(err.exception.status, 400)
+        with self.assertRaises(server.ApiError) as err2:
+            server.clean_session_recap_input({'title': 'X', 'choices': 'not-a-list'})
+        self.assertEqual(err2.exception.status, 400)
+
+    def test_recap_text_list_bounded(self):
+        values = [f'item {i}' for i in range(200)]
+        cleaned = server._clean_recap_text_list(values)
+        self.assertEqual(len(cleaned), server.RECAP_TEXT_LIST_LIMIT)
+
+    def test_recap_public_payload_hides_private_fields(self):
+        row = {
+            'id': 1, 'session_date': 1700000000, 'title': 'Recap',
+            'public_summary': 'summary', 'gm_notes': 'secret',
+            'participants_json': '[]', 'locations_json': '["Watson"]',
+            'choices_json': '["choice"]', 'loot_json': '["loot"]',
+            'npc_changes_json': '[]', 'injuries_json': '[]', 'quotes_json': '[]',
+            'session_id': 1, 'contract_id': 1, 'storyline_id': 1,
+            'owner_user_id': 2, 'feed_post_id': 5, 'timeline_id': 7,
+            'published': 1, 'created': 1, 'updated': 1,
+        }
+        public = server.recap_public_payload(row)
+        self.assertNotIn('gm_notes', public)
+        self.assertNotIn('loot', public)
+        self.assertIn('locations', public)
+        full = server.session_recap_payload(row, full=True)
+        self.assertEqual(full['gm_notes'], 'secret')
+        self.assertEqual(full['loot'], ['loot'])
+        self.assertEqual(full['choices'], ['choice'])
