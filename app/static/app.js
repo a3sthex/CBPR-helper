@@ -3207,7 +3207,7 @@ async function viewCharacters(view) {
   view.innerHTML = `
     <div class="page-head">
       <div><h1>🧬 ${T('My Characters','Мои персонажи')}</h1><div class="sub">${T('Active Dossiers','Активные досье')}: ${activeCount}/50${archivedCount ? ` · ${archivedCount} ${T('archived','в архиве')}` : ''}</div></div>
-      <div class="row"><button class="btn-sm" onclick="location.hash='#/stash'">🎒 ${T('Crew Stash','Общий склад')}</button><button class="btn-primary" onclick="location.hash='#/char/new'">+ ${T('New Edgerunner','Новый эджраннер')}</button></div>
+      <div class="row"><button class="btn-sm" onclick="location.hash='#/stash'">🎒 ${T('Crew Stash','Общий склад')}</button><button class="btn-sm" id="chars-import">⬆ ${T('Import JSON','Импорт JSON')}</button><button class="btn-primary" onclick="location.hash='#/char/new'">+ ${T('New Edgerunner','Новый эджраннер')}</button></div>
     </div>`;
   const listEl = document.createElement('div');
   listEl.className = 'grid cols-3';
@@ -3248,6 +3248,44 @@ async function viewCharacters(view) {
       viewCharacters(view);
     } catch (e) { toast(e.message, true); }
   });
+  const importButton = $('#chars-import', view);
+  if (importButton) importButton.onclick = () => openCharacterImportModal(view);
+}
+
+function openCharacterImportModal(view) {
+  const modal = openModal(`
+    <h2>⬆ ${T('Import Character JSON','Импорт персонажа (JSON)')}</h2>
+    <div class="panel accent mb"><b>TRUST + AUDIT</b>
+      <p class="small">${T('Imports a portable Dossier export (⬇ JSON). Server-owned runtime state resets to fresh defaults, and the Dossier is imported as private.','Импортирует переносимый экспорт Dossier (⬇ JSON). Серверное runtime-состояние сбрасывается, а Dossier импортируется приватным.')}</p>
+    </div>
+    <label class="f"><span>${T('File','Файл')}</span><input id="imp-file" type="file" accept="application/json,.json"></label>
+    <label class="f"><span>${T('or paste JSON','или вставьте JSON')}</span><textarea id="imp-text" rows="12" spellcheck="false" placeholder='{"handle":"V","roles":[{"name":"Solo","rank":4,"primary":true}],...}'></textarea></label>
+    <div class="row"><button id="imp-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="imp-go" disabled>${T('Import','Импортировать')}</button></div>
+  `, true);
+  const text = $('#imp-text', modal), go = $('#imp-go', modal), file = $('#imp-file', modal);
+  const refresh = () => { go.disabled = !text.value.trim(); };
+  text.oninput = refresh;
+  file.onchange = () => {
+    const selected = file.files && file.files[0];
+    if (!selected) return;
+    const reader = new FileReader();
+    reader.onload = () => { text.value = String(reader.result || ''); refresh(); };
+    reader.readAsText(selected);
+  };
+  $('#imp-cancel', modal).onclick = closeModal;
+  go.onclick = async () => {
+    let payload;
+    try { payload = JSON.parse(text.value); }
+    catch (e) { toast(T('Invalid JSON.','Некорректный JSON.'), true); return; }
+    go.disabled = true;
+    try {
+      const res = await api('/api/characters/import', { method: 'POST', body: { data: payload } });
+      closeModal();
+      toast(T('Character imported.','Персонаж импортирован.'));
+      viewCharacters(view);
+      go('/char/' + res.id);
+    } catch (e) { go.disabled = false; toast(e.message, true); }
+  };
 }
 
 /* ============================== редактор персонажа ============================== */

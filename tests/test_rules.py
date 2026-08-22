@@ -1969,3 +1969,90 @@ class CrewStashUnitTests(unittest.TestCase):
         server._attach_runtime_state(target, entry, 'a' * 32)
         self.assertEqual(target['weapon_state']['a' * 32]['magazine'], 7)
         self.assertNotIn('_runtime', entry)
+
+
+class CharacterImportTests(unittest.TestCase):
+    def _portable(self):
+        return {
+            'handle': 'V', 'role': 'Solo', 'role_rank': 4,
+            'roles': [{'name': 'Solo', 'rank': 4, 'primary': True}],
+            'active_role': 'Solo',
+            'stats': {'BODY': 6, 'WILL': 6, 'LUCK': 5, 'MOVE': 6,
+                      'DEX': 7, 'REF': 7, 'TECH': 4, 'INT': 4, 'COOL': 4, 'EMP': 5},
+            'skills': {'Handgun': 6, 'Evasion': 4, 'Language (Streetslang)': 2,
+                       'Local Expert (Watson)': 2, 'Brawling': 2, 'Concentration': 2,
+                       'Perception': 2, 'Stealth': 2, 'First Aid': 1},
+            'native_language': 'Streetslang',
+            'inventory': [
+                {'key': 'guns-0', 'catalog_item_id': 'guns-0', 'instance_id': 'a' * 32,
+                 'cat': 'guns', 'name': 'Medium Pistol', 'qty': 1, 'state': 'carried',
+                 'price': 50},
+                {'key': 'armor-5', 'catalog_item_id': 'armor-5', 'instance_id': 'c' * 32,
+                 'cat': 'armor', 'name': 'Kevlar', 'qty': 1, 'state': 'equipped'},
+            ],
+            'cyberware': [],
+            'armor': {'body': {'key': 'armor-5', 'catalog_item_id': 'armor-5',
+                               'instance_id': 'c' * 32, 'name': 'Kevlar', 'sp': 7}},
+            'cash': 500, 'ip_available': 10, 'ip_total_earned': 10,
+            'ip_total_spent': 0, 'reputation': 3, 'luck_cur': 5,
+        }
+
+    def test_import_strips_runtime_state_and_forces_private(self):
+        raw = self._portable()
+        raw['weapon_state'] = {'a' * 32: {'magazine': 3, 'magazine_max': 12, 'reserve': 0}}
+        raw['armor_tech_state'] = {'c' * 32: {'active': True, 'mode': 'sp_plus_one'}}
+        raw['portrait_media_id'] = 'd' * 32
+        raw['public'] = True
+        raw['archived'] = True
+        data = server.canonical_import_character(raw)
+        self.assertFalse(data.get('public'))
+        self.assertNotIn('portrait_media_id', data)
+        self.assertNotIn('archived', data)
+        self.assertNotIn('armor_tech_state', data)
+        self.assertNotIn('cyberware_state', data)
+        self.assertNotIn('tech_maker_state', data)
+        # weapon_state is re-defaulted (fresh full magazine) under the new id.
+        weapon = next(i for i in data['inventory'] if i['cat'] == 'guns')
+        self.assertNotEqual(weapon['instance_id'], 'a' * 32)
+        self.assertEqual(list(data['weapon_state'].keys()), [weapon['instance_id']])
+        state = data['weapon_state'][weapon['instance_id']]
+        self.assertEqual(state['magazine'], state['magazine_max'])
+
+    def test_import_regenerates_ids_and_rebinds_armor(self):
+        data = server.canonical_import_character(self._portable())
+        ids = {i['instance_id'] for i in data['inventory']}
+        self.assertNotIn('a' * 32, ids)
+        self.assertNotIn('c' * 32, ids)
+        armor_owned = next(i for i in data['inventory'] if i['cat'] == 'armor')
+        self.assertEqual(data['armor']['body']['instance_id'], armor_owned['instance_id'])
+        self.assertEqual(armor_owned['state'], 'equipped')
+
+    def test_import_preserves_resources_and_quantity(self):
+        data = server.canonical_import_character(self._portable())
+        self.assertEqual(data['cash'], 500)
+        self.assertEqual(data['ip_available'], 10)
+        self.assertEqual(data['reputation'], 3)
+        self.assertEqual(data['luck_cur'], 5)
+        weapon = next(i for i in data['inventory'] if i['cat'] == 'guns')
+        self.assertEqual(weapon['qty'], 1)
+        self.assertEqual(weapon['price'], 50)
+
+    def test_import_accepts_envelopes_and_strings(self):
+        raw = self._portable()
+        data = server.canonical_import_character({'id': 1, 'derived': {}, 'data': raw})
+        self.assertEqual(data['handle'], 'V')
+        data2 = server.canonical_import_character(json.dumps(raw))
+        self.assertEqual(data2['handle'], 'V')
+
+    def test_import_rejects_unknown_item_and_invalid_json(self):
+        raw = self._portable()
+        raw['inventory'].append({'key': 'not-real', 'name': 'Ghost'})
+        with self.assertRaises(server.ApiError) as unknown:
+            server.canonical_import_character(raw)
+        self.assertEqual(unknown.exception.status, 400)
+        with self.assertRaises(server.ApiError) as bad_json:
+            server.canonical_import_character('{not valid json')
+        self.assertEqual(bad_json.exception.status, 400)
+        with self.assertRaises(server.ApiError) as not_object:
+            server.canonical_import_character([1, 2, 3])
+        self.assertEqual(not_object.exception.status, 400)

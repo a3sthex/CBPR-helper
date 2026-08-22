@@ -6500,6 +6500,56 @@ def clean_character_trust_update(old_data, incoming):
     return data
 
 
+# Server-owned runtime/audit containers are never portable between deployments.
+# A JSON import carries the Dossier (identity, stats, skills, loadout, resources)
+# but resets transient runtime state to fresh defaults.
+IMPORT_STRIP_KEYS = (
+    'cyberware_state', 'therapy_state', 'armor_tech_state', 'armor_repair_state',
+    'tech_maker_state', 'modification_state', 'weapon_state', 'program_state',
+    'net_entities', 'vehicle_state',
+    'portrait_media_id', 'archived', 'archive_reason', 'public',
+)
+
+
+def canonical_import_character(raw):
+    """Validate a portable Dossier export without creation-budget rules."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise ApiError(400, 'Некорректный JSON импорта')
+    if not isinstance(raw, dict):
+        raise ApiError(400, 'Импорт должен быть JSON-объектом')
+    # Accept the plain data object or common envelopes (full char_payload, sheet).
+    for key in ('data', 'character', 'sheet'):
+        if isinstance(raw.get(key), dict):
+            raw = raw[key]
+            break
+    base = clean_character(raw)
+    for key in IMPORT_STRIP_KEYS:
+        base.pop(key, None)
+    # Unknown non-custom items are rejected instead of passed through silently.
+    for bucket in ('inventory', 'cyberware'):
+        for entry in base.get(bucket) or []:
+            if not isinstance(entry, dict):
+                raise ApiError(400, 'Inventory должен содержать объекты')
+            if not catalog_item_id_for_entry(entry) and not entry.get('is_custom'):
+                raise ApiError(400, 'Неизвестный предмет в импорте')
+    data = clean_character_trust_update(base, base)
+    data['public'] = False
+    data.pop('portrait_media_id', None)
+    ensure_character_item_instances(data, regenerate=True)
+    if len(data.get('inventory') or []) + len(data.get('cyberware') or []) > 500:
+        raise ApiError(400, 'Инвентарь не может содержать больше 500 экземпляров')
+    # Re-default runtime containers against the regenerated instance ids so no
+    # stale per-instance state from the source sheet survives the import.
+    for key in ('weapon_state', 'program_state', 'net_entities'):
+        data.pop(key, None)
+    ensure_progression(data)
+    ensure_character_visibility(data)
+    return data
+
+
 def skill_base(name):
     name = str(name or '')
     for known in SKILL_BY_NAME:
@@ -8712,6 +8762,9 @@ SERVER_ERROR_EN = {
     'Предмет не найден в Crew Stash': 'Item not found in the Crew Stash',
     'Недостаточно единиц в Crew Stash': 'Not enough units in the Crew Stash',
     'Этот предмет берётся поштучно (не stackable)': 'This item is taken one at a time (not stackable)',
+    'Некорректный JSON импорта': 'Invalid import JSON',
+    'Импорт должен быть JSON-объектом': 'Import must be a JSON object',
+    'Неизвестный предмет в импорте': 'Unknown item in the import',
 }
 
 def server_error_message(message, language):
@@ -10671,6 +10724,30 @@ class Handler(BaseHTTPRequestHandler):
         persist_character_item_instances(
             conn, cur.lastrowid, data, 'character_creation', acquired_at=now, prune=True)
         record_character_changes(conn, cur.lastrowid, u['id'], {}, data, 'Character created')
+        conn.commit()
+        row = conn.execute('SELECT * FROM characters WHERE id=?', (cur.lastrowid,)).fetchone()
+        self.send_json(self.char_payload(row, u['display_name'], conn=conn), status=201)
+
+    @atomic_endpoint
+    def api_character_import(self, conn, qs, m, body):
+        u = self.require_user(conn)
+        raw = (body or {}).get('data')
+        if raw is None:
+            raw = (body or {})
+        data = canonical_import_character(raw)
+        owned_rows = conn.execute('SELECT data FROM characters WHERE owner_id=?',
+                                  (u['id'],)).fetchall()
+        count = sum(1 for item in owned_rows if not parse_json_object(item['data']).get('archived'))
+        if count >= 50:
+            raise ApiError(400, 'Слишком много персонажей (максимум 50)')
+        now = time.time()
+        cur = conn.execute(
+            'INSERT INTO characters(owner_id, public, data, created, updated) VALUES(?,?,?,?,?)',
+            (u['id'], 0, json.dumps(data, ensure_ascii=False), now, now))
+        persist_character_item_instances(
+            conn, cur.lastrowid, data, 'character_import', acquired_at=now, prune=True)
+        record_character_changes(conn, cur.lastrowid, u['id'], {}, data,
+                                 'Character imported from JSON')
         conn.commit()
         row = conn.execute('SELECT * FROM characters WHERE id=?', (cur.lastrowid,)).fetchone()
         self.send_json(self.char_payload(row, u['display_name'], conn=conn), status=201)
@@ -17223,6 +17300,7 @@ ROUTES = [
     ('GET', rx(r'/api/nightmarket'), Handler.api_nightmarket),
     ('GET', rx(r'/api/characters'), Handler.api_my_characters),
     ('POST', rx(r'/api/characters'), Handler.api_create_character),
+    ('POST', rx(r'/api/characters/import'), Handler.api_character_import),
     ('GET', rx(r'/api/characters/(\d+)'), Handler.api_get_character),
     ('PUT', rx(r'/api/characters/(\d+)'), Handler.api_save_character),
     ('PUT', rx(r'/api/characters/(\d+)/sheet'), Handler.api_character_sheet_update),

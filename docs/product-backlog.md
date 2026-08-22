@@ -2637,7 +2637,7 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 7. Netrunner Cyberdeck/Program Manager.
 8. Crew Registry portraits.
 9. Dedicated landscape print sheet.
-10. JSON import.
+10. ✅ JSON import (реализовано B.14).
 
 Полный Ruleset/Profile layer временно исключён из P1 до выхода и изучения обновлённой системы Cyberpunk.
 
@@ -3259,6 +3259,18 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - `derived.loans` на Character Sheet (скрыт в public view); UI: кнопка `Transfer` у предметов, модалка Give/Loan/Stash/Split/Trade/Return, панель `Loans` (взято/выдано) и страница `Crew Stash` с выбором персонажа и историей;
 - 10 новых тестов: unit (split/pack/roundtrip runtime state) + интеграционные (give→stash→take, split, loan→return→recall, trade, права, блокировка equipped);
 - остаётся: привязка Crew Stash к конкретному Housing/Location и vehicle cargo stash (Nomad) — пока склад один общий на кампанию.
+
+**Статус B.14 — реализован JSON Character Import:**
+
+- `POST /api/characters/import` создаёт нового персонажа под аккаунтом импортирующего из переносимого JSON (export «⬇ JSON», wizard export или полный char_payload — принимаются `data`/`character`/`sheet` обёртки и JSON-строки);
+- серверная валидация без creation-budget правил: `canonical_import_character` переиспользует `clean_character` + `clean_character_trust_update` + `canonical_owned_entry` (без `validate_creation`), поэтому развившиеся в кампании персонажи импортируются;
+- сервер-owned runtime/audit контейнеры НЕ переносятся (`cyberware_state/therapy_state/armor_tech_state/armor_repair_state/tech_maker_state/modification_state/weapon_state/program_state/net_entities/vehicle_state`) — сбрасываются к свежим дефолтам (оружие получает полный магазин);
+- `instance_id` предметов регенерируются, внутренние ссылки (armor-слоты, cyberware host bindings) перепривязываются; quantity/price/ammo_rounds/custom_name/notes/acquisition сохраняются;
+- импорт всегда приватный (`public=false`), `portrait_media_id`/`archived`/`archive_reason` отбрасываются; неизвестные не-custom предметы отклоняются;
+- лимиты: 50 персонажей на аккаунт, ≤500 item instances, `MAX_CHAR_BYTES`; импорт пишется в Character Ledger;
+- UI: кнопка `⬆ Import JSON` в списке «My Characters» с модалкой (файл или вставка текста, валидация JSON, переход к новому Dossier);
+- 8 новых тестов: unit (strip runtime/private, id+armor rebind, ресурсы/qty, envelope+string, reject unknown/invalid) + интеграционные (endpoint создаёт owned-private персонажа с ledger, требует логин, отклоняет malformed);
+- остаётся: привязка портрета при импорте в пределах одного деплоя (media id отбрасывается, перезагрузка вручную).
 2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 3. ✅ Мигрировать stack inventory к стабильным item instances.
 4. ✅ Добавить custom/found items и acquisition provenance.
@@ -3281,7 +3293,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 13. ◐ Cyberdeck/Cyberware/Armor/Tech modification hosts.
     - готово: полный Cyberdeck/Program/Black ICE lifecycle, Live NET, concrete Cyberware/Popup weapons/Popup Shield, Therapy, concrete Armor/Shield hosts, Tech Upgrade, manual/Jeeves/paid Armor Repair, curated special cyberweapons (Net Launcher / Dartguns / Gas Jet) с special-ammo lifecycle, Manual Shield Tech Upgrade Polish и Tech Maker Custom Modifications (allowlisted upgrade/invention effects на weapon/armor/vehicle/cyberware);
     - дальше: более широкий allowlisted effect surface (Campaign Clock services реализованы в B.12).
-14. JSON import.
+14. ✅ JSON import (реализовано B.14).
 
 ### Пакет C — Publishing Preview
 

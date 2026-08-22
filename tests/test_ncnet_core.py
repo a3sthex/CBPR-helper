@@ -790,5 +790,95 @@ class CrewStashFlowTests(unittest.TestCase):
         self.assertEqual(blocked.exception.status, 409)
 
 
+class CharacterImportFlowTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.conn = sqlite3.connect(str(Path(self.tmp.name) / 'ncnet.db'))
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(server.SCHEMA)
+        server.apply_schema_migrations(self.conn, make_backup=False)
+        self.conn.execute(
+            'INSERT INTO users(username,display_name,pass_hash,is_gm,account_role,created) '
+            "VALUES('runner1','Runner One','x',0,'player',1)")
+        self.conn.commit()
+        self.handler = object.__new__(server.Handler)
+        self.response = {}
+        self.current = self.user('runner1')
+        self.handler.current_user = lambda conn: self.current
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tmp.cleanup()
+
+    def user(self, username):
+        return self.conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
+
+    def call(self, method, *args):
+        self.response = {}
+        self.handler.send_json = lambda payload, status=200, cookies=None: self.response.update(
+            payload=payload, status=status, cookies=cookies)
+        method(self.handler, self.conn, *args)
+        return self.response
+
+    def portable(self):
+        return {
+            'handle': 'Imported V', 'role': 'Solo', 'role_rank': 4,
+            'roles': [{'name': 'Solo', 'rank': 4, 'primary': True}],
+            'active_role': 'Solo',
+            'stats': {'BODY': 6, 'WILL': 6, 'LUCK': 5, 'MOVE': 6,
+                      'DEX': 7, 'REF': 7, 'TECH': 4, 'INT': 4, 'COOL': 4, 'EMP': 5},
+            'skills': {'Handgun': 6, 'Evasion': 4, 'Language (Streetslang)': 2,
+                       'Local Expert (Watson)': 2},
+            'native_language': 'Streetslang',
+            'inventory': [{
+                'key': 'guns-0', 'catalog_item_id': 'guns-0', 'instance_id': 'a' * 32,
+                'cat': 'guns', 'name': 'Medium Pistol', 'qty': 1, 'state': 'carried',
+                'price': 50,
+            }],
+            'cyberware': [], 'armor': {},
+            'weapon_state': {'a' * 32: {'magazine': 2, 'magazine_max': 12}},
+            'cash': 200, 'ip_available': 5, 'ip_total_earned': 5,
+            'ip_total_spent': 0, 'reputation': 1, 'luck_cur': 5,
+        }
+
+    def test_import_creates_owned_private_character(self):
+        self.current = self.user('runner1')
+        payload = self.call(server.Handler.api_character_import, {}, None, {
+            'data': self.portable(),
+        })
+        self.assertEqual(payload['status'], 201)
+        character = payload['payload']
+        self.assertEqual(character['owner_id'], 1)
+        self.assertEqual(character['data']['handle'], 'Imported V')
+        self.assertFalse(character['data'].get('public'))
+        self.assertNotIn('armor_tech_state', character['data'])
+        instances = self.conn.execute(
+            'SELECT * FROM item_instances WHERE character_id=?', (character['id'],)).fetchall()
+        self.assertEqual(len(instances), 1)
+        ledger = self.conn.execute(
+            'SELECT COUNT(*) n FROM character_ledger WHERE character_id=? '
+            "AND reason='Character imported from JSON'",
+            (character['id'],)).fetchone()['n']
+        self.assertGreaterEqual(ledger, 1)
+        # Runtime state resets: the imported weapon starts with a fresh magazine.
+        weapon = next(i for i in character['data']['inventory'] if i['cat'] == 'guns')
+        state = character['data']['weapon_state'][weapon['instance_id']]
+        self.assertEqual(state['magazine'], state['magazine_max'])
+
+    def test_import_requires_login(self):
+        self.current = None
+        with self.assertRaises(server.ApiError) as denied:
+            self.call(server.Handler.api_character_import, {}, None, {'data': self.portable()})
+        self.assertEqual(denied.exception.status, 401)
+
+    def test_import_rejects_malformed_payload(self):
+        self.current = self.user('runner1')
+        with self.assertRaises(server.ApiError) as bad:
+            self.call(server.Handler.api_character_import, {}, None, {'data': {'handle': ''}})
+        self.assertEqual(bad.exception.status, 400)
+
+
 if __name__ == '__main__':
     unittest.main()
