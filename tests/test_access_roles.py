@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import sqlite3
 import tempfile
@@ -50,18 +51,40 @@ class AccessRoleMigrationTests(unittest.TestCase):
                      for row in conn.execute('SELECT * FROM users')}
             self.assertEqual(roles, {'alice': 'gm', 'bob': 'player'})
             self.assertEqual(
-                conn.execute('SELECT COUNT(*) n FROM schema_migrations').fetchone()['n'], 6)
+                conn.execute('SELECT COUNT(*) n FROM schema_migrations').fetchone()['n'],
+                server.MIGRATION_ORGANIZATIONS)
             self.assertEqual(len(list(Path(directory).glob('campaign.db.backup-*'))), 1)
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(users)')}
             self.assertTrue({'account_role', 'show_display_name', 'vk_user_id',
-                             'notification_prefs', 'theme_json', 'avatar_media_id'} <= columns)
+                             'notification_prefs', 'theme_json', 'avatar_media_id',
+                             'disabled_at', 'disabled_reason', 'disabled_by'} <= columns)
+            session_columns = {row['name'] for row in conn.execute(
+                'PRAGMA table_info(sessions)')}
+            self.assertTrue({'last_seen', 'ip_address', 'user_agent'} <= session_columns)
+            nc_session_columns = {row['name'] for row in conn.execute(
+                'PRAGMA table_info(nc_sessions)')}
+            self.assertIn('net_state_json', nc_session_columns)
+            self.assertTrue(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_security_audit'"
+            ).fetchone())
             combatant_columns = {row['name'] for row in conn.execute(
                 'PRAGMA table_info(session_combatants)')}
             self.assertTrue({'sp_head_max', 'sp_body_max', 'shield_max', 'ammo_max',
-                             'luck_current', 'luck_max'} <= combatant_columns)
+                             'luck_current', 'luck_max', 'statblock_json'} <= combatant_columns)
             template_columns = {row['name'] for row in conn.execute(
                 'PRAGMA table_info(npc_templates)')}
             self.assertIn('archived', template_columns)
+            session_columns = {row['name'] for row in conn.execute(
+                'PRAGMA table_info(nc_sessions)')}
+            self.assertIn('safety_config', session_columns)
+            for table in ('session_access', 'session_safety_signals', 'active_effect_instances',
+                          'item_modifications'):
+                self.assertTrue(conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                ).fetchone())
+            effect_columns = {row['name'] for row in conn.execute(
+                'PRAGMA table_info(active_effect_instances)')}
+            self.assertTrue({'preset_id', 'context_json'} <= effect_columns)
             legacy_npc = conn.execute("SELECT * FROM session_combatants WHERE name='Legacy NPC'").fetchone()
             self.assertEqual((legacy_npc['sp_head_max'], legacy_npc['sp_body_max'],
                               legacy_npc['shield_max'], legacy_npc['ammo_max']),
@@ -119,10 +142,11 @@ class AccessRoleMigrationTests(unittest.TestCase):
             handler = object.__new__(server.Handler)
             handler.send_json = lambda payload, status=200, cookies=None: response.update(
                 payload=payload, status=status, cookies=cookies)
-            server.Handler.api_register(handler, conn, {}, None, {
-                'username': 'newplayer', 'display_name': 'New Player',
-                'password': 'password', 'is_gm': True, 'account_role': 'admin',
-            })
+            with mock.patch.dict(os.environ, {'CBPR_REGISTRATION_MODE': 'open'}, clear=False):
+                server.Handler.api_register(handler, conn, {}, None, {
+                    'username': 'newplayer', 'display_name': 'New Player',
+                    'password': 'password', 'is_gm': True, 'account_role': 'admin',
+                })
             row = conn.execute("SELECT * FROM users WHERE username='newplayer'").fetchone()
             self.assertEqual(row['account_role'], 'player')
             self.assertFalse(row['is_gm'])
@@ -169,13 +193,24 @@ class AccessRoleMigrationTests(unittest.TestCase):
             handler.require_user = lambda current: user
             handler.send_json = lambda payload, status=200, cookies=None: response.update(
                 payload=payload, status=status)
-            server.Handler.api_news_create(handler, conn, {}, None, {
-                'title': 'Street transmission', 'tag': 'Watson',
+            conn.execute(
+                'INSERT INTO characters(owner_id,public,data,created,updated) VALUES(?,1,?,1,1)',
+                (user['id'], json.dumps({'handle': 'Wire', 'role': 'Media', 'role_rank': 4,
+                 'stats': {'LUCK': 5}, 'skills': {}, 'inventory': [], 'cyberware': [],
+                 'armor': {}, 'cash': 0})))
+            conn.commit()
+            server.Handler.api_feed_create(handler, conn, {}, None, {
+                'author_character_id': 1, 'format': 'short',
                 'body': 'Published directly from the city feed.',
             })
             self.assertEqual(response['status'], 201)
-            self.assertEqual(conn.execute('SELECT COUNT(*) n FROM news').fetchone()['n'], 1)
-            self.assertEqual(response['payload']['author_id'], user['id'])
+            self.assertEqual(response['payload']['status'], 'published')
+            self.assertEqual(conn.execute('SELECT COUNT(*) n FROM feed_posts').fetchone()['n'], 1)
+            with self.assertRaises(server.ApiError) as legacy_write:
+                server.Handler.api_news_create(handler, conn, {}, None, {
+                    'title': 'Legacy bypass', 'body': 'Must be rejected.',
+                })
+            self.assertEqual(legacy_write.exception.status, 410)
             conn.close()
 
     def test_secure_cookie_rate_limit_and_origin_guard(self):
@@ -191,6 +226,14 @@ class AccessRoleMigrationTests(unittest.TestCase):
         with self.assertRaises(server.ApiError) as denied:
             server.Handler.verify_request_origin(handler)
         self.assertEqual(denied.exception.status, 403)
+        handler.client_address = ('127.0.0.1', 12345)
+        handler.headers = {'X-NCNET-Client-IP': '203.0.113.42',
+                           'CF-Connecting-IP': '198.51.100.99',
+                           'X-Forwarded-For': '198.51.100.7'}
+        with mock.patch.dict(os.environ, {'CBPR_TRUST_PROXY': '1'}, clear=False):
+            self.assertEqual(server.Handler.client_ip(handler), '203.0.113.42')
+        with mock.patch.dict(os.environ, {'CBPR_TRUST_PROXY': '0'}, clear=False):
+            self.assertEqual(server.Handler.client_ip(handler), '127.0.0.1')
 
     def test_frontend_has_no_self_assign_gm_controls(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
@@ -216,8 +259,24 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertIn("kind === 'feed_image' || kind === 'news_image' || kind === 'contract_image'", source)
         self.assertIn("'16:9': [1920,1080]", source)
         self.assertIn('crop-output-width', source)
+        self.assertIn('id="rg-invite"', source)
+        self.assertIn("api('/api/admin/invites'", source)
+        self.assertIn("api('/api/admin/backups'", source)
+        self.assertIn('data-backup-verify', source)
+        self.assertIn("api('/api/account/sessions'", source)
+        self.assertIn("api('/api/account/password'", source)
+        self.assertIn('data-admin-status', source)
+        self.assertIn('data-dossier-visibility', source)
+        self.assertIn('revision:c.revision', source)
+        self.assertIn('id="nm-vendor"', source)
+        self.assertIn('data-market-info', source)
+        self.assertNotIn("data-tab=\"catalog\"", source)
+        self.assertNotIn("mode: 'list'", source)
         self.assertIn('12_000_000', source)
         network = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')
+        self.assertIn("api(`/api/sessions/${id}/access`", network)
+        self.assertIn("api(`/api/sessions/${id}/safety`", network)
+        self.assertIn('data-safety-status', network)
         network_css = (ROOT / 'app/static/ncnet.css').read_text(encoding='utf-8')
         self.assertIn('nc-feed-image-frame', network)
         self.assertIn('feed-image-lightbox', network)

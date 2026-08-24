@@ -99,7 +99,7 @@ Persona может представлять:
 ### 2.6 Night Market и Character data
 
 - Покупка на Night Market немедленно меняет Cash и Inventory и считается каноничной.
-- Владелец продолжает свободно редактировать свой Character Sheet.
+- После создания владелец меняет заметки, Portrait и видимость; механические поля Character Sheet меняются только через специализированные серверные операции (Progression, Resources, Market, Payroll и Aftermath).
 - Постоянные изменения записываются в Character Ledger.
 - HP, текущий SP, Ammo, LUCK и временные состояния хранятся в Session Activity, чтобы не засорять постоянный Ledger.
 
@@ -174,7 +174,7 @@ Persona может представлять:
 | `#/calc` | `#/database/quick-reference` |
 | `#/codex` | `#/database` |
 
-Legacy route должен продолжать открываться по сохранённой ссылке.
+Legacy route должен продолжать открываться по сохранённой ссылке и вести в новый интерфейс. Legacy API после миграции остаётся read-only.
 
 ## 4. Роли и разрешения
 
@@ -809,7 +809,7 @@ Player View управляется конфигурацией GM и никогд
 - При выходе crew первый waitlist автоматически становится crew.
 - Classified briefing не возвращается неавторизованному пользователю.
 - EN остаётся default locale; весь новый UI имеет EN/RU.
-- Legacy `#/jobs` и API продолжают работать через compatibility layer.
+- Legacy `#/jobs` и `#/news` ведут в Contracts/Feed; legacy GET API сохраняет архивный доступ с новой моделью приватности, изменяющие endpoints возвращают `410 Gone`.
 - Tests, syntax checks, migration smoke и HTTP permission smoke проходят.
 
 ## 14. Контрольные точки, требующие подтверждения перед этапом

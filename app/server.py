@@ -6,8 +6,11 @@
 """
 import argparse
 import base64
+import copy
+import functools
 import hashlib
 import hmac
+import ipaddress
 import json
 import math
 import os
@@ -29,15 +32,83 @@ DB_PATH = os.path.abspath(os.path.expanduser(
     os.environ.get('CBPR_DB_PATH') or os.path.join(DATA_DIR, 'cbpr.db')))
 STATIC_DIR = os.path.join(BASE, 'static')
 ITEMS_PATH = os.path.join(DATA_DIR, 'items.json')
+EFFECTS_PATH = os.path.join(DATA_DIR, 'effects.json')
 UPLOAD_DIR = os.path.join(DATA_DIR, 'uploads')
+BACKUP_DIR = os.path.abspath(os.path.expanduser(
+    os.environ.get('CBPR_BACKUP_DIR') or os.path.join(DATA_DIR, 'backups')))
 
 MOSCOW = timezone(timedelta(hours=3))
 SESSION_TTL = 30 * 24 * 3600
 PBKDF_ITERS = 120_000
 
+
+def security_headers():
+    """Defense-in-depth response headers.
+
+    CSP is deliberately lenient on script/style ('unsafe-inline') because the
+    SPA builds UI with innerHTML + inline event handlers, but still hardens
+    object-src/base-uri/connect-src/frame-ancestors. Override the whole policy
+    with CBPR_CSP (empty value disables the header).
+    """
+    csp = os.environ.get('CBPR_CSP')
+    if csp is None:
+        csp = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "img-src 'self' data:; "
+            "connect-src 'self'; "
+            "object-src 'none'; base-uri 'self'; "
+            "frame-ancestors 'self'; form-action 'self'"
+        )
+    pairs = [
+        ('X-Content-Type-Options', 'nosniff'),
+        ('X-Frame-Options', 'SAMEORIGIN'),
+        ('Referrer-Policy', 'strict-origin-when-cross-origin'),
+    ]
+    if csp:
+        pairs.append(('Content-Security-Policy', csp))
+    return pairs
+
 # ---------------------------------------------------------------- каталог
 
 _catalog = None
+
+
+def cyberdeck_item_metadata(item):
+    """Return declarative host metadata for Cyberdecks, Hardware, and Programs."""
+    if not isinstance(item, dict):
+        return {}
+    item_type = str((item.get('mechanics') or {}).get('type') or '')
+    description = str(item.get('desc') or '')
+    if item.get('cat') == 'net_stuff' and item_type == 'Cyberdeck Hardware':
+        slots = re.search(r'Takes?\s+(\d+)\s+Hardware Option Slots?',
+                          description, re.I)
+        return {
+            'host_type': 'cyberdeck', 'modification_kind': 'cyberdeck_hardware',
+            'modification_group': None, 'slot_type': 'hardware',
+            'grants_slots': {}, 'slots_used': int(slots.group(1)) if slots else 1,
+            'compatibility_text': 'Cyberdeck Hardware',
+            'permanent_installation': False,
+            'unique_per_host': bool(re.search(
+                r'Multiple installations do nothing', description, re.I)),
+            'compatibility_manual': False,
+            'installation_source': item.get('source'),
+        }
+    if item.get('cat') == 'programs':
+        program_class = str((item.get('mechanics') or {}).get('program_class') or '')
+        return {
+            'host_type': 'cyberdeck', 'modification_kind': 'cyberdeck_program',
+            'modification_group': None, 'slot_type': 'program',
+            'grants_slots': {},
+            'slots_used': 2 if 'Black ICE' in program_class else 1,
+            'compatibility_text': program_class,
+            'permanent_installation': False, 'unique_per_host': False,
+            'compatibility_manual': False,
+            'installation_source': item.get('source'),
+        }
+    return {}
 
 
 def load_catalog():
@@ -50,6 +121,17 @@ def load_catalog():
         import_data.main()
     with open(ITEMS_PATH, encoding='utf-8') as f:
         _catalog = json.load(f)
+    for item in _catalog.get('items') or []:
+        item.update(cyberdeck_item_metadata(item))
+        # Normalize exotic/multi-ammo magazine notation ("20 / 2",
+        # "6 (Rubber Arrows)", "-") to the first integer so weapon_state
+        # magazine_max does not collapse to 0. Raw text stays in `fields`.
+        mechanics = item.get('mechanics')
+        if isinstance(mechanics, dict) and 'magazine' in mechanics:
+            mag = mechanics['magazine']
+            if not isinstance(mag, int):
+                match = re.search(r'\d+', str(mag))
+                mechanics['magazine'] = int(match.group(0)) if match else 0
     _catalog['_by_id'] = {it['id']: it for it in _catalog['items']}
     return _catalog
 
@@ -60,6 +142,1469 @@ def catalog():
 
 def item_by_id(iid):
     return catalog()['_by_id'].get(iid)
+
+
+ITEM_INTERACTION_FIELDS = (
+    'stackable', 'consumable', 'consume_amount', 'use_context', 'use_effect',
+    'equippable', 'equip_modes', 'equip_slots', 'hands_required',
+    'activation_required', 'active_actions', 'equip_limit', 'exclusive_group',
+    'requires_host_type',
+)
+ITEM_MODIFICATION_FIELDS = (
+    'host_type', 'modification_kind', 'modification_group', 'slot_type',
+    'grants_slots', 'slots_used', 'compatibility_text',
+    'permanent_installation', 'unique_per_host', 'compatibility_manual',
+    'installation_source', 'availability_text', 'nomad_access_required',
+    'repeatable_max', 'prerequisite_upgrades', 'prerequisite_host_names',
+    'conflicting_upgrades',
+)
+
+
+def catalog_interaction_data(item):
+    if not isinstance(item, dict):
+        return {}
+    return {key: copy.deepcopy(item[key]) for key in ITEM_INTERACTION_FIELDS if key in item}
+
+
+def enrich_owned_item_interactions(data):
+    """Refresh safe declarative interaction flags for legacy owned catalog items."""
+    for bucket in ('inventory', 'cyberware'):
+        for entry in data.get(bucket) or []:
+            if not isinstance(entry, dict) or entry.get('is_custom'):
+                continue
+            item = item_by_id(catalog_item_id_for_entry(entry))
+            if not item:
+                continue
+            for key in ITEM_INTERACTION_FIELDS + ITEM_MODIFICATION_FIELDS:
+                if key in item:
+                    entry[key] = copy.deepcopy(item[key])
+                else:
+                    entry.pop(key, None)
+            coverage = item_effect_coverage(item.get('id'))
+            if coverage:
+                entry['effect_coverage'] = coverage
+            else:
+                entry.pop('effect_coverage', None)
+    return data
+
+
+_effect_rules = None
+EFFECT_OPERATIONS = {'add', 'set', 'minimum', 'maximum', 'multiply'}
+EFFECT_STACK_POLICIES = {'stack', 'highest', 'lowest', 'unique', 'replace'}
+
+
+def effect_target_allowed(target):
+    target = str(target or '')
+    if target.startswith('character.stat.'):
+        return target.removeprefix('character.stat.') in STATS
+    if target.startswith('skill.') and target.endswith('.check'):
+        return target[6:-6] in SKILL_BY_NAME
+    return False
+
+
+def validate_effect_definition(effect):
+    allowed_keys = {
+        'id', 'target', 'operation', 'value', 'stack_group', 'stack_policy',
+        'priority', 'source', 'minimum_value',
+    }
+    if not isinstance(effect, dict) or set(effect) - allowed_keys:
+        raise RuntimeError('Effect contains non-allowlisted fields')
+    if not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(effect.get('id') or '')):
+        raise RuntimeError('Invalid declarative effect id')
+    if not effect_target_allowed(effect.get('target')):
+        raise RuntimeError(f'Effect target is not allowlisted: {effect.get("target")}')
+    if effect.get('operation') not in EFFECT_OPERATIONS:
+        raise RuntimeError(f'Effect operation is not allowlisted: {effect.get("operation")}')
+    value = effect.get('value')
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or abs(value) > 1000:
+        raise RuntimeError('Effect value must be a finite bounded number')
+    minimum_value = effect.get('minimum_value')
+    if (minimum_value is not None and
+            (not isinstance(minimum_value, (int, float)) or
+             isinstance(minimum_value, bool) or not math.isfinite(minimum_value) or
+             abs(minimum_value) > 1000)):
+        raise RuntimeError('Effect minimum_value must be a finite bounded number')
+    if effect.get('stack_policy', 'stack') not in EFFECT_STACK_POLICIES:
+        raise RuntimeError('Invalid effect stack policy')
+    if not isinstance(effect.get('priority', 100), int):
+        raise RuntimeError('Effect priority must be an integer')
+
+
+def load_effect_rules():
+    global _effect_rules
+    if _effect_rules is not None:
+        return _effect_rules
+    with open(EFFECTS_PATH, encoding='utf-8') as handle:
+        payload = json.load(handle)
+    rules = payload.get('synergy_rules')
+    item_rules = payload.get('item_effect_rules') or []
+    use_rules = payload.get('use_effect_rules') or []
+    weapon_rules = payload.get('weapon_modification_rules') or []
+    vehicle_rules = payload.get('vehicle_modification_rules') or []
+    if (payload.get('version') != 1 or
+            set(payload) - {'version', 'rules_version', 'synergy_rules',
+                            'item_effect_rules', 'use_effect_rules',
+                            'weapon_modification_rules', 'vehicle_modification_rules'} or
+            not isinstance(rules, list) or len(rules) > 500 or
+            not isinstance(item_rules, list) or len(item_rules) > 500 or
+            not isinstance(use_rules, list) or len(use_rules) > 500 or
+            not isinstance(weapon_rules, list) or len(weapon_rules) > 500 or
+            not isinstance(vehicle_rules, list) or len(vehicle_rules) > 500):
+        raise RuntimeError('Unsupported effects data format')
+    seen = set()
+    for rule in rules:
+        if not isinstance(rule, dict) or set(rule) - {
+                'id', 'label_en', 'label_ru', 'required_counts', 'required_all', 'effects'}:
+            raise RuntimeError('Synergy rule contains non-allowlisted fields')
+        rule_id = str(rule.get('id') or '')
+        if not re.fullmatch(r'[a-z0-9_.-]{3,100}', rule_id) or rule_id in seen:
+            raise RuntimeError('Invalid or duplicate synergy rule id')
+        seen.add(rule_id)
+        required_counts = rule.get('required_counts') or {}
+        required_all = rule.get('required_all') or []
+        if not isinstance(required_counts, dict) or not isinstance(required_all, list):
+            raise RuntimeError(f'Invalid requirements in synergy {rule_id}')
+        for requirement in required_counts.values():
+            if (not isinstance(requirement, dict) or
+                    set(requirement) - {'minimum', 'state', 'label'} or
+                    requirement.get('state', 'installed') != 'installed' or
+                    not isinstance(requirement.get('minimum', 1), int)):
+                raise RuntimeError(f'Invalid count requirement in synergy {rule_id}')
+        for requirement in required_all:
+            if (not isinstance(requirement, dict) or
+                    set(requirement) - {'catalog_id', 'state', 'label'} or
+                    requirement.get('state', 'installed') != 'installed'):
+                raise RuntimeError(f'Invalid all requirement in synergy {rule_id}')
+        requirements = list(required_counts.keys()) + [
+            item.get('catalog_id') for item in required_all]
+        if not requirements or any(not item_by_id(item_id) for item_id in requirements):
+            raise RuntimeError(f'Unknown catalog requirement in synergy {rule_id}')
+        effects = rule.get('effects')
+        if not isinstance(effects, list) or not effects:
+            raise RuntimeError(f'Synergy {rule_id} has no effects')
+        for effect in effects:
+            validate_effect_definition(effect)
+    for rule in item_rules:
+        if not isinstance(rule, dict) or set(rule) - {
+                'id', 'catalog_id', 'label_en', 'label_ru', 'active_when',
+                'effects', 'manual_rules'}:
+            raise RuntimeError('Item effect rule contains non-allowlisted fields')
+        rule_id = str(rule.get('id') or '')
+        if not re.fullmatch(r'[a-z0-9_.-]{3,100}', rule_id) or rule_id in seen:
+            raise RuntimeError('Invalid or duplicate item effect rule id')
+        seen.add(rule_id)
+        if not item_by_id(rule.get('catalog_id')):
+            raise RuntimeError(f'Unknown catalog item in effect rule {rule_id}')
+        active_when = rule.get('active_when') or {}
+        if (not isinstance(active_when, dict) or
+                set(active_when) - {'state', 'active'} or
+                active_when.get('state') not in ITEM_INSTANCE_STATES or
+                ('active' in active_when and not isinstance(active_when['active'], bool))):
+            raise RuntimeError(f'Invalid activation condition in item effect rule {rule_id}')
+        effects = rule.get('effects') or []
+        manual_rules = rule.get('manual_rules') or []
+        if not isinstance(effects, list) or not isinstance(manual_rules, list) or not (effects or manual_rules):
+            raise RuntimeError(f'Item effect rule {rule_id} has no effect or manual rule')
+        for effect in effects:
+            validate_effect_definition(effect)
+        for manual in manual_rules:
+            if (not isinstance(manual, dict) or
+                    set(manual) - {'id', 'text_en', 'text_ru', 'condition', 'source'} or
+                    not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(manual.get('id') or '')) or
+                    not str(manual.get('text_en') or '').strip() or
+                    not str(manual.get('text_ru') or '').strip()):
+                raise RuntimeError(f'Invalid manual rule in item effect rule {rule_id}')
+    for rule in use_rules:
+        if not isinstance(rule, dict) or set(rule) - {
+                'id', 'catalog_id', 'label_en', 'label_ru', 'duration_type',
+                'duration_value', 'effects', 'manual_rules'}:
+            raise RuntimeError('Use effect rule contains non-allowlisted fields')
+        rule_id = str(rule.get('id') or '')
+        if not re.fullmatch(r'[a-z0-9_.-]{3,100}', rule_id) or rule_id in seen:
+            raise RuntimeError('Invalid or duplicate use effect rule id')
+        seen.add(rule_id)
+        item = item_by_id(rule.get('catalog_id'))
+        if not item or not item.get('consumable'):
+            raise RuntimeError(f'Unknown or non-consumable item in use effect rule {rule_id}')
+        duration_type = rule.get('duration_type')
+        duration_value = rule.get('duration_value')
+        if (duration_type not in ACTIVE_EFFECT_DURATIONS or duration_type == 'manual' or
+                not isinstance(duration_value, int) or duration_value < 1 or
+                (duration_type == 'real_time' and duration_value > 10080) or
+                (duration_type == 'rounds' and duration_value > 100) or
+                (duration_type == 'campaign_time' and duration_value > 525600)):
+            raise RuntimeError(f'Invalid duration in use effect rule {rule_id}')
+        effects = rule.get('effects') or []
+        manual_rules = rule.get('manual_rules') or []
+        if not isinstance(effects, list) or not effects or not isinstance(manual_rules, list):
+            raise RuntimeError(f'Use effect rule {rule_id} has no automated effect')
+        for effect in effects:
+            validate_effect_definition(effect)
+        for manual in manual_rules:
+            if (not isinstance(manual, dict) or
+                    set(manual) - {'id', 'text_en', 'text_ru', 'condition', 'source'} or
+                    not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(manual.get('id') or '')) or
+                    not str(manual.get('text_en') or '').strip() or
+                    not str(manual.get('text_ru') or '').strip()):
+                raise RuntimeError(f'Invalid manual rule in use effect rule {rule_id}')
+    for rule in weapon_rules:
+        if not isinstance(rule, dict) or set(rule) - {
+                'id', 'catalog_id', 'label_en', 'label_ru', 'requirements',
+                'configuration', 'effects', 'manual_rules'}:
+            raise RuntimeError('Weapon modification rule contains non-allowlisted fields')
+        rule_id = str(rule.get('id') or '')
+        if not re.fullmatch(r'[a-z0-9_.-]{3,100}', rule_id) or rule_id in seen:
+            raise RuntimeError('Invalid or duplicate weapon modification rule id')
+        seen.add(rule_id)
+        item = item_by_id(rule.get('catalog_id'))
+        if not item or item.get('cat') != 'gun_upgrades':
+            raise RuntimeError(f'Unknown weapon upgrade in rule {rule_id}')
+        requirements = rule.get('requirements') or {}
+        if (not isinstance(requirements, dict) or
+                set(requirements) - {'installed_any', 'label_en', 'label_ru'}):
+            raise RuntimeError(f'Invalid requirements in weapon rule {rule_id}')
+        installed_any = requirements.get('installed_any') or []
+        if (not isinstance(installed_any, list) or
+                any(not item_by_id(item_id) or item_by_id(item_id).get('cat') != 'cyberware'
+                    for item_id in installed_any)):
+            raise RuntimeError(f'Invalid installed requirement in weapon rule {rule_id}')
+        configuration = rule.get('configuration')
+        if configuration is not None:
+            if (not isinstance(configuration, dict) or
+                    set(configuration) - {'key', 'label_en', 'label_ru', 'required',
+                                          'choices', 'choice_source'} or
+                    not re.fullmatch(r'[a-z0-9_.-]{2,80}', str(configuration.get('key') or '')) or
+                    not isinstance(configuration.get('required', False), bool) or
+                    configuration.get('choice_source') not in (None, 'compatible_range_tables') or
+                    (configuration.get('choice_source') is None and
+                     (not isinstance(configuration.get('choices'), list) or
+                      not configuration['choices']))):
+                raise RuntimeError(f'Invalid configuration in weapon rule {rule_id}')
+            choice_values = set()
+            for choice in configuration.get('choices') or []:
+                if (not isinstance(choice, dict) or
+                        set(choice) - {'value', 'label_en', 'label_ru'} or
+                        not re.fullmatch(r'[a-z0-9_.-]{1,80}', str(choice.get('value') or '')) or
+                        not str(choice.get('label_en') or '').strip() or
+                        not str(choice.get('label_ru') or '').strip() or
+                        choice['value'] in choice_values):
+                    raise RuntimeError(f'Invalid configuration choice in weapon rule {rule_id}')
+                choice_values.add(choice['value'])
+        effects = rule.get('effects') or []
+        manual_rules = rule.get('manual_rules') or []
+        if (not isinstance(effects, list) or not isinstance(manual_rules, list) or
+                not (effects or manual_rules)):
+            raise RuntimeError(f'Weapon modification rule {rule_id} has no effects or manual rule')
+        for effect in effects:
+            if (not isinstance(effect, dict) or
+                    set(effect) - {'id', 'target', 'operation', 'value', 'values',
+                                   'profile', 'profiles', 'configuration_key',
+                                   'enhanced_when', 'enhanced_multiplier', 'source'} or
+                    not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(effect.get('id') or '')) or
+                    effect.get('target') not in {'weapon.magazine', 'weapon.concealable',
+                                                 'weapon.attack_check',
+                                                 'weapon.alternate_profile',
+                                                 'weapon.autofire_profile',
+                                                 'weapon.range_table',
+                                                 'weapon.tag'}):
+                raise RuntimeError(f'Invalid weapon effect in rule {rule_id}')
+            if effect['target'] == 'weapon.magazine':
+                values = effect.get('values')
+                if (effect.get('operation') != 'set_by_weapon_type' or
+                        not isinstance(values, dict) or not values or
+                        any(not isinstance(key, str) or not isinstance(value, int) or
+                            value < 1 or value > 999 for key, value in values.items())):
+                    raise RuntimeError(f'Invalid magazine effect in rule {rule_id}')
+            elif effect['target'] == 'weapon.concealable':
+                if effect.get('operation') != 'set' or effect.get('value') not in ('YES', 'NO'):
+                    raise RuntimeError(f'Invalid concealability effect in rule {rule_id}')
+            elif effect['target'] == 'weapon.alternate_profile':
+                profile = effect.get('profile')
+                if (effect.get('operation') != 'grant' or not isinstance(profile, dict) or
+                        set(profile) - {'id', 'label_en', 'label_ru', 'skill', 'damage',
+                                        'rof', 'magazine', 'ammo_kind', 'hands_required'} or
+                        not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(profile.get('id') or '')) or
+                        profile.get('skill') not in SKILL_BY_NAME or
+                        not re.fullmatch(r'\d+d\d+', str(profile.get('damage') or '')) or
+                        not isinstance(profile.get('rof'), int) or profile['rof'] < 1 or
+                        not isinstance(profile.get('magazine'), int) or profile['magazine'] < 1 or
+                        profile.get('ammo_kind') not in ('grenade', 'shotgun') or
+                        profile.get('hands_required') != 2):
+                    raise RuntimeError(f'Invalid alternate profile in rule {rule_id}')
+            elif effect['target'] == 'weapon.autofire_profile':
+                operation = effect.get('operation')
+                profiles = ([effect.get('profile')] if operation == 'grant' else
+                            list((effect.get('profiles') or {}).values()))
+                if operation not in ('grant', 'configure') or not profiles:
+                    raise RuntimeError(f'Invalid Autofire operation in rule {rule_id}')
+                for profile in profiles:
+                    if (not isinstance(profile, dict) or
+                            set(profile) - {'id', 'label_en', 'label_ru', 'skill', 'table',
+                                            'multiplier', 'ammo_cost', 'suppressive_fire'} or
+                            not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(profile.get('id') or '')) or
+                            profile.get('skill') != 'Autofire' or
+                            profile.get('table') not in ('SMG', 'Machine Pistol') or
+                            not isinstance(profile.get('multiplier'), int) or
+                            not 1 <= profile['multiplier'] <= 4 or
+                            profile.get('ammo_cost') != 10 or
+                            not isinstance(profile.get('suppressive_fire'), bool)):
+                        raise RuntimeError(f'Invalid Autofire profile in rule {rule_id}')
+                if operation == 'configure':
+                    configured = effect.get('profiles') or {}
+                    config_key = effect.get('configuration_key')
+                    choices = {choice['value'] for choice in (configuration or {}).get('choices', [])}
+                    if (not configuration or config_key != configuration.get('key') or
+                            set(configured) != choices):
+                        raise RuntimeError(f'Invalid Autofire configuration in rule {rule_id}')
+                enhanced_when = effect.get('enhanced_when') or []
+                if (not isinstance(enhanced_when, list) or
+                        set(enhanced_when) - {'excellent_quality', 'base_autofire'} or
+                        ('enhanced_multiplier' in effect and
+                         effect.get('enhanced_multiplier') not in (1, 2, 3, 4))):
+                    raise RuntimeError(f'Invalid Autofire enhancement in rule {rule_id}')
+            elif effect['target'] == 'weapon.range_table':
+                if (effect.get('operation') != 'configure' or not configuration or
+                        effect.get('configuration_key') != configuration.get('key') or
+                        configuration.get('choice_source') != 'compatible_range_tables'):
+                    raise RuntimeError(f'Invalid Range Table configuration in rule {rule_id}')
+            elif effect['target'] == 'weapon.tag':
+                if (effect.get('operation') != 'grant' or
+                        effect.get('value') not in ('Power Weapon', 'Smart Weapon', 'Tech Weapon')):
+                    raise RuntimeError(f'Invalid weapon tag in rule {rule_id}')
+            elif (effect.get('operation') != 'add' or
+                  not isinstance(effect.get('value'), (int, float)) or
+                  abs(effect['value']) > 10):
+                raise RuntimeError(f'Invalid attack effect in rule {rule_id}')
+        for manual in manual_rules:
+            if (not isinstance(manual, dict) or
+                    set(manual) - {'id', 'text_en', 'text_ru', 'condition', 'source'} or
+                    not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(manual.get('id') or '')) or
+                    not str(manual.get('text_en') or '').strip() or
+                    not str(manual.get('text_ru') or '').strip()):
+                raise RuntimeError(f'Invalid manual rule in weapon rule {rule_id}')
+    for rule in vehicle_rules:
+        if not isinstance(rule, dict) or set(rule) - {
+                'id', 'catalog_id', 'label_en', 'label_ru', 'effects', 'manual_rules'}:
+            raise RuntimeError('Vehicle modification rule contains non-allowlisted fields')
+        rule_id = str(rule.get('id') or '')
+        if not re.fullmatch(r'[a-z0-9_.-]{3,100}', rule_id) or rule_id in seen:
+            raise RuntimeError('Invalid or duplicate vehicle modification rule id')
+        seen.add(rule_id)
+        item = item_by_id(rule.get('catalog_id'))
+        if not item or item.get('cat') != 'vehicles_upgrades':
+            raise RuntimeError(f'Unknown vehicle upgrade in rule {rule_id}')
+        effects = rule.get('effects') or []
+        manual_rules = rule.get('manual_rules') or []
+        if not isinstance(effects, list) or not effects or not isinstance(manual_rules, list):
+            raise RuntimeError(f'Vehicle modification rule {rule_id} has no effects')
+        for effect in effects:
+            if (not isinstance(effect, dict) or
+                    set(effect) - {'id', 'target', 'operation', 'value', 'values',
+                                   'resource', 'profile', 'source'} or
+                    not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(effect.get('id') or '')) or
+                    effect.get('target') not in {'vehicle.sdp_max', 'vehicle.body_sp',
+                                                 'vehicle.glass_hp', 'vehicle.seats',
+                                                 'vehicle.nos_tank', 'vehicle.weapon_mount',
+                                                 'vehicle.mounted_weapon', 'vehicle.interior',
+                                                 'vehicle.room_upgrade', 'vehicle.cargo'}):
+                raise RuntimeError(f'Invalid vehicle effect in rule {rule_id}')
+            target, operation = effect['target'], effect.get('operation')
+            if target == 'vehicle.glass_hp':
+                values = effect.get('values')
+                if (operation != 'set_by_count' or not isinstance(values, dict) or
+                        set(values) != {'1', '2'} or
+                        any(not isinstance(value, int) or value < 0 for value in values.values())):
+                    raise RuntimeError(f'Invalid glass effect in rule {rule_id}')
+            elif target in ('vehicle.body_sp',):
+                if operation != 'set' or not isinstance(effect.get('value'), int):
+                    raise RuntimeError(f'Invalid vehicle SP effect in rule {rule_id}')
+            elif target == 'vehicle.nos_tank':
+                resource = effect.get('resource')
+                if (operation != 'grant' or not isinstance(resource, dict) or
+                        set(resource) != {'id', 'label_en', 'label_ru', 'uses'} or
+                        resource.get('id') != 'nos_tank' or
+                        not str(resource.get('label_en') or '').strip() or
+                        not str(resource.get('label_ru') or '').strip() or
+                        resource.get('uses') != 1):
+                    raise RuntimeError(f'Invalid NOS resource in rule {rule_id}')
+            elif target == 'vehicle.weapon_mount':
+                resource = effect.get('resource')
+                if (operation != 'grant' or not isinstance(resource, dict) or
+                        set(resource) != {'id', 'label_en', 'label_ru'} or
+                        resource.get('id') != 'heavy_weapon_mount' or
+                        not str(resource.get('label_en') or '').strip() or
+                        not str(resource.get('label_ru') or '').strip()):
+                    raise RuntimeError(f'Invalid heavy weapon mount resource in rule {rule_id}')
+            elif target == 'vehicle.interior':
+                profile = effect.get('profile')
+                if (operation != 'grant' or not isinstance(profile, dict) or
+                        set(profile) != {'id', 'kind', 'rooms', 'beds', 'amenities'} or
+                        profile.get('id') != 'housing_capacity' or
+                        profile.get('kind') != 'housing' or profile.get('rooms') != 1 or
+                        profile.get('beds') != 1 or
+                        profile.get('amenities') != ['toilet', 'shower', 'small_kitchen']):
+                    raise RuntimeError(f'Invalid vehicle interior profile in rule {rule_id}')
+            elif target == 'vehicle.room_upgrade':
+                profile = effect.get('profile')
+                if (operation != 'grant' or not isinstance(profile, dict) or
+                        set(profile) - {'id', 'kind', 'purposes'} or
+                        profile.get('kind') not in ('luxury', 'complex') or
+                        profile.get('id') not in
+                            ('luxury_vehicle_room', 'complex_vehicle_room')):
+                    raise RuntimeError(f'Invalid vehicle room profile in rule {rule_id}')
+                if (profile['kind'] == 'luxury' and
+                        (profile['id'] != 'luxury_vehicle_room' or
+                         set(profile) != {'id', 'kind'})):
+                    raise RuntimeError(f'Invalid Luxury Room profile in rule {rule_id}')
+                if (profile['kind'] == 'complex' and
+                        profile['id'] != 'complex_vehicle_room'):
+                    raise RuntimeError(f'Invalid Complex Room profile in rule {rule_id}')
+                purposes = profile.get('purposes')
+                allowed_purposes = {
+                    'cargo_bay', 'bunkhouse', 'cafeteria', 'restaurant',
+                    'recreation_deck', 'prison', 'bowling_alley',
+                    'laser_tag_arena', 'other_complex',
+                }
+                if (profile['kind'] == 'complex' and
+                        (not isinstance(purposes, list) or not purposes or
+                         len(set(purposes)) != len(purposes) or
+                         set(purposes) - allowed_purposes)):
+                    raise RuntimeError(f'Invalid Complex Room purposes in rule {rule_id}')
+            elif target == 'vehicle.cargo':
+                profile = effect.get('profile')
+                if (operation != 'grant' or not isinstance(profile, dict) or
+                        set(profile) != {'id', 'kind', 'cargo_spaces',
+                                        'hidden_holsters', 'discovery_dv'} or
+                        (profile.get('id'), profile.get('kind'),
+                         profile.get('hidden_holsters')) not in {
+                            ('smuggling_upgrade', 'hidden', 2),
+                            ('bicycle_smuggling_compartment', 'hidden_small', 0)} or
+                        profile.get('cargo_spaces') != 1 or
+                        profile.get('discovery_dv') != 17):
+                    raise RuntimeError(f'Invalid vehicle cargo profile in rule {rule_id}')
+            elif target == 'vehicle.mounted_weapon':
+                profile = effect.get('profile')
+                profile_keys = {
+                    'id', 'label_en', 'label_ru', 'kind', 'skill', 'weapon_type',
+                    'range_table', 'damage', 'rof', 'magazine', 'ammo_kind',
+                    'ammo_cost', 'orientations', 'operator', 'autofire_multiplier',
+                    'suppressive_fire',
+                }
+                if (operation != 'grant' or not isinstance(profile, dict) or
+                        set(profile) - profile_keys or
+                        not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(profile.get('id') or '')) or
+                        not str(profile.get('label_en') or '').strip() or
+                        not str(profile.get('label_ru') or '').strip() or
+                        profile.get('kind') not in ('standard', 'autofire') or
+                        profile.get('skill') not in SKILL_BY_NAME or
+                        profile.get('range_table') not in
+                            ('Shotgun', 'Assault Rifle', 'Rocket Launcher') or
+                        not isinstance(profile.get('rof'), int) or profile['rof'] != 1 or
+                        not isinstance(profile.get('magazine'), int) or
+                            not 1 <= profile['magazine'] <= 100 or
+                        profile.get('ammo_kind') not in
+                            ('incendiary_shotgun', 'rifle', 'rocket') or
+                        not isinstance(profile.get('ammo_cost'), int) or
+                            not 1 <= profile['ammo_cost'] <= profile['magazine'] or
+                        not isinstance(profile.get('orientations'), list) or
+                        not profile['orientations'] or
+                        len(set(profile['orientations'])) != len(profile['orientations']) or
+                        set(profile['orientations']) - {'front', 'side', 'rear'} or
+                        profile.get('operator') != 'driver' or
+                        not isinstance(profile.get('suppressive_fire'), bool)):
+                    raise RuntimeError(f'Invalid mounted weapon profile in rule {rule_id}')
+                if profile['kind'] == 'standard':
+                    if (not re.fullmatch(r'\d+d\d+', str(profile.get('damage') or '')) or
+                            'autofire_multiplier' in profile or profile['ammo_cost'] != 1):
+                        raise RuntimeError(f'Invalid standard mounted weapon in rule {rule_id}')
+                elif (profile.get('skill') != 'Autofire' or 'damage' in profile or
+                      profile.get('autofire_multiplier') != 4 or
+                      profile['ammo_cost'] != 10 or not profile['suppressive_fire']):
+                    raise RuntimeError(f'Invalid Autofire mounted weapon in rule {rule_id}')
+            elif operation != 'add' or not isinstance(effect.get('value'), int):
+                raise RuntimeError(f'Invalid additive vehicle effect in rule {rule_id}')
+        for manual in manual_rules:
+            if (not isinstance(manual, dict) or
+                    set(manual) - {'id', 'text_en', 'text_ru', 'condition', 'source'} or
+                    not re.fullmatch(r'[a-z0-9_.-]{3,100}', str(manual.get('id') or '')) or
+                    not str(manual.get('text_en') or '').strip() or
+                    not str(manual.get('text_ru') or '').strip()):
+                raise RuntimeError(f'Invalid manual rule in vehicle rule {rule_id}')
+    _effect_rules = payload
+    return payload
+
+
+def item_effect_coverage(catalog_id):
+    payload = load_effect_rules()
+    rules = [
+        ('state', rule) for rule in payload.get('item_effect_rules') or []
+        if rule.get('catalog_id') == catalog_id]
+    rules += [
+        ('use', rule) for rule in payload.get('use_effect_rules') or []
+        if rule.get('catalog_id') == catalog_id]
+    rules += [
+        ('modification', rule) for rule in payload.get('weapon_modification_rules') or []
+        if rule.get('catalog_id') == catalog_id]
+    rules += [
+        ('modification', rule) for rule in payload.get('vehicle_modification_rules') or []
+        if rule.get('catalog_id') == catalog_id]
+    catalog_item = item_by_id(catalog_id) or {}
+    if catalog_item.get('grants_slots'):
+        rules.append(('modification', {
+            'id': f'{catalog_id}-slot-grant', 'label_en': catalog_item.get('name'),
+            'label_ru': catalog_item.get('name'),
+            'effects': [{'source': catalog_item.get('installation_source')}],
+            'manual_rules': [],
+        }))
+    if not rules:
+        return None
+    return {
+        'automated': any(rule.get('effects') for _, rule in rules),
+        'manual': any(rule.get('manual_rules') for _, rule in rules),
+        'rules': [{
+            'id': rule['id'], 'kind': kind,
+            'label_en': rule.get('label_en') or rule['id'],
+            'label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
+            'source': next((effect.get('source') for effect in rule.get('effects') or []
+                            if effect.get('source')), None) or
+                      next((manual.get('source') for manual in rule.get('manual_rules') or []
+                            if manual.get('source')), None),
+        } for kind, rule in rules],
+    }
+
+
+def catalog_item_payload(item):
+    payload = copy.deepcopy(item)
+    coverage = item_effect_coverage(item.get('id'))
+    if coverage:
+        payload['effect_coverage'] = coverage
+    return payload
+
+
+def weapon_modification_rules_for_catalog(catalog_id):
+    return [copy.deepcopy(rule) for rule in
+            load_effect_rules().get('weapon_modification_rules') or []
+            if rule.get('catalog_id') == catalog_id]
+
+
+def vehicle_modification_rules_for_catalog(catalog_id):
+    return [copy.deepcopy(rule) for rule in
+            load_effect_rules().get('vehicle_modification_rules') or []
+            if rule.get('catalog_id') == catalog_id]
+
+
+CYBERDECK_PROFILES = {
+    'net_stuff-0': {'mixed': 5},
+    'net_stuff-1': {'mixed': 7},
+    'net_stuff-2': {'mixed': 9},
+    'net_stuff-3': {'mixed': 5},
+    'net_stuff-4': {'program': 5},
+    'net_stuff-5': {'program': 5},
+    'net_stuff-6': {'program': 4, 'hardware': 5},
+    'net_stuff-7': {'mixed': 5},
+    'net_stuff-8': {'program': 7},
+    'net_stuff-9': {'hardware': 2},
+    'net_stuff-10': {'program': 7},
+    'net_stuff-11': {'mixed': 6},
+    'net_stuff-12': {'program': 6, 'hardware': 5},
+    'net_stuff-13': {'program': 9},
+    'net_stuff-14': {'mixed': 9},
+    'net_stuff-15': {'flak': 3, 'mixed': 6},
+    'net_stuff-16': {'mixed': 9},
+    'net_stuff-17': {'program': 3, 'hardware': 6},
+}
+
+
+WEAPON_RANGE_FAMILIES = {
+    'pistol': ['Snubnose Pistol', 'Pistol', 'Long Barrel Pistol'],
+    'smg': ['Subcompact SMG', 'SMG'],
+    'shotgun': ['Short Barrel Shotgun', 'Shotgun', 'Long Barrel Shotgun'],
+    'rifle': ['Carbine', 'Assault Rifle', 'Battle Rifle', 'Marksman Rifle',
+              'Scout Rifle', 'Sniper Rifle', 'Anti-materiel Rifle'],
+    'bow': ['Shortbow', 'Bow', 'Longbow'],
+    'grenade_launcher': ['Grenade Launcher'],
+    'rocket_launcher': ['Rocket Launcher', 'Missile Launcher'],
+}
+
+
+def weapon_range_table_info(host):
+    weapon_type = str((host.get('mechanics') or {}).get('type') or '')
+    low = weapon_type.lower()
+    if 'pistol' in low:
+        family, base = 'pistol', 'Pistol'
+    elif 'smg' in low:
+        family, base = 'smg', 'SMG'
+    elif 'shotgun' in low:
+        family, base = 'shotgun', 'Shotgun'
+    elif any(token in low for token in ('rifle', 'carbine')):
+        family = 'rifle'
+        base = weapon_type if weapon_type in WEAPON_RANGE_FAMILIES[family] else 'Assault Rifle'
+    elif 'bow' in low:
+        family, base = 'bow', 'Bow'
+    elif 'grenade launcher' in low:
+        family, base = 'grenade_launcher', 'Grenade Launcher'
+    elif 'rocket launcher' in low or 'missile launcher' in low:
+        family = 'rocket_launcher'
+        base = 'Missile Launcher' if 'missile' in low else 'Rocket Launcher'
+    else:
+        return {'family': None, 'base': None, 'choices': []}
+    available_rows = {str(row[0]) for row in (catalog().get('range_table') or [])[1:] if row}
+    choices = [name for name in WEAPON_RANGE_FAMILIES[family]
+               if name in available_rows and name != base]
+    return {'family': family, 'base': base, 'choices': choices}
+
+
+def weapon_modification_configuration_schema(catalog_id, host=None):
+    schemas = [copy.deepcopy(rule['configuration'])
+               for rule in weapon_modification_rules_for_catalog(catalog_id)
+               if isinstance(rule.get('configuration'), dict)]
+    for schema in schemas:
+        if schema.get('choice_source') == 'compatible_range_tables':
+            info = weapon_range_table_info(host or {})
+            schema['choices'] = [
+                {'value': name, 'label_en': name, 'label_ru': name}
+                for name in info['choices']]
+            schema['base_value'] = info['base']
+            schema['weapon_family'] = info['family']
+    return schemas
+
+
+def clean_weapon_modification_choices(catalog_id, raw, host=None):
+    schemas = weapon_modification_configuration_schema(catalog_id, host)
+    raw = raw or {}
+    if not isinstance(raw, dict):
+        raise ApiError(400, 'Modification configuration должна быть объектом')
+    allowed_keys = {schema['key'] for schema in schemas}
+    if set(raw) - allowed_keys:
+        raise ApiError(400, 'Modification configuration содержит неизвестные поля')
+    clean = {}
+    for schema in schemas:
+        value = str(raw.get(schema['key']) or '')
+        choices = {choice['value'] for choice in schema.get('choices') or []}
+        if schema.get('required') and not value:
+            raise ApiError(400, 'Выберите обязательную конфигурацию modification')
+        if value and value not in choices:
+            raise ApiError(400, 'Некорректный вариант configuration')
+        if value:
+            clean[schema['key']] = value
+    return clean
+
+
+def weapon_profiles_from_rules(rules):
+    return [copy.deepcopy(effect['profile']) for rule in rules or []
+            for effect in rule.get('effects') or []
+            if effect.get('target') == 'weapon.alternate_profile' and
+            isinstance(effect.get('profile'), dict)]
+
+
+def ammo_kind_for_modification_profile(rules, profile_id):
+    for rule in rules or []:
+        for effect in rule.get('effects') or []:
+            profile = effect.get('profile') or {}
+            if profile.get('id') == profile_id:
+                return profile.get('ammo_kind')
+    return None
+
+
+def ammo_pack_size(entry):
+    mechanics = (entry or {}).get('mechanics') or {}
+    return max(1, int(_num(mechanics.get('quantity_per_purchase')) or 1))
+
+
+def ammo_rounds(entry):
+    if not isinstance(entry, dict) or entry.get('cat') != 'ammo':
+        return 0
+    maximum = max(1, int(_num(entry.get('qty')) or 1)) * ammo_pack_size(entry)
+    current = _num(entry.get('ammo_rounds'))
+    return max(0, min(maximum, int(current if current is not None else maximum)))
+
+
+def ensure_shared_ammo_state(data):
+    for item in data.get('inventory') or []:
+        if not isinstance(item, dict) or item.get('cat') != 'ammo':
+            continue
+        item['ammo_rounds'] = ammo_rounds(item)
+    for state in (data.get('weapon_state') or {}).values():
+        if isinstance(state, dict):
+            state['reserve'] = 0
+            if (_num(state.get('magazine')) or 0) <= 0:
+                state.pop('loaded_ammo_catalog_id', None)
+                state.pop('loaded_ammo_name', None)
+    for state in (data.get('modification_state') or {}).values():
+        if isinstance(state, dict) and state.get('resource_type') == 'mounted_weapon':
+            state['reserve'] = 0
+            if (_num(state.get('magazine')) or 0) <= 0:
+                state.pop('loaded_ammo_catalog_id', None)
+                state.pop('loaded_ammo_name', None)
+    return data
+
+
+def ammo_matches_requirement(entry, ammo_kind=None, weapon=None):
+    if not isinstance(entry, dict) or entry.get('cat') != 'ammo' or ammo_rounds(entry) <= 0:
+        return False
+    mechanics = entry.get('mechanics') or {}
+    compatible = str(mechanics.get('compatible_weapons') or '').lower()
+    ammo_name = str(entry.get('name') or '').lower()
+    if ammo_kind == 'grenade':
+        return 'grenade' in compatible and 'except grenades' not in compatible
+    if ammo_kind == 'shotgun':
+        return ('shotgun' in compatible or 'slug' in compatible or
+                'shell' in compatible or 'all except grenades & rockets' in compatible)
+    if ammo_kind == 'incendiary_shotgun':
+        return ('incendiary' in ammo_name and
+                ('shotgun' in compatible or 'slug' in compatible or
+                 'shell' in compatible))
+    if ammo_kind == 'rifle':
+        return ('bullet' in compatible or
+                'all except grenades & rockets' in compatible or
+                'all except shotgun shells' in compatible)
+    if ammo_kind == 'rocket':
+        return 'rocket' in compatible and 'except grenades & rockets' not in compatible
+    catalog_weapon = item_by_id(catalog_item_id_for_entry(weapon)) or {}
+    weapon_name = str((weapon or {}).get('name') or catalog_weapon.get('name') or '').lower()
+    weapon_type = str(((weapon or {}).get('mechanics') or
+                       catalog_weapon.get('mechanics') or {}).get('type') or '').lower()
+    if weapon_name and weapon_name in compatible:
+        return True
+    if 'grenade launcher' in weapon_type:
+        return 'grenade' in compatible and 'except grenades' not in compatible
+    if 'rocket launcher' in weapon_type or 'missile launcher' in weapon_type:
+        return 'rocket' in compatible and 'except grenades & rockets' not in compatible
+    if 'shotgun' in weapon_type:
+        return ('shotgun' in compatible or 'slug' in compatible or
+                'shell' in compatible or 'all except grenades & rockets' in compatible)
+    if 'bow' in weapon_type or 'crossbow' in weapon_type:
+        return ('arrow' in compatible or 'bolt' in compatible or
+                'all except grenades & rockets' in compatible)
+    return ('bullet' in compatible or
+            'all except grenades & rockets' in compatible or
+            'all except shotgun shells' in compatible)
+
+
+def shared_ammo_available(character, ammo_kind=None, weapon=None):
+    return sum(ammo_rounds(item) for item in character.get('inventory') or []
+               if ammo_matches_requirement(item, ammo_kind, weapon))
+
+
+def consume_shared_ammo(data, state, ammo_instance_id, *, ammo_kind=None, weapon=None):
+    ammo_instance_id = str(ammo_instance_id or '').lower()
+    if not INSTANCE_ID_RE.fullmatch(ammo_instance_id):
+        raise ApiError(400, 'Выберите конкретный ammo stack')
+    inventory = data.get('inventory') or []
+    ammo = next((item for item in inventory if isinstance(item, dict) and
+                 item.get('instance_id') == ammo_instance_id), None)
+    if not ammo or ammo.get('state') not in ('carried', 'stored'):
+        raise ApiError(409, 'Ammo stack недоступен для Reload')
+    if not ammo_matches_requirement(ammo, ammo_kind, weapon):
+        raise ApiError(400, 'Ammo stack несовместим с этим оружием')
+    current = max(0, int(_num(state.get('magazine')) or 0))
+    maximum = max(0, int(_num(state.get('magazine_max')) or 0))
+    if maximum <= current:
+        raise ApiError(409, 'Магазин уже заполнен')
+    catalog_id = catalog_item_id_for_entry(ammo)
+    loaded_catalog_id = str(state.get('loaded_ammo_catalog_id') or '')
+    if current > 0 and loaded_catalog_id and loaded_catalog_id != catalog_id:
+        raise ApiError(409, 'Нельзя смешивать разные типы ammo в одном магазине')
+    available = ammo_rounds(ammo)
+    moved = min(maximum - current, available)
+    if moved <= 0:
+        raise ApiError(409, 'В выбранном ammo stack нет боеприпасов')
+    state['magazine'] = current + moved
+    state['loaded_ammo_catalog_id'] = catalog_id
+    state['loaded_ammo_name'] = ammo.get('name') or 'Ammo'
+    remaining = available - moved
+    if remaining <= 0:
+        inventory.remove(ammo)
+    else:
+        ammo['ammo_rounds'] = remaining
+        ammo['qty'] = max(1, math.ceil(remaining / ammo_pack_size(ammo)))
+    return {
+        'moved': moved, 'ammo_name': state['loaded_ammo_name'],
+        'ammo_catalog_id': catalog_id, 'remaining': remaining,
+    }
+
+
+def clear_loaded_ammo_if_empty(state):
+    if (_num((state or {}).get('magazine')) or 0) <= 0:
+        state.pop('loaded_ammo_catalog_id', None)
+        state.pop('loaded_ammo_name', None)
+
+
+VEHICLE_COMPLEX_PURPOSE_LABELS = {
+    'cargo_bay': ('Cargo Bay', 'Грузовой отсек'),
+    'bunkhouse': ('Bunkhouse', 'Казарма'),
+    'cafeteria': ('Cafeteria', 'Кафетерий'),
+    'restaurant': ('Restaurant', 'Ресторан'),
+    'recreation_deck': ('Recreation Deck', 'Зона отдыха'),
+    'prison': ('Prison', 'Тюремный блок'),
+    'bowling_alley': ('Bowling Alley', 'Боулинг'),
+    'laser_tag_arena': ('Laser Tag Arena', 'Арена лазертага'),
+    'other_complex': ('Other Complex Room', 'Другая комплексная комната'),
+}
+
+
+def vehicle_action_effects_from_rules(rules):
+    return [copy.deepcopy(effect) for rule in rules or []
+            for effect in rule.get('effects') or []
+            if effect.get('target') in {
+                'vehicle.nos_tank', 'vehicle.mounted_weapon', 'vehicle.weapon_mount',
+                'vehicle.interior', 'vehicle.room_upgrade', 'vehicle.cargo'}]
+
+
+def vehicle_modification_configuration_schema(catalog_id):
+    schemas = []
+    for effect in vehicle_action_effects_from_rules(
+            vehicle_modification_rules_for_catalog(catalog_id)):
+        profile = effect.get('profile') or {}
+        if effect.get('target') == 'vehicle.mounted_weapon':
+            orientations = profile.get('orientations') or []
+            if len(orientations) > 1:
+                schemas.append({
+                    'key': 'orientation',
+                    'label_en': 'Mount orientation',
+                    'label_ru': 'Направление установки',
+                    'required': True,
+                    'choices': [
+                        {'value': value, 'label_en': value.title(),
+                         'label_ru': {'front': 'Спереди', 'side': 'Сбоку',
+                                      'rear': 'Сзади'}[value]}
+                        for value in orientations],
+                })
+        elif (effect.get('target') == 'vehicle.room_upgrade' and
+              profile.get('kind') == 'complex'):
+            schemas.append({
+                'key': 'purpose', 'label_en': 'Complex Room purpose',
+                'label_ru': 'Назначение комплексной комнаты', 'required': True,
+                'choices': [
+                    {'value': value,
+                     'label_en': VEHICLE_COMPLEX_PURPOSE_LABELS[value][0],
+                     'label_ru': VEHICLE_COMPLEX_PURPOSE_LABELS[value][1]}
+                    for value in profile.get('purposes') or []],
+            })
+    return schemas
+
+
+def clean_vehicle_modification_choices(catalog_id, raw):
+    schemas = vehicle_modification_configuration_schema(catalog_id)
+    raw = raw or {}
+    if not isinstance(raw, dict):
+        raise ApiError(400, 'Vehicle configuration должна быть объектом')
+    allowed_keys = {schema['key'] for schema in schemas}
+    if set(raw) - allowed_keys:
+        raise ApiError(400, 'Vehicle configuration содержит неизвестные поля')
+    clean = {}
+    for schema in schemas:
+        value = str(raw.get(schema['key']) or '')
+        choices = {choice['value'] for choice in schema.get('choices') or []}
+        if len(choices) == 1 and not value:
+            value = next(iter(choices))
+        if schema.get('required') and not value:
+            raise ApiError(400, 'Выберите обязательную конфигурацию транспорта')
+        if value and value not in choices:
+            raise ApiError(400, 'Некорректная конфигурация транспорта')
+        if value:
+            clean[schema['key']] = value
+    return clean
+
+
+def initial_vehicle_modification_state(rules, character, choices=None):
+    choices = choices or {}
+    effects = vehicle_action_effects_from_rules(rules)
+    for effect in effects:
+        if effect.get('target') == 'vehicle.nos_tank':
+            maximum = int((effect.get('resource') or {}).get('uses') or 1)
+            return {
+                'resource_type': 'nos_tank', 'profile_id': 'nos_tank',
+                'uses_remaining': maximum, 'uses_max': maximum,
+            }
+        if effect.get('target') == 'vehicle.weapon_mount':
+            resource = effect.get('resource') or {}
+            return {
+                'resource_type': 'heavy_weapon_mount',
+                'profile_id': resource.get('id') or 'heavy_weapon_mount',
+                'weapon_instance_id': None,
+            }
+        if effect.get('target') == 'vehicle.mounted_weapon':
+            profile = effect.get('profile') or {}
+            return {
+                'resource_type': 'mounted_weapon',
+                'profile_id': profile.get('id'),
+                'magazine': 0,
+                'magazine_max': int(profile.get('magazine') or 0),
+                'reserve': 0,
+                'ammo_cost': int(profile.get('ammo_cost') or 1),
+                'orientation': choices.get('orientation') or
+                    ((profile.get('orientations') or [None])[0]),
+            }
+    return None
+
+
+def normalize_vehicle_modification_state(existing, authoritative):
+    if not authoritative:
+        return existing
+    existing = existing if isinstance(existing, dict) else {}
+    normalized = copy.deepcopy(authoritative)
+    if authoritative['resource_type'] == 'nos_tank':
+        maximum = authoritative['uses_max']
+        current = _num(existing.get('uses_remaining'))
+        normalized['uses_remaining'] = max(
+            0, min(maximum, int(current if current is not None else maximum)))
+    elif authoritative['resource_type'] == 'heavy_weapon_mount':
+        weapon_instance_id = str(existing.get('weapon_instance_id') or '').lower()
+        normalized['weapon_instance_id'] = (
+            weapon_instance_id if INSTANCE_ID_RE.fullmatch(weapon_instance_id) else None)
+    else:
+        maximum = authoritative['magazine_max']
+        magazine = _num(existing.get('magazine'))
+        normalized['magazine'] = max(
+            0, min(maximum, int(magazine if magazine is not None else 0)))
+        normalized['reserve'] = 0
+        if normalized['magazine'] > 0:
+            loaded_catalog_id = str(existing.get('loaded_ammo_catalog_id') or '')
+            if item_by_id(loaded_catalog_id):
+                normalized['loaded_ammo_catalog_id'] = loaded_catalog_id
+                normalized['loaded_ammo_name'] = str(
+                    existing.get('loaded_ammo_name') or
+                    item_by_id(loaded_catalog_id).get('name') or 'Ammo')[:120]
+    return normalized
+
+
+def evaluate_effective_weapon(host, modifications, owned_by_id, character):
+    base = copy.deepcopy(host.get('mechanics') or {})
+    effective = copy.deepcopy(base)
+    host_catalog = item_by_id(catalog_item_id_for_entry(host)) or {}
+    base_feature_text = ' '.join(str(value) for value in (host_catalog.get('fields') or {}).values()).lower()
+    base_has_autofire = 'autofire' in base_feature_text
+    excellent_quality = 'excellent' in str(base.get('quality') or '').lower()
+    range_info = weapon_range_table_info(host)
+    base_range_table = range_info.get('base')
+    effective_range_table = base_range_table
+    base_magazine = _num(base.get('magazine')) or 0
+    effective_magazine = base_magazine
+    base_concealable = base.get('concealable')
+    effective_concealable = base_concealable
+    attack_modifier = 0
+    alternate_attacks = []
+    autofire_profiles = []
+    weapon_tags = []
+    applied = []
+    sources = []
+    installed_cyberware = {
+        catalog_item_id_for_entry(item) for item in character.get('cyberware') or []
+        if isinstance(item, dict) and str(item.get('state') or 'installed') == 'installed'
+    }
+    weapon_type = str(base.get('type') or '')
+    for modification in modifications:
+        upgrade = owned_by_id.get(modification.get('upgrade_instance_id')) or {}
+        config = modification.get('configuration') or {}
+        rules = config.get('effect_rules')
+        if not isinstance(rules, list):
+            rules = weapon_modification_rules_for_catalog(catalog_item_id_for_entry(upgrade))
+        if not rules:
+            grants = copy.deepcopy(upgrade.get('grants_slots') or {})
+            sources.append({
+                'id': f'{"slot-grant" if grants else "manual"}:{modification.get("modification_id")}',
+                'label_en': upgrade.get('name') or config.get('upgrade_name') or 'Upgrade',
+                'label_ru': upgrade.get('name') or config.get('upgrade_name') or 'Upgrade',
+                'active': True, 'automated': bool(grants),
+                'manual_resolution_required': not bool(grants),
+                'source': upgrade.get('installation_source') or upgrade.get('source'),
+                'effects': [
+                    {'target': f'weapon.{pool}_slots', 'operation': 'add',
+                     'value': amount, 'active': True}
+                    for pool, amount in grants.items()],
+                'manual_rules': [],
+            })
+            continue
+        for rule in rules:
+            requirements = rule.get('requirements') or {}
+            required_any = requirements.get('installed_any') or []
+            requirements_met = not required_any or bool(installed_cyberware & set(required_any))
+            rule_effects = []
+            for definition in rule.get('effects') or []:
+                effect = copy.deepcopy(definition)
+                effect['active'] = requirements_met
+                effect['modification_id'] = modification.get('modification_id')
+                if effect['target'] == 'weapon.magazine':
+                    value = (effect.get('values') or {}).get(weapon_type)
+                    if value is None:
+                        effect['active'] = False
+                        effect['suppressed_reason'] = f'No magazine value for {weapon_type}'
+                    elif requirements_met:
+                        effect['before'] = effective_magazine
+                        effective_magazine = int(value)
+                        effect['after'] = effective_magazine
+                elif effect['target'] == 'weapon.concealable' and requirements_met:
+                    effect['before'] = effective_concealable
+                    effective_concealable = effect['value']
+                    effect['after'] = effective_concealable
+                elif effect['target'] == 'weapon.alternate_profile' and requirements_met:
+                    profile = copy.deepcopy(effect['profile'])
+                    profile.update({
+                        'modification_id': modification.get('modification_id'),
+                        'upgrade_instance_id': modification.get('upgrade_instance_id'),
+                        'source': effect.get('source'),
+                        'shared_ammo_available': shared_ammo_available(
+                            character, profile.get('ammo_kind')),
+                        'state': copy.deepcopy(
+                            (character.get('modification_state') or {}).get(
+                                modification.get('modification_id'), {})),
+                    })
+                    alternate_attacks.append(profile)
+                elif effect['target'] == 'weapon.autofire_profile' and requirements_met:
+                    if effect.get('operation') == 'grant':
+                        profile = copy.deepcopy(effect.get('profile') or {})
+                        enhanced_when = set(effect.get('enhanced_when') or [])
+                        if (('excellent_quality' in enhanced_when and excellent_quality) or
+                                ('base_autofire' in enhanced_when and base_has_autofire)):
+                            profile['multiplier'] = effect.get('enhanced_multiplier', profile.get('multiplier'))
+                    else:
+                        choice = (config.get('choices') or {}).get(effect.get('configuration_key'))
+                        profile = copy.deepcopy((effect.get('profiles') or {}).get(choice) or {})
+                        if not profile:
+                            effect['active'] = False
+                            effect['suppressed_reason'] = 'Required installation configuration is missing'
+                    if profile:
+                        profile.update({
+                            'modification_id': modification.get('modification_id'),
+                            'upgrade_instance_id': modification.get('upgrade_instance_id'),
+                            'source': effect.get('source'),
+                        })
+                        autofire_profiles.append(profile)
+                elif effect['target'] == 'weapon.range_table' and requirements_met:
+                    choice = (config.get('choices') or {}).get(effect.get('configuration_key'))
+                    if choice in range_info.get('choices', []):
+                        effect['before'] = effective_range_table
+                        effective_range_table = choice
+                        effect['after'] = effective_range_table
+                    else:
+                        effect['active'] = False
+                        effect['suppressed_reason'] = 'Required compatible Range Table choice is missing'
+                elif effect['target'] == 'weapon.tag' and requirements_met:
+                    if effect.get('value') not in weapon_tags:
+                        weapon_tags.append(effect.get('value'))
+                elif effect['target'] == 'weapon.attack_check' and requirements_met:
+                    effect['before'] = attack_modifier
+                    attack_modifier += effect['value']
+                    effect['after'] = attack_modifier
+                if effect.get('active'):
+                    applied.append(effect)
+                rule_effects.append(effect)
+            sources.append({
+                'id': rule['id'], 'label_en': rule.get('label_en') or rule['id'],
+                'label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
+                'active': requirements_met,
+                'automated': True,
+                'requirements_met': requirements_met,
+                'requirement_label_en': requirements.get('label_en'),
+                'requirement_label_ru': requirements.get('label_ru'),
+                'source': next((effect.get('source') for effect in rule_effects
+                                if effect.get('source')), None),
+                'effects': rule_effects,
+                'manual_rules': [
+                    {**copy.deepcopy(manual), 'manual_resolution_required': True}
+                    for manual in rule.get('manual_rules') or []],
+                'modification_id': modification.get('modification_id'),
+                'upgrade_instance_id': modification.get('upgrade_instance_id'),
+            })
+    # Tech Maker custom modifications: declarative, allowlisted, non-stacking.
+    for mod in character_tech_maker_modifications(character).values():
+        if mod.get('host_instance_id') != host.get('instance_id'):
+            continue
+        effect = mod.get('effect')
+        if not isinstance(effect, dict):
+            continue
+        target = effect.get('target')
+        maker = {
+            'id': f'tech-maker:{target}',
+            'label_en': mod.get('name') or 'Tech Maker Modification',
+            'label_ru': mod.get('name') or 'Tech Maker Modification',
+            'active': True, 'automated': True, 'source_type': 'tech_maker',
+            'source': mod.get('source'),
+            'modification_id': mod.get('modification_id'),
+            'manual_resolution_required': False,
+            'effects': [copy.deepcopy(effect)],
+        }
+        if target == 'weapon.attack_check':
+            effect['before'] = attack_modifier
+            attack_modifier += int(effect.get('value') or 0)
+            effect['after'] = attack_modifier
+        elif target == 'weapon.magazine':
+            effect['before'] = effective_magazine
+            effective_magazine = max(0, effective_magazine + int(effect.get('value') or 0))
+            effect['after'] = effective_magazine
+        elif target == 'weapon.concealable':
+            effect['before'] = effective_concealable
+            effective_concealable = effect.get('value')
+            effect['after'] = effective_concealable
+        maker['effects'] = [copy.deepcopy(effect)]
+        applied.append(effect)
+        sources.append(maker)
+    if base_magazine or effective_magazine:
+        effective['magazine'] = effective_magazine
+    if effective_concealable is not None:
+        effective['concealable'] = effective_concealable
+    if effective_range_table is not None:
+        effective['range_table'] = effective_range_table
+    slot_pools = weapon_slot_capacity(host, modifications, owned_by_id)
+    return {
+        'instance_id': host.get('instance_id'),
+        'base': {**base, 'range_table': base_range_table}, 'effective': effective,
+        'attack_modifier': attack_modifier,
+        'shared_ammo_available': shared_ammo_available(character, weapon=host),
+        'alternate_attacks': alternate_attacks,
+        'autofire_profiles': autofire_profiles,
+        'tags': weapon_tags,
+        'slot_pools': slot_pools,
+        'slots_total': sum(pool['total'] for pool in slot_pools.values()),
+        'slots_used': sum(pool['used'] for pool in slot_pools.values()),
+        'modifiers': applied, 'sources': sources,
+    }
+
+
+def character_effective_weapons(character, modifications):
+    owned = {item.get('instance_id'): item for item in character.get('inventory') or []
+             if isinstance(item, dict) and item.get('instance_id')}
+    result = {}
+    for host in (item for item in character.get('inventory') or []
+                 if isinstance(item, dict) and item.get('cat') == 'guns'):
+        host_modifications = [modification for modification in modifications
+                              if modification.get('host_instance_id') == host.get('instance_id')]
+        result[host['instance_id']] = evaluate_effective_weapon(
+            host, host_modifications, owned, character)
+    return result
+
+
+def vehicle_base_interior(host):
+    catalog_item = item_by_id(catalog_item_id_for_entry(host)) or {}
+    mechanics = host.get('mechanics') or catalog_item.get('mechanics') or {}
+    name = str(host.get('name') or catalog_item.get('name') or '')
+    description = str(catalog_item.get('desc') or '')
+    room_count = 0
+    total_match = re.search(r'total of\s+(\d+)\s+rooms?', description, re.I)
+    minimum_match = re.search(r'minimum\s+(\w+)\s+rooms?', description, re.I)
+    word_numbers = {'one': 1, 'two': 2, 'three': 3, 'four': 4}
+    if total_match:
+        room_count = int(total_match.group(1))
+    elif re.search(r'only one room', description, re.I):
+        room_count = 1
+    elif minimum_match:
+        token = minimum_match.group(1).lower()
+        room_count = int(token) if token.isdigit() else word_numbers.get(token, 0)
+    elif name == 'Cabin Cruiser':
+        room_count = 2
+    elif name == 'Yacht':
+        room_count = 4
+    elif name == 'Aerozep':
+        room_count = 2
+    seats_value = str(mechanics.get('seats') or '')
+    seats_match = re.search(r'(\d+)\s+per\s+room', seats_value, re.I)
+    seats_per_room = int(seats_match.group(1)) if seats_match else (
+        4 if 'yacht' in f'{name} {description}'.lower() else
+        (2 if room_count else 0))
+    return {
+        'base_rooms': room_count, 'rooms_total': room_count,
+        'normal_rooms': room_count, 'luxury_rooms': 0, 'complex_rooms': 0,
+        'seats_per_room': seats_per_room,
+        'kombi': False, 'beds': 0, 'amenities': [],
+        'complex_purposes': [],
+    }
+
+
+def bound_vehicle_weapon_profile(weapon, effective_weapon, character):
+    mechanics = effective_weapon.get('effective') or weapon.get('mechanics') or {}
+    catalog_item = item_by_id(catalog_item_id_for_entry(weapon)) or {}
+    description = str(catalog_item.get('desc') or '')
+    rule_text = ' '.join([
+        description,
+        *[str(value) for value in (catalog_item.get('fields') or {}).values()],
+    ])
+    skill = str(mechanics.get('skill') or '')
+    autofire_only = skill == 'Autofire' or 'can only autofire' in rule_text.lower()
+    ammo_cost_match = re.search(r'uses\s+(\d+)\s+rounds whenever it fires',
+                                rule_text, re.I)
+    multiplier_match = re.search(r'max autofire multiplier of\s+(\d+)',
+                                  rule_text, re.I)
+    weapon_state = copy.deepcopy((character.get('weapon_state') or {}).get(
+        weapon.get('instance_id')) or {})
+    profile = {
+        'id': f'bound:{weapon.get("instance_id")}',
+        'weapon_instance_id': weapon.get('instance_id'),
+        'label_en': weapon.get('custom_name') or weapon.get('name') or 'Mounted Weapon',
+        'label_ru': weapon.get('custom_name') or weapon.get('name') or 'Закреплённое оружие',
+        'kind': 'autofire' if autofire_only else 'standard',
+        'skill': skill, 'weapon_type': mechanics.get('type'),
+        'range_table': mechanics.get('range_table'),
+        'damage': (mechanics.get('damage') or {}).get('notation')
+            if isinstance(mechanics.get('damage'), dict) else mechanics.get('damage'),
+        'rof': mechanics.get('rof'), 'hands_required': mechanics.get('hands'),
+        'magazine': mechanics.get('magazine'),
+        'ammo_cost': int(ammo_cost_match.group(1)) if ammo_cost_match else
+            (10 if autofire_only else 1),
+        'autofire_multiplier': int(multiplier_match.group(1))
+            if multiplier_match else (4 if autofire_only else None),
+        'reload_actions': 2 if re.search(
+            r'(?:requires?|takes?)\s+2\s+(?:rounds|actions?)\s+to reload|'
+            r'2\s+actions?\s+to reload', rule_text, re.I) else 1,
+        'attack_modifier': effective_weapon.get('attack_modifier') or 0,
+        'shared_ammo_available': shared_ammo_available(character, weapon=weapon),
+        'state': weapon_state, 'operator': 'passenger',
+        'source': catalog_item.get('source') or weapon.get('source'),
+        'manual_resolution_required': True,
+    }
+    return profile
+
+
+def evaluate_effective_vehicle(host, modifications, owned_by_id,
+                               character=None, all_modifications=None):
+    character = character or {}
+    all_modifications = all_modifications or modifications
+    base = copy.deepcopy(host.get('mechanics') or {})
+    base_sdp = max(0, _num(base.get('sdp')) or 0)
+    base_body_sp = max(0, _num(base.get('body_sp')) or 0)
+    base_glass_hp = max(0, _num(base.get('glass_hp')) or 0)
+    base_seats = _num(base.get('seats'))
+    effective_sdp = base_sdp
+    effective_body_sp = base_body_sp
+    effective_glass_hp = base_glass_hp
+    interior = vehicle_base_interior(host)
+    effective_seats = base_seats if base_seats is not None else base.get('seats')
+    if (base_seats is None and interior['rooms_total'] and
+            interior['seats_per_room']):
+        effective_seats = interior['rooms_total'] * interior['seats_per_room']
+    sources = []
+    nos_tanks = []
+    mounted_weapons = []
+    weapon_mounts = []
+    cargo_modules = []
+    modification_states = host.get('_modification_state') or {}
+    active_catalog_counts = {}
+    for modification in modifications:
+        upgrade = owned_by_id.get(modification.get('upgrade_instance_id')) or {}
+        catalog_id = catalog_item_id_for_entry(upgrade)
+        active_catalog_counts[catalog_id] = active_catalog_counts.get(catalog_id, 0) + 1
+    for modification in modifications:
+        upgrade = owned_by_id.get(modification.get('upgrade_instance_id')) or {}
+        config = modification.get('configuration') or {}
+        catalog_id = catalog_item_id_for_entry(upgrade)
+        rules = config.get('effect_rules')
+        if not isinstance(rules, list) or not rules:
+            rules = vehicle_modification_rules_for_catalog(catalog_id)
+        if not rules:
+            sources.append({
+                'id': f'manual:{modification.get("modification_id")}',
+                'label_en': upgrade.get('name') or config.get('upgrade_name') or 'Upgrade',
+                'label_ru': upgrade.get('name') or config.get('upgrade_name') or 'Upgrade',
+                'active': True, 'automated': False, 'effects': [],
+                'manual_rules': [], 'source': upgrade.get('installation_source') or upgrade.get('source'),
+            })
+            continue
+        for rule in rules:
+            rule_effects = []
+            for definition in rule.get('effects') or []:
+                effect = copy.deepcopy(definition)
+                effect['active'] = True
+                effect['modification_id'] = modification.get('modification_id')
+                effect['before'] = None
+                if effect['target'] == 'vehicle.sdp_max':
+                    effect['before'] = effective_sdp
+                    effective_sdp += int(effect['value'])
+                    effect['after'] = effective_sdp
+                elif effect['target'] == 'vehicle.body_sp':
+                    effect['before'] = effective_body_sp
+                    effective_body_sp = max(effective_body_sp, int(effect['value']))
+                    effect['after'] = effective_body_sp
+                elif effect['target'] == 'vehicle.glass_hp':
+                    effect['before'] = effective_glass_hp
+                    count = min(2, active_catalog_counts.get(catalog_id, 1))
+                    effective_glass_hp = max(
+                        effective_glass_hp, int((effect.get('values') or {}).get(str(count), 0)))
+                    effect['after'] = effective_glass_hp
+                elif effect['target'] == 'vehicle.seats':
+                    if isinstance(effective_seats, int):
+                        effect['before'] = effective_seats
+                        effective_seats += int(effect['value'])
+                        effect['after'] = effective_seats
+                    else:
+                        effect['active'] = False
+                        effect['suppressed_reason'] = 'Base seats are not a fixed numeric value'
+                elif effect['target'] == 'vehicle.nos_tank':
+                    resource = copy.deepcopy(effect.get('resource') or {})
+                    maximum = int(resource.get('uses') or 1)
+                    resource.update({
+                        'modification_id': modification.get('modification_id'),
+                        'upgrade_instance_id': modification.get('upgrade_instance_id'),
+                        'state': copy.deepcopy(modification_states.get(
+                            modification.get('modification_id')) or {
+                                'resource_type': 'nos_tank',
+                                'uses_remaining': maximum, 'uses_max': maximum,
+                            }),
+                        'source': effect.get('source'),
+                    })
+                    nos_tanks.append(resource)
+                elif effect['target'] == 'vehicle.weapon_mount':
+                    resource = copy.deepcopy(effect.get('resource') or {})
+                    state = copy.deepcopy(modification_states.get(
+                        modification.get('modification_id')) or {
+                            'resource_type': 'heavy_weapon_mount',
+                            'profile_id': 'heavy_weapon_mount',
+                            'weapon_instance_id': None,
+                        })
+                    weapon_instance_id = state.get('weapon_instance_id')
+                    weapon = owned_by_id.get(weapon_instance_id) if weapon_instance_id else None
+                    bound_profile = None
+                    if weapon and weapon.get('cat') == 'guns':
+                        weapon_modifications = [
+                            item for item in all_modifications
+                            if item.get('host_instance_id') == weapon_instance_id]
+                        effective_weapon = evaluate_effective_weapon(
+                            weapon, weapon_modifications, owned_by_id, character)
+                        bound_profile = bound_vehicle_weapon_profile(
+                            weapon, effective_weapon, character)
+                    resource.update({
+                        'modification_id': modification.get('modification_id'),
+                        'upgrade_instance_id': modification.get('upgrade_instance_id'),
+                        'state': state, 'bound_weapon': bound_profile,
+                        'source': effect.get('source'),
+                    })
+                    weapon_mounts.append(resource)
+                elif effect['target'] == 'vehicle.interior':
+                    profile = copy.deepcopy(effect.get('profile') or {})
+                    if interior['base_rooms']:
+                        interior['rooms_total'] += int(profile.get('rooms') or 0)
+                        if isinstance(effective_seats, int) and interior['seats_per_room']:
+                            effective_seats += interior['seats_per_room']
+                    else:
+                        interior['rooms_total'] = max(
+                            interior['rooms_total'], int(profile.get('rooms') or 1))
+                        interior['kombi'] = True
+                        interior['beds'] += int(profile.get('beds') or 0)
+                        for amenity in profile.get('amenities') or []:
+                            if amenity not in interior['amenities']:
+                                interior['amenities'].append(amenity)
+                elif effect['target'] == 'vehicle.room_upgrade':
+                    profile = copy.deepcopy(effect.get('profile') or {})
+                    if profile.get('kind') == 'luxury':
+                        interior['luxury_rooms'] += 1
+                    elif profile.get('kind') == 'complex':
+                        interior['complex_rooms'] += 1
+                        purpose = (config.get('choices') or {}).get('purpose')
+                        if purpose:
+                            interior['complex_purposes'].append(purpose)
+                            if purpose == 'cargo_bay':
+                                cargo_modules.append({
+                                    'id': f'complex-cargo:{modification.get("modification_id")}',
+                                    'kind': 'cargo_bay', 'cargo_spaces': None,
+                                    'modification_id': modification.get('modification_id'),
+                                    'source': effect.get('source'),
+                                    'manual_resolution_required': True,
+                                })
+                        if isinstance(effective_seats, int) and interior['seats_per_room']:
+                            effective_seats += interior['seats_per_room'] * 2
+                elif effect['target'] == 'vehicle.cargo':
+                    profile = copy.deepcopy(effect.get('profile') or {})
+                    profile.update({
+                        'modification_id': modification.get('modification_id'),
+                        'upgrade_instance_id': modification.get('upgrade_instance_id'),
+                        'source': effect.get('source'),
+                        'manual_resolution_required': True,
+                    })
+                    cargo_modules.append(profile)
+                elif effect['target'] == 'vehicle.mounted_weapon':
+                    profile = copy.deepcopy(effect.get('profile') or {})
+                    orientations = profile.get('orientations') or []
+                    choices = config.get('choices') or {}
+                    profile.update({
+                        'modification_id': modification.get('modification_id'),
+                        'upgrade_instance_id': modification.get('upgrade_instance_id'),
+                        'orientation': choices.get('orientation') or
+                            (orientations[0] if orientations else None),
+                        'shared_ammo_available': shared_ammo_available(
+                            character, profile.get('ammo_kind')),
+                        'state': copy.deepcopy(modification_states.get(
+                            modification.get('modification_id')) or {
+                                'resource_type': 'mounted_weapon',
+                                'magazine': 0,
+                                'magazine_max': int(profile.get('magazine') or 0),
+                                'reserve': 0,
+                                'ammo_cost': int(profile.get('ammo_cost') or 1),
+                            }),
+                        'source': effect.get('source'),
+                    })
+                    mounted_weapons.append(profile)
+                rule_effects.append(effect)
+            sources.append({
+                'id': rule['id'], 'label_en': rule.get('label_en') or rule['id'],
+                'label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
+                'active': any(effect.get('active') for effect in rule_effects),
+                'automated': True, 'effects': rule_effects,
+                'manual_rules': [
+                    {**copy.deepcopy(manual), 'manual_resolution_required': True}
+                    for manual in rule.get('manual_rules') or []],
+                'source': next((effect.get('source') for effect in rule_effects
+                                if effect.get('source')), None),
+                'modification_id': modification.get('modification_id'),
+            })
+    interior['normal_rooms'] = max(
+        0, interior['rooms_total'] - interior['luxury_rooms'] - interior['complex_rooms'])
+    interior['cargo_bays'] = sum(
+        1 for module in cargo_modules if module.get('kind') == 'cargo_bay')
+    interior['hidden_cargo_spaces'] = sum(
+        int(module.get('cargo_spaces') or 0) for module in cargo_modules
+        if str(module.get('kind') or '').startswith('hidden'))
+    tech_maker = None
+    for mod in character_tech_maker_modifications(character).values():
+        if mod.get('host_instance_id') != host.get('instance_id'):
+            continue
+        effect = mod.get('effect')
+        if not isinstance(effect, dict):
+            continue
+        if effect.get('target') == 'vehicle.sdp_max':
+            effect['before'] = effective_sdp
+            effective_sdp += int(effect.get('value') or 0)
+            effect['after'] = effective_sdp
+            tech_maker = copy.deepcopy(mod)
+            sources.append({
+                'id': f'tech-maker:{mod.get("modification_id")}',
+                'label_en': mod.get('name') or 'Tech Maker Modification',
+                'label_ru': mod.get('name') or 'Tech Maker Modification',
+                'active': True, 'automated': True, 'effects': [copy.deepcopy(effect)],
+                'manual_rules': [], 'source': mod.get('source'),
+                'modification_id': mod.get('modification_id'),
+            })
+    effective = copy.deepcopy(base)
+    effective.update({'sdp': effective_sdp, 'body_sp': effective_body_sp,
+                      'glass_hp': effective_glass_hp, 'seats': effective_seats})
+    state = copy.deepcopy((host.get('_vehicle_state') or {}))
+    if not state:
+        state = {'sdp_current': effective_sdp, 'sdp_max': effective_sdp}
+    return {
+        'instance_id': host.get('instance_id'),
+        'base': {**base, 'sdp': base_sdp, 'body_sp': base_body_sp,
+                 'glass_hp': base_glass_hp, 'seats': base_seats if base_seats is not None else base.get('seats')},
+        'effective': effective, 'state': state, 'sources': sources,
+        'nos_tanks': nos_tanks, 'mounted_weapons': mounted_weapons,
+        'weapon_mounts': weapon_mounts, 'interior': interior,
+        'cargo_modules': cargo_modules, 'tech_maker_modification': tech_maker,
+    }
+
+
+def character_effective_vehicles(character, modifications):
+    owned = {item.get('instance_id'): item for item in character.get('inventory') or []
+             if isinstance(item, dict) and item.get('instance_id')}
+    states = character.get('vehicle_state') or {}
+    modification_states = character.get('modification_state') or {}
+    result = {}
+    for host in (item for item in character.get('inventory') or []
+                 if isinstance(item, dict) and item.get('cat') == 'vehicles'):
+        copy_host = copy.deepcopy(host)
+        copy_host['_vehicle_state'] = copy.deepcopy(states.get(host.get('instance_id')) or {})
+        copy_host['_modification_state'] = copy.deepcopy(modification_states)
+        host_modifications = [modification for modification in modifications
+                              if modification.get('host_instance_id') == host.get('instance_id')]
+        result[host['instance_id']] = evaluate_effective_vehicle(
+            copy_host, host_modifications, owned, character, modifications)
+    return result
 
 
 # ---------------------------------------------------------------- правила
@@ -303,7 +1848,362 @@ def _armor_penalties(piece):
     return {stat: legacy for stat in ('REF', 'DEX', 'MOVE')} if legacy else {}
 
 
-def derive(char):
+def resolve_modifier_stack(modifiers):
+    """Apply explicit stacking groups and return applied/suppressed modifiers."""
+    groups = {}
+    for modifier in modifiers:
+        group = (modifier.get('target'), modifier.get('stack_group') or modifier.get('id'))
+        groups.setdefault(group, []).append(copy.deepcopy(modifier))
+    resolved = []
+    for rows in groups.values():
+        rows.sort(key=lambda item: (-int(item.get('priority', 100)), str(item.get('id') or '')))
+        policy = rows[0].get('stack_policy', 'stack')
+        selected = rows
+        if policy == 'unique':
+            selected = rows[:1]
+        elif policy == 'highest':
+            selected = [max(rows, key=lambda item: item.get('value', 0))]
+        elif policy == 'lowest':
+            selected = [min(rows, key=lambda item: item.get('value', 0))]
+        elif policy == 'replace':
+            selected = rows[:1]
+        selected_ids = {id(item) for item in selected}
+        for item in rows:
+            item['applied'] = id(item) in selected_ids
+            if not item['applied']:
+                item['suppressed_reason'] = f'not stacked ({policy})'
+            resolved.append(item)
+    return sorted(resolved, key=lambda item: (
+        str(item.get('target') or ''), int(item.get('priority', 100)), str(item.get('id') or '')))
+
+
+def apply_modifier_pipeline(base_value, modifiers):
+    applied = [item for item in resolve_modifier_stack(modifiers) if item.get('applied')]
+    order = {'set': 0, 'minimum': 1, 'maximum': 1, 'add': 2, 'multiply': 3}
+    applied.sort(key=lambda item: (
+        order.get(item.get('operation'), 99), int(item.get('priority', 100)),
+        str(item.get('id') or '')))
+    value = base_value
+    for item in applied:
+        operation, amount = item['operation'], item['value']
+        if operation == 'set':
+            value = amount
+        elif operation == 'minimum':
+            value = max(value, amount)
+        elif operation == 'maximum':
+            value = min(value, amount)
+        elif operation == 'add':
+            value += amount
+        elif operation == 'multiply':
+            value *= amount
+    # Some source effects define a floor for their complete modifier rather than
+    # a separate operation. Apply the strictest declared floor after the whole
+    # numeric pipeline so stacked penalties cannot push a protected STAT below it.
+    floors = [item.get('minimum_value') for item in applied
+              if item.get('minimum_value') is not None]
+    if floors:
+        value = max(value, max(floors))
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return value, resolve_modifier_stack(modifiers)
+
+
+ACTIVE_EFFECT_DURATIONS = {'manual', 'real_time', 'rounds', 'campaign_time'}
+CUSTOM_EFFECT_DURATIONS = {'manual', 'real_time', 'rounds'}
+ACTIVE_EFFECT_ACTIONS = {'enable', 'disable', 'tick'}
+
+
+def effect_runtime_status(effect, now=None):
+    now = time.time() if now is None else now
+    if effect.get('archived_at'):
+        return 'archived'
+    duration = effect.get('duration_type') or 'manual'
+    if duration == 'real_time' and effect.get('expires_at') is not None and effect['expires_at'] <= now:
+        return 'expired'
+    if duration == 'rounds' and (_num(effect.get('remaining_rounds')) or 0) <= 0:
+        return 'completed'
+    if not effect.get('active'):
+        return 'disabled'
+    return 'active'
+
+
+def effect_instance_payload(row, now=None):
+    item = dict(row)
+    try:
+        definition = json.loads(item.pop('definition_json'))
+        validate_effect_definition(definition)
+        valid = True
+    except (TypeError, ValueError, json.JSONDecodeError, RuntimeError):
+        definition, valid = {}, False
+    try:
+        context = json.loads(item.pop('context_json', '{}') or '{}')
+        if not isinstance(context, dict):
+            context = {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        context = {}
+    item['definition'] = definition
+    item['context'] = context
+    item['active'] = bool(item.get('active'))
+    item['valid'] = valid
+    item['status'] = effect_runtime_status(item, now) if valid else 'invalid'
+    item['effective_active'] = valid and item['status'] == 'active'
+    if item.get('duration_type') == 'real_time' and item.get('expires_at') is not None:
+        item['remaining_seconds'] = max(0, int(item['expires_at'] - (time.time() if now is None else now)))
+    return item
+
+
+def character_effect_instances(conn, character_id, include_archived=False):
+    where = '' if include_archived else 'AND e.archived_at IS NULL'
+    rows = conn.execute(
+        'SELECT e.*,u.display_name actor FROM active_effect_instances e '
+        'JOIN users u ON u.id=e.created_by WHERE e.character_id=? ' + where +
+        ' ORDER BY e.created DESC,e.effect_id', (int(character_id),)).fetchall()
+    now = time.time()
+    return [effect_instance_payload(row, now) for row in rows]
+
+
+def instantiate_consumable_effects(conn, character_id, actor_user_id, item_entry, now=None):
+    """Create allowlisted effect snapshots for one consumed catalog item."""
+    now = time.time() if now is None else now
+    catalog_id = catalog_item_id_for_entry(item_entry)
+    rules = [rule for rule in load_effect_rules().get('use_effect_rules') or []
+             if rule.get('catalog_id') == catalog_id]
+    created = []
+    replaced = []
+    for rule in rules:
+        duration_type = rule['duration_type']
+        duration_value = int(rule['duration_value'])
+        expires_at = now + duration_value * 60 if duration_type == 'real_time' else None
+        remaining_rounds = duration_value if duration_type == 'rounds' else None
+        for definition in rule.get('effects') or []:
+            stack_group = definition.get('stack_group') or definition['id']
+            if definition.get('stack_policy') in ('replace', 'unique'):
+                old_rows = conn.execute(
+                    "SELECT * FROM active_effect_instances WHERE character_id=? "
+                    "AND source_type='consumable' AND active=1 AND archived_at IS NULL",
+                    (int(character_id),)).fetchall()
+                for old_row in old_rows:
+                    try:
+                        old_definition = json.loads(old_row['definition_json'])
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        continue
+                    if (old_definition.get('stack_group') or old_definition.get('id')) == stack_group:
+                        conn.execute(
+                            'UPDATE active_effect_instances SET active=0,updated=? WHERE effect_id=?',
+                            (now, old_row['effect_id']))
+                        replaced.append(old_row['effect_id'])
+            effect_id = secrets.token_hex(16)
+            label = str(rule.get('label_en') or rule['id'])[:120]
+            if len(rule.get('effects') or []) > 1:
+                label = f'{label}: {definition["target"]}'[:120]
+            reason = f'Use {item_entry.get("custom_name") or item_entry.get("name") or catalog_id}'
+            context = {
+                'rules_version': load_effect_rules().get('rules_version'),
+                'label_en': rule.get('label_en') or rule['id'],
+                'label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
+                'manual_rules': copy.deepcopy(rule.get('manual_rules') or []),
+                'campaign_minutes': duration_value if duration_type == 'campaign_time' else None,
+                'campaign_clock_manual': duration_type == 'campaign_time',
+            }
+            conn.execute(
+                'INSERT INTO active_effect_instances(effect_id,character_id,source_type,'
+                'source_item_instance_id,preset_id,label,definition_json,context_json,'
+                'duration_type,started_at,expires_at,remaining_rounds,active,created_by,'
+                'reason,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)',
+                (effect_id, int(character_id), 'consumable', item_entry.get('instance_id'),
+                 rule['id'], label, json.dumps(definition, ensure_ascii=False),
+                 json.dumps(context, ensure_ascii=False), duration_type, now,
+                 expires_at, remaining_rounds, int(actor_user_id), reason, now, now))
+            row = conn.execute(
+                'SELECT e.*,u.display_name actor FROM active_effect_instances e '
+                'JOIN users u ON u.id=e.created_by WHERE e.effect_id=?',
+                (effect_id,)).fetchone()
+            created.append(effect_instance_payload(row, now))
+    manual_rules = [
+        copy.deepcopy(manual)
+        for rule in rules for manual in rule.get('manual_rules') or []]
+    return {'created': created, 'replaced_effect_ids': sorted(set(replaced)),
+            'manual_rules': manual_rules}
+
+
+def evaluate_character_effects(char, derived, active_effects=None):
+    """Evaluate allowlisted declarative effects without mutating base Character data."""
+    payload = load_effect_rules()
+    inventory = [item for item in char.get('inventory') or [] if isinstance(item, dict)]
+    cyberware = [item for item in char.get('cyberware') or [] if isinstance(item, dict)]
+    owned_items = inventory + cyberware
+
+    def installed_count(catalog_id, state='installed'):
+        return sum(1 for item in cyberware
+                   if catalog_item_id_for_entry(item) == catalog_id and
+                   str(item.get('state') or 'installed') == state)
+
+    modifiers = []
+    synergies = []
+    for rule in payload.get('synergy_rules') or []:
+        requirements = []
+        active = True
+        for catalog_id, requirement in (rule.get('required_counts') or {}).items():
+            minimum = max(1, int(requirement.get('minimum') or 1))
+            current = installed_count(catalog_id, requirement.get('state') or 'installed')
+            met = current >= minimum
+            active = active and met
+            requirements.append({
+                'catalog_id': catalog_id,
+                'label': requirement.get('label') or item_by_id(catalog_id)['name'],
+                'current': current, 'required': minimum, 'met': met,
+            })
+        for requirement in rule.get('required_all') or []:
+            catalog_id = requirement['catalog_id']
+            current = installed_count(catalog_id, requirement.get('state') or 'installed')
+            met = current >= 1
+            active = active and met
+            requirements.append({
+                'catalog_id': catalog_id,
+                'label': requirement.get('label') or item_by_id(catalog_id)['name'],
+                'current': min(current, 1), 'required': 1, 'met': met,
+            })
+        effects = []
+        for definition in rule.get('effects') or []:
+            effect = copy.deepcopy(definition)
+            effect.update({
+                'rule_id': rule['id'], 'rule_label_en': rule.get('label_en') or rule['id'],
+                'rule_label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
+                'active': active,
+            })
+            effects.append(effect)
+            if active:
+                modifiers.append(effect)
+        synergies.append({
+            'id': rule['id'], 'label_en': rule.get('label_en') or rule['id'],
+            'label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
+            'active': active, 'requirements': requirements, 'effects': effects,
+        })
+
+    item_sources = []
+    for rule in payload.get('item_effect_rules') or []:
+        matching = [item for item in owned_items
+                    if catalog_item_id_for_entry(item) == rule['catalog_id']]
+        if not matching:
+            continue
+        condition = rule.get('active_when') or {}
+        active_instances = []
+        for item in matching:
+            state_ok = str(item.get('state') or 'carried') == condition.get('state')
+            active_ok = ('active' not in condition or
+                         bool(item.get('active')) == condition.get('active'))
+            if state_ok and active_ok:
+                active_instances.append(item)
+        active = bool(active_instances)
+        effects = []
+        for definition in rule.get('effects') or []:
+            effect = copy.deepcopy(definition)
+            effect.update({
+                'rule_id': rule['id'], 'rule_label_en': rule.get('label_en') or rule['id'],
+                'rule_label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
+                'active': active, 'source_type': 'catalog_item',
+            })
+            effects.append(effect)
+            if active:
+                modifiers.append(effect)
+        item_sources.append({
+            'id': rule['id'], 'catalog_id': rule['catalog_id'],
+            'label_en': rule.get('label_en') or rule['id'],
+            'label_ru': rule.get('label_ru') or rule.get('label_en') or rule['id'],
+            'active': active,
+            'matching_instance_ids': [item.get('instance_id') for item in matching],
+            'active_instance_ids': [item.get('instance_id') for item in active_instances],
+            'active_when': copy.deepcopy(condition), 'effects': effects,
+            'manual_rules': [
+                {**copy.deepcopy(manual), 'manual_resolution_required': True}
+                for manual in rule.get('manual_rules') or []],
+        })
+
+    instances = []
+    for raw_instance in active_effects or []:
+        instance = copy.deepcopy(raw_instance)
+        definition = instance.get('definition')
+        valid = bool(instance.get('valid', True))
+        if valid:
+            try:
+                validate_effect_definition(definition)
+            except RuntimeError:
+                valid = False
+        runtime_active = valid and effect_runtime_status(instance) == 'active'
+        public_instance = {
+            key: copy.deepcopy(instance.get(key)) for key in (
+                'effect_id', 'label', 'source_type', 'source_item_instance_id',
+                'preset_id', 'context', 'duration_type', 'started_at', 'expires_at', 'remaining_rounds',
+                'session_id', 'active', 'archived_at', 'actor', 'reason')
+        }
+        public_instance.update({
+            'definition': copy.deepcopy(definition) if valid else {},
+            'valid': valid, 'status': effect_runtime_status(instance) if valid else 'invalid',
+            'effective_active': runtime_active,
+        })
+        if instance.get('remaining_seconds') is not None:
+            public_instance['remaining_seconds'] = instance['remaining_seconds']
+        instances.append(public_instance)
+        if runtime_active:
+            modifier = copy.deepcopy(definition)
+            modifier.update({
+                'effect_instance_id': instance.get('effect_id'),
+                'rule_id': f'instance:{instance.get("effect_id")}',
+                'rule_label_en': instance.get('label') or definition['id'],
+                'rule_label_ru': instance.get('label') or definition['id'],
+                'source': instance.get('label') or definition.get('source') or 'Active Effect',
+                'active': True,
+            })
+            modifiers.append(modifier)
+
+    by_target = {}
+    for modifier in modifiers:
+        by_target.setdefault(modifier['target'], []).append(modifier)
+
+    stats = {}
+    for stat in STATS:
+        base = _num((char.get('stats') or {}).get(stat)) or 0
+        stat_modifiers = list(by_target.get(f'character.stat.{stat}', []))
+        armor_penalty = _num((derived.get('armor_penalties') or {}).get(stat)) or 0
+        if armor_penalty:
+            stat_modifiers.append({
+                'id': f'armor-penalty-{stat.lower()}', 'target': f'character.stat.{stat}',
+                'operation': 'add', 'value': armor_penalty,
+                'stack_group': f'armor_penalty_{stat.lower()}', 'stack_policy': 'lowest',
+                'priority': 100, 'source': 'Equipped Armor', 'active': True,
+            })
+        if stat == 'EMP' and derived.get('emp_cur') is not None:
+            stat_modifiers.append({
+                'id': 'humanity-current-emp', 'target': 'character.stat.EMP',
+                'operation': 'set', 'value': derived['emp_cur'],
+                'stack_group': 'humanity_current_emp', 'stack_policy': 'replace',
+                'priority': 50, 'source': 'Current Humanity', 'active': True,
+            })
+        effective, breakdown = apply_modifier_pipeline(base, stat_modifiers)
+        stats[stat] = {'base': base, 'effective': effective, 'modifiers': breakdown}
+
+    skills = {}
+    for name, metadata in SKILL_BY_NAME.items():
+        stat = metadata[2]
+        level = _num((char.get('skills') or {}).get(name)) or 0
+        check_modifiers = list(by_target.get(f'skill.{name}.check', []))
+        check_modifier, breakdown = apply_modifier_pipeline(0, check_modifiers)
+        stat_effective = stats.get(stat, {'effective': 0})['effective']
+        skills[name] = {
+            'stat': stat, 'stat_effective': stat_effective,
+            'level_base': level, 'check_modifier': check_modifier,
+            'effective_check_base': stat_effective + level + check_modifier,
+            'modifiers': breakdown,
+        }
+    return {
+        'rules_version': payload.get('rules_version'),
+        'stats': stats, 'skills': skills,
+        'synergies': synergies, 'item_sources': item_sources, 'instances': instances,
+        'modifiers': resolve_modifier_stack(modifiers),
+    }
+
+
+def derive(char, active_effects=None):
     """Производные показатели листа персонажа по правилам CP:R/CEMK."""
     st = char.get('stats') or {}
     out = {}
@@ -321,6 +2221,8 @@ def derive(char):
     hl_total = 0
     hum_cut = 0
     for chrome in char.get('cyberware') or []:
+        if str(chrome.get('state') or 'installed') != 'installed':
+            continue
         if chrome.get('humanity_exempt') and chrome.get('key') == 'creation-neuroport':
             continue
         hl_total += _num(chrome.get('hl')) or 0
@@ -346,10 +2248,16 @@ def derive(char):
     # На каждой локации работает только наибольший SP. Штраф применяется
     # один раз — самый строгий отдельно для REF, DEX и MOVE.
     armor = char.get('armor') or {}
+    armor_hosts = effective_armor_hosts(char)
+    armor_host_by_id = {item['instance_id']: item for item in armor_hosts['hosts']}
     body_pieces = [armor.get('body'), armor.get('body_outer'), armor.get('body_inner')]
     head_pieces = [armor.get('head')]
-    body_pieces = [a for a in body_pieces if isinstance(a, dict)]
-    head_pieces = [a for a in head_pieces if isinstance(a, dict)]
+    body_pieces = [copy.deepcopy(a) for a in body_pieces if isinstance(a, dict)]
+    head_pieces = [copy.deepcopy(a) for a in head_pieces if isinstance(a, dict)]
+    for piece in body_pieces + head_pieces:
+        host = armor_host_by_id.get(piece.get('instance_id'))
+        if host and host.get('effective_sp') is not None:
+            piece['sp'] = host['effective_sp']
     body_sps = [_num(a.get('sp')) for a in body_pieces]
     head_sps = [_num(a.get('sp')) for a in head_pieces]
     body_sps = [sp for sp in body_sps if sp is not None]
@@ -364,6 +2272,12 @@ def derive(char):
             penalties[stat] = min(penalties[stat], value)
     out['armor_penalties'] = penalties
     out['armor_penalty'] = min(penalties.values())
+    out['effects'] = evaluate_character_effects(char, out, active_effects)
+    out['effective_stats'] = {
+        stat: values['effective'] for stat, values in out['effects']['stats'].items()
+    }
+    out['effective_cyberware'] = effective_cyberware_loadout(char)
+    out['effective_armor_hosts'] = armor_hosts
     return out
 
 
@@ -395,19 +2309,26 @@ CREATE TABLE IF NOT EXISTS users(
   notification_prefs TEXT NOT NULL DEFAULT '{}',
   theme_json TEXT NOT NULL DEFAULT '{}',
   avatar_media_id TEXT,
+  disabled_at REAL,
+  disabled_reason TEXT,
+  disabled_by INTEGER,
   created REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions(
   token TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL,
   created REAL NOT NULL,
-  expires REAL NOT NULL
+  expires REAL NOT NULL,
+  last_seen REAL,
+  ip_address TEXT,
+  user_agent TEXT
 );
 CREATE TABLE IF NOT EXISTS characters(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   owner_id INTEGER NOT NULL,
   public INTEGER NOT NULL DEFAULT 1,
   data TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 0,
   created REAL NOT NULL,
   updated REAL NOT NULL
 );
@@ -478,12 +2399,36 @@ CREATE TABLE IF NOT EXISTS account_role_audit(
   reason TEXT NOT NULL,
   created REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS account_security_audit(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  actor_user_id INTEGER,
+  event_type TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  created REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS registration_invites(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code_hash TEXT UNIQUE NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  created_by INTEGER NOT NULL,
+  max_uses INTEGER NOT NULL DEFAULT 1,
+  uses INTEGER NOT NULL DEFAULT 0,
+  expires_at REAL,
+  disabled_at REAL,
+  created REAL NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_char_owner ON characters(owner_id);
 CREATE INDEX IF NOT EXISTS idx_news_created ON news(created);
 CREATE INDEX IF NOT EXISTS idx_media_owner ON media(owner_id);
 CREATE INDEX IF NOT EXISTS idx_media_attached ON media(attached_type, attached_id);
 CREATE INDEX IF NOT EXISTS idx_ip_character ON ip_ledger(character_id, created);
 CREATE INDEX IF NOT EXISTS idx_role_audit_target ON account_role_audit(target_user_id, created);
+CREATE INDEX IF NOT EXISTS idx_registration_invites_active
+  ON registration_invites(disabled_at,expires_at,uses,max_uses);
+CREATE INDEX IF NOT EXISTS idx_account_security_audit
+  ON account_security_audit(user_id,created);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id,expires);
 """
 
 NETWORK_SCHEMA = """
@@ -700,9 +2645,33 @@ CREATE TABLE IF NOT EXISTS nc_sessions(
   round INTEGER NOT NULL DEFAULT 0,
   active_turn INTEGER NOT NULL DEFAULT 0,
   player_view_config TEXT NOT NULL DEFAULT '{}',
+  safety_config TEXT NOT NULL DEFAULT '{}',
+  net_state_json TEXT NOT NULL DEFAULT '{}',
   notes TEXT NOT NULL DEFAULT '',
   created REAL NOT NULL,
   updated REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session_access(
+  session_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  role TEXT NOT NULL,
+  created_by INTEGER NOT NULL,
+  created REAL NOT NULL,
+  updated REAL NOT NULL,
+  PRIMARY KEY(session_id,user_id)
+);
+CREATE TABLE IF NOT EXISTS session_safety_signals(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'pause',
+  message TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'open',
+  acknowledged_by INTEGER,
+  acknowledged_at REAL,
+  resolved_by INTEGER,
+  resolved_at REAL,
+  created REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS session_combatants(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -745,8 +2714,365 @@ CREATE TABLE IF NOT EXISTS session_activity(
 );
 CREATE INDEX IF NOT EXISTS idx_character_ledger ON character_ledger(character_id,created);
 CREATE INDEX IF NOT EXISTS idx_sessions_owner ON nc_sessions(owner_user_id,status,updated);
+CREATE INDEX IF NOT EXISTS idx_session_access_user ON session_access(user_id,session_id);
+CREATE INDEX IF NOT EXISTS idx_session_safety_open ON session_safety_signals(session_id,status,created);
 CREATE INDEX IF NOT EXISTS idx_session_combatants ON session_combatants(session_id,sort_order);
 CREATE INDEX IF NOT EXISTS idx_session_activity ON session_activity(session_id,created);
+"""
+
+ITEM_INSTANCE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS item_instances(
+  instance_id TEXT PRIMARY KEY,
+  character_id INTEGER NOT NULL,
+  catalog_item_id TEXT,
+  bucket TEXT NOT NULL DEFAULT 'inventory',
+  custom_name TEXT,
+  state TEXT NOT NULL DEFAULT 'carried',
+  quantity INTEGER NOT NULL DEFAULT 1,
+  condition_current INTEGER,
+  condition_max INTEGER,
+  notes TEXT NOT NULL DEFAULT '',
+  acquired_at REAL NOT NULL,
+  source_type TEXT NOT NULL DEFAULT 'legacy_migration',
+  source_ref TEXT,
+  data_json TEXT NOT NULL DEFAULT '{}',
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_item_instances_character
+  ON item_instances(character_id,bucket,state,acquired_at);
+CREATE INDEX IF NOT EXISTS idx_item_instances_catalog
+  ON item_instances(catalog_item_id,character_id);
+"""
+
+ACTIVE_EFFECT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS active_effect_instances(
+  effect_id TEXT PRIMARY KEY,
+  character_id INTEGER NOT NULL,
+  source_type TEXT NOT NULL DEFAULT 'custom',
+  source_item_instance_id TEXT,
+  preset_id TEXT,
+  label TEXT NOT NULL,
+  definition_json TEXT NOT NULL,
+  context_json TEXT NOT NULL DEFAULT '{}',
+  duration_type TEXT NOT NULL DEFAULT 'manual',
+  started_at REAL NOT NULL,
+  expires_at REAL,
+  remaining_rounds INTEGER,
+  session_id INTEGER,
+  active INTEGER NOT NULL DEFAULT 1,
+  archived_at REAL,
+  created_by INTEGER NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_active_effects_character
+  ON active_effect_instances(character_id,active,archived_at,expires_at);
+CREATE INDEX IF NOT EXISTS idx_active_effects_session
+  ON active_effect_instances(session_id,active,remaining_rounds);
+"""
+
+ITEM_MODIFICATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS item_modifications(
+  modification_id TEXT PRIMARY KEY,
+  character_id INTEGER NOT NULL,
+  host_instance_id TEXT NOT NULL,
+  upgrade_instance_id TEXT NOT NULL,
+  host_type TEXT NOT NULL,
+  slot_type TEXT NOT NULL DEFAULT 'attachment',
+  slots_used INTEGER NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1,
+  permanent INTEGER NOT NULL DEFAULT 0,
+  configuration_json TEXT NOT NULL DEFAULT '{}',
+  notes TEXT NOT NULL DEFAULT '',
+  source_type TEXT NOT NULL DEFAULT 'inventory',
+  installed_by INTEGER NOT NULL,
+  installed_at REAL NOT NULL,
+  removed_by INTEGER,
+  removed_at REAL,
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_item_modifications_host
+  ON item_modifications(character_id,host_instance_id,active,installed_at);
+CREATE INDEX IF NOT EXISTS idx_item_modifications_upgrade
+  ON item_modifications(upgrade_instance_id,active);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_item_modifications_active_upgrade
+  ON item_modifications(upgrade_instance_id) WHERE active=1;
+"""
+
+CAMPAIGN_CLOCK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS campaign_state(
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  campaign_time REAL NOT NULL,
+  timezone TEXT NOT NULL DEFAULT 'Europe/Moscow',
+  updated REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS campaign_clock_audit(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_user_id INTEGER NOT NULL,
+  delta_seconds REAL NOT NULL,
+  before_time REAL NOT NULL,
+  after_time REAL NOT NULL,
+  reason TEXT NOT NULL,
+  created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_campaign_clock_audit
+  ON campaign_clock_audit(created);
+"""
+
+CREW_STASH_SCHEMA = """
+CREATE TABLE IF NOT EXISTS crew_stash(
+  instance_id TEXT PRIMARY KEY,
+  catalog_item_id TEXT,
+  custom_name TEXT,
+  state TEXT NOT NULL DEFAULT 'stored',
+  quantity INTEGER NOT NULL DEFAULT 1,
+  notes TEXT NOT NULL DEFAULT '',
+  stored_at REAL NOT NULL,
+  data_json TEXT NOT NULL DEFAULT '{}',
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS personal_stash(
+  instance_id TEXT PRIMARY KEY,
+  character_id INTEGER NOT NULL,
+  catalog_item_id TEXT,
+  custom_name TEXT,
+  state TEXT NOT NULL DEFAULT 'stored',
+  quantity INTEGER NOT NULL DEFAULT 1,
+  notes TEXT NOT NULL DEFAULT '',
+  stored_at REAL NOT NULL,
+  data_json TEXT NOT NULL DEFAULT '{}',
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_personal_stash_char ON personal_stash(character_id);
+CREATE INDEX IF NOT EXISTS idx_crew_stash_stored ON crew_stash(stored_at);
+
+CREATE TABLE IF NOT EXISTS item_transfers(
+  transfer_id TEXT PRIMARY KEY,
+  instance_id TEXT NOT NULL,
+  from_character_id INTEGER,
+  to_character_id INTEGER,
+  from_bucket TEXT,
+  to_bucket TEXT,
+  quantity INTEGER NOT NULL DEFAULT 1,
+  kind TEXT NOT NULL,
+  actor_user_id INTEGER NOT NULL,
+  notes TEXT NOT NULL DEFAULT '',
+  created REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_item_transfers_instance ON item_transfers(instance_id, created);
+
+CREATE TABLE IF NOT EXISTS item_loans(
+  loan_id TEXT PRIMARY KEY,
+  instance_id TEXT NOT NULL,
+  owner_character_id INTEGER NOT NULL,
+  borrower_character_id INTEGER NOT NULL,
+  quantity INTEGER NOT NULL DEFAULT 1,
+  loaned_by INTEGER NOT NULL,
+  loaned_at REAL NOT NULL,
+  returned_at REAL,
+  returned_by INTEGER,
+  notes TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_item_loans_owner ON item_loans(owner_character_id, returned_at);
+CREATE INDEX IF NOT EXISTS idx_item_loans_borrower ON item_loans(borrower_character_id, returned_at);
+"""
+
+MARKET_STOCK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS market_stock(
+  market_day TEXT NOT NULL,
+  vendor_id TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  stock_initial INTEGER NOT NULL DEFAULT 0,
+  stock_remaining INTEGER NOT NULL DEFAULT 0,
+  reserved_character_id INTEGER,
+  reserved_note TEXT NOT NULL DEFAULT '',
+  created REAL NOT NULL,
+  updated REAL NOT NULL,
+  PRIMARY KEY(market_day, vendor_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS idx_market_stock_day ON market_stock(market_day);
+
+CREATE TABLE IF NOT EXISTS fixer_requests(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  character_id INTEGER NOT NULL,
+  requested_by INTEGER NOT NULL,
+  item_id TEXT,
+  item_name TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  created REAL NOT NULL,
+  updated REAL NOT NULL,
+  resolved_by INTEGER,
+  resolved_at REAL,
+  resolution_note TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_fixer_requests_status ON fixer_requests(status, created);
+"""
+
+MARKET_PERMANENT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS market_permanent(
+  vendor_id TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created REAL NOT NULL,
+  PRIMARY KEY (vendor_id, item_id)
+);
+"""
+
+ORGANIZATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS persona_memberships(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  member_persona_id INTEGER NOT NULL,
+  organization_persona_id INTEGER NOT NULL,
+  role_title TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  visibility TEXT NOT NULL DEFAULT 'public',
+  since_at REAL,
+  until_at REAL,
+  note TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memberships_member ON persona_memberships(member_persona_id);
+CREATE INDEX IF NOT EXISTS idx_memberships_org ON persona_memberships(organization_persona_id);
+CREATE TABLE IF NOT EXISTS crew_reputation(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  organization_persona_id INTEGER NOT NULL,
+  reputation INTEGER NOT NULL DEFAULT 0,
+  favor INTEGER NOT NULL DEFAULT 0,
+  heat INTEGER NOT NULL DEFAULT 0,
+  standing TEXT NOT NULL DEFAULT 'neutral',
+  note TEXT NOT NULL DEFAULT '',
+  created_by INTEGER,
+  created REAL NOT NULL,
+  updated REAL NOT NULL,
+  UNIQUE(organization_persona_id)
+);
+CREATE TABLE IF NOT EXISTS character_reputation(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  character_id INTEGER NOT NULL,
+  organization_persona_id INTEGER NOT NULL,
+  reputation INTEGER NOT NULL DEFAULT 0,
+  favor INTEGER NOT NULL DEFAULT 0,
+  heat INTEGER NOT NULL DEFAULT 0,
+  standing TEXT NOT NULL DEFAULT 'neutral',
+  note TEXT NOT NULL DEFAULT '',
+  created_by INTEGER,
+  created REAL NOT NULL,
+  updated REAL NOT NULL,
+  UNIQUE(character_id, organization_persona_id)
+);
+"""
+
+# Curated always-available base stock (20.10). Book price, no daily rotation,
+# no finite stock. Sourced from docs/permanent-assortment.md.
+PERMANENT_SUPPLY = {
+    'gunmart-after-dark': [
+        'ammo-0', 'ammo-1', 'ammo-4', 'ammo-8',
+        'guns-0', 'guns-1', 'guns-2', 'guns-3', 'guns-5', 'guns-6',
+        'guns-8', 'guns-9', 'melee-0', 'melee-1', 'melee-2', 'melee-3',
+        'grenades-14', 'grenades-7', 'grenades-3'],
+    'iron-shell': ['armor-1', 'armor-2', 'armor-3', 'armor-5', 'armor-6', 'armor-0'],
+    'chrome-saint': ['cyberware-49', 'cyberware-56', 'cyberware-31', 'cyberware-2',
+                     'cyberware-1', 'cyberware-90', 'cyberware-88'],
+    'ghost-packet': ['net_stuff-5', 'net_stuff-4', 'net_stuff-19', 'programs-14',
+                     'programs-12', 'programs-13', 'programs-6', 'programs-0'],
+    'back-alley-general': [
+        'gear-22', 'gear-27', 'gear-47', 'gear-60', 'gear-72', 'gear-10', 'gear-1',
+        'gear-0', 'gear-6', 'gear-13', 'gear-19', 'gear-31', 'gear-50', 'gear-67',
+        'gear-82', 'gear-91'],
+    'street-pharmacy': ['gear-150', 'gear-151', 'gear-152', 'gear-153', 'gear-154',
+                        'gear-155', 'gear-156', 'gear-157', 'gear-164'],
+}
+
+SESSION_RECAP_SCHEMA = """
+CREATE TABLE IF NOT EXISTS session_recaps(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_user_id INTEGER NOT NULL,
+  session_id INTEGER,
+  contract_id INTEGER,
+  storyline_id INTEGER,
+  session_date REAL NOT NULL,
+  title TEXT NOT NULL,
+  public_summary TEXT NOT NULL DEFAULT '',
+  gm_notes TEXT NOT NULL DEFAULT '',
+  participants_json TEXT NOT NULL DEFAULT '[]',
+  choices_json TEXT NOT NULL DEFAULT '[]',
+  npc_changes_json TEXT NOT NULL DEFAULT '[]',
+  locations_json TEXT NOT NULL DEFAULT '[]',
+  loot_json TEXT NOT NULL DEFAULT '[]',
+  injuries_json TEXT NOT NULL DEFAULT '[]',
+  quotes_json TEXT NOT NULL DEFAULT '[]',
+  feed_post_id INTEGER,
+  timeline_id INTEGER,
+  published INTEGER NOT NULL DEFAULT 0,
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_recaps_date ON session_recaps(session_date);
+CREATE INDEX IF NOT EXISTS idx_session_recaps_storyline ON session_recaps(storyline_id, session_date);
+"""
+
+LOCATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS locations(
+  id TEXT PRIMARY KEY,
+  name_en TEXT NOT NULL,
+  name_ru TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT 'other',
+  district_id TEXT NOT NULL DEFAULT '',
+  x REAL NOT NULL DEFAULT 500,
+  y REAL NOT NULL DEFAULT 500,
+  description_en TEXT NOT NULL DEFAULT '',
+  description_ru TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT '',
+  custom INTEGER NOT NULL DEFAULT 0,
+  owner_user_id INTEGER,
+  archived INTEGER NOT NULL DEFAULT 0,
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_locations_district ON locations(district_id, archived);
+CREATE INDEX IF NOT EXISTS idx_locations_kind ON locations(kind, archived);
+"""
+
+MEMORIAL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS memorials(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  character_id INTEGER,
+  handle TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT '',
+  role_rank INTEGER NOT NULL DEFAULT 0,
+  portrait_media_id TEXT,
+  status TEXT NOT NULL DEFAULT 'deceased',
+  death_date REAL,
+  location TEXT NOT NULL DEFAULT '',
+  cause TEXT NOT NULL DEFAULT '',
+  epitaph TEXT NOT NULL DEFAULT '',
+  last_words TEXT NOT NULL DEFAULT '',
+  obituary TEXT NOT NULL DEFAULT '',
+  gm_notes TEXT NOT NULL DEFAULT '',
+  visibility TEXT NOT NULL DEFAULT 'public',
+  legacy_drink_name TEXT NOT NULL DEFAULT '',
+  legacy_ingredients TEXT NOT NULL DEFAULT '',
+  legacy_preparation TEXT NOT NULL DEFAULT '',
+  legacy_glass TEXT NOT NULL DEFAULT '',
+  legacy_garnish TEXT NOT NULL DEFAULT '',
+  legacy_quote TEXT NOT NULL DEFAULT '',
+  legacy_legend TEXT NOT NULL DEFAULT '',
+  legacy_awarded_by INTEGER,
+  legacy_awarded_at REAL,
+  feed_post_id INTEGER,
+  created_by INTEGER NOT NULL,
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memorials_status ON memorials(status, death_date);
 """
 
 NOTIFICATION_SCHEMA = """
@@ -789,6 +3115,21 @@ MIGRATION_CITY_FEED = 3
 MIGRATION_OPERATIONS = 4
 MIGRATION_NOTIFICATIONS = 5
 MIGRATION_TACTICAL_PROFILES = 6
+MIGRATION_ITEM_INSTANCES = 7
+MIGRATION_ACTIVE_EFFECTS = 8
+MIGRATION_EFFECT_PRESETS = 9
+MIGRATION_ITEM_MODIFICATIONS = 10
+MIGRATION_SESSION_NET = 11
+MIGRATION_CAMPAIGN_CLOCK = 12
+MIGRATION_CREW_STASH = 13
+MIGRATION_MARKET_STOCK = 14
+MIGRATION_NPC_STATBLOCKS = 15
+MIGRATION_SESSION_RECAPS = 16
+MIGRATION_LOCATIONS = 17
+MIGRATION_MEMORIAL = 18
+MIGRATION_MEMORIAL_DRAFT = 19
+MIGRATION_MARKET_PERMANENT = 20
+MIGRATION_ORGANIZATIONS = 21
 DB_BACKUP_LIMIT = 5
 _RATE_LIMIT_BUCKETS = {}
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -826,6 +3167,37 @@ def enforce_rate_limit(identifier, limit, window):
             raise ApiError(429, 'Слишком много запросов; попробуйте позже')
         bucket.append(now)
         _RATE_LIMIT_BUCKETS[identifier] = bucket
+
+
+# Per-account login throttle: mitigates distributed brute-force that bypasses
+# the IP-level limit. Only failed attempts are counted; a successful login
+# clears the counter. In-memory (resets on restart), like the IP limiter.
+FAILED_LOGIN_LIMIT = 8
+FAILED_LOGIN_WINDOW = 900  # 15 minutes
+
+
+def _failed_login_bucket(username):
+    now = time.time()
+    key = f'login-user:{username}'
+    with _RATE_LIMIT_LOCK:
+        bucket = [stamp for stamp in _RATE_LIMIT_BUCKETS.get(key, [])
+                  if stamp > now - FAILED_LOGIN_WINDOW]
+        _RATE_LIMIT_BUCKETS[key] = bucket
+        return bucket
+
+
+def account_login_locked(username):
+    return len(_failed_login_bucket(username)) >= FAILED_LOGIN_LIMIT
+
+
+def record_failed_login(username):
+    bucket = _failed_login_bucket(username)
+    bucket.append(time.time())
+
+
+def clear_failed_logins(username):
+    with _RATE_LIMIT_LOCK:
+        _RATE_LIMIT_BUCKETS.pop(f'login-user:{username}', None)
         if len(_RATE_LIMIT_BUCKETS) > 5000:
             for key in list(_RATE_LIMIT_BUCKETS)[:1000]:
                 if not _RATE_LIMIT_BUCKETS[key] or _RATE_LIMIT_BUCKETS[key][-1] <= now - 3600:
@@ -835,6 +3207,20 @@ def enforce_rate_limit(identifier, limit, window):
 def configured_admin_usernames():
     raw = os.environ.get('CBPR_ADMIN_USERS', '')
     return {part.strip().lower() for part in raw.split(',') if part.strip()}
+
+
+def backup_tools_module():
+    if BASE not in sys.path:
+        sys.path.insert(0, BASE)
+    import backup as tools
+    return tools
+
+
+def backup_retention():
+    try:
+        return max(1, min(365, int(os.environ.get('CBPR_BACKUP_RETENTION', '14'))))
+    except (TypeError, ValueError):
+        return 14
 
 
 def backup_database(conn, label):
@@ -870,6 +3256,1202 @@ def ensure_column(conn, table, name, definition):
         conn.execute(f'ALTER TABLE {table} ADD COLUMN {name} {definition}')
 
 
+ITEM_INSTANCE_STATES = {
+    'carried', 'stored', 'equipped', 'installed', 'consumed', 'broken',
+}
+ITEM_INSTANCE_BUCKETS = {'inventory', 'cyberware'}
+INSTANCE_ID_RE = re.compile(r'^[a-f0-9]{32}$')
+
+
+def new_item_instance_id():
+    return secrets.token_hex(16)
+
+
+def catalog_item_id_for_entry(entry):
+    """Resolve a legacy owned-item row to a stable Data Pool identifier."""
+    if not isinstance(entry, dict):
+        return None
+    raw = str(entry.get('catalog_item_id') or entry.get('source_key') or
+              entry.get('key') or '').split('@', 1)[0]
+    return raw if raw and item_by_id(raw) else None
+
+
+def item_entry_stackable(entry):
+    """Use explicit instance/catalog metadata; only ammunition stacks by default."""
+    if isinstance(entry, dict) and isinstance(entry.get('stackable'), bool):
+        return entry['stackable']
+    item = item_by_id(catalog_item_id_for_entry(entry)) if isinstance(entry, dict) else None
+    explicit = (item or {}).get('stackable')
+    if isinstance(explicit, bool):
+        return explicit
+    return str((item or entry or {}).get('cat') or '') == 'ammo'
+
+
+def ensure_character_item_instances(data, regenerate=False):
+    """Add stable IDs and split durable legacy stacks without losing quantities.
+
+    The Character JSON remains a compatibility projection while ``item_instances``
+    becomes the relational foundation for modifications, transfers and consumables.
+    """
+    changed = False
+    seen = set()
+    legacy_instance_ids = {}
+    legacy_weapon_state = copy.deepcopy(data.get('weapon_state') or {})
+    legacy_weapon_keys = set()
+    for bucket in ('inventory', 'cyberware'):
+        source = data.get(bucket) if isinstance(data.get(bucket), list) else []
+        normalized = []
+        for raw_entry in source:
+            if not isinstance(raw_entry, dict):
+                normalized.append(raw_entry)
+                continue
+            entry = dict(raw_entry)
+            try:
+                quantity = max(1, int(entry.get('qty') or entry.get('quantity') or 1))
+            except (TypeError, ValueError):
+                quantity = 1
+            stackable = bucket == 'inventory' and item_entry_stackable(entry)
+            copies = 1 if stackable else quantity
+            per_copy_quantity = quantity if stackable else 1
+            if copies != 1 or quantity != per_copy_quantity:
+                changed = True
+            for index in range(copies):
+                owned = dict(entry)
+                original_instance_id = str(entry.get('instance_id') or '').lower() \
+                    if index == 0 else ''
+                candidate = original_instance_id
+                if regenerate or not INSTANCE_ID_RE.fullmatch(candidate) or candidate in seen:
+                    candidate = new_item_instance_id()
+                    changed = True
+                if original_instance_id and original_instance_id != candidate:
+                    legacy_instance_ids.setdefault(original_instance_id, candidate)
+                seen.add(candidate)
+                if owned.get('instance_id') != candidate or owned.get('qty') != per_copy_quantity:
+                    changed = True
+                owned['instance_id'] = candidate
+                owned['qty'] = per_copy_quantity
+                if owned.get('is_custom'):
+                    custom_key = f'custom-{candidate}'
+                    if owned.get('key') != custom_key:
+                        owned['key'] = custom_key
+                        changed = True
+                owned.pop('quantity', None)
+                state = str(owned.get('state') or
+                            ('installed' if bucket == 'cyberware' else 'carried'))
+                if state not in ITEM_INSTANCE_STATES:
+                    state = 'installed' if bucket == 'cyberware' else 'carried'
+                    changed = True
+                owned['state'] = state
+                catalog_id = catalog_item_id_for_entry(owned)
+                if catalog_id and owned.get('catalog_item_id') != catalog_id:
+                    owned['catalog_item_id'] = catalog_id
+                    changed = True
+                normalized.append(owned)
+                if bucket == 'inventory' and owned.get('cat') in ('guns', 'melee'):
+                    legacy_key = str(entry.get('key') or entry.get('source_key') or
+                                     entry.get('name') or '')
+                    legacy_weapon_keys.add(legacy_key)
+                    if candidate not in legacy_weapon_state and legacy_key in legacy_weapon_state:
+                        legacy_weapon_state[candidate] = copy.deepcopy(legacy_weapon_state[legacy_key])
+                        changed = True
+        if source != normalized:
+            changed = True
+        data[bucket] = normalized
+
+    # Cyberware creation assigns options to concrete temporary foundation IDs.
+    # When server-owned IDs are regenerated, remap those links in the same pass.
+    free_neuroport = next((
+        item for item in data.get('cyberware') or []
+        if isinstance(item, dict) and item.get('creation_free') and
+        item.get('key') == 'creation-neuroport'), None)
+    if free_neuroport:
+        legacy_instance_ids.setdefault(
+            'creation-neuroport', free_neuroport.get('instance_id'))
+    for old_id, new_id in list(legacy_instance_ids.items()):
+        if old_id and INSTANCE_ID_RE.fullmatch(str(new_id or '')):
+            legacy_instance_ids.setdefault(
+                cyberware_secondary_host_id(old_id),
+                cyberware_secondary_host_id(new_id))
+    for chrome in data.get('cyberware') or []:
+        if not isinstance(chrome, dict):
+            continue
+        old_host = str(chrome.get('host_instance') or '')
+        if old_host and legacy_instance_ids.get(old_host):
+            chrome['host_instance'] = legacy_instance_ids[old_host]
+            changed = True
+        old_hosts = chrome.get('host_instances')
+        if isinstance(old_hosts, list):
+            remapped = [legacy_instance_ids.get(str(host), str(host))
+                        for host in old_hosts]
+            if remapped != old_hosts:
+                chrome['host_instances'] = remapped
+                changed = True
+
+    # Existing equipped armor pointed at a catalog key. Preserve that projection,
+    # but also bind it to one concrete owned item whenever a match is available.
+    armor = data.get('armor') if isinstance(data.get('armor'), dict) else {}
+    inventory = [entry for entry in data.get('inventory') or [] if isinstance(entry, dict)]
+    claimed = set()
+    for location in ('head', 'body', 'shield'):
+        piece = armor.get(location)
+        if not isinstance(piece, dict):
+            continue
+        current = str(piece.get('instance_id') or '')
+        if INSTANCE_ID_RE.fullmatch(current) and current in seen:
+            claimed.add(current)
+            equipped = next((entry for entry in inventory
+                             if entry.get('instance_id') == current), None)
+            if equipped and equipped.get('state') != 'equipped':
+                equipped['state'] = 'equipped'
+                changed = True
+            continue
+        piece_key = str(piece.get('key') or piece.get('source_key') or '').split('@', 1)[0]
+        bundled = bool(piece.get('bundled'))
+        match = next((entry for entry in inventory
+                      if (entry.get('instance_id') not in claimed or bundled) and
+                      str(entry.get('catalog_item_id') or entry.get('key') or
+                          entry.get('source_key') or '').split('@', 1)[0] == piece_key), None)
+        if match:
+            piece['instance_id'] = match['instance_id']
+            if match.get('state') != 'equipped':
+                match['state'] = 'equipped'
+            claimed.add(match['instance_id'])
+            changed = True
+
+    for key in legacy_weapon_keys:
+        if key in legacy_weapon_state and any(
+                isinstance(entry, dict) and entry.get('instance_id') != key and
+                str(entry.get('key') or entry.get('source_key') or entry.get('name') or '') == key
+                for entry in data.get('inventory') or []):
+            legacy_weapon_state.pop(key, None)
+            changed = True
+    if data.get('weapon_state') != legacy_weapon_state:
+        data['weapon_state'] = legacy_weapon_state
+    if (_num(data.get('schema_version')) or 0) < 5:
+        data['schema_version'] = 5
+        changed = True
+    return changed
+
+
+def persist_character_item_instances(conn, character_id, data, source_type,
+                                     source_ref=None, acquired_at=None, prune=False):
+    """Upsert the compatibility projection into the relational instance store."""
+    now = time.time()
+    acquired_at = float(acquired_at or now)
+    present = set()
+    for bucket in ('inventory', 'cyberware'):
+        for entry in data.get(bucket) or []:
+            if not isinstance(entry, dict):
+                continue
+            instance_id = str(entry.get('instance_id') or '').lower()
+            occupied = conn.execute(
+                'SELECT character_id FROM item_instances WHERE instance_id=?',
+                (instance_id,)).fetchone() if INSTANCE_ID_RE.fullmatch(instance_id) else None
+            if (not INSTANCE_ID_RE.fullmatch(instance_id) or
+                    (occupied and occupied['character_id'] != int(character_id))):
+                old_instance_id = instance_id
+                instance_id = new_item_instance_id()
+                entry['instance_id'] = instance_id
+                for piece in (data.get('armor') or {}).values():
+                    if isinstance(piece, dict) and piece.get('instance_id') == old_instance_id:
+                        piece['instance_id'] = instance_id
+                states = data.get('weapon_state') or {}
+                if old_instance_id in states:
+                    states[instance_id] = states.pop(old_instance_id)
+            present.add(instance_id)
+            catalog_id = catalog_item_id_for_entry(entry)
+            state = str(entry.get('state') or
+                        ('installed' if bucket == 'cyberware' else 'carried'))
+            if state not in ITEM_INSTANCE_STATES:
+                state = 'installed' if bucket == 'cyberware' else 'carried'
+                entry['state'] = state
+            try:
+                quantity = max(1, int(entry.get('qty') or 1))
+            except (TypeError, ValueError):
+                quantity = 1
+            condition_current = _num(entry.get('condition_current'))
+            condition_max = _num(entry.get('condition_max'))
+            acquisition_source = str(entry.get('acquisition_source') or '').strip()[:40]
+            acquisition_note = str(entry.get('acquisition_note') or '').strip()[:160]
+            stored_source = acquisition_source or str(source_type or 'unknown')[:40]
+            stored_ref = acquisition_note or str(source_ref or '')[:160] or None
+            conn.execute(
+                'INSERT INTO item_instances(instance_id,character_id,catalog_item_id,bucket,'
+                'custom_name,state,quantity,condition_current,condition_max,notes,acquired_at,'
+                'source_type,source_ref,data_json,created,updated) '
+                'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
+                'ON CONFLICT(instance_id) DO UPDATE SET '
+                'catalog_item_id=excluded.catalog_item_id,bucket=excluded.bucket,'
+                'custom_name=excluded.custom_name,state=excluded.state,quantity=excluded.quantity,'
+                'condition_current=excluded.condition_current,condition_max=excluded.condition_max,'
+                'notes=excluded.notes,data_json=excluded.data_json,updated=excluded.updated',
+                (instance_id, int(character_id), catalog_id, bucket,
+                 str(entry.get('custom_name') or '')[:120] or None, state, quantity,
+                 condition_current, condition_max, str(entry.get('notes') or '')[:2000],
+                 acquired_at, stored_source, stored_ref,
+                 json.dumps(entry, ensure_ascii=False), acquired_at, now))
+            if acquisition_source:
+                conn.execute(
+                    'UPDATE item_instances SET source_type=?,source_ref=? WHERE instance_id=?',
+                    (acquisition_source, acquisition_note or None, instance_id))
+    if prune:
+        if present:
+            marks = ','.join('?' for _ in present)
+            conn.execute(
+                f'DELETE FROM item_instances WHERE character_id=? AND instance_id NOT IN ({marks})',
+                (int(character_id), *sorted(present)))
+        else:
+            conn.execute('DELETE FROM item_instances WHERE character_id=?', (int(character_id),))
+
+
+def item_modification_payload(row):
+    item = dict(row)
+    item['active'] = bool(item.get('active'))
+    item['permanent'] = bool(item.get('permanent'))
+    item['configuration'] = parse_json_object(item.pop('configuration_json', '{}'))
+    return item
+
+
+def character_modifications(conn, character_id, include_inactive=False):
+    where = '' if include_inactive else 'AND m.active=1'
+    rows = conn.execute(
+        'SELECT m.*,u.display_name installer FROM item_modifications m '
+        'JOIN users u ON u.id=m.installed_by WHERE m.character_id=? ' + where +
+        ' ORDER BY m.installed_at,m.modification_id', (int(character_id),)).fetchall()
+    return [item_modification_payload(row) for row in rows]
+
+
+def weapon_is_exotic(entry):
+    item = item_by_id(catalog_item_id_for_entry(entry))
+    text = ' '.join((
+        str((item or {}).get('name') or ''), str((item or {}).get('desc') or ''),
+        str(((item or {}).get('mechanics') or {}).get('quality') or ''),
+    )).lower()
+    return 'exotic weapon' in text or 'exotic ranged weapon' in text
+
+
+def weapon_slot_capacity(host, active_modifications=None, owned_by_id=None):
+    active_modifications = active_modifications or []
+    owned_by_id = owned_by_id or {}
+    pools = {
+        'attachment': {'total': 0 if weapon_is_exotic(host) else 3, 'used': 0},
+        'scope': {'total': 0, 'used': 0},
+    }
+    for modification in active_modifications:
+        if not modification.get('active', True):
+            continue
+        upgrade = owned_by_id.get(modification.get('upgrade_instance_id')) or {}
+        for pool, amount in (upgrade.get('grants_slots') or {}).items():
+            if pool in pools:
+                pools[pool]['total'] += max(0, int(amount or 0))
+    for modification in active_modifications:
+        if not modification.get('active', True):
+            continue
+        upgrade = owned_by_id.get(modification.get('upgrade_instance_id')) or {}
+        required = max(0, int(modification.get('slots_used') or 0))
+        configured_pool = (modification.get('configuration') or {}).get('slot_pool')
+        pool = configured_pool if configured_pool in pools else 'attachment'
+        if not configured_pool and upgrade.get('slot_type') == 'scope' and weapon_is_exotic(host):
+            pool = 'scope'
+        pools[pool]['used'] += required
+    return pools
+
+
+def weapon_upgrade_compatibility(host, upgrade, active_modifications=None,
+                                 owned_by_id=None):
+    active_modifications = active_modifications or []
+    owned_by_id = owned_by_id or {}
+    reasons = []
+    manual = bool(upgrade.get('compatibility_manual'))
+    if host.get('cat') != 'guns':
+        reasons.append('Host is not a ranged weapon')
+    if upgrade.get('cat') != 'gun_upgrades' or upgrade.get('host_type') != 'weapon':
+        reasons.append('Item is not a weapon upgrade')
+    host_catalog = item_by_id(catalog_item_id_for_entry(host)) or {}
+    upgrade_catalog = item_by_id(catalog_item_id_for_entry(upgrade)) or {}
+    mechanics = host_catalog.get('mechanics') or host.get('mechanics') or {}
+    weapon_type = str(mechanics.get('type') or '').lower()
+    skill = str(mechanics.get('skill') or '').lower()
+    text = str(upgrade.get('compatibility_text') or
+               (upgrade_catalog.get('mechanics') or {}).get('compatible_weapons') or '').lower()
+    exotic = weapon_is_exotic(host)
+    installed_upgrades = [owned_by_id.get(modification.get('upgrade_instance_id')) or {}
+                          for modification in active_modifications]
+    has_scope_rail = any(item.get('name') == 'Compatibility Rail'
+                         for item in installed_upgrades)
+    scope_upgrade = upgrade.get('slot_type') == 'scope'
+    if 'non-exotic' in text and exotic and not (scope_upgrade and has_scope_rail):
+        reasons.append('Requires a Non-Exotic weapon or Compatibility Rail')
+    if 'all exotic ranged weapons' in text and not exotic:
+        reasons.append('Requires an Exotic weapon')
+    if 'shoulder arms' in text and skill != 'shoulder arms':
+        reasons.append('Requires a Shoulder Arms weapon')
+    is_bow = 'bow' in weapon_type or 'crossbow' in weapon_type
+    if text.strip().startswith('bows, crossbows') and not is_bow:
+        reasons.append('Requires a Bow or Crossbow')
+    if ('except bows' in text or 'excluding bows' in text or 'excluding bows & crossbows' in text) and is_bow:
+        reasons.append('Cannot be installed on Bows/Crossbows')
+    if 'sniper rifles' in text and 'all ranged' not in text and 'sniper rifle' not in weapon_type:
+        reasons.append('Requires a Sniper Rifle')
+    if text.startswith('all pistols') and 'pistol' not in weapon_type:
+        reasons.append('Requires a Pistol')
+    host_feature_text = ' '.join(str(value) for value in (host_catalog.get('fields') or {}).values()).lower()
+    if 'autofire (smg 3)' in text and 'autofire (3)' not in host_feature_text:
+        reasons.append('Requires a weapon with Autofire (SMG 3)')
+    if 'except grenade launchers and rocket launchers' in text and any(
+            token in weapon_type for token in ('grenade launcher', 'rocket launcher')):
+        reasons.append('Cannot be installed on Grenade/Rocket Launchers')
+    configuration_schemas = weapon_modification_configuration_schema(
+        catalog_item_id_for_entry(upgrade), host)
+    if any(schema.get('required') and not schema.get('choices')
+           for schema in configuration_schemas):
+        reasons.append('No compatible configuration choices for this weapon type')
+
+    pools = weapon_slot_capacity(host, active_modifications, owned_by_id)
+    required = max(0, int(upgrade.get('slots_used') or 0))
+    preferred_pool = 'scope' if scope_upgrade and exotic else 'attachment'
+    if required and pools[preferred_pool]['used'] + required > pools[preferred_pool]['total']:
+        # A non-Exotic scope normally consumes a general attachment slot. An Exotic
+        # scope may only consume the dedicated slot granted by Compatibility Rail.
+        reasons.append(
+            f'Not enough {preferred_pool} slots '
+            f'({pools[preferred_pool]["used"]}/{pools[preferred_pool]["total"]}, needs {required})')
+    slots_total = sum(pool['total'] for pool in pools.values())
+    slots_used = sum(pool['used'] for pool in pools.values())
+    catalog_id = catalog_item_id_for_entry(upgrade)
+    group = upgrade.get('modification_group')
+    for modification in active_modifications:
+        installed = owned_by_id.get(modification.get('upgrade_instance_id')) or {}
+        if upgrade.get('unique_per_host') and catalog_item_id_for_entry(installed) == catalog_id:
+            reasons.append('Only one copy may be installed on this host')
+        if group and installed.get('modification_group') == group:
+            reasons.append(f'Conflicts with installed {installed.get("name") or "upgrade"}')
+        names = {str(upgrade.get('name') or ''), str(installed.get('name') or '')}
+        if names == {'Smart Rebuild', 'Smartgun Link'}:
+            reasons.append('Smart Rebuild conflicts with Smartgun Link')
+    return {
+        'allowed': not reasons, 'manual_resolution_required': manual,
+        'reasons': reasons, 'slots_total': slots_total, 'slots_used': slots_used,
+        'slot_pools': pools, 'slot_pool': preferred_pool if required else None,
+        'slot_pool_after': pools[preferred_pool]['used'] + required,
+        'slot_pool_total': pools[preferred_pool]['total'],
+        'slots_required': required, 'slots_after': slots_used + required,
+        'grants_slots': copy.deepcopy(upgrade.get('grants_slots') or {}),
+        'compatibility_text': upgrade.get('compatibility_text') or '',
+    }
+
+
+def cyberdeck_profile_for_host(host):
+    catalog_id = catalog_item_id_for_entry(host)
+    return copy.deepcopy(CYBERDECK_PROFILES.get(catalog_id) or {})
+
+
+def cyberdeck_program_category(item):
+    program_class = str((item.get('mechanics') or {}).get('program_class') or '')
+    if 'Black ICE' in program_class:
+        return 'black_ice'
+    if 'Attacker' in program_class:
+        return 'attacker'
+    if 'Defender' in program_class:
+        return 'defender'
+    if 'Booster' in program_class:
+        return 'booster'
+    return 'program'
+
+
+def cyberdeck_slot_usage(host, active_modifications=None, owned_by_id=None):
+    active_modifications = active_modifications or []
+    owned_by_id = owned_by_id or {}
+    capacities = cyberdeck_profile_for_host(host)
+    installed = [owned_by_id.get(mod.get('upgrade_instance_id')) or {}
+                 for mod in active_modifications if mod.get('active', True)]
+    hardware = [item for item in installed
+                if item.get('modification_kind') == 'cyberdeck_hardware']
+    programs = [item for item in installed
+                if item.get('modification_kind') == 'cyberdeck_program']
+    perfume_shoppe = any(item.get('name') == 'Perfume Shoppe' for item in hardware)
+    hardware_units = sum(max(1, int(item.get('slots_used') or 1)) for item in hardware)
+    program_units = 0
+    flak_units = 0
+    program_weights = []
+    for item in programs:
+        weight = max(1, int(item.get('slots_used') or 1))
+        if perfume_shoppe and item.get('name') == 'Skunk':
+            weight = 1
+        program_weights.append({'instance_id': item.get('instance_id'),
+                                'name': item.get('name'), 'slots': weight})
+        program_units += weight
+        if item.get('name') == 'Flak':
+            flak_units += weight
+    flak_used = min(capacities.get('flak', 0), flak_units)
+    remaining_program = max(0, program_units - flak_used)
+    program_used = min(capacities.get('program', 0), remaining_program)
+    remaining_program -= program_used
+    hardware_used = min(capacities.get('hardware', 0), hardware_units)
+    remaining_hardware = max(0, hardware_units - hardware_used)
+    mixed_used = remaining_program + remaining_hardware
+    pools = {
+        'program': {'total': capacities.get('program', 0), 'used': program_used},
+        'hardware': {'total': capacities.get('hardware', 0), 'used': hardware_used},
+        'mixed': {'total': capacities.get('mixed', 0), 'used': mixed_used},
+        'flak': {'total': capacities.get('flak', 0), 'used': flak_used},
+    }
+    pools = {key: value for key, value in pools.items()
+             if value['total'] or value['used']}
+    overloaded = any(pool['used'] > pool['total'] for pool in pools.values())
+    return {
+        'pools': pools, 'overloaded': overloaded,
+        'slots_total': sum(capacities.values()),
+        'slots_used': hardware_units + program_units,
+        'hardware_units': hardware_units, 'program_units': program_units,
+        'program_weights': program_weights,
+    }
+
+
+def cyberdeck_item_compatibility(host, upgrade, active_modifications=None,
+                                 owned_by_id=None):
+    active_modifications = active_modifications or []
+    owned_by_id = owned_by_id or {}
+    reasons = []
+    host_catalog = item_by_id(catalog_item_id_for_entry(host)) or {}
+    if (host.get('cat') != 'net_stuff' or
+            (host_catalog.get('mechanics') or {}).get('type') != 'Cyberdeck'):
+        reasons.append('Host is not a Cyberdeck')
+    if upgrade.get('host_type') != 'cyberdeck':
+        reasons.append('Item is not Cyberdeck Hardware or a Program')
+    installed = [owned_by_id.get(mod.get('upgrade_instance_id')) or {}
+                 for mod in active_modifications]
+    if upgrade.get('unique_per_host') and any(
+            catalog_item_id_for_entry(item) == catalog_item_id_for_entry(upgrade)
+            for item in installed):
+        reasons.append('Only one effective copy may be installed on this Cyberdeck')
+    deck_id = catalog_item_id_for_entry(host)
+    name = str(upgrade.get('name') or '')
+    kind = upgrade.get('modification_kind')
+    category = cyberdeck_program_category(upgrade)
+    if kind == 'cyberdeck_program':
+        if deck_id == 'net_stuff-4':
+            if sum(cyberdeck_program_category(item) == category for item in installed) >= 1:
+                reasons.append('Kirama Entry Deck allows only one Program of each Class')
+        elif deck_id == 'net_stuff-6' and category != 'black_ice':
+            reasons.append('Microtech Assault Program slots accept only Black ICE')
+        elif deck_id == 'net_stuff-12' and name != 'Hellhound':
+            reasons.append('Kerberos Program slots accept only Hellhound')
+        elif deck_id == 'net_stuff-13' and name not in ('Sword', 'Shield'):
+            reasons.append('Verdant Knight accepts only Sword and Shield Programs')
+        elif deck_id == 'net_stuff-14' and category in ('attacker', 'black_ice'):
+            reasons.append("Warlock's Book cannot install Attacker or Black ICE Programs")
+        elif deck_id == 'net_stuff-15':
+            if category == 'defender' and name != 'Flak':
+                reasons.append('Zetatech Kaliya accepts no Defender other than Flak')
+            if category == 'black_ice' and name != 'Asp':
+                reasons.append('Zetatech Kaliya accepts no Black ICE other than Asp')
+        elif deck_id == 'net_stuff-16' and category == 'defender':
+            reasons.append('Zetatech MicroMate cannot install Defender Programs')
+        if (category == 'black_ice' and name != 'Wisp' and
+                any(item.get('name') == 'Swamp Mist' for item in installed)):
+            reasons.append('Swamp Mist permits only Wisp Black ICE')
+    elif kind == 'cyberdeck_hardware':
+        if name == 'Swamp Mist' and any(
+                cyberdeck_program_category(item) == 'black_ice' and
+                item.get('name') != 'Wisp' for item in installed):
+            reasons.append('Remove non-Wisp Black ICE before installing Swamp Mist')
+    candidate_id = str(upgrade.get('instance_id') or 'candidate')
+    candidate_mod = {
+        'modification_id': f'candidate:{candidate_id}', 'active': True,
+        'host_instance_id': host.get('instance_id'),
+        'upgrade_instance_id': upgrade.get('instance_id'),
+    }
+    candidate_owned = dict(owned_by_id)
+    if upgrade.get('instance_id'):
+        candidate_owned[upgrade['instance_id']] = upgrade
+    usage = cyberdeck_slot_usage(
+        host, [*active_modifications, candidate_mod], candidate_owned)
+    if usage['overloaded']:
+        reasons.append('Not enough compatible Cyberdeck slots')
+    return {
+        'allowed': not reasons, 'reasons': reasons,
+        'manual_resolution_required': False,
+        'slot_pools': usage['pools'], 'slots_total': usage['slots_total'],
+        'slots_used_after': usage['slots_used'],
+        'slots_required': max(1, int(upgrade.get('slots_used') or 1)),
+        'item_kind': kind,
+    }
+
+
+PROGRAM_RUNTIME_STATUSES = {'inactive', 'rezzed', 'derezzed', 'destroyed'}
+
+
+def queue_defense_sequencer_trigger(data, modifications, deck_instance_id,
+                                     source_program_instance_id):
+    owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+             if isinstance(item, dict) and item.get('instance_id')}
+    source_program = owned.get(source_program_instance_id) or {}
+    if source_program.get('name') != 'Armor':
+        return 0
+    sequencers = [mod for mod in modifications
+                  if mod.get('host_instance_id') == deck_instance_id and
+                  (owned.get(mod.get('upgrade_instance_id')) or {}).get('name') ==
+                  'Defense Sequencer']
+    eligible = [
+        item.get('instance_id') for mod in modifications
+        for item in [owned.get(mod.get('upgrade_instance_id')) or {}]
+        if mod.get('host_instance_id') == deck_instance_id and
+        item.get('name') == 'Armor' and item.get('instance_id') != source_program_instance_id and
+        ((data.get('program_state') or {}).get(item.get('instance_id')) or {}).get(
+            'status', 'inactive') == 'inactive']
+    if not sequencers or not eligible:
+        return 0
+    for sequencer in sequencers:
+        data.setdefault('modification_state', {})[sequencer['modification_id']] = {
+            'resource_type': 'defense_sequencer',
+            'pending_armor_rez': True,
+            'trigger_program_instance_id': source_program_instance_id,
+            'eligible_armor_instance_ids': eligible,
+            'manual_eligibility_required': True,
+            'source': 'DL:Up 5 / IR3 41',
+        }
+    return len(eligible)
+
+
+def resolve_defense_sequencer_trigger(data, modifications, deck_instance_id,
+                                      hardware_instance_id, armor_instance_id,
+                                      now=None):
+    """Resolve a pending Defense Sequencer after explicit table eligibility proof."""
+    now = time.time() if now is None else now
+    owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+             if isinstance(item, dict) and item.get('instance_id')}
+    sequencer_modification = next((
+        mod for mod in modifications
+        if mod.get('host_instance_id') == deck_instance_id and
+        mod.get('upgrade_instance_id') == hardware_instance_id and
+        (owned.get(hardware_instance_id) or {}).get('name') == 'Defense Sequencer'), None)
+    if not sequencer_modification:
+        raise ApiError(404, 'Installed Defense Sequencer не найден')
+    sequencer_state = (data.get('modification_state') or {}).get(
+        sequencer_modification['modification_id']) or {}
+    if (sequencer_state.get('resource_type') != 'defense_sequencer' or
+            not sequencer_state.get('pending_armor_rez')):
+        raise ApiError(409, 'Defense Sequencer не имеет pending Armor trigger')
+    eligible_ids = [str(item) for item in
+                    sequencer_state.get('eligible_armor_instance_ids') or []]
+    if armor_instance_id not in eligible_ids:
+        raise ApiError(409, 'Выбранная Armor не входит в pending eligibility snapshot')
+    armor = owned.get(armor_instance_id)
+    armor_modification = next((
+        mod for mod in modifications
+        if mod.get('host_instance_id') == deck_instance_id and
+        mod.get('upgrade_instance_id') == armor_instance_id and
+        (armor or {}).get('name') == 'Armor'), None)
+    if not armor or not armor_modification:
+        raise ApiError(409, 'Eligible Armor больше не установлена в этом Cyberdeck')
+    runtime = initial_program_runtime_state(
+        armor, deck_instance_id, armor_modification['modification_id'],
+        (data.get('program_state') or {}).get(armor_instance_id))
+    if runtime['status'] != 'inactive':
+        raise ApiError(409, 'Defense Sequencer может Rez только inactive Armor')
+    for program_id, existing in (data.get('program_state') or {}).items():
+        if program_id == armor_instance_id or not isinstance(existing, dict):
+            continue
+        other = owned.get(program_id) or {}
+        if other.get('name') == 'Armor' and existing.get('status') == 'rezzed':
+            raise ApiError(409, 'Другая копия Armor уже Rezzed')
+    runtime['status'] = 'rezzed'
+    runtime['rez_current'] = runtime['rez_max']
+    data.setdefault('program_state', {})[armor_instance_id] = runtime
+    data.setdefault('modification_state', {})[
+        sequencer_modification['modification_id']] = {
+            'resource_type': 'defense_sequencer',
+            'pending_armor_rez': False,
+            'resolved_armor_instance_id': armor_instance_id,
+            'trigger_program_instance_id': sequencer_state.get(
+                'trigger_program_instance_id'),
+            'manual_eligibility_confirmed': True,
+            'resolved_at': now,
+            'source': sequencer_state.get('source') or 'DL:Up 5 / IR3 41',
+        }
+    return {
+        'armor_instance_id': armor_instance_id,
+        'armor_name': armor.get('custom_name') or armor.get('name') or 'Armor',
+        'rez_current': runtime['rez_current'], 'rez_max': runtime['rez_max'],
+        'manual_eligibility_confirmed': True,
+    }
+
+
+def initial_program_runtime_state(item, deck_instance_id, modification_id, existing=None):
+    existing = existing if isinstance(existing, dict) else {}
+    category = cyberdeck_program_category(item)
+    maximum = max(0, int(_num((item.get('mechanics') or {}).get('rez')) or 0))
+    status = str(existing.get('status') or 'inactive')
+    if status not in PROGRAM_RUNTIME_STATUSES or status == 'destroyed':
+        status = 'inactive'
+    current = _num(existing.get('rez_current'))
+    if category in ('booster', 'defender', 'black_ice'):
+        current = max(0, min(maximum,
+                             int(current if current is not None else maximum)))
+    else:
+        current = 0
+    return {
+        'program_instance_id': item.get('instance_id'),
+        'catalog_item_id': catalog_item_id_for_entry(item),
+        'deck_instance_id': deck_instance_id,
+        'modification_id': modification_id,
+        'category': category, 'status': status,
+        'rez_current': current, 'rez_max': maximum,
+        'run_count': max(0, int(_num(existing.get('run_count')) or 0)),
+        'last_run_at': existing.get('last_run_at'),
+    }
+
+
+NET_ENTITY_STATUSES = {
+    'lying_in_wait', 'hunting', 'derezzed', 'deactivated', 'destroyed',
+}
+
+
+BLACK_ICE_ANTI_PROGRAM_DAMAGE = {
+    'Dragon': 6, 'Killer': 4, 'Sabertooth': 6,
+}
+ATTACKER_PROGRAM_BLACK_ICE_DAMAGE = {'Sword': 3, 'Banhammer': 2}
+BLACK_ICE_STAT_EFFECT_TARGETS = {
+    'Liche': ('INT', 'REF', 'DEX'),
+    'Scorpion': ('MOVE',),
+}
+
+
+def black_ice_effect_profile(item):
+    catalog_item = item_by_id(catalog_item_id_for_entry(item)) or item or {}
+    name = str(catalog_item.get('name') or '')
+    dice = BLACK_ICE_ANTI_PROGRAM_DAMAGE.get(name)
+    if name == 'Asp':
+        resolution = 'automated_random_destroy'
+    elif name == 'Raven':
+        resolution = 'automated_random_derez_plus_manual'
+    elif name in BLACK_ICE_STAT_EFFECT_TARGETS:
+        resolution = 'automated_stat_penalty'
+    else:
+        resolution = 'automated_rez_damage' if dice else 'manual_effect'
+    return {
+        'resolution': resolution,
+        'damage_dice': dice, 'damage_sides': 6 if dice else None,
+        'destroy_on_derez': bool(dice),
+        'source': catalog_item.get('source'),
+        'manual_effect': '' if resolution == 'automated_stat_penalty' else
+            str(catalog_item.get('desc') or '')[:2000],
+    }
+
+
+def instantiate_black_ice_stat_effects(conn, character_id, actor_user_id,
+                                       source_program, session_id, now=None,
+                                       penalty_roll=None):
+    """Create allowlisted one-hour STAT penalties for Liche or Scorpion.
+
+    The duration uses the existing campaign-time/manual-clock lifecycle: the
+    numerical penalty is authoritative immediately, while advancing the one-hour
+    campaign clock remains an explicit table action.
+    """
+    now = time.time() if now is None else now
+    catalog_item = item_by_id(catalog_item_id_for_entry(source_program)) or source_program or {}
+    name = str(catalog_item.get('name') or '')
+    targets = BLACK_ICE_STAT_EFFECT_TARGETS.get(name)
+    if not targets:
+        raise ApiError(409, 'Black ICE не имеет curated STAT effect')
+    if penalty_roll is None:
+        penalty_roll = secrets.randbelow(6) + 1
+    if (not isinstance(penalty_roll, int) or isinstance(penalty_roll, bool) or
+            not 1 <= penalty_roll <= 6):
+        raise ApiError(400, 'Black ICE STAT penalty roll должен быть от 1 до 6')
+    effect_group_id = secrets.token_hex(16)
+    created = []
+    for stat in targets:
+        effect_id = secrets.token_hex(16)
+        definition = {
+            'id': f'black-ice-{name.lower()}-{effect_id}',
+            'target': f'character.stat.{stat}',
+            'operation': 'add', 'value': -penalty_roll,
+            'minimum_value': 1,
+            'stack_group': f'black_ice_{name.lower()}_{effect_group_id}_{stat.lower()}',
+            'stack_policy': 'stack', 'priority': 400,
+            'source': str(catalog_item.get('source') or 'CP:R 371')[:120],
+        }
+        validate_effect_definition(definition)
+        label = f'{name}: {stat} −{penalty_roll}'
+        context = {
+            'effect_group_id': effect_group_id,
+            'automated_effect': True,
+            'manual_expiry': True,
+            'campaign_minutes': 60,
+            'campaign_clock_manual': True,
+            'penalty_roll': penalty_roll,
+            'minimum_stat': 1,
+            'source_program_instance_id': source_program.get('instance_id'),
+            'source_catalog_item_id': catalog_item_id_for_entry(source_program),
+            'source': catalog_item.get('source') or 'CP:R 371',
+        }
+        conn.execute(
+            'INSERT INTO active_effect_instances(effect_id,character_id,source_type,'
+            'source_item_instance_id,preset_id,label,definition_json,context_json,'
+            'duration_type,started_at,session_id,active,created_by,reason,created,updated) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)',
+            (effect_id, int(character_id), 'black_ice',
+             source_program.get('instance_id'),
+             f'black-ice-{name.lower()}-stat-penalty', label,
+             json.dumps(definition, ensure_ascii=False),
+             json.dumps(context, ensure_ascii=False), 'campaign_time', now,
+             int(session_id), int(actor_user_id),
+             f'Automated {name} effect · manual 1-hour campaign expiry', now, now))
+        row = conn.execute(
+            'SELECT e.*,u.display_name actor FROM active_effect_instances e '
+            'JOIN users u ON u.id=e.created_by WHERE e.effect_id=?',
+            (effect_id,)).fetchone()
+        created.append(effect_instance_payload(row, now))
+    return {
+        'name': name, 'penalty_roll': penalty_roll,
+        'targets': list(targets), 'created': created,
+        'effect_group_id': effect_group_id,
+    }
+
+
+def roll_dice(count, sides=6):
+    count = max(0, min(100, int(count or 0)))
+    sides = max(2, min(100, int(sides or 6)))
+    rolls = [secrets.randbelow(sides) + 1 for _ in range(count)]
+    return {'rolls': rolls, 'total': sum(rolls)}
+
+
+def black_ice_target_type(item):
+    program_class = str((item.get('mechanics') or {}).get('program_class') or '')
+    return 'enemy_program_source' if 'Anti Program Black ICE' in program_class \
+        else 'enemy_netrunner'
+
+
+def active_black_ice_entity(character, program_instance_id):
+    entities = character.get('net_entities') or {}
+    return next((copy.deepcopy(entity) for entity in entities.values()
+                 if isinstance(entity, dict) and
+                 entity.get('source_program_instance_id') == program_instance_id and
+                 entity.get('status') in ('lying_in_wait', 'hunting', 'derezzed')), None)
+
+
+def initial_black_ice_entity(item, deck_instance_id, character_id, mode,
+                             floor_label, target_label=None):
+    mechanics = item.get('mechanics') or {}
+    maximum = max(1, int(_num(mechanics.get('rez')) or 1))
+    status = 'lying_in_wait' if mode == 'lie_in_wait' else 'hunting'
+    roll = secrets.randbelow(10) + 1 if status == 'hunting' else None
+    speed = max(0, int(_num(mechanics.get('spd')) or 0))
+    return {
+        'net_entity_id': secrets.token_hex(16),
+        'source_program_instance_id': item.get('instance_id'),
+        'deck_instance_id': deck_instance_id,
+        'owner_character_id': int(character_id),
+        'type': 'black_ice', 'name': item.get('custom_name') or item.get('name'),
+        'program_class': mechanics.get('program_class'),
+        'target_type': black_ice_target_type(item),
+        'floor_label': floor_label,
+        'target_label': target_label if status == 'hunting' else None,
+        'per': max(0, int(_num(mechanics.get('per')) or 0)),
+        'spd': speed, 'atk': max(0, int(_num(mechanics.get('atk')) or 0)),
+        'def': max(0, int(_num(mechanics.get('def')) or 0)),
+        'rez_current': maximum, 'rez_max': maximum,
+        'initiative_roll': roll,
+        'initiative': speed + roll if roll is not None else None,
+        'status': status, 'activated_at': time.time(),
+        'updated_at': time.time(), 'archived_at': None,
+        'manual_resolution_required': True,
+    }
+
+
+def evaluate_effective_cyberdeck(host, modifications, owned_by_id, character=None):
+    character = character or {}
+    usage = cyberdeck_slot_usage(host, modifications, owned_by_id)
+    hardware = []
+    programs = []
+    for modification in modifications:
+        item = owned_by_id.get(modification.get('upgrade_instance_id')) or {}
+        payload = {
+            'modification_id': modification.get('modification_id'),
+            'instance_id': item.get('instance_id'),
+            'catalog_item_id': catalog_item_id_for_entry(item),
+            'name': item.get('custom_name') or item.get('name'),
+            'slots': next((row['slots'] for row in usage['program_weights']
+                           if row['instance_id'] == item.get('instance_id')),
+                          max(1, int(item.get('slots_used') or 1))),
+            'source': item.get('source'),
+            'manual_resolution_required': True,
+        }
+        if item.get('modification_kind') == 'cyberdeck_hardware':
+            hardware_state = copy.deepcopy((character.get('modification_state') or {}).get(
+                modification.get('modification_id')) or {})
+            if hardware_state:
+                payload['runtime_state'] = hardware_state
+                if (item.get('name') == 'Defense Sequencer' and
+                        hardware_state.get('pending_armor_rez')):
+                    payload['eligible_armor_programs'] = [
+                        {
+                            'instance_id': program_id,
+                            'name': (owned_by_id.get(program_id) or {}).get(
+                                'custom_name') or (owned_by_id.get(program_id) or {}).get(
+                                'name') or 'Armor',
+                        }
+                        for program_id in
+                        hardware_state.get('eligible_armor_instance_ids') or []
+                        if program_id in owned_by_id]
+            if item.get('name') == 'Backup Drive':
+                payload['backup_state'] = hardware_state or {
+                    'resource_type': 'backup_drive', 'saved_programs': []}
+            hardware.append(payload)
+        elif item.get('modification_kind') == 'cyberdeck_program':
+            payload['program_class'] = (item.get('mechanics') or {}).get('program_class')
+            payload['mechanics'] = copy.deepcopy(item.get('mechanics') or {})
+            payload['runtime'] = initial_program_runtime_state(
+                item, host.get('instance_id'), modification.get('modification_id'),
+                (character.get('program_state') or {}).get(item.get('instance_id')))
+            if cyberdeck_program_category(item) == 'black_ice':
+                payload['net_entity'] = active_black_ice_entity(
+                    character, item.get('instance_id'))
+            programs.append(payload)
+    return {
+        'instance_id': host.get('instance_id'),
+        'profile': cyberdeck_profile_for_host(host),
+        **usage, 'hardware': hardware, 'programs': programs,
+    }
+
+
+def character_effective_cyberdecks(character, modifications):
+    owned = {item.get('instance_id'): item for item in character.get('inventory') or []
+             if isinstance(item, dict) and item.get('instance_id')}
+    result = {}
+    for host in (item for item in character.get('inventory') or []
+                 if isinstance(item, dict) and item.get('cat') == 'net_stuff' and
+                 (item.get('mechanics') or {}).get('type') == 'Cyberdeck'):
+        host_modifications = [mod for mod in modifications
+                              if mod.get('host_instance_id') == host.get('instance_id')]
+        result[host['instance_id']] = evaluate_effective_cyberdeck(
+            host, host_modifications, owned, character)
+    return result
+
+
+def vehicle_classification(host):
+    name = str(host.get('name') or '').lower()
+    catalog_item = item_by_id(catalog_item_id_for_entry(host)) or {}
+    description = str(catalog_item.get('desc') or '').lower()
+    combined = f'{name} {description}'
+    if name == 'bicycle' or 'bicycle' in name:
+        return {'bicycle', 'bike', 'land'}
+    if 'bike' in name or 'motorcycle' in name:
+        return {'bike', 'land'}
+    if 'jetski' in name:
+        return {'jetski', 'sea'}
+    if 'gyrocopter' in name:
+        return {'gyrocopter', 'air'}
+    if 'cabin cruiser' in combined:
+        return {'sea', 'rooms', 'cabin_cruiser'}
+    if 'yacht' in combined:
+        return {'sea', 'rooms', 'yacht'}
+    if 'aerozep' in combined:
+        return {'air', 'rooms', 'aerozep'}
+    if 'av-4' in combined:
+        return {'air', 'av4'}
+    if any(token in name for token in ('speedboat', 'boat', 'submarine')):
+        return {'sea'}
+    if any(token in name for token in ('helicopter', 'aerodyne', 'av-')):
+        return {'air'}
+    return {'land', 'groundcar'}
+
+
+VEHICLE_REPAIR_RULES = {
+    'minor': {'dv': 9, 'duration_key': '3_hours', 'duration_en': '3 hours',
+              'duration_ru': '3 часа'},
+    'major': {'dv': 13, 'duration_key': '1_day', 'duration_en': '1 day',
+              'duration_ru': '1 день'},
+    'destroyed': {'dv': 17, 'duration_key': '1_week', 'duration_en': '1 week',
+                  'duration_ru': '1 неделя'},
+}
+
+
+def vehicle_repair_severity(current, maximum):
+    current = max(0, _num(current) or 0)
+    maximum = max(0, _num(maximum) or 0)
+    if current <= 0:
+        return 'destroyed'
+    if current < maximum / 2:
+        return 'major'
+    return 'minor'
+
+
+def vehicle_repair_skill(host):
+    classes = vehicle_classification(host)
+    if 'bicycle' in classes:
+        return 'Basic Tech'
+    if 'air' in classes:
+        return 'Air Vehicle Tech'
+    if 'sea' in classes:
+        return 'Sea Vehicle Tech'
+    return 'Land Vehicle Tech'
+
+
+def character_nomad_rank(character):
+    return max([_num(role.get('rank')) or 0 for role in character.get('roles') or []
+                if isinstance(role, dict) and role.get('name') == 'Nomad'] or [0])
+
+
+def vehicle_interior_capacity_for_compatibility(host, active_modifications, owned_by_id):
+    interior = vehicle_base_interior(host)
+    installed = [owned_by_id.get(mod.get('upgrade_instance_id')) or {}
+                 for mod in active_modifications]
+    names = [str(item.get('name') or '') for item in installed]
+    has_housing = any(name == 'Housing Capacity' for name in names)
+    if has_housing:
+        interior['rooms_total'] += 1
+        if not interior['base_rooms']:
+            interior['rooms_total'] = 1
+            interior['kombi'] = True
+    interior['luxury_rooms'] = sum(name == 'Luxury Vehicle Room' for name in names)
+    interior['complex_rooms'] = sum(name == 'Complex Vehicle Room' for name in names)
+    interior['upgraded_rooms'] = interior['luxury_rooms'] + interior['complex_rooms']
+    interior['has_housing'] = has_housing
+    return interior
+
+
+def vehicle_upgrade_compatibility(host, upgrade, active_modifications=None,
+                                  owned_by_id=None, character=None):
+    active_modifications = active_modifications or []
+    owned_by_id = owned_by_id or {}
+    character = character or {}
+    reasons = []
+    manual = bool(upgrade.get('compatibility_manual'))
+    if host.get('cat') != 'vehicles':
+        reasons.append('Host is not a vehicle')
+    if upgrade.get('cat') != 'vehicles_upgrades' or upgrade.get('host_type') != 'vehicle':
+        reasons.append('Item is not a vehicle upgrade')
+    classes = vehicle_classification(host)
+    availability = str(upgrade.get('availability_text') or '').strip()
+    low = availability.lower()
+    if 'except bikes, jetskis, gyrocopters' in low:
+        if classes & {'bike', 'jetski', 'gyrocopter'}:
+            reasons.append('Unavailable for Bikes, Jetskis, or Gyrocopters')
+    elif 'all land and sea vehicles except bikes and jetski' in low:
+        if not classes & {'land', 'sea'} or classes & {'bike', 'jetski'}:
+            reasons.append('Requires a non-Bike Land or Sea vehicle')
+    elif low == 'all land and sea vehicles' and not classes & {'land', 'sea'}:
+        reasons.append('Requires a Land or Sea vehicle')
+    elif low == 'all land vehicles' and 'land' not in classes:
+        reasons.append('Requires a Land vehicle')
+    elif low == 'all bikes' and 'bike' not in classes:
+        reasons.append('Requires a Bike')
+    elif low in ('all groundcars', 'all groundcards') and 'groundcar' not in classes:
+        reasons.append('Requires a Groundcar')
+    elif low == 'bicycle' and 'bicycle' not in classes:
+        reasons.append('Requires a Bicycle')
+    elif low not in ('', 'all vehicles') and ',' in availability and not any(
+            (token.strip().lower() in str(host.get('name') or '').lower() or
+             (token.strip().lower() == 'groundcars' and 'groundcar' in classes))
+            for token in availability.split(',')):
+        reasons.append('Vehicle is not in the named availability list')
+    elif low == 'vehicles with rooms':
+        interior_capacity = vehicle_interior_capacity_for_compatibility(
+            host, active_modifications, owned_by_id)
+        if interior_capacity['rooms_total'] <= 0:
+            reasons.append('Requires a vehicle with at least one room')
+    elif low not in ('', 'all vehicles') and not any(token in low for token in (
+            'except bikes', 'land and sea', 'land vehicles', 'all bikes',
+            'groundcar', 'bicycle', ',')):
+        if low not in str(host.get('name') or '').lower():
+            reasons.append('Vehicle does not match named availability')
+
+    installed_upgrades = [owned_by_id.get(mod.get('upgrade_instance_id')) or {}
+                          for mod in active_modifications]
+    installed_names = {str(item.get('name') or '') for item in installed_upgrades}
+    has_named_upgrade = lambda expected: any(
+        name == expected or name.startswith(expected + ' (') for name in installed_names)
+    prerequisite_host_names = upgrade.get('prerequisite_host_names') or {}
+    for prerequisite in upgrade.get('prerequisite_upgrades') or []:
+        host_names = prerequisite_host_names.get(prerequisite) or []
+        applies = not host_names or str(host.get('name') or '') in host_names
+        if applies and not has_named_upgrade(prerequisite):
+            reasons.append(f'Requires installed {prerequisite}')
+    for conflict in upgrade.get('conflicting_upgrades') or []:
+        if has_named_upgrade(conflict):
+            reasons.append(f'Conflicts with installed {conflict}')
+    same_count = sum(1 for item in installed_upgrades
+                     if catalog_item_id_for_entry(item) == catalog_item_id_for_entry(upgrade))
+    repeatable_max = max(1, int(upgrade.get('repeatable_max') or 1))
+    if same_count >= repeatable_max:
+        reasons.append(f'Upgrade limit reached ({same_count}/{repeatable_max})')
+
+    upgrade_name = str(upgrade.get('name') or '')
+    interior_capacity = vehicle_interior_capacity_for_compatibility(
+        host, active_modifications, owned_by_id)
+    if upgrade_name in ('Luxury Vehicle Room', 'Complex Vehicle Room'):
+        if interior_capacity['upgraded_rooms'] >= interior_capacity['rooms_total']:
+            reasons.append('All vehicle rooms already have a room upgrade')
+    if upgrade_name == 'Vehicle Heavy Weapon Mount':
+        if same_count >= 1:
+            multiple_allowed = bool(
+                classes & {'cabin_cruiser', 'yacht', 'aerozep'} or
+                ('groundcar' in classes and interior_capacity['has_housing']))
+            if not multiple_allowed:
+                reasons.append(
+                    'Additional Heavy Weapon Mounts require a room vehicle or a Housing Groundcar')
+        base_seats = _num((host.get('mechanics') or {}).get('seats'))
+        seating_upgrades = sum(name == 'Seating Upgrade' for name in installed_names)
+        if base_seats is not None:
+            available_seats = int(base_seats) + seating_upgrades * 2 - same_count
+        else:
+            available_seats = (
+                interior_capacity['rooms_total'] * interior_capacity['seats_per_room'] +
+                interior_capacity['complex_rooms'] *
+                interior_capacity['seats_per_room'] * 2 - same_count)
+        if available_seats <= 0:
+            reasons.append('Vehicle has no seat available for another Heavy Weapon Mount')
+
+    access_required = _num(upgrade.get('nomad_access_required'))
+    nomad_rank = character_nomad_rank(character)
+    role_access = upgrade.get('acquisition_source') == 'role_access'
+    access_met = not role_access or access_required is None or nomad_rank >= access_required
+    if not access_met:
+        reasons.append(f'Nomad Access {access_required} requires Nomad Rank {access_required}')
+    return {
+        'allowed': not reasons,
+        'manual_resolution_required': manual,
+        'reasons': reasons,
+        'availability_text': availability,
+        'nomad_access_required': access_required,
+        'nomad_rank': nomad_rank,
+        'role_access_item': role_access,
+        'nomad_access_met': access_met,
+        'repeatable_max': repeatable_max,
+        'installed_count': same_count,
+        'prerequisite_upgrades': copy.deepcopy(upgrade.get('prerequisite_upgrades') or []),
+        'conflicting_upgrades': copy.deepcopy(upgrade.get('conflicting_upgrades') or []),
+    }
+
+
+def validate_active_modification_references(conn, character_id, data):
+    owned = {entry.get('instance_id'): entry for bucket in ('inventory', 'cyberware')
+             for entry in data.get(bucket) or [] if isinstance(entry, dict) and entry.get('instance_id')}
+    modifications = character_modifications(conn, character_id)
+    modification_by_id = {item['modification_id']: item for item in modifications}
+    bound_weapon_ids = set()
+    states = data.get('modification_state') or {}
+    for modification in modifications:
+        host = owned.get(modification['host_instance_id'])
+        upgrade = owned.get(modification['upgrade_instance_id'])
+        if not host or not upgrade:
+            raise ApiError(409, 'Сначала снимите установленные модификации')
+        if upgrade.get('state') != 'installed' or upgrade.get('host_instance_id') != host.get('instance_id'):
+            raise ApiError(409, 'Повреждена связь установленной модификации')
+        state = states.get(modification['modification_id']) or {}
+        if state.get('resource_type') != 'heavy_weapon_mount':
+            continue
+        weapon_instance_id = str(state.get('weapon_instance_id') or '')
+        if not weapon_instance_id:
+            continue
+        weapon = owned.get(weapon_instance_id)
+        mechanics = (item_by_id(catalog_item_id_for_entry(weapon)) or {}).get('mechanics') or {}
+        valid = bool(
+            weapon and weapon.get('cat') == 'guns' and
+            _num(mechanics.get('hands')) == 2 and
+            weapon.get('state') == 'installed' and
+            weapon.get('mounted_modification_id') == modification['modification_id'] and
+            weapon.get('mounted_vehicle_id') == modification['host_instance_id'] and
+            weapon_instance_id not in bound_weapon_ids)
+        if not valid:
+            raise ApiError(409, 'Повреждена связь Vehicle Heavy Weapon Mount')
+        bound_weapon_ids.add(weapon_instance_id)
+    for weapon in owned.values():
+        mount_id = str(weapon.get('mounted_modification_id') or '')
+        if not mount_id:
+            continue
+        modification = modification_by_id.get(mount_id)
+        state = states.get(mount_id) or {}
+        if (not modification or state.get('weapon_instance_id') != weapon.get('instance_id') or
+                weapon.get('instance_id') not in bound_weapon_ids):
+            raise ApiError(409, 'Повреждена связь Vehicle Heavy Weapon Mount')
+
+
+def sync_weapon_states_with_modifications(conn, character_id, data):
+    ensure_progression(data)
+    modifications = character_modifications(conn, character_id)
+    effective_weapons = character_effective_weapons(data, modifications)
+    states = data.setdefault('weapon_state', {})
+    for instance_id, weapon in effective_weapons.items():
+        effective_max = max(0, _num((weapon.get('effective') or {}).get('magazine')) or 0)
+        state = states.setdefault(instance_id, {
+            'magazine': effective_max, 'magazine_max': effective_max, 'reserve': 0,
+        })
+        state['magazine_max'] = effective_max
+        state['magazine'] = max(0, min(effective_max, _num(state.get('magazine')) or 0))
+        state['reserve'] = 0
+        clear_loaded_ammo_if_empty(state)
+    ensure_shared_ammo_state(data)
+    return effective_weapons
+
+
+def sync_vehicle_states_with_modifications(conn, character_id, data):
+    modifications = character_modifications(conn, character_id)
+    vehicles = {item.get('instance_id'): item for item in data.get('inventory') or []
+                if isinstance(item, dict) and item.get('cat') == 'vehicles'}
+    owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+             if isinstance(item, dict) and item.get('instance_id')}
+    modification_states = data.setdefault('modification_state', {})
+    for modification in modifications:
+        if modification.get('host_type') != 'vehicle' or \
+                modification.get('host_instance_id') not in vehicles:
+            continue
+        config = modification.get('configuration') or {}
+        rules = config.get('effect_rules')
+        upgrade = owned.get(modification.get('upgrade_instance_id')) or {}
+        if not isinstance(rules, list) or not rules:
+            rules = vehicle_modification_rules_for_catalog(
+                catalog_item_id_for_entry(upgrade) or
+                config.get('upgrade_catalog_item_id'))
+        initial = initial_vehicle_modification_state(
+            rules, data, config.get('choices') or {})
+        if initial:
+            modification_states[modification['modification_id']] = \
+                normalize_vehicle_modification_state(
+                    modification_states.get(modification['modification_id']), initial)
+    effective_vehicles = character_effective_vehicles(data, modifications)
+    states = data.setdefault('vehicle_state', {})
+    for instance_id, vehicle in effective_vehicles.items():
+        new_max = max(0, _num((vehicle.get('effective') or {}).get('sdp')) or 0)
+        base_max = max(0, _num((vehicles.get(instance_id, {}).get('mechanics') or {}).get('sdp')) or 0)
+        state = states.setdefault(instance_id, {'sdp_current': base_max, 'sdp_max': base_max})
+        old_max = max(0, _num(state.get('sdp_max')) or base_max)
+        old_current = max(0, min(old_max, _num(state.get('sdp_current'))
+                                 if _num(state.get('sdp_current')) is not None else old_max))
+        damage = max(0, old_max - old_current)
+        state['sdp_max'] = new_max
+        state['sdp_current'] = max(0, new_max - damage)
+        vehicle['state'] = copy.deepcopy(state)
+    return effective_vehicles
+
+
+def backfill_character_item_instances(conn):
+    """One-time, idempotent migration of legacy JSON stacks to stable instances."""
+    if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='characters'").fetchone():
+        return
+    rows = conn.execute('SELECT id,data,created FROM characters ORDER BY id').fetchall()
+    for row in rows:
+        try:
+            data = json.loads(row['data'])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        original = copy.deepcopy(data)
+        changed = ensure_character_item_instances(data)
+        ensure_progression(data)
+        changed = changed or data != original
+        persist_character_item_instances(
+            conn, row['id'], data, 'legacy_migration', acquired_at=row['created'], prune=True)
+        if changed:
+            conn.execute('UPDATE characters SET data=? WHERE id=?',
+                         (json.dumps(data, ensure_ascii=False), row['id']))
+
+
 def apply_schema_migrations(conn, make_backup=True):
     """Idempotently upgrade legacy databases without resetting campaign data."""
     conn.execute('CREATE TABLE IF NOT EXISTS schema_migrations('
@@ -878,6 +4460,21 @@ def apply_schema_migrations(conn, make_backup=True):
                  'id INTEGER PRIMARY KEY AUTOINCREMENT, target_user_id INTEGER NOT NULL, '
                  'actor_user_id INTEGER, role_before TEXT NOT NULL, role_after TEXT NOT NULL, '
                  'reason TEXT NOT NULL, created REAL NOT NULL)')
+    conn.executescript("""
+      CREATE TABLE IF NOT EXISTS sessions(
+        token TEXT PRIMARY KEY,user_id INTEGER NOT NULL,created REAL NOT NULL,expires REAL NOT NULL,
+        last_seen REAL,ip_address TEXT,user_agent TEXT
+      );
+      CREATE TABLE IF NOT EXISTS account_security_audit(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL,actor_user_id INTEGER,
+        event_type TEXT NOT NULL,detail TEXT NOT NULL DEFAULT '',created REAL NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS registration_invites(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,code_hash TEXT UNIQUE NOT NULL,
+        label TEXT NOT NULL DEFAULT '',created_by INTEGER NOT NULL,max_uses INTEGER NOT NULL DEFAULT 1,
+        uses INTEGER NOT NULL DEFAULT 0,expires_at REAL,disabled_at REAL,created REAL NOT NULL
+      );
+    """)
     applied = {row['version'] for row in conn.execute('SELECT version FROM schema_migrations')}
     migrations = [
         (MIGRATION_ACCOUNT_ROLES, 'account roles and privacy foundation'),
@@ -886,6 +4483,21 @@ def apply_schema_migrations(conn, make_backup=True):
         (MIGRATION_OPERATIONS, 'character ledger and session operations'),
         (MIGRATION_NOTIFICATIONS, 'site notifications and VK outbox'),
         (MIGRATION_TACTICAL_PROFILES, 'profile media and tactical session resources'),
+        (MIGRATION_ITEM_INSTANCES, 'stable character item instances'),
+        (MIGRATION_ACTIVE_EFFECTS, 'active character effect instances'),
+        (MIGRATION_EFFECT_PRESETS, 'effect preset snapshots'),
+        (MIGRATION_ITEM_MODIFICATIONS, 'host item modifications'),
+        (MIGRATION_SESSION_NET, 'live session NET context'),
+        (MIGRATION_CAMPAIGN_CLOCK, 'campaign clock and service timing'),
+        (MIGRATION_CREW_STASH, 'crew stash and item transfers'),
+        (MIGRATION_MARKET_STOCK, 'market finite stock and fixer requests'),
+        (MIGRATION_NPC_STATBLOCKS, 'npc full statblocks and session snapshots'),
+        (MIGRATION_SESSION_RECAPS, 'session recaps and campaign chronicle'),
+        (MIGRATION_LOCATIONS, 'map points of interest and key locations'),
+        (MIGRATION_MEMORIAL, 'fallen edgerunners memorial and afterlife legacy'),
+        (MIGRATION_MEMORIAL_DRAFT, 'collaborative memorial draft state'),
+        (MIGRATION_MARKET_PERMANENT, 'permanent market supply'),
+        (MIGRATION_ORGANIZATIONS, 'organization memberships and reputation'),
     ]
     pending = [version for version, _ in migrations if version not in applied]
     if make_backup and pending:
@@ -924,15 +4536,102 @@ def apply_schema_migrations(conn, make_backup=True):
         ensure_column(conn, 'session_combatants', 'ammo_max', 'INTEGER NOT NULL DEFAULT 0')
         ensure_column(conn, 'session_combatants', 'luck_current', 'INTEGER NOT NULL DEFAULT 0')
         ensure_column(conn, 'session_combatants', 'luck_max', 'INTEGER NOT NULL DEFAULT 0')
+    if MIGRATION_ITEM_INSTANCES not in applied:
+        conn.executescript(ITEM_INSTANCE_SCHEMA)
+        backfill_character_item_instances(conn)
+    if MIGRATION_ACTIVE_EFFECTS not in applied:
+        conn.executescript(ACTIVE_EFFECT_SCHEMA)
+    if MIGRATION_EFFECT_PRESETS not in applied:
+        ensure_column(conn, 'active_effect_instances', 'preset_id', 'TEXT')
+        ensure_column(conn, 'active_effect_instances', 'context_json', "TEXT NOT NULL DEFAULT '{}'")
+    if MIGRATION_ITEM_MODIFICATIONS not in applied:
+        conn.executescript(ITEM_MODIFICATION_SCHEMA)
+    if MIGRATION_SESSION_NET not in applied:
+        ensure_column(conn, 'nc_sessions', 'net_state_json', "TEXT NOT NULL DEFAULT '{}'")
+    if MIGRATION_CAMPAIGN_CLOCK not in applied:
+        conn.executescript(CAMPAIGN_CLOCK_SCHEMA)
+    if MIGRATION_CREW_STASH not in applied:
+        conn.executescript(CREW_STASH_SCHEMA)
+    if MIGRATION_MARKET_STOCK not in applied:
+        conn.executescript(MARKET_STOCK_SCHEMA)
+    if MIGRATION_NPC_STATBLOCKS not in applied:
+        ensure_column(conn, 'session_combatants', 'statblock_json', "TEXT NOT NULL DEFAULT '{}'")
+    if MIGRATION_SESSION_RECAPS not in applied:
+        conn.executescript(SESSION_RECAP_SCHEMA)
+    if MIGRATION_LOCATIONS not in applied:
+        conn.executescript(LOCATION_SCHEMA)
+    if MIGRATION_MEMORIAL not in applied:
+        conn.executescript(MEMORIAL_SCHEMA)
+    if MIGRATION_MEMORIAL_DRAFT not in applied:
+        ensure_column(conn, 'memorials', 'draft_state', "TEXT NOT NULL DEFAULT 'published'")
+    if MIGRATION_MARKET_PERMANENT not in applied:
+        conn.executescript(MARKET_PERMANENT_SCHEMA)
+    if MIGRATION_ORGANIZATIONS not in applied:
+        conn.executescript(ORGANIZATION_SCHEMA)
+    # Crew reputation (additive to organizations migration).
+    try:
+        conn.execute('''CREATE TABLE IF NOT EXISTS crew_reputation(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  organization_persona_id INTEGER NOT NULL,
+  reputation INTEGER NOT NULL DEFAULT 0,
+  favor INTEGER NOT NULL DEFAULT 0,
+  heat INTEGER NOT NULL DEFAULT 0,
+  standing TEXT NOT NULL DEFAULT 'neutral',
+  note TEXT NOT NULL DEFAULT '',
+  created_by INTEGER,
+  created REAL NOT NULL,
+  updated REAL NOT NULL,
+  UNIQUE(organization_persona_id))''')
+    except Exception:
+        pass
+    # Personal stash (additive to crew_stash migration).
+    try:
+        conn.executescript('''CREATE TABLE IF NOT EXISTS personal_stash(
+  instance_id TEXT PRIMARY KEY,
+  character_id INTEGER NOT NULL,
+  catalog_item_id TEXT,
+  custom_name TEXT,
+  state TEXT NOT NULL DEFAULT 'stored',
+  quantity INTEGER NOT NULL DEFAULT 1,
+  notes TEXT NOT NULL DEFAULT '',
+  stored_at REAL NOT NULL,
+  data_json TEXT NOT NULL DEFAULT '{}',
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_personal_stash_char ON personal_stash(character_id);''')
+    except Exception:
+        pass
     # Re-run additive CREATE IF NOT EXISTS blocks so patch-level tables added to an
     # already-applied migration remain safe during development and rolling deploys.
     conn.executescript(NETWORK_SCHEMA)
     conn.executescript(FEED_SCHEMA)
     conn.executescript(OPERATIONS_SCHEMA)
     conn.executescript(NOTIFICATION_SCHEMA)
+    conn.executescript(ITEM_INSTANCE_SCHEMA)
+    conn.executescript(ACTIVE_EFFECT_SCHEMA)
+    conn.executescript(ITEM_MODIFICATION_SCHEMA)
+    conn.executescript(CAMPAIGN_CLOCK_SCHEMA)
+    conn.executescript(CREW_STASH_SCHEMA)
+    conn.executescript(MARKET_STOCK_SCHEMA)
+    conn.executescript(SESSION_RECAP_SCHEMA)
+    conn.executescript(LOCATION_SCHEMA)
+    conn.executescript(MEMORIAL_SCHEMA)
     # Recover safely if a rolling/patch deployment recorded the migration before
     # every additive column reached a particular database.
     ensure_column(conn, 'users', 'avatar_media_id', 'TEXT')
+    ensure_column(conn, 'users', 'disabled_at', 'REAL')
+    ensure_column(conn, 'users', 'disabled_reason', 'TEXT')
+    ensure_column(conn, 'users', 'disabled_by', 'INTEGER')
+    ensure_column(conn, 'sessions', 'last_seen', 'REAL')
+    ensure_column(conn, 'sessions', 'ip_address', 'TEXT')
+    ensure_column(conn, 'sessions', 'user_agent', 'TEXT')
+    if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='characters'").fetchone():
+        ensure_column(conn, 'characters', 'revision', 'INTEGER NOT NULL DEFAULT 0')
+    ensure_column(conn, 'nc_sessions', 'safety_config', "TEXT NOT NULL DEFAULT '{}'")
+    ensure_column(conn, 'nc_sessions', 'net_state_json', "TEXT NOT NULL DEFAULT '{}'")
+    ensure_column(conn, 'session_combatants', 'statblock_json', "TEXT NOT NULL DEFAULT '{}'")
     ensure_column(conn, 'npc_templates', 'archived', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'session_combatants', 'sp_head_max', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'session_combatants', 'sp_body_max', 'INTEGER NOT NULL DEFAULT 0')
@@ -940,6 +4639,8 @@ def apply_schema_migrations(conn, make_backup=True):
     ensure_column(conn, 'session_combatants', 'ammo_max', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'session_combatants', 'luck_current', 'INTEGER NOT NULL DEFAULT 0')
     ensure_column(conn, 'session_combatants', 'luck_max', 'INTEGER NOT NULL DEFAULT 0')
+    ensure_column(conn, 'active_effect_instances', 'preset_id', 'TEXT')
+    ensure_column(conn, 'active_effect_instances', 'context_json', "TEXT NOT NULL DEFAULT '{}'")
     conn.execute('UPDATE session_combatants SET sp_head_max=sp_head '
                  'WHERE sp_head_max=0 AND sp_head>0')
     conn.execute('UPDATE session_combatants SET sp_body_max=sp_body '
@@ -957,6 +4658,11 @@ def apply_schema_migrations(conn, make_backup=True):
                  "THEN 1 ELSE 0 END")
     conn.execute('CREATE INDEX IF NOT EXISTS idx_role_audit_target '
                  'ON account_role_audit(target_user_id, created)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_registration_invites_active '
+                 'ON registration_invites(disabled_at,expires_at,uses,max_uses)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_account_security_audit '
+                 'ON account_security_audit(user_id,created)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id,expires)')
     conn.commit()
 
 
@@ -1002,6 +4708,7 @@ NC_LOCATION_IDS = {
     'badlands-near-pacifica', 'orbital-air-space-center',
 }
 FEED_FORMATS = {'short', 'article', 'blog', 'bulletin', 'statement', 'rumor'}
+FEED_DEFAULT_FORMAT = 'article'
 FEED_TRUTH = {'true', 'partially_true', 'false', 'propaganda', 'unknown'}
 SESSION_VIEW_DEFAULTS = {
     'show_initiative': True,
@@ -1013,7 +4720,29 @@ SESSION_VIEW_DEFAULTS = {
     'show_luck': True,
     'show_conditions': True,
     'show_injuries': True,
+    'show_npc_stats': False,
 }
+SESSION_ACCESS_ROLES = {'co_gm', 'assistant', 'rules_helper', 'observer'}
+SESSION_ROLE_CAPABILITIES = {
+    'owner': {'view_gm', 'view_secrets', 'edit_session', 'edit_combatants', 'manage_access', 'manage_safety'},
+    'co_gm': {'view_gm', 'view_secrets', 'edit_session', 'edit_combatants', 'manage_safety'},
+    'assistant': {'view_gm', 'view_secrets', 'edit_combatants'},
+    'rules_helper': {'view_gm'},
+    'observer': {'view_player'},
+    'crew': {'view_player'},
+}
+SESSION_SAFETY_DEFAULTS = {
+    'content_notes': '',
+    'lines': [],
+    'veils': [],
+    'pause_enabled': True,
+}
+SAFETY_SIGNAL_KINDS = {'pause', 'x_card', 'check_in'}
+SAFETY_SIGNAL_STATUSES = {'open', 'acknowledged', 'resolved'}
+SESSION_NET_NODE_TYPES = {
+    'access_point', 'password', 'file', 'control', 'black_ice', 'objective',
+}
+SESSION_NET_PATH_DIRECTIONS = {'bidirectional', 'one_way'}
 
 
 def parse_json_object(value, default=None):
@@ -1063,6 +4792,212 @@ def session_view_config(value):
     }
 
 
+def session_safety_config(value):
+    raw = parse_json_object(value)
+    lines = raw.get('lines') if isinstance(raw.get('lines'), list) else []
+    veils = raw.get('veils') if isinstance(raw.get('veils'), list) else []
+    return {
+        'content_notes': str(raw.get('content_notes') or '')[:5000],
+        'lines': [str(item).strip()[:200] for item in lines[:50] if str(item).strip()],
+        'veils': [str(item).strip()[:200] for item in veils[:50] if str(item).strip()],
+        'pause_enabled': raw.get('pause_enabled') is not False,
+    }
+
+
+def session_net_state(value):
+    raw = parse_json_object(value)
+    floors = []
+    seen_floors = set()
+    for item in raw.get('floors') or []:
+        if not isinstance(item, dict):
+            continue
+        floor_id = str(item.get('floor_id') or '').lower()
+        label = str(item.get('label') or '').strip()[:120]
+        if (not INSTANCE_ID_RE.fullmatch(floor_id) or floor_id in seen_floors or
+                not label or len(floors) >= 100):
+            continue
+        seen_floors.add(floor_id)
+        floors.append({'floor_id': floor_id, 'label': label,
+                       'sort_order': len(floors)})
+    nodes = []
+    seen_nodes = set()
+    for item in raw.get('nodes') or []:
+        if not isinstance(item, dict):
+            continue
+        node_id = str(item.get('node_id') or '').lower()
+        floor_id = str(item.get('floor_id') or '').lower()
+        node_type = str(item.get('type') or '').lower()
+        label = str(item.get('label') or '').strip()[:120]
+        if (not INSTANCE_ID_RE.fullmatch(node_id) or node_id in seen_nodes or
+                floor_id not in seen_floors or node_type not in SESSION_NET_NODE_TYPES or
+                not label or len(nodes) >= 500):
+            continue
+        seen_nodes.add(node_id)
+        nodes.append({
+            'node_id': node_id, 'floor_id': floor_id, 'type': node_type,
+            'label': label, 'dv': max(0, min(29, int(_num(item.get('dv')) or 0))),
+            'defense': max(0, min(29, int(_num(item.get('defense')) or 0))),
+            'visible': item.get('visible') is True,
+            'resolved': item.get('resolved') is True,
+            'controlled_by_combatant_id': int(item['controlled_by_combatant_id'])
+                if isinstance(item.get('controlled_by_combatant_id'), int) and
+                item['controlled_by_combatant_id'] > 0 else None,
+            'gm_note': str(item.get('gm_note') or '')[:2000],
+            'sort_order': len(nodes),
+        })
+    paths = []
+    seen_paths = set()
+    seen_pairs = set()
+    for item in raw.get('paths') or []:
+        if not isinstance(item, dict):
+            continue
+        path_id = str(item.get('path_id') or '').lower()
+        from_node_id = str(item.get('from_node_id') or '').lower()
+        to_node_id = str(item.get('to_node_id') or '').lower()
+        direction = str(item.get('direction') or 'bidirectional').lower()
+        pair = (from_node_id, to_node_id, direction)
+        if (not INSTANCE_ID_RE.fullmatch(path_id) or path_id in seen_paths or
+                from_node_id not in seen_nodes or to_node_id not in seen_nodes or
+                from_node_id == to_node_id or direction not in SESSION_NET_PATH_DIRECTIONS or
+                pair in seen_pairs or len(paths) >= 1000):
+            continue
+        seen_paths.add(path_id)
+        seen_pairs.add(pair)
+        if direction == 'bidirectional':
+            seen_pairs.add((to_node_id, from_node_id, direction))
+        paths.append({
+            'path_id': path_id, 'from_node_id': from_node_id,
+            'to_node_id': to_node_id, 'direction': direction,
+            'label': str(item.get('label') or '')[:120],
+            'visible': item.get('visible') is True,
+        })
+    links = []
+    seen_entities = set()
+    for item in raw.get('links') or []:
+        if not isinstance(item, dict):
+            continue
+        entity_id = str(item.get('net_entity_id') or '').lower()
+        floor_id = str(item.get('floor_id') or '').lower()
+        node_id = str(item.get('node_id') or '').lower()
+        character_id = _num(item.get('character_id'))
+        target_id = _num(item.get('target_combatant_id'))
+        if (not INSTANCE_ID_RE.fullmatch(entity_id) or entity_id in seen_entities or
+                not isinstance(character_id, int) or character_id < 1 or
+                floor_id not in seen_floors or len(links) >= 200 or
+                (node_id and node_id not in seen_nodes)):
+            continue
+        if node_id:
+            node_floor = next((node['floor_id'] for node in nodes
+                               if node['node_id'] == node_id), None)
+            if node_floor != floor_id:
+                continue
+        seen_entities.add(entity_id)
+        links.append({
+            'net_entity_id': entity_id, 'character_id': character_id,
+            'floor_id': floor_id, 'node_id': node_id or None,
+            'target_combatant_id': int(target_id) if isinstance(target_id, int) and target_id > 0 else None,
+            'initiative': max(-1000, min(1000, _num(item.get('initiative')) or 0)),
+            'active': item.get('active') is not False,
+            'visible': item.get('visible') is not False,
+            'linked_at': _num(item.get('linked_at')) or 0,
+        })
+    runners = []
+    seen_combatants = set()
+    for item in raw.get('runners') or []:
+        if not isinstance(item, dict):
+            continue
+        combatant_id = _num(item.get('combatant_id'))
+        character_id = _num(item.get('character_id'))
+        node_id = str(item.get('node_id') or '').lower()
+        previous_node_id = str(item.get('previous_node_id') or '').lower()
+        if (not isinstance(combatant_id, int) or combatant_id < 1 or
+                combatant_id in seen_combatants or
+                not isinstance(character_id, int) or character_id < 1 or
+                (node_id and node_id not in seen_nodes) or
+                (previous_node_id and previous_node_id not in seen_nodes) or
+                len(runners) >= 100):
+            continue
+        seen_combatants.add(combatant_id)
+        runners.append({
+            'combatant_id': combatant_id, 'character_id': character_id,
+            'node_id': node_id or None,
+            'previous_node_id': previous_node_id or None,
+            'jacked_in': item.get('jacked_in') is True,
+            'interface_rank': max(0, min(10, int(_num(item.get('interface_rank')) or 0))),
+            'actions_recorded': max(0, int(_num(item.get('actions_recorded')) or 0)),
+            'action_round': max(0, int(_num(item.get('action_round')) or 0)),
+            'actions_used': max(0, int(_num(item.get('actions_used')) or 0)),
+            'action_penalty': max(0, min(3, int(_num(
+                item.get('action_penalty')) or 0))),
+            'next_action_penalty': max(0, min(3, int(_num(
+                item.get('next_action_penalty')) or 0))),
+            'last_action_at': _num(item.get('last_action_at')),
+        })
+    action_log = []
+    for item in raw.get('action_log') or []:
+        if not isinstance(item, dict):
+            continue
+        action_id = str(item.get('action_id') or '').lower()
+        if not INSTANCE_ID_RE.fullmatch(action_id):
+            continue
+        action_log.append({
+            'action_id': action_id,
+            'combatant_id': int(item['combatant_id'])
+                if isinstance(item.get('combatant_id'), int) else None,
+            'actor_entity_id': str(item.get('actor_entity_id') or '') or None,
+            'action': str(item.get('action') or '')[:40],
+            'target_node_id': str(item.get('target_node_id') or '') or None,
+            'target_entity_id': str(item.get('target_entity_id') or '') or None,
+            'target_program_instance_id': str(
+                item.get('target_program_instance_id') or '') or None,
+            'success': item.get('success') if isinstance(item.get('success'), bool) else None,
+            'actor_total': _num(item.get('actor_total')),
+            'defense_total': _num(item.get('defense_total')),
+            'created': _num(item.get('created')) or 0,
+            'summary': str(item.get('summary') or '')[:500],
+        })
+        if len(action_log) >= 100:
+            break
+    return {
+        'round': max(0, int(_num(raw.get('round')) or 0)),
+        'active_turn': max(0, int(_num(raw.get('active_turn')) or 0)),
+        'floors': floors, 'nodes': nodes, 'paths': paths, 'links': links,
+        'runners': runners, 'action_log': action_log,
+    }
+
+
+def character_interface_rank(data):
+    return max([int(_num(role.get('rank')) or 0)
+                for role in data.get('roles') or []
+                if isinstance(role, dict) and role.get('name') == 'Netrunner'] or [0])
+
+
+def net_actions_for_interface(rank):
+    rank = max(0, min(10, int(_num(rank) or 0)))
+    if rank <= 0:
+        return 0
+    if rank <= 3:
+        return 2
+    if rank <= 6:
+        return 3
+    if rank <= 9:
+        return 4
+    return 5
+
+
+def session_net_path_between(state, from_node_id, to_node_id, *, require_visible=True):
+    for path in state.get('paths') or []:
+        if require_visible and not path.get('visible'):
+            continue
+        if path['from_node_id'] == from_node_id and path['to_node_id'] == to_node_id:
+            return path
+        if (path['direction'] == 'bidirectional' and
+                path['from_node_id'] == to_node_id and
+                path['to_node_id'] == from_node_id):
+            return path
+    return None
+
+
 def clean_npc_template_input(body, existing=None):
     base = dict(existing or {})
     name = str((body or {}).get('name', base.get('name', '')) or '').strip()[:120]
@@ -1109,7 +5044,8 @@ def clean_npc_template_input(body, existing=None):
         raise ApiError(400, 'Некорректный NPC template')
     data['secret'] = secret
     data['visible'] = data.get('visible') is not False
-    if len(json.dumps(data, ensure_ascii=False)) > 20000:
+    data['statblock'] = clean_npc_statblock(data.get('statblock'))
+    if len(json.dumps(data, ensure_ascii=False)) > 40000:
         raise ApiError(400, 'Некорректный NPC template')
     return {
         'name': name,
@@ -1117,6 +5053,225 @@ def clean_npc_template_input(body, existing=None):
         'role': str((body or {}).get('role', base.get('role', '')) or '')[:80],
         'data': data,
     }
+
+
+NPC_STAT_MAX = 20
+NPC_SKILL_MAX = 10
+
+
+def clean_npc_statblock(source):
+    """Validate the full-statblock portion of an NPC (STATs, Skills, Weapons, Notes)."""
+    if source is None:
+        source = {}
+    if not isinstance(source, dict):
+        raise ApiError(400, 'NPC statblock должен быть объектом')
+    stats = source.get('stats') if isinstance(source.get('stats'), dict) else {}
+    clean_stats = {}
+    for stat in STATS:
+        value = _num(stats.get(stat))
+        if value is not None:
+            clean_stats[stat] = max(0, min(NPC_STAT_MAX, value))
+    skills = source.get('skills') if isinstance(source.get('skills'), dict) else {}
+    if len(skills) > 200:
+        raise ApiError(400, 'NPC skills должен быть объектом до 200 записей')
+    clean_skills = {}
+    for name, value in skills.items():
+        name = str(name).strip()[:120]
+        if not skill_base(name):
+            raise ApiError(400, f'Неизвестный NPC Skill: {name}')
+        clean_skills[name] = max(0, min(NPC_SKILL_MAX, _num(value) or 0))
+    weapons = source.get('weapons') if isinstance(source.get('weapons'), list) else []
+    if len(weapons) > 30:
+        raise ApiError(400, 'NPC weapons должен быть списком до 30 записей')
+    clean_weapons = []
+    for weapon in weapons:
+        if not isinstance(weapon, dict):
+            raise ApiError(400, 'NPC weapon должен быть объектом')
+        weapon_name = str(weapon.get('name') or '').strip()[:120]
+        if not weapon_name:
+            raise ApiError(400, 'NPC weapon требует имя')
+        clean_weapons.append({
+            'name': weapon_name,
+            'skill': str(weapon.get('skill') or '').strip()[:120],
+            'damage': str(weapon.get('damage') or '')[:80],
+            'rof': str(weapon.get('rof') or '')[:20],
+            'notes': str(weapon.get('notes') or '')[:400],
+        })
+    return {
+        'stats': clean_stats,
+        'skills': clean_skills,
+        'weapons': clean_weapons,
+        'notes': str(source.get('notes') or '')[:4000],
+    }
+
+
+def npc_statblock_derived(statblock):
+    """Compute readable attack/skill bases from a validated NPC statblock."""
+    statblock = statblock if isinstance(statblock, dict) else {}
+    stats = statblock.get('stats') if isinstance(statblock.get('stats'), dict) else {}
+    skills = statblock.get('skills') if isinstance(statblock.get('skills'), dict) else {}
+    attacks = []
+    for weapon in statblock.get('weapons') or []:
+        if not isinstance(weapon, dict):
+            continue
+        skill_name = str(weapon.get('skill') or '')
+        base_name = skill_base(skill_name)
+        stat = SKILL_BY_NAME[base_name][2] if base_name else 'REF'
+        stat_value = _num(stats.get(stat)) or 0
+        skill_level = _num(skills.get(skill_name)) or 0
+        attacks.append({
+            'name': weapon.get('name'),
+            'skill': skill_name, 'stat': stat,
+            'stat_value': stat_value, 'skill_level': skill_level,
+            'base': stat_value + skill_level,
+            'damage': weapon.get('damage'), 'rof': weapon.get('rof'),
+            'notes': weapon.get('notes'),
+        })
+    skill_bases = []
+    for name, level in sorted(skills.items()):
+        base_name = skill_base(name)
+        if not base_name:
+            continue
+        stat = SKILL_BY_NAME[base_name][2]
+        stat_value = _num(stats.get(stat)) or 0
+        skill_bases.append({
+            'name': name, 'stat': stat, 'level': level,
+            'base': stat_value + level,
+        })
+    return {
+        'attacks': attacks,
+        'skills': skill_bases,
+        'death_save': _num(stats.get('BODY')) or 0,
+        'evasion_base': (_num(stats.get('DEX')) or 0) + (_num(skills.get('Evasion')) or 0),
+    }
+
+
+# ------------------------------------------------------------- Session Recap / Chronicle
+
+RECAP_TEXT_LIST_LIMIT = 50
+
+
+def _clean_recap_text_list(source):
+    if source is None:
+        return []
+    if not isinstance(source, list):
+        raise ApiError(400, 'Recap списки должны быть массивами')
+    return [str(value).strip()[:300] for value in source[:RECAP_TEXT_LIST_LIMIT]
+            if str(value).strip()]
+
+
+def _clean_recap_participants(source):
+    if source is None:
+        return []
+    if not isinstance(source, list):
+        raise ApiError(400, 'Recap participants должен быть списком')
+    out = []
+    for value in source[:RECAP_TEXT_LIST_LIMIT]:
+        if isinstance(value, dict):
+            kind = str(value.get('kind') or 'character')[:40]
+            name = str(value.get('name') or '').strip()[:120]
+            if name:
+                out.append({'kind': kind, 'name': name})
+        elif str(value).strip():
+            out.append({'kind': 'character', 'name': str(value).strip()[:120]})
+    return out
+
+
+def clean_session_recap_input(body):
+    if not isinstance(body, dict):
+        raise ApiError(400, 'Recap должен быть объектом')
+    title = str(body.get('title') or '').strip()[:240]
+    if len(title) < 2:
+        raise ApiError(400, 'Recap требует название')
+    try:
+        session_date = float(body.get('session_date') or time.time())
+    except (TypeError, ValueError):
+        raise ApiError(400, 'Некорректная дата Recap')
+    if not math.isfinite(session_date):
+        session_date = time.time()
+    return {
+        'title': title,
+        'session_date': session_date,
+        'session_id': _num(body.get('session_id')),
+        'contract_id': _num(body.get('contract_id')),
+        'storyline_id': _num(body.get('storyline_id')),
+        'public_summary': str(body.get('public_summary') or '')[:10000],
+        'gm_notes': str(body.get('gm_notes') or '')[:20000],
+        'participants': _clean_recap_participants(body.get('participants')),
+        'choices': _clean_recap_text_list(body.get('choices')),
+        'npc_changes': _clean_recap_text_list(body.get('npc_changes')),
+        'locations': _clean_recap_text_list(body.get('locations')),
+        'loot': _clean_recap_text_list(body.get('loot')),
+        'injuries': _clean_recap_text_list(body.get('injuries')),
+        'quotes': _clean_recap_text_list(body.get('quotes')),
+        'published': bool(body.get('published')),
+        'publish_feed': bool(body.get('publish_feed')),
+    }
+
+
+def recap_participants(conn, session_id=None, contract_id=None):
+    """Auto-collect participant names from a session or contract."""
+    participants = []
+    seen = set()
+    if session_id:
+        rows = conn.execute(
+            'SELECT sc.*,c.data character_data FROM session_combatants sc '
+            'LEFT JOIN characters c ON c.id=sc.character_id '
+            'WHERE sc.session_id=? ORDER BY sc.sort_order,sc.id', (session_id,)).fetchall()
+        for row in rows:
+            if row['character_id']:
+                character = parse_json_object(row['character_data']) if row['character_data'] else {}
+                name = character.get('handle') or row['name']
+                kind = 'character'
+            else:
+                name = row['name']
+                kind = 'npc'
+            key = (kind, name)
+            if key not in seen:
+                seen.add(key)
+                participants.append({'kind': kind, 'name': name})
+    if not participants and contract_id:
+        rows = conn.execute(
+            "SELECT c.data character_data FROM contract_signups s "
+            "JOIN characters c ON c.id=s.character_id WHERE s.contract_id=? AND s.status='crew' "
+            'ORDER BY s.queue_position,s.joined_at', (contract_id,)).fetchall()
+        for row in rows:
+            character = parse_json_object(row['character_data']) if row['character_data'] else {}
+            name = character.get('handle')
+            if name and ('character', name) not in seen:
+                seen.add(('character', name))
+                participants.append({'kind': 'character', 'name': name})
+    return participants
+
+
+def recap_public_payload(row):
+    """Public chronicle view: only shareable fields."""
+    return {
+        'id': row['id'], 'session_date': row['session_date'], 'title': row['title'],
+        'public_summary': row['public_summary'],
+        'participants': parse_json_list(row['participants_json']),
+        'locations': parse_json_list(row['locations_json']),
+        'session_id': row['session_id'], 'contract_id': row['contract_id'],
+        'storyline_id': row['storyline_id'], 'published': bool(row['published']),
+        'created': row['created'], 'updated': row['updated'],
+    }
+
+
+def session_recap_payload(row, full=False):
+    payload = recap_public_payload(row)
+    if full:
+        payload.update({
+            'owner_user_id': row['owner_user_id'],
+            'gm_notes': row['gm_notes'],
+            'choices': parse_json_list(row['choices_json']),
+            'npc_changes': parse_json_list(row['npc_changes_json']),
+            'loot': parse_json_list(row['loot_json']),
+            'injuries': parse_json_list(row['injuries_json']),
+            'quotes': parse_json_list(row['quotes_json']),
+            'feed_post_id': row['feed_post_id'],
+            'timeline_id': row['timeline_id'],
+        })
+    return payload
 
 
 def ensure_system_persona(conn, handle, display_name, kind):
@@ -1210,8 +5365,10 @@ def assign_account_role(conn, actor, target_user_id, role, reason='Admin role as
     before = user_account_role(target)
     if before == role:
         return target
-    if before == 'admin' and role != 'admin':
-        admins = conn.execute("SELECT COUNT(*) n FROM users WHERE account_role='admin'").fetchone()['n']
+    if before == 'admin' and role != 'admin' and not _row_value(target, 'disabled_at'):
+        admins = conn.execute(
+            "SELECT COUNT(*) n FROM users WHERE account_role='admin' AND disabled_at IS NULL"
+        ).fetchone()['n']
         if admins <= 1:
             raise ApiError(409, 'Нельзя снять роль с последнего администратора')
     reason = str(reason or 'Admin role assignment').strip()[:500]
@@ -1348,7 +5505,8 @@ def record_character_changes(conn, character_id, actor_user_id, before, after,
         'skills': 'skill', 'skill_pools': 'skill', 'stats': 'stat',
         'reputation': 'reputation', 'inventory': 'inventory',
         'cyberware': 'cyberware', 'armor': 'armor',
-        'archived': 'status', 'public': 'status',
+        'vehicle_state': 'vehicle',
+        'archived': 'status', 'public': 'status', 'visibility': 'status',
     }
     recorded = set()
     for key, category in tracked.items():
@@ -1364,6 +5522,229 @@ def record_character_changes(conn, character_id, actor_user_id, before, after,
              json.dumps(old_value, ensure_ascii=False), json.dumps(new_value, ensure_ascii=False),
              str(reason or '')[:500], time.time()))
         recorded.add(category)
+
+
+CHARACTER_DIFF_SCALARS = (
+    ('handle', 'Handle'), ('first_name', 'First name'), ('last_name', 'Last name'),
+    ('player', 'Player'), ('role', 'Primary Role'), ('role_rank', 'Role Rank'),
+    ('cash', 'Cash'), ('ip_available', 'Available IP'), ('reputation', 'Reputation'),
+    ('hp_cur', 'Current HP'), ('humanity_cur', 'Current Humanity'),
+    ('luck_cur', 'Current LUCK'), ('lifestyle', 'Lifestyle'), ('housing', 'Housing'),
+    ('appearance', 'Appearance'), ('background', 'Background'),
+    ('languages', 'Languages'), ('notes', 'Notes'), ('public', 'Public Dossier'),
+)
+
+
+def readable_change_value(value):
+    if value is None or value == '':
+        return '—'
+    if isinstance(value, bool):
+        return 'Yes' if value else 'No'
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= 160 else value[:157] + '…'
+    return json.dumps(value, ensure_ascii=False)[:240]
+
+
+def character_change_summary(before, after, limit=250):
+    """Build compact, human-readable changes while full snapshots stay server-side."""
+    changes = []
+
+    def add(path, label, old, new, kind='changed'):
+        if old == new or len(changes) >= limit:
+            return
+        changes.append({
+            'path': path, 'label': label, 'kind': kind,
+            'before': readable_change_value(old), 'after': readable_change_value(new),
+        })
+
+    for key, label in CHARACTER_DIFF_SCALARS:
+        add(key, label, before.get(key), after.get(key))
+    for group, label in (('stats', 'STAT'), ('skills', 'Skill'),
+                         ('skill_pools', 'Skill Pool')):
+        old_values = before.get(group) if isinstance(before.get(group), dict) else {}
+        new_values = after.get(group) if isinstance(after.get(group), dict) else {}
+        for key in sorted(set(old_values) | set(new_values)):
+            add(f'{group}.{key}', f'{label}: {key}', old_values.get(key), new_values.get(key))
+
+    def item_map(data, bucket):
+        result = {}
+        for index, item in enumerate(data.get(bucket) or []):
+            if not isinstance(item, dict):
+                continue
+            identity = str(item.get('instance_id') or f'{item.get("key") or item.get("name")}:{index}')
+            result[identity] = item
+        return result
+
+    for bucket, label in (('inventory', 'Inventory'), ('cyberware', 'Cyberware')):
+        old_items, new_items = item_map(before, bucket), item_map(after, bucket)
+        for identity in sorted(set(old_items) | set(new_items)):
+            old, new = old_items.get(identity), new_items.get(identity)
+            if old is None:
+                name = new.get('custom_name') or new.get('name') or 'Item'
+                add(f'{bucket}.{identity}', f'{label}: {name}', '—',
+                    f'added ×{new.get("qty") or 1}', 'added')
+            elif new is None:
+                name = old.get('custom_name') or old.get('name') or 'Item'
+                add(f'{bucket}.{identity}', f'{label}: {name}',
+                    f'owned ×{old.get("qty") or 1}', 'removed', 'removed')
+            else:
+                old_view = {
+                    'name': old.get('custom_name') or old.get('name'),
+                    'qty': old.get('qty') or 1, 'state': old.get('state') or 'carried',
+                    'mode': old.get('equipped_mode'), 'active': old.get('active'),
+                    'category': old.get('cat'), 'value': old.get('price'),
+                    'source': old.get('acquisition_source'),
+                    'hosts': cyberware_host_assignments(old)
+                        if bucket == 'cyberware' else None,
+                    'side': old.get('installation_side') if bucket == 'cyberware' else None,
+                    'description': old.get('desc') if old.get('is_custom') else None,
+                }
+                new_view = {
+                    'name': new.get('custom_name') or new.get('name'),
+                    'qty': new.get('qty') or 1, 'state': new.get('state') or 'carried',
+                    'mode': new.get('equipped_mode'), 'active': new.get('active'),
+                    'category': new.get('cat'), 'value': new.get('price'),
+                    'source': new.get('acquisition_source'),
+                    'hosts': cyberware_host_assignments(new)
+                        if bucket == 'cyberware' else None,
+                    'side': new.get('installation_side') if bucket == 'cyberware' else None,
+                    'description': new.get('desc') if new.get('is_custom') else None,
+                }
+                add(f'{bucket}.{identity}', f'{label}: {new_view["name"]}',
+                    old_view, new_view)
+
+    old_armor = before.get('armor') if isinstance(before.get('armor'), dict) else {}
+    new_armor = after.get('armor') if isinstance(after.get('armor'), dict) else {}
+    for location in ('head', 'body', 'shield'):
+        old_piece, new_piece = old_armor.get(location), new_armor.get(location)
+        old_view = (old_piece or {}).get('name') if isinstance(old_piece, dict) else None
+        new_view = (new_piece or {}).get('name') if isinstance(new_piece, dict) else None
+        add(f'armor.{location}', f'Armor: {location}', old_view, new_view)
+    old_mod_state = before.get('modification_state') if isinstance(before.get('modification_state'), dict) else {}
+    new_mod_state = after.get('modification_state') if isinstance(after.get('modification_state'), dict) else {}
+    for modification_id in sorted(set(old_mod_state) | set(new_mod_state)):
+        add(f'modification_state.{modification_id}', 'Modification resource state',
+            old_mod_state.get(modification_id), new_mod_state.get(modification_id))
+    old_program_state = before.get('program_state') if isinstance(before.get('program_state'), dict) else {}
+    new_program_state = after.get('program_state') if isinstance(after.get('program_state'), dict) else {}
+    for program_id in sorted(set(old_program_state) | set(new_program_state)):
+        add(f'program_state.{program_id}', 'Program runtime state',
+            old_program_state.get(program_id), new_program_state.get(program_id))
+    old_net_entities = before.get('net_entities') if isinstance(before.get('net_entities'), dict) else {}
+    new_net_entities = after.get('net_entities') if isinstance(after.get('net_entities'), dict) else {}
+    for entity_id in sorted(set(old_net_entities) | set(new_net_entities)):
+        add(f'net_entities.{entity_id}', 'Black ICE NET entity',
+            old_net_entities.get(entity_id), new_net_entities.get(entity_id))
+    old_vehicle_state = before.get('vehicle_state') if isinstance(before.get('vehicle_state'), dict) else {}
+    new_vehicle_state = after.get('vehicle_state') if isinstance(after.get('vehicle_state'), dict) else {}
+    for vehicle_id in sorted(set(old_vehicle_state) | set(new_vehicle_state)):
+        add(f'vehicle_state.{vehicle_id}', 'Vehicle SDP',
+            old_vehicle_state.get(vehicle_id), new_vehicle_state.get(vehicle_id))
+
+    def synergy_views(data):
+        result = {}
+        for rule in derive(data).get('effects', {}).get('synergies', []):
+            progress = ', '.join(
+                f"{item['label']} {item['current']}/{item['required']}"
+                for item in rule.get('requirements') or [])
+            result[rule['id']] = {
+                'label': rule.get('label_en') or rule['id'],
+                'status': 'ACTIVE' if rule.get('active') else 'INACTIVE',
+                'progress': progress,
+            }
+        return result
+
+    old_synergies, new_synergies = synergy_views(before), synergy_views(after)
+    for rule_id in sorted(set(old_synergies) | set(new_synergies)):
+        old_view, new_view = old_synergies.get(rule_id), new_synergies.get(rule_id)
+        add(f'effects.synergy.{rule_id}',
+            f'Effect: {(new_view or old_view or {}).get("label", rule_id)}',
+            old_view, new_view)
+
+    def item_effect_views(data):
+        result = {}
+        for source in derive(data).get('effects', {}).get('item_sources', []):
+            result[source['id']] = {
+                'label': source.get('label_en') or source['id'],
+                'status': 'ACTIVE' if source.get('active') else 'INACTIVE',
+                'matching_instances': len(source.get('matching_instance_ids') or []),
+                'active_instances': len(source.get('active_instance_ids') or []),
+            }
+        return result
+
+    old_sources, new_sources = item_effect_views(before), item_effect_views(after)
+    for rule_id in sorted(set(old_sources) | set(new_sources)):
+        old_view, new_view = old_sources.get(rule_id), new_sources.get(rule_id)
+        add(f'effects.item_source.{rule_id}',
+            f'Effect: {(new_view or old_view or {}).get("label", rule_id)}',
+            old_view, new_view)
+    return changes
+
+
+def record_character_change_set(conn, character_id, actor_user_id, before, after,
+                                reason, revision_before, revision_after,
+                                category='sheet_update', reverts_ledger_id=None):
+    changes = character_change_summary(before, after)
+    delta = {
+        'changes': changes,
+        'change_count': len(changes),
+        'revision_before': int(revision_before),
+        'revision_after': int(revision_after),
+        'revertible': True,
+    }
+    if reverts_ledger_id is not None:
+        delta['reverts_ledger_id'] = int(reverts_ledger_id)
+    cursor = conn.execute(
+        'INSERT INTO character_ledger(character_id,actor_user_id,category,delta_json,'
+        'before_json,after_json,reason,created) VALUES(?,?,?,?,?,?,?,?)',
+        (character_id, actor_user_id, category, json.dumps(delta, ensure_ascii=False),
+         json.dumps(before, ensure_ascii=False), json.dumps(after, ensure_ascii=False),
+         str(reason or '')[:500], time.time()))
+    return cursor.lastrowid
+
+
+def record_effect_change(conn, character_id, actor_user_id, effect_id, label,
+                         before, after, reason, revision_before, revision_after):
+    def summary(value):
+        if not value:
+            return '—'
+        definition = value.get('definition') or {}
+        return {
+            'status': value.get('status') or ('active' if value.get('active') else 'disabled'),
+            'target': definition.get('target'),
+            'operation': definition.get('operation'),
+            'value': definition.get('value'),
+            'duration': value.get('duration_type'),
+            'remaining_rounds': value.get('remaining_rounds'),
+        }
+
+    delta = {
+        'changes': [{
+            'path': f'effects.instances.{effect_id}', 'label': f'Effect: {label}',
+            'kind': 'changed', 'before': readable_change_value(summary(before)),
+            'after': readable_change_value(summary(after)),
+        }],
+        'change_count': 1,
+        'revision_before': int(revision_before),
+        'revision_after': int(revision_after),
+        'revertible': False,
+    }
+    conn.execute(
+        'INSERT INTO character_ledger(character_id,actor_user_id,category,delta_json,'
+        'before_json,after_json,reason,created) VALUES(?,?,?,?,?,?,?,?)',
+        (character_id, actor_user_id, 'effect', json.dumps(delta, ensure_ascii=False),
+         json.dumps(before, ensure_ascii=False) if before else None,
+         json.dumps(after, ensure_ascii=False) if after else None,
+         str(reason or '')[:500], time.time()))
+
+
+def record_account_security(conn, user_id, actor_user_id, event_type, detail=''):
+    conn.execute(
+        'INSERT INTO account_security_audit(user_id,actor_user_id,event_type,detail,created) '
+        'VALUES(?,?,?,?,?)',
+        (user_id, actor_user_id, str(event_type)[:80], str(detail or '')[:500], time.time()))
 
 
 def add_notification(conn, user_id, event_type, title, body='', link=None):
@@ -1453,21 +5834,879 @@ def deliver_vk_outbox(conn, limit=20):
     return {'configured': True, 'sent': sent, 'failed': failed}
 
 
+# -------------------------------------------------------- Campaign Clock
+
+CAMPAIGN_CLOCK_TZ = 'Europe/Moscow'
+# Source-defined campaign-time durations for services that complete on the
+# Campaign Clock. Manual times remain unbounded until the table confirms them.
+CAMPAIGN_DURATION_SECONDS = {
+    '1_hour': 3600,
+    '3_hours': 3 * 3600,
+    '6_hours': 6 * 3600,
+    '1_day': 24 * 3600,
+    '1_week': 7 * 24 * 3600,
+    '2_weeks': 14 * 24 * 3600,
+}
+CAMPAIGN_DURATION_LABELS = {
+    '1_hour': '1 Hour', '3_hours': '3 Hours', '6_hours': '6 Hours',
+    '1_day': '1 Day', '1_week': '1 Week', '2_weeks': '2 Weeks',
+}
+
+
+def campaign_timezone():
+    return os.environ.get('CBPR_CAMPAIGN_TZ') or CAMPAIGN_CLOCK_TZ
+
+
+def ensure_campaign_clock(conn):
+    """Seed the single campaign clock row if it does not exist yet."""
+    row = conn.execute('SELECT * FROM campaign_state WHERE id=1').fetchone()
+    if not row:
+        conn.execute(
+            'INSERT INTO campaign_state(id,campaign_time,timezone,updated) '
+            'VALUES(1,?,?,?)',
+            (time.time(), campaign_timezone(), time.time()))
+    return row or conn.execute('SELECT * FROM campaign_state WHERE id=1').fetchone()
+
+
+def campaign_now(conn):
+    ensure_campaign_clock(conn)
+    return float(conn.execute(
+        'SELECT campaign_time FROM campaign_state WHERE id=1').fetchone()['campaign_time'])
+
+
+def campaign_time_label(ts):
+    try:
+        return datetime.fromtimestamp(float(ts), MOSCOW).strftime('%Y-%m-%d %H:%M')
+    except (TypeError, ValueError, OverflowError, OSError):
+        return '—'
+
+
+def campaign_duration_seconds(key):
+    return CAMPAIGN_DURATION_SECONDS.get(str(key or ''))
+
+
+def campaign_clock_payload(conn):
+    state = conn.execute('SELECT * FROM campaign_state WHERE id=1').fetchone()
+    if not state:
+        state = ensure_campaign_clock(conn)
+        state = conn.execute('SELECT * FROM campaign_state WHERE id=1').fetchone()
+    changes = conn.execute(
+        'SELECT a.*,u.display_name actor FROM campaign_clock_audit a '
+        'JOIN users u ON u.id=a.actor_user_id ORDER BY a.id DESC LIMIT 30').fetchall()
+    return {
+        'campaign_time': float(state['campaign_time']),
+        'timezone': state['timezone'],
+        'label': campaign_time_label(state['campaign_time']),
+        'changes': [{
+            'delta_seconds': row['delta_seconds'], 'before_time': row['before_time'],
+            'after_time': row['after_time'], 'reason': row['reason'],
+            'actor': row['actor'], 'created': row['created'],
+        } for row in changes],
+    }
+
+
+def campaign_service_status(now, due_at):
+    """Return a campaign-clock readiness label for a started service."""
+    if due_at is None:
+        return {'ready': None, 'label': 'MANUAL TIME', 'due_label': None}
+    remaining = float(due_at) - float(now)
+    ready = remaining <= 0
+    if ready:
+        return {'ready': True, 'label': 'DUE', 'due_label': campaign_time_label(due_at)}
+    if remaining < 3600:
+        minutes = max(1, int(remaining // 60))
+        return {'ready': False, 'label': f'{minutes}m', 'due_label': campaign_time_label(due_at)}
+    if remaining < 86400:
+        hours = int(remaining // 3600)
+        return {'ready': False, 'label': f'{hours}h', 'due_label': campaign_time_label(due_at)}
+    days = int(remaining // 86400)
+    return {'ready': False, 'label': f'{days}d', 'due_label': campaign_time_label(due_at)}
+
+
+def character_campaign_services(character, conn):
+    """Collect this character's active clock-tracked services."""
+    now = campaign_now(conn)
+    out = []
+    data = character if isinstance(character, dict) else json.loads(character.get('data') or '{}')
+    therapy = (data.get('therapy_state') or {}).get('active')
+    if isinstance(therapy, dict):
+        status = campaign_service_status(now, therapy.get('campaign_due_at'))
+        out.append({
+            'kind': 'therapy', 'label': therapy.get('label') or 'Therapy',
+            'started_at': therapy.get('started_at'),
+            'campaign_due_at': therapy.get('campaign_due_at'),
+            'status': status['label'], 'ready': status['ready'],
+            'due_label': status['due_label'],
+            'manual_resolution_required': True,
+        })
+    repair = data.get('armor_repair_state') if isinstance(data.get('armor_repair_state'), dict) else {}
+    for instance_id, workflow in repair.items():
+        active = workflow.get('active') if isinstance(workflow, dict) else None
+        if not isinstance(active, dict):
+            continue
+        status = campaign_service_status(now, active.get('campaign_due_at'))
+        out.append({
+            'kind': 'armor_repair', 'label': f'Armor Repair · {active.get("method")}',
+            'started_at': active.get('started_at'),
+            'campaign_due_at': active.get('campaign_due_at'),
+            'status': status['label'], 'ready': status['ready'],
+            'due_label': status['due_label'],
+            'manual_resolution_required': True,
+        })
+    vehicle_state = data.get('vehicle_state') if isinstance(data.get('vehicle_state'), dict) else {}
+    for instance_id, state in vehicle_state.items():
+        active = state.get('repair') if isinstance(state, dict) else None
+        if not isinstance(active, dict):
+            continue
+        status = campaign_service_status(now, active.get('campaign_due_at'))
+        out.append({
+            'kind': 'vehicle_repair', 'label': f'Vehicle Repair · {active.get("severity")}',
+            'started_at': active.get('started_at'),
+            'campaign_due_at': active.get('campaign_due_at'),
+            'status': status['label'], 'ready': status['ready'],
+            'due_label': status['due_label'],
+            'manual_resolution_required': True,
+        })
+    return out
+
+
+def campaign_pending_services(conn):
+    """GM view: every active clock-tracked service across the campaign."""
+    now = campaign_now(conn)
+    rows = conn.execute(
+        'SELECT c.id character_id,c.owner_id,c.data,u.display_name owner_name '
+        'FROM characters c JOIN users u ON u.id=c.owner_id '
+        'WHERE c.data NOT LIKE \'%"archived": true%\' OR c.data NOT LIKE \'%"archived":true%\'').fetchall()
+    pending = []
+    for row in rows:
+        try:
+            data = json.loads(row['data'])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if data.get('archived'):
+            continue
+        services = character_campaign_services(data, conn)
+        for service in services:
+            pending.append({
+                'character_id': row['character_id'],
+                'character_name': data.get('handle') or 'Unknown Edgerunner',
+                'owner_name': row['owner_name'],
+                **service,
+            })
+    pending.sort(key=lambda item: (item['campaign_due_at'] is None,
+                                    item['campaign_due_at'] or 0))
+    return pending
+
+
+# -------------------------------------------------------- Downtime Planner
+
+# Declarative downtime activity catalog. ``kind`` drives what a resolution may
+# automate; ambiguous activities stay MANUAL (GM resolves the roll at the table
+# and records only the outcome).
+DOWNTIME_ACTIVITIES = [
+    {'id': 'hustle', 'kind': 'hustle', 'label_en': 'Hustle',
+     'label_ru': 'Подработка (Hustle)',
+     'desc_en': 'Roll the Role Hustle table; record the €$ result.',
+     'desc_ru': 'Бросок по таблице Hustle роли; запишите результат в €$.'},
+    {'id': 'recover_hp', 'kind': 'recover_hp', 'label_en': 'Recover HP',
+     'label_ru': 'Восстановление HP',
+     'desc_en': 'Rest and healing; record HP recovered.',
+     'desc_ru': 'Отдых и лечение; запишите восстановленные HP.'},
+    {'id': 'therapy', 'kind': 'therapy', 'label_en': 'Therapy',
+     'label_ru': 'Терапия (Humanity)',
+     'desc_en': 'Start a Therapy course (Humanity recovery).',
+     'desc_ru': 'Начать курс Therapy (восстановление Humanity).'},
+    {'id': 'armor_repair', 'kind': 'armor_repair', 'label_en': 'Armor Repair',
+     'label_ru': 'Ремонт брони',
+     'desc_en': 'Repair damaged Armor/Shield via the Armor workflow.',
+     'desc_ru': 'Ремонт повреждённой брони/щита через Armor workflow.'},
+    {'id': 'vehicle_repair', 'kind': 'vehicle_repair', 'label_en': 'Vehicle Repair',
+     'label_ru': 'Ремонт транспорта',
+     'desc_en': 'Repair vehicle durability via the Garage workflow.',
+     'desc_ru': 'Ремонт прочности транспорта через Garage workflow.'},
+    {'id': 'fabrication', 'kind': 'fabrication', 'label_en': 'Fabrication / Invention',
+     'label_ru': 'Fabrication / Invention',
+     'desc_en': 'Tech Maker fabrication or invention during downtime.',
+     'desc_ru': 'Fabrication или Invention Tech Maker во время downtime.'},
+    {'id': 'fixer_search', 'kind': 'fixer_search', 'label_en': 'Fixer Search',
+     'label_ru': 'Поиск через Fixer',
+     'desc_en': 'Ask a Fixer to source an item.',
+     'desc_ru': 'Попросить Fixer достать предмет.'},
+    {'id': 'other', 'kind': 'other', 'label_en': 'Other',
+     'label_ru': 'Другое',
+     'desc_en': 'Any other downtime activity; record the outcome.',
+     'desc_ru': 'Любое другое занятие; запишите результат.'},
+]
+DOWNTIME_ACTIVITY_BY_ID = {item['id']: item for item in DOWNTIME_ACTIVITIES}
+DOWNTIME_ACTIVITY_IDS = set(DOWNTIME_ACTIVITY_BY_ID)
+# ``hustle`` and ``recover_hp`` apply a bounded numeric result automatically,
+# but the roll itself is always resolved manually at the table.
+DOWNTIME_RESOLVE_KINDS = {'hustle', 'recover_hp', 'other'}
+
+
+def clean_downtime_activity(source):
+    if not isinstance(source, dict):
+        raise ApiError(400, 'Downtime activity должен быть объектом')
+    activity_id = str(source.get('id') or '').strip().lower()
+    if activity_id not in DOWNTIME_ACTIVITY_IDS:
+        raise ApiError(400, 'Неизвестная Downtime activity')
+    return {
+        'id': activity_id,
+        'note': str(source.get('note') or '').strip()[:500],
+        'resolved': bool(source.get('resolved')),
+        'resolution_note': str(source.get('resolution_note') or '').strip()[:1000],
+    }
+
+
+def clean_downtime_activities(source):
+    if source is None:
+        return []
+    if not isinstance(source, list) or len(source) > 12:
+        raise ApiError(400, 'Downtime activities должен быть списком до 12 записей')
+    return [clean_downtime_activity(item) for item in source]
+
+
+def downtime_state(data):
+    state = data.get('downtime_state')
+    if not isinstance(state, dict):
+        state = {'active': None, 'history': []}
+        data['downtime_state'] = state
+    if not isinstance(state.get('history'), list):
+        state['history'] = []
+    active = state.get('active') if isinstance(state.get('active'), dict) else None
+    if active is not None and not isinstance(active.get('activities'), list):
+        active['activities'] = []
+    return state
+
+
+def downtime_activity_payload(activity):
+    catalog = DOWNTIME_ACTIVITY_BY_ID.get(activity.get('id')) or {}
+    return {
+        'id': activity.get('id'),
+        'kind': catalog.get('kind'),
+        'label_en': catalog.get('label_en'),
+        'label_ru': catalog.get('label_ru'),
+        'note': activity.get('note') or '',
+        'resolved': bool(activity.get('resolved')),
+        'resolution_note': activity.get('resolution_note') or '',
+    }
+
+
+def downtime_payload(data, conn=None):
+    state = downtime_state(data)
+    active = state.get('active') if isinstance(state.get('active'), dict) else None
+    now = campaign_now(conn) if conn is not None else time.time()
+    active_payload = None
+    if active is not None:
+        status = campaign_service_status(now, active.get('campaign_due_at'))
+        active_payload = {
+            'downtime_id': active.get('downtime_id'),
+            'started_at': active.get('started_at'),
+            'campaign_started_at': active.get('campaign_started_at'),
+            'campaign_due_at': active.get('campaign_due_at'),
+            'duration_key': active.get('duration_key'),
+            'duration_label': active.get('duration_label'),
+            'note': active.get('note') or '',
+            'created_by': active.get('created_by'),
+            'status': status['label'],
+            'ready': status['ready'],
+            'due_label': status['due_label'],
+            'activities': [downtime_activity_payload(item)
+                           for item in active.get('activities') or []],
+        }
+    history = [{
+        'downtime_id': item.get('downtime_id'),
+        'started_at': item.get('started_at'),
+        'campaign_started_at': item.get('campaign_started_at'),
+        'campaign_due_at': item.get('campaign_due_at'),
+        'duration_key': item.get('duration_key'),
+        'duration_label': item.get('duration_label'),
+        'note': item.get('note') or '',
+        'completed_at': item.get('completed_at'),
+        'summary': item.get('summary') or '',
+        'activities': [downtime_activity_payload(activity)
+                       for activity in item.get('activities') or []],
+    } for item in (state.get('history') or [])[-50:][::-1] if isinstance(item, dict)]
+    return {'active': active_payload, 'history': history,
+            'activities': DOWNTIME_ACTIVITIES}
+
+
+# -------------------------------------------------------- Map POIs / Key Locations
+
+LOCATION_KINDS = {
+    'bar', 'club', 'clinic', 'market', 'restaurant', 'corporate',
+    'gang', 'landmark', 'service', 'other',
+}
+
+# Seed points of interest for the 2070s campaign. Coordinates use the same
+# 0..1000 viewBox as the client-side NC_MAP_COORDS overlay. Source metadata is
+# explicit so the GM can tell canonical landmarks from campaign inventions.
+NC_SEED_LOCATIONS = [
+    {'id': 'afterlife', 'name_en': 'Afterlife', 'name_ru': 'Afterlife', 'kind': 'bar',
+     'district_id': 'heywood-the-glen', 'x': 530, 'y': 640,
+     'description_en': 'The legendary edgerunner bar where mercs drink to their fallen.',
+     'description_ru': 'Легендарный бар эджраннеров, где наёмники пьют за павших.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'lizzies-bar', 'name_en': "Lizzie's Bar", 'name_ru': 'Бар Лиззи', 'kind': 'club',
+     'district_id': 'watson-kabuki', 'x': 600, 'y': 265,
+     'description_en': 'Mox-owned club and braindance den in Kabuki.',
+     'description_ru': 'Клуб Mox и точка брейнданса в Кабуки.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'clouds', 'name_en': 'Clouds', 'name_ru': 'Clouds', 'kind': 'club',
+     'district_id': 'westbrook-japantown', 'x': 668, 'y': 340,
+     'description_en': 'High-end dolls club above Japantown.',
+     'description_ru': 'Элитный клуб кукол над Джапантауном.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'totentanz', 'name_en': 'Totentanz', 'name_ru': 'Totentanz', 'kind': 'club',
+     'district_id': 'watson', 'x': 555, 'y': 175,
+     'description_en': 'Maelstrom-run industrial club in Watson.',
+     'description_ru': 'Индустриальный клуб Maelstrom в Уотсоне.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'riot', 'name_en': 'Riot', 'name_ru': 'Riot', 'kind': 'club',
+     'district_id': 'westbrook-japantown', 'x': 645, 'y': 372,
+     'description_en': 'Music club where the top edgerunners perform.',
+     'description_ru': 'Музыкальный клуб, где выступают топовые эджраннеры.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'embers', 'name_en': 'Embers', 'name_ru': 'Embers', 'kind': 'club',
+     'district_id': 'westbrook-charter-hill', 'x': 782, 'y': 512,
+     'description_en': 'Exclusive Charter Hill lounge with a view.',
+     'description_ru': 'Эксклюзивный лаунж в Чартер-Хилл с видом.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'konpeki-plaza', 'name_en': 'Konpeki Plaza', 'name_ru': 'Конпеки-Плаза', 'kind': 'corporate',
+     'district_id': 'city-center-downtown', 'x': 425, 'y': 452,
+     'description_en': 'Arasaka luxury hotel and corpo fortress.',
+     'description_ru': 'Люксовый отель Arasaka и корпоративная крепость.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'arasaka-tower', 'name_en': 'Arasaka Tower', 'name_ru': 'Башня Арасака', 'kind': 'corporate',
+     'district_id': 'city-center-corpo-plaza', 'x': 558, 'y': 486,
+     'description_en': 'The monolithic heart of Arasaka in Night City.',
+     'description_ru': 'Монолитное сердце Arasaka в Найт-Сити.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'megabuilding-h10', 'name_en': 'Megabuilding H10', 'name_ru': 'Мегаздание H10', 'kind': 'landmark',
+     'district_id': 'watson-little-china', 'x': 520, 'y': 280,
+     'description_en': 'Residential megabuilding in Little China.',
+     'description_ru': 'Жилое мегаздание в Маленьком Китае.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'megabuilding-h8', 'name_en': 'Megabuilding H8', 'name_ru': 'Мегаздание H8', 'kind': 'landmark',
+     'district_id': 'heywood-vista-del-rey', 'x': 610, 'y': 550,
+     'description_en': 'Residential megabuilding in Vista del Rey.',
+     'description_ru': 'Жилое мегаздание в Виста-дель-Рей.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'grand-imperial-mall', 'name_en': 'Grand Imperial Mall', 'name_ru': 'Гранд Империал Молл', 'kind': 'market',
+     'district_id': 'pacifica-coastview', 'x': 485, 'y': 705,
+     'description_en': 'Ruined Pacifica mall taken over by the Voodoo Boys.',
+     'description_ru': 'Разрушенный молл Пасифики под контролем Voodoo Boys.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'viktor-clinic', 'name_en': "Viktor's Clinic", 'name_ru': 'Клиника Виктора', 'kind': 'clinic',
+     'district_id': 'watson-little-china', 'x': 508, 'y': 300,
+     'description_en': 'Ripperdoc clinic trusted by local mercs.',
+     'description_ru': 'Клиника риппердока, которой доверяют местные наёмники.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'mistys-esoterica', 'name_en': "Misty's Esoterica", 'name_ru': 'Эзотерика Мисти', 'kind': 'service',
+     'district_id': 'watson-little-china', 'x': 535, 'y': 288,
+     'description_en': 'Occult shop and tarot readings.',
+     'description_ru': 'Оккультная лавка и расклады Таро.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'no-tell-motel', 'name_en': 'No-Tell Motel', 'name_ru': 'Мотель No-Tell', 'kind': 'service',
+     'district_id': 'watson-northside-industrial', 'x': 640, 'y': 120,
+     'description_en': 'Cheap no-questions-asked motel.',
+     'description_ru': 'Дешёвый мотель без лишних вопросов.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'delamain-hq', 'name_en': 'Delamain HQ', 'name_ru': 'Штаб Delamain', 'kind': 'service',
+     'district_id': 'city-center-downtown', 'x': 450, 'y': 470,
+     'description_en': 'Delamain taxi corporation headquarters.',
+     'description_ru': 'Штаб корпорации такси Delamain.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'biotechnica-flats', 'name_en': 'Biotechnica Flats', 'name_ru': 'Поля Biotechnica', 'kind': 'corporate',
+     'district_id': 'badlands-near-santo-domingo', 'x': 885, 'y': 700,
+     'description_en': 'Biotechnica protein farms in the Badlands.',
+     'description_ru': 'Протеиновые фермы Biotechnica в Пустошах.',
+     'source': 'Cyberpunk 2077'},
+    {'id': 'maelstrom-hangout', 'name_en': 'Maelstrom Hangout', 'name_ru': 'База Maelstrom', 'kind': 'gang',
+     'district_id': 'watson-northside-industrial', 'x': 600, 'y': 150,
+     'description_en': 'Chrome-obsessed Maelstrom turf in Northside.',
+     'description_ru': 'Территория помешанных на хроме Maelstrom в Нортсайде.',
+     'source': 'Campaign seed'},
+    {'id': 'tyger-claws-den', 'name_en': 'Tyger Claws Den', 'name_ru': 'Логово Tyger Claws', 'kind': 'gang',
+     'district_id': 'westbrook-japantown', 'x': 675, 'y': 360,
+     'description_en': 'Tyger Claws operation in Japantown.',
+     'description_ru': 'Точка Tyger Claws в Джапантауне.',
+     'source': 'Campaign seed'},
+    {'id': 'voodoo-boys-temple', 'name_en': 'Voodoo Boys Temple', 'name_ru': 'Храм Voodoo Boys', 'kind': 'gang',
+     'district_id': 'pacifica-west-wind-estate', 'x': 435, 'y': 820,
+     'description_en': 'The Voodoo Boys hold their turf in Pacifica.',
+     'description_ru': 'Voodoo Boys держат свою территорию в Пасифике.',
+     'source': 'Campaign seed'},
+    {'id': 'dynalar-clinic', 'name_en': 'Dynalar Clinic', 'name_ru': 'Клиника Dynalar', 'kind': 'clinic',
+     'district_id': 'city-center-corpo-plaza', 'x': 545, 'y': 505,
+     'description_en': 'Corporate-grade ripperdoc services.',
+     'description_ru': 'Риппердок-услуги корпоративного уровня.',
+     'source': 'Campaign seed'},
+]
+
+
+def ensure_seed_locations(conn):
+    """Idempotently seed canonical Night City points of interest."""
+    now = time.time()
+    for item in NC_SEED_LOCATIONS:
+        conn.execute(
+            'INSERT OR IGNORE INTO locations(id,name_en,name_ru,kind,district_id,x,y,'
+            'description_en,description_ru,source,custom,owner_user_id,archived,created,updated) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?,0,NULL,0,?,?)',
+            (item['id'], item['name_en'], item['name_ru'], item['kind'],
+             item['district_id'], item['x'], item['y'],
+             item['description_en'], item['description_ru'], item['source'], now, now))
+
+
+def clean_location_input(body, existing=None):
+    base = dict(existing or {})
+    get = lambda key, default='': (body or {}).get(key, base.get(key, default))
+    name_en = str(get('name_en') or '').strip()[:120]
+    if len(name_en) < 2:
+        raise ApiError(400, 'Локации нужно название')
+    kind = str(get('kind') or 'other').strip().lower()
+    if kind not in LOCATION_KINDS:
+        raise ApiError(400, 'Неизвестный тип локации')
+    district_id = str(get('district_id') or '').strip().lower()
+    if district_id and district_id not in NC_LOCATION_IDS:
+        raise ApiError(400, 'Некорректная локация Night City')
+    try:
+        x = float(get('x', 500))
+        y = float(get('y', 500))
+    except (TypeError, ValueError):
+        raise ApiError(400, 'Некорректные координаты локации')
+    if not math.isfinite(x) or not math.isfinite(y):
+        raise ApiError(400, 'Некорректные координаты локации')
+    return {
+        'name_en': name_en,
+        'name_ru': str(get('name_ru') or '').strip()[:120],
+        'kind': kind,
+        'district_id': district_id,
+        'x': max(0.0, min(1000.0, x)),
+        'y': max(0.0, min(1000.0, y)),
+        'description_en': str(get('description_en') or '').strip()[:5000],
+        'description_ru': str(get('description_ru') or '').strip()[:5000],
+        'source': str(get('source') or '').strip()[:160],
+    }
+
+
+def location_payload(row, user):
+    return {
+        'id': row['id'], 'name_en': row['name_en'], 'name_ru': row['name_ru'],
+        'kind': row['kind'], 'district_id': row['district_id'],
+        'x': row['x'], 'y': row['y'],
+        'description_en': row['description_en'], 'description_ru': row['description_ru'],
+        'source': row['source'], 'custom': bool(row['custom']),
+        'archived': bool(row['archived']),
+        'can_edit': bool(user and user_is_gm(user) and row['custom']),
+        'can_delete': bool(user and user_is_gm(user) and not row['archived']),
+        'created': row['created'], 'updated': row['updated'],
+    }
+
+
+# -------------------------------------------------------- Memorial / Afterlife
+
+MEMORIAL_STATUSES = {'deceased', 'retired', 'missing'}
+MEMORIAL_VISIBILITIES = {'public', 'private'}
+MEMBERSHIP_STATUSES = {'active', 'former', 'secret', 'expelled', 'deceased'}
+MEMBERSHIP_VISIBILITIES = {'public', 'gm', 'classified'}
+REPUTATION_STANDINGS = {'allied', 'friendly', 'neutral', 'hostile', 'hunted'}
+
+def membership_payload(row):
+    return {
+        'id': row['id'], 'member_persona_id': row['member_persona_id'],
+        'organization_persona_id': row['organization_persona_id'],
+        'role_title': row['role_title'], 'status': row['status'],
+        'visibility': row['visibility'], 'since_at': row['since_at'],
+        'until_at': row['until_at'], 'note': row['note'],
+        'sort_order': row['sort_order'],
+    }
+
+def crew_reputation_map(conn):
+    try:
+        rows = conn.execute('SELECT * FROM crew_reputation').fetchall()
+        return {row['organization_persona_id']: dict(row) for row in rows}
+    except sqlite3.OperationalError:
+        return {}
+
+def clean_membership_input(body, existing=None):
+    base = dict(existing or {})
+    get = lambda key, default='': (body or {}).get(key, base.get(key, default))
+    status = str(get('status', 'active')).lower()
+    if status not in MEMBERSHIP_STATUSES:
+        status = 'active'
+    visibility = str(get('visibility', 'public')).lower()
+    if visibility not in MEMBERSHIP_VISIBILITIES:
+        visibility = 'public'
+    member = _num(get('member_persona_id') or base.get('member_persona_id'))
+    org = _num(get('organization_persona_id') or base.get('organization_persona_id'))
+    if not member or not org:
+        raise ApiError(400, 'Membership требует member и organization persona')
+    since = get('since_at')
+    until = get('until_at')
+    return {
+        'member_persona_id': member, 'organization_persona_id': org,
+        'role_title': str(get('role_title') or '')[:120],
+        'status': status, 'visibility': visibility,
+        'since_at': optional_timestamp(since) if since not in (None, '') else None,
+        'until_at': optional_timestamp(until) if until not in (None, '') else None,
+        'note': str(get('note') or '')[:2000],
+        'sort_order': max(0, min(999, _num(get('sort_order')) or 0)),
+    }
+
+def clean_reputation_input(body, existing=None):
+    base = dict(existing or {})
+    get = lambda key, default=0: (body or {}).get(key, base.get(key, default))
+    standing = str(get('standing', 'neutral')).lower()
+    if standing not in REPUTATION_STANDINGS:
+        standing = 'neutral'
+    return {
+        'organization_persona_id': _num(get('organization_persona_id')),
+        'reputation': max(-100, min(100, _num(get('reputation')) or 0)),
+        'favor': max(-100, min(100, _num(get('favor')) or 0)),
+        'heat': max(0, min(100, _num(get('heat')) or 0)),
+        'standing': standing,
+        'note': str(get('note') or '')[:2000],
+    }
+
+
+
+def clean_memorial_input(body, existing=None):
+    base = dict(existing or {})
+    get = lambda key, default='': (body or {}).get(key, base.get(key, default))
+    status = str(get('status', 'deceased')).lower()
+    if status not in MEMORIAL_STATUSES:
+        raise ApiError(400, 'Неизвестный статус memorial')
+    handle = str(get('handle') or '').strip()[:60]
+    if len(handle) < 1:
+        raise ApiError(400, 'Memorial требует handle')
+    visibility = str(get('visibility') or 'public').lower()
+    if visibility not in MEMORIAL_VISIBILITIES:
+        visibility = 'public'
+    death_date = None
+    if get('death_date') not in (None, ''):
+        death_date = optional_timestamp(get('death_date'))
+    return {
+        'status': status,
+        'handle': handle,
+        'role': str(get('role') or '').strip()[:80],
+        'role_rank': max(0, min(10, _num(get('role_rank')) or 0)),
+        'death_date': death_date,
+        'location': str(get('location') or '').strip()[:240],
+        'cause': str(get('cause') or '').strip()[:2000],
+        'epitaph': str(get('epitaph') or '').strip()[:1000],
+        'last_words': str(get('last_words') or '').strip()[:2000],
+        'obituary': str(get('obituary') or '').strip()[:10000],
+        'gm_notes': str(get('gm_notes') or '').strip()[:10000],
+        'visibility': visibility,
+    }
+
+
+def clean_legacy_input(body):
+    if not isinstance(body, dict):
+        raise ApiError(400, 'Afterlife Legacy должен быть объектом')
+    drink_name = str(body.get('drink_name') or '').strip()[:120]
+    if len(drink_name) < 2:
+        raise ApiError(400, 'Напиток требует название')
+    return {
+        'drink_name': drink_name,
+        'ingredients': str(body.get('ingredients') or '').strip()[:2000],
+        'preparation': str(body.get('preparation') or '').strip()[:4000],
+        'glass': str(body.get('glass') or '').strip()[:200],
+        'garnish': str(body.get('garnish') or '').strip()[:500],
+        'quote': str(body.get('quote') or '').strip()[:2000],
+        'legend': str(body.get('legend') or '').strip()[:6000],
+    }
+
+
+def memorial_payload(row, user=None, full=False):
+    payload = {
+        'id': row['id'], 'character_id': row['character_id'],
+        'handle': row['handle'], 'role': row['role'], 'role_rank': row['role_rank'],
+        'portrait_media_id': row['portrait_media_id'],
+        'status': row['status'],
+        'draft_state': row['draft_state'] if 'draft_state' in row.keys() else 'published',
+        'death_date': row['death_date'],
+        'location': row['location'], 'cause': row['cause'],
+        'epitaph': row['epitaph'], 'last_words': row['last_words'],
+        'obituary': row['obituary'],
+        'visibility': row['visibility'],
+        'feed_post_id': row['feed_post_id'],
+        'legacy': {
+            'drink_name': row['legacy_drink_name'],
+            'ingredients': row['legacy_ingredients'],
+            'preparation': row['legacy_preparation'],
+            'glass': row['legacy_glass'],
+            'garnish': row['legacy_garnish'],
+            'quote': row['legacy_quote'],
+            'legend': row['legacy_legend'],
+            'awarded_at': row['legacy_awarded_at'],
+        } if row['legacy_drink_name'] else None,
+        'created': row['created'], 'updated': row['updated'],
+    }
+    if full:
+        payload['gm_notes'] = row['gm_notes']
+        payload['created_by'] = row['created_by']
+    return payload
+
+
+# -------------------------------------------------------- Crew Stash & transfers
+
+TRANSFER_KINDS = {'give', 'stash', 'take', 'loan', 'return', 'recall', 'trade', 'split'}
+
+
+def crew_stash_payload(conn):
+    rows = conn.execute(
+        'SELECT * FROM crew_stash ORDER BY stored_at,instance_id').fetchall()
+    payload = []
+    for row in rows:
+        item = dict(row)
+        item['item'] = parse_json_object(item.pop('data_json'))
+        item['item'].pop('_runtime', None)
+        item['item'].pop('_tech_maker', None)
+        item['transfers'] = item_transfer_history(conn, item['instance_id'])
+        payload.append(item)
+    return payload
+
+
+def item_transfer_history(conn, instance_id, limit=50):
+    rows = conn.execute(
+        'SELECT t.*,u.display_name actor FROM item_transfers t '
+        'JOIN users u ON u.id=t.actor_user_id WHERE t.instance_id=? '
+        'ORDER BY t.created DESC,t.transfer_id LIMIT ?',
+        (str(instance_id), max(1, min(500, int(limit))))).fetchall()
+    return [dict(row) for row in rows]
+
+
+def character_open_loans(conn, character_id):
+    rows = conn.execute(
+        'SELECT * FROM item_loans WHERE (owner_character_id=? OR borrower_character_id=?) '
+        'AND returned_at IS NULL ORDER BY loaned_at,loan_id',
+        (int(character_id), int(character_id))).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        instance = conn.execute(
+            'SELECT * FROM item_instances WHERE instance_id=?',
+            (row['instance_id'],)).fetchone()
+        entry = parse_json_object(instance['data_json']) if instance else {}
+        item['item_name'] = entry.get('custom_name') or entry.get('name') or 'Item'
+        owner = conn.execute(
+            'SELECT data FROM characters WHERE id=?',
+            (row['owner_character_id'],)).fetchone()
+        borrower = conn.execute(
+            'SELECT data FROM characters WHERE id=?',
+            (row['borrower_character_id'],)).fetchone()
+        item['owner_handle'] = (parse_json_object(owner['data']) if owner else {}).get('handle') or '?'
+        item['borrower_handle'] = (parse_json_object(borrower['data']) if borrower else {}).get('handle') or '?'
+        out.append(item)
+    return out
+
+
+def active_loan_for_instance(conn, instance_id):
+    return conn.execute(
+        'SELECT * FROM item_loans WHERE instance_id=? AND returned_at IS NULL',
+        (str(instance_id),)).fetchone()
+
+
+def transfer_targets(conn, user):
+    """Characters an actor may hand items to: own + public for players, all for GM."""
+    if user_is_gm(user):
+        rows = conn.execute(
+            'SELECT c.id,c.owner_id,c.data,u.display_name owner_name '
+            'FROM characters c JOIN users u ON u.id=c.owner_id '
+            'ORDER BY u.id,c.id').fetchall()
+    else:
+        rows = conn.execute(
+            'SELECT c.id,c.owner_id,c.data,u.display_name owner_name '
+            'FROM characters c JOIN users u ON u.id=c.owner_id '
+            'WHERE c.public=1 OR c.owner_id=? ORDER BY u.id,c.id',
+            (user['id'],)).fetchall()
+    out = []
+    for row in rows:
+        data = parse_json_object(row['data'])
+        out.append({
+            'id': row['id'], 'handle': data.get('handle') or 'Unknown Edgerunner',
+            'owner_id': row['owner_id'], 'owner_name': row['owner_name'],
+            'archived': bool(data.get('archived')), 'role': data.get('role') or '',
+        })
+    return out
+
+
+def _inventory_entry(data, instance_id):
+    for index, entry in enumerate(data.get('inventory') or []):
+        if isinstance(entry, dict) and entry.get('instance_id') == instance_id:
+            return index, entry
+    return None, None
+
+
+def _character_item_name(entry):
+    return str(entry.get('custom_name') or entry.get('name') or 'Item')
+
+
+def _transferable_item_error(conn, character_id, entry, data, loan=None, loan_ok=False):
+    """Return a translated ApiError when the instance cannot leave the character."""
+    if entry.get('state') in ('equipped', 'installed', 'consumed', 'broken'):
+        raise ApiError(409, 'Передавать можно только carried предмет (сначала снимите его)')
+    armor = data.get('armor') if isinstance(data.get('armor'), dict) else {}
+    for location in ('head', 'body', 'shield'):
+        piece = armor.get(location)
+        if isinstance(piece, dict) and piece.get('instance_id') == entry.get('instance_id'):
+            raise ApiError(409, 'Сначала снимите броню из слота')
+    modifications = character_modifications(conn, character_id)
+    if any(mod.get('host_instance_id') == entry.get('instance_id') for mod in modifications):
+        raise ApiError(409, 'Сначала снимите установленные модификации с предмета')
+    if not loan_ok and loan is not None and loan['borrower_character_id'] == int(character_id):
+        raise ApiError(409, 'Предмет взят в долг — его можно только вернуть владельцу')
+    if not loan_ok and loan is not None and loan['owner_character_id'] == int(character_id):
+        raise ApiError(409, 'Предмет сейчас в долгу у другого персонажа')
+
+
+_RUNTIME_STATE_KEYS = ('weapon_state', 'vehicle_state', 'armor_repair_state', 'armor_tech_state')
+
+
+def _detach_runtime_state(source_data, entry, instance_id):
+    """Pull per-instance server-owned runtime containers into the moving entry."""
+    packed = {}
+    for key in _RUNTIME_STATE_KEYS:
+        source_map = source_data.get(key) if isinstance(source_data.get(key), dict) else {}
+        if instance_id in source_map:
+            packed[key] = source_map.pop(instance_id)
+    if packed:
+        entry['_runtime'] = packed
+
+
+def _attach_runtime_state(target_data, entry, instance_id):
+    packed = entry.pop('_runtime', None)
+    if isinstance(packed, dict):
+        for key, value in packed.items():
+            if key in _RUNTIME_STATE_KEYS and isinstance(value, dict):
+                target_data.setdefault(key, {})[instance_id] = value
+
+
+def _detach_tech_maker_modifications(source_data, entry, instance_id):
+    """Tech Maker work stays on the item; detach its records with the host."""
+    source_state = source_data.get('tech_maker_state')
+    if not isinstance(source_state, dict):
+        return
+    mods = source_state.get('modifications') if isinstance(source_state.get('modifications'), dict) else {}
+    moved = {mod_id: mod for mod_id, mod in mods.items()
+             if isinstance(mod, dict) and mod.get('host_instance_id') == instance_id}
+    if not moved:
+        return
+    for mod_id in moved:
+        mods.pop(mod_id)
+    source_history = source_state.get('history') if isinstance(source_state.get('history'), list) else []
+    keep, history = [], []
+    for record in source_history:
+        if isinstance(record, dict) and record.get('modification_id') in moved:
+            history.append(record)
+        else:
+            keep.append(record)
+    source_state['history'] = keep
+    entry['_tech_maker'] = {'modifications': moved, 'history': history}
+
+
+def _attach_tech_maker_modifications(target_data, entry):
+    packed = entry.pop('_tech_maker', None)
+    if not isinstance(packed, dict):
+        return
+    mods = packed.get('modifications') if isinstance(packed.get('modifications'), dict) else {}
+    history = packed.get('history') if isinstance(packed.get('history'), list) else []
+    if not mods:
+        return
+    target_state = target_data.setdefault('tech_maker_state', {})
+    target_mods = target_state.setdefault('modifications', {})
+    target_mods.update(mods)
+    target_history = target_state.setdefault('history', [])
+    target_history.extend(history)
+    target_state['history'] = target_history[-50:]
+
+
+def _split_stack(entry, take_qty):
+    """Return (remaining_entry_or_None, taken_entry) where taken is a fresh copy."""
+    full_qty = max(1, int(entry.get('qty') or 1))
+    take_qty = max(1, min(full_qty, int(take_qty or 0) or full_qty))
+    if take_qty >= full_qty:
+        return None, copy.deepcopy(entry)
+    remaining = copy.deepcopy(entry)
+    taken = copy.deepcopy(entry)
+    remaining['qty'] = full_qty - take_qty
+    taken['qty'] = take_qty
+    if entry.get('cat') == 'ammo':
+        pack = ammo_pack_size(entry)
+        rounds = ammo_rounds(entry)
+        taken['ammo_rounds'] = take_qty * pack
+        remaining['ammo_rounds'] = max(0, rounds - take_qty * pack)
+    return remaining, taken
+
+
+def _prepare_entry_for_holder(entry, holder_kind):
+    """Normalise an entry before it lands in a stash or another character."""
+    cleaned = copy.deepcopy(entry)
+    cleaned['qty'] = max(1, int(cleaned.get('qty') or 1))
+    cleaned['state'] = 'stored' if holder_kind == 'stash' else 'carried'
+    for key in ('equipped_mode', 'equipped_slot', 'active', 'host_instance_id',
+                'host_instances', 'mounted_modification_id', 'mounted_vehicle_id'):
+        cleaned.pop(key, None)
+    return cleaned
+
+
+def _record_item_transfer(conn, instance_id, kind, actor_user_id, notes,
+                          from_character_id=None, to_character_id=None,
+                          from_bucket=None, to_bucket=None, quantity=1):
+    conn.execute(
+        'INSERT INTO item_transfers(transfer_id,instance_id,from_character_id,'
+        'to_character_id,from_bucket,to_bucket,quantity,kind,actor_user_id,notes,created) '
+        'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+        (secrets.token_hex(16), str(instance_id), from_character_id, to_character_id,
+         from_bucket, to_bucket, max(1, int(quantity or 1)), kind,
+         int(actor_user_id), str(notes or '')[:500], time.time()))
+
+
+def _record_transfer_ledger(conn, character_id, actor_user_id, before, after,
+                            reason, revision_before, revision_after):
+    ledger_id = record_character_change_set(
+        conn, character_id, actor_user_id, before, after, reason,
+        revision_before, revision_after, category='transfer')
+    row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                       (ledger_id,)).fetchone()
+    delta = parse_json_object(row['delta_json'])
+    delta['revertible'] = False
+    conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                 (json.dumps(delta, ensure_ascii=False), ledger_id))
+    return ledger_id
+
+
+def _persist_transfer_side(conn, character_id, data, source_type, source_ref):
+    ensure_progression(data)
+    persist_character_item_instances(
+        conn, character_id, data, source_type, source_ref=source_ref, prune=True)
+
+
 def db():
     conn = sqlite3.connect(DB_PATH, timeout=20)
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA busy_timeout=15000')
+    conn.execute('PRAGMA foreign_keys=ON')
     return conn
 
 
 def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    load_effect_rules()  # fail closed on invalid or non-allowlisted declarative effects
     conn = db()
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA synchronous=NORMAL')
     had_users_table = bool(conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'").fetchone())
     conn.executescript(SCHEMA)
     apply_schema_migrations(conn, make_backup=had_users_table)
+    ensure_campaign_clock(conn)
+    ensure_seed_locations(conn)
+    ensure_market_permanent(conn)
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     stale = conn.execute('SELECT * FROM media WHERE attached_type IS NULL AND created < ?', (time.time() - 7 * 86400,)).fetchall()
     for media in stale:
@@ -1505,11 +6744,45 @@ def init_db():
     promoted = apply_admin_bootstrap(conn)
     if promoted:
         print('NC//NET Admin bootstrap: ' + ', '.join(promoted))
+    for vendor in NIGHT_MARKET_VENDORS:
+        persona_id = ensure_system_persona(conn, vendor['handle'], vendor['name_en'], 'outlet')
+        if persona_id:
+            conn.execute(
+                'UPDATE personas SET display_name=?,short_bio=?,public_bio=?,accent_color=?,updated=? '
+                'WHERE id=?',
+                (vendor['name_en'], vendor['tagline_en'],
+                 vendor['tagline_en'] + ' Daily stock rotates at 00:00 Europe/Moscow.',
+                 vendor['accent_color'], time.time(), persona_id))
     migrate_legacy_network_content(conn)
     conn.close()
 
 
 # ---------------------------------------------------------------- auth
+
+REGISTRATION_MODES = {'open', 'invite', 'closed'}
+
+
+def registration_mode():
+    mode = str(os.environ.get('CBPR_REGISTRATION_MODE', 'invite') or '').strip().lower()
+    return mode if mode in REGISTRATION_MODES else 'invite'
+
+
+def invite_code_hash(code):
+    normalized = re.sub(r'[^A-Za-z0-9]', '', str(code or '')).upper()
+    return hashlib.sha256(normalized.encode()).hexdigest() if normalized else ''
+
+
+def create_invite_code():
+    raw = secrets.token_hex(8).upper()
+    return f'NCNET-{raw[:4]}-{raw[4:8]}-{raw[8:12]}-{raw[12:16]}'
+
+
+def validate_new_password(password):
+    if len(password) < 8:
+        raise ApiError(400, 'Пароль: минимум 8 символов')
+    if len(password) > 256:
+        raise ApiError(400, 'Пароль слишком длинный')
+
 
 def hash_password(pw):
     salt = secrets.token_hex(16)
@@ -1535,11 +6808,14 @@ def session_cookie(token, max_age=SESSION_TTL):
     return '; '.join(parts)
 
 
-def create_session(conn, user_id):
+def create_session(conn, user_id, ip_address='', user_agent=''):
     token = secrets.token_hex(32)
     now = time.time()
-    conn.execute('INSERT INTO sessions(token, user_id, created, expires) VALUES(?,?,?,?)',
-                 (token, user_id, now, now + SESSION_TTL))
+    conn.execute(
+        'INSERT INTO sessions(token,user_id,created,expires,last_seen,ip_address,user_agent) '
+        'VALUES(?,?,?,?,?,?,?)',
+        (token, user_id, now, now + SESSION_TTL, now,
+         str(ip_address or '')[:64], str(user_agent or '')[:300]))
     conn.execute('DELETE FROM sessions WHERE expires < ?', (now,))
     conn.commit()
     return token
@@ -1547,8 +6823,71 @@ def create_session(conn, user_id):
 
 # ---------------------------------------------------------------- ночной рынок
 
-NM_PER_CAT = 4
+NM_PER_CAT = 6
 NM_MULTS = [0.7, 0.8, 0.9, 0.9, 1.0, 1.0, 1.1, 1.2, 1.5]
+NIGHT_MARKET_VENDORS = [
+    {
+        'id': 'gunmart-after-dark', 'handle': 'gunmart-after-dark', 'accent_color': '#ff9d45', 'name_en': 'Gunmart After Dark',
+        'name_ru': 'Gunmart After Dark', 'icon': '🔫',
+        'tagline_en': 'Weapons, ammunition, explosives, and questionable rebuilds.',
+        'tagline_ru': 'Оружие, боеприпасы, взрывчатка и сомнительные переделки.',
+        'cats': ['guns', 'melee', 'gun_upgrades', 'ammo', 'grenades'],
+        'location': 'Watson',
+        'location_id': 'megabuilding-h10',
+    },
+    {
+        'id': 'iron-shell', 'handle': 'iron-shell', 'accent_color': '#8fa0bd', 'name_en': 'Iron Shell', 'name_ru': 'Iron Shell', 'icon': '🛡️',
+        'tagline_en': 'Armor, shields, and the confidence to get shot twice.',
+        'tagline_ru': 'Броня, щиты и уверенность, что переживёшь второй выстрел.',
+        'cats': ['armor'],
+        'location': 'Westbrook',
+        'location_id': None,
+    },
+    {
+        'id': 'chrome-saint', 'handle': 'chrome-saint', 'accent_color': '#ff2d78', 'name_en': 'Chrome Saint', 'name_ru': 'Chrome Saint', 'icon': '🦾',
+        'tagline_en': 'Fashionware, chrome, and discreet installation referrals.',
+        'tagline_ru': 'Fashionware, хром и контакты для неброской установки.',
+        'cats': ['cyberware'],
+        'location': 'City Center',
+        'location_id': None,
+    },
+    {
+        'id': 'ghost-packet', 'handle': 'ghost-packet', 'accent_color': '#00e5ff', 'name_en': 'Ghost Packet', 'name_ru': 'Ghost Packet', 'icon': '💾',
+        'tagline_en': 'Cyberdecks, Programs, Black ICE, and NET hardware.',
+        'tagline_ru': 'Cyberdeck, Programs, Black ICE и NET-железо.',
+        'cats': ['net_stuff', 'programs'],
+        'location': 'Heywood',
+        'location_id': 'afterlife',
+    },
+    {
+        'id': 'nomad-exchange', 'handle': 'nomad-exchange', 'accent_color': '#ffd500', 'name_en': 'Nomad Exchange', 'name_ru': 'Nomad Exchange', 'icon': '🏍️',
+        'tagline_en': 'Vehicles, upgrades, cargo solutions, no fixed address.',
+        'tagline_ru': 'Транспорт, апгрейды, грузовые решения и никакого адреса.',
+        'cats': ['vehicles', 'vehicles_upgrades'],
+        'location': 'Badlands',
+        'location_id': None,
+    },
+    {
+        'id': 'back-alley-general', 'handle': 'back-alley-general', 'accent_color': '#3cf28a', 'name_en': 'Back-Alley General',
+        'name_ru': 'Back-Alley General', 'icon': '🎒',
+        'tagline_en': 'Gear, fashion, services, and everything nobody admits buying.',
+        'tagline_ru': 'Снаряжение, мода, услуги и всё, в покупке чего не признаются.',
+        'cats': ['gear', 'fashion', 'services'],
+        'exclude_consumable': True,
+        'location': 'Pacifica',
+        'location_id': 'grand-imperial-mall',
+    },
+    {
+        'id': 'street-pharmacy', 'handle': 'street-pharmacy', 'accent_color': '#b388ff', 'name_en': 'Street Pharmacy',
+        'name_ru': 'Street Pharmacy', 'icon': '💊',
+        'tagline_en': 'Pharma and street drugs — no prescription, no questions.',
+        'tagline_ru': 'Фарма и уличные наркотики — без рецепта и без вопросов.',
+        'cats': ['gear'],
+        'consumable_only': True,
+        'location': 'Watson',
+        'location_id': None,
+    },
+]
 
 
 def _h(s):
@@ -1559,23 +6898,179 @@ def nm_day():
     return datetime.now(MOSCOW).strftime('%Y-%m-%d')
 
 
-def night_market():
+def nm_day_offset(day, delta_days):
+    try:
+        base = datetime.strptime(str(day or ''), '%Y-%m-%d')
+    except ValueError:
+        return day
+    return (base + timedelta(days=int(delta_days))).strftime('%Y-%m-%d')
+
+
+def nm_stock_seed(day, vendor_id, item_id):
+    """Deterministic 1..5 unit stock seed for a daily vendor+item offer."""
+    return 1 + _h(f'stock|{day}|{vendor_id}|{item_id}') % 5
+
+
+def permanent_offer_payload(item, vendor_id):
+    return {
+        'id': item['id'], 'cat': item['cat'], 'name': item['name'],
+        'price': item['price'], 'street_price': item['price'],
+        'permanent': True, 'discount': False, 'multiplier': 1.0,
+        'fields': item.get('fields') or {}, 'mechanics': item.get('mechanics') or {},
+        'requirements': item.get('requirements') or [], 'capacity': item.get('capacity'),
+        'source': item.get('source'), 'desc': item.get('desc'),
+        'armor_locations': item.get('armor_locations'), 'armor_bundled': item.get('armor_bundled'),
+        'effect_coverage': item_effect_coverage(item.get('id')), 'vendor_id': vendor_id,
+    }
+
+
+def ensure_market_permanent(conn):
+    """Idempotently seed the curated always-available base stock."""
+    now = time.time()
+    by_id = catalog()['_by_id']
+    for vendor_id, item_ids in PERMANENT_SUPPLY.items():
+        for sort_order, item_id in enumerate(item_ids):
+            if item_id in by_id:
+                conn.execute(
+                    'INSERT OR IGNORE INTO market_permanent(vendor_id,item_id,sort_order,created) '
+                    'VALUES(?,?,?,?)', (vendor_id, item_id, sort_order, now))
+
+
+def market_permanent_rows(conn):
+    try:
+        rows = conn.execute(
+            'SELECT vendor_id,item_id FROM market_permanent ORDER BY vendor_id,sort_order').fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    groups = {}
+    for row in rows:
+        groups.setdefault(row['vendor_id'], []).append(row['item_id'])
+    return groups
+
+
+def permanent_offers(conn):
+    """Permanent offer payloads grouped by vendor_id."""
+    groups = market_permanent_rows(conn)
+    by_id = catalog()['_by_id']
+    return {vendor_id: [permanent_offer_payload(by_id[item_id], vendor_id)
+                        for item_id in item_ids if item_id in by_id]
+            for vendor_id, item_ids in groups.items()}
+
+
+def nm_offer_payload(item, day, vendor_id):
+    multiplier = NM_MULTS[
+        _h(f'price|{day}|{vendor_id}|{item["id"]}') % len(NM_MULTS)]
+    street = round(item['price'] * multiplier)
+    return {
+        'id': item['id'], 'cat': item['cat'], 'name': item['name'],
+        'price': item['price'], 'street_price': street,
+        'discount': street < item['price'], 'multiplier': multiplier,
+        'fields': item.get('fields') or {},
+        'mechanics': item.get('mechanics') or {},
+        'requirements': item.get('requirements') or [],
+        'capacity': item.get('capacity'),
+        'source': item.get('source'), 'desc': item.get('desc'),
+        'armor_locations': item.get('armor_locations'),
+        'armor_bundled': item.get('armor_bundled'),
+        'effect_coverage': item_effect_coverage(item.get('id')),
+        'vendor_id': vendor_id,
+    }
+
+
+def nm_rotation(day):
+    """Deterministic per-day vendor rotation with no persistent state."""
     cat = catalog()
-    day = nm_day()
-    out = []
-    for c in cat['cats']:
-        pool = [i for i in cat['items'] if i['cat'] == c['id'] and i.get('price')]
-        pool.sort(key=lambda i: _h(f'{day}|{c["id"]}|{i["id"]}'))
-        for it in pool[:NM_PER_CAT]:
-            m = NM_MULTS[_h(f'p|{day}|{it["id"]}') % len(NM_MULTS)]
-            street = round(it['price'] * m)
-            out.append({
-                'id': it['id'], 'cat': it['cat'], 'name': it['name'],
-                'price': it['price'], 'street_price': street,
-                'discount': street < it['price'],
-                'fields': it['fields'], 'source': it['source'], 'desc': it['desc'],
-            })
-    return {'date': day, 'items': out}
+    all_items = []
+    vendors = []
+    for vendor in NIGHT_MARKET_VENDORS:
+        stock = []
+        for category_id in vendor['cats']:
+            pool = [item for item in cat['items']
+                    if item['cat'] == category_id and item.get('price')]
+            if vendor.get('consumable_only'):
+                pool = [item for item in pool if item.get('consumable')]
+            elif vendor.get('exclude_consumable'):
+                pool = [item for item in pool if not item.get('consumable')]
+            pool.sort(key=lambda item: _h(
+                f'{day}|{vendor["id"]}|{category_id}|{item["id"]}'))
+            for item in pool[:NM_PER_CAT]:
+                payload = nm_offer_payload(item, day, vendor['id'])
+                stock.append(payload)
+                all_items.append(payload)
+        vendor_payload = {key: value for key, value in vendor.items()
+                          if key not in ('cats', 'consumable_only', 'exclude_consumable')}
+        vendor_payload.update({'categories': list(vendor['cats']), 'items': stock})
+        vendors.append(vendor_payload)
+    return {'items': all_items, 'vendors': vendors}
+
+
+def market_stock_rows(conn, day):
+    rows = conn.execute(
+        'SELECT * FROM market_stock WHERE market_day=?', (day,)).fetchall()
+    return {row['item_id']: dict(row) for row in rows}
+
+
+def ensure_market_stock(conn, day=None):
+    """Idempotently seed the persistent finite stock for a market day."""
+    day = day or nm_day()
+    rotation = nm_rotation(day)
+    now = time.time()
+    for item in rotation['items']:
+        seed = nm_stock_seed(day, item['vendor_id'], item['id'])
+        conn.execute(
+            'INSERT INTO market_stock(market_day,vendor_id,item_id,stock_initial,'
+            'stock_remaining,reserved_character_id,reserved_note,created,updated) '
+            'VALUES(?,?,?,?,?,NULL,\'\',?,?) '
+            'ON CONFLICT(market_day,vendor_id,item_id) DO NOTHING',
+            (day, item['vendor_id'], item['id'], seed, seed, now, now))
+    return rotation
+
+
+def night_market(day=None, conn=None):
+    """Assemble the daily market with deterministic rotation and stock state."""
+    day = day or nm_day()
+    rotation = nm_rotation(day)
+    yesterday_keys = {
+        (item['vendor_id'], item['id']) for item in nm_rotation(nm_day_offset(day, -1))['items']
+    }
+    stock_rows = market_stock_rows(conn, day) if conn is not None else {}
+    reserved_handles = {}
+    if conn is not None:
+        reserved_ids = {
+            row['reserved_character_id'] for row in stock_rows.values()
+            if row.get('reserved_character_id')
+        }
+        if reserved_ids:
+            marks = ','.join('?' for _ in reserved_ids)
+            for row in conn.execute(
+                    f'SELECT id,data FROM characters WHERE id IN ({marks})',
+                    tuple(sorted(reserved_ids))):
+                reserved_handles[row['id']] = (
+                    parse_json_object(row['data']).get('handle') or 'Unknown Edgerunner')
+    for item in rotation['items']:
+        seed = nm_stock_seed(day, item['vendor_id'], item['id'])
+        item['new_today'] = (item['vendor_id'], item['id']) not in yesterday_keys
+        item['stock'] = seed
+        state_row = stock_rows.get(item['id'])
+        if state_row is not None:
+            item['stock'] = state_row['stock_initial']
+            item['stock_remaining'] = max(0, state_row['stock_remaining'])
+            item['reserved_character_id'] = state_row.get('reserved_character_id')
+            item['reserved_note'] = state_row.get('reserved_note') or ''
+        else:
+            item['stock_remaining'] = seed
+            item['reserved_character_id'] = None
+            item['reserved_note'] = ''
+        item['sold_out'] = item['stock_remaining'] <= 0
+        item['reserved'] = bool(item.get('reserved_character_id'))
+        item['reserved_handle'] = reserved_handles.get(item['reserved_character_id'])
+    perm = permanent_offers(conn) if conn is not None else {}
+    crew_rep = crew_reputation_map(conn) if conn is not None else {}
+    for vendor in rotation['vendors']:
+        vendor['permanent'] = perm.get(vendor['id'], [])
+    rotation['crew_reputation'] = crew_rep
+    rotation['date'] = day
+    return rotation
 
 
 def nm_price_map():
@@ -1585,6 +7080,165 @@ def nm_price_map():
 # ---------------------------------------------------------------- валидация персонажа
 
 MAX_CHAR_BYTES = 300_000
+CHARACTER_VISIBILITY_DEFAULTS = {
+    'portrait': True,
+    'identity': True,
+    'biography': True,
+    'stats': True,
+    'skills': False,
+    'lifepath': False,
+    'equipment': False,
+    'combat': False,
+    'player_name': False,
+}
+CHARACTER_PROFILE_FIELDS = {'notes', 'portrait_media_id', 'public', 'visibility'}
+
+
+def ensure_character_visibility(data):
+    raw = data.get('visibility') if isinstance(data, dict) else None
+    raw = raw if isinstance(raw, dict) else {}
+    visibility = {
+        key: raw[key] if isinstance(raw.get(key), bool) else default
+        for key, default in CHARACTER_VISIBILITY_DEFAULTS.items()
+    }
+    data['visibility'] = visibility
+    return visibility
+
+
+def public_character_data(data):
+    """Return an allowlisted Dossier view; private sheet fields never cross the API."""
+    source = copy.deepcopy(data if isinstance(data, dict) else {})
+    visibility = ensure_character_visibility(source)
+    allowed = {
+        'handle', 'role', 'role_rank', 'primary_role', 'active_role', 'roles',
+        'public', 'archived', 'archive_reason', 'schema_version', 'seed', 'visibility',
+    }
+    if visibility['portrait']:
+        allowed.add('portrait_media_id')
+    if visibility['identity']:
+        allowed.update({'first_name', 'last_name'})
+    if visibility['biography']:
+        allowed.update({'appearance', 'background', 'languages', 'native_language',
+                        'lifestyle', 'housing'})
+    if visibility['stats']:
+        allowed.add('stats')
+    if visibility['skills']:
+        allowed.update({'skills', 'skill_pools', 'skill_specializations'})
+    if visibility['lifepath']:
+        allowed.update({'lifepath', 'role_lifepath', 'lifepath_mode'})
+    if visibility['equipment']:
+        allowed.update({'inventory', 'cyberware', 'armor', 'weapon_state'})
+    if visibility['combat']:
+        allowed.update({'hp_cur', 'humanity_cur', 'luck_cur', 'reputation'})
+    if visibility['player_name']:
+        allowed.add('player')
+    public = {key: source[key] for key in allowed if key in source}
+    # Mini-dossier highlight: top-5 skills (excluding Language) so a public
+    # profile reads like a hireable operator card without exposing every skill.
+    skills_source = source.get('skills') if isinstance(source.get('skills'), dict) else {}
+    top_pairs = []
+    for name, level in skills_source.items():
+        if name == 'Language':
+            continue
+        try:
+            value = int(level)
+        except (TypeError, ValueError):
+            try:
+                value = int(float(level))
+            except (TypeError, ValueError):
+                continue
+        top_pairs.append((str(name), value))
+    top_pairs.sort(key=lambda item: item[1], reverse=True)
+    public['top_skills'] = [{'name': name, 'level': level}
+                            for name, level in top_pairs[:5]]
+    for bucket in ('inventory', 'cyberware'):
+        if isinstance(public.get(bucket), list):
+            for entry in public[bucket]:
+                if isinstance(entry, dict):
+                    entry.pop('notes', None)
+                    entry.pop('acquisition_note', None)
+    if isinstance(public.get('roles'), list):
+        public['roles'] = [{
+            key: role[key] for key in ('name', 'rank', 'primary') if key in role
+        } for role in public['roles'] if isinstance(role, dict)]
+    return public
+
+
+def character_author_payload(character):
+    if not character:
+        return None
+    data = parse_json_object(character['data'])
+    visibility = ensure_character_visibility(data)
+    return {
+        'id': character['id'], 'kind': 'character',
+        'display_name': data.get('handle') or 'Unknown Edgerunner',
+        'handle': data.get('handle') or 'unknown',
+        'avatar_media_id': data.get('portrait_media_id') if visibility['portrait'] else None,
+        'accent_color': '#ff2d78',
+    }
+
+
+def clean_character_profile_patch(old_data, body):
+    """Return the small owner-editable Dossier patch.
+
+    Character mechanics are deliberately immutable through the generic PUT endpoint.
+    Progression, resources, inventory and rewards have dedicated server-side commands.
+    A legacy full ``data`` payload is accepted only when every non-profile field is
+    byte-for-byte equivalent to the stored sheet, so old clients cannot overwrite it.
+    """
+    if not isinstance(body, dict):
+        raise ApiError(400, 'Изменение досье должно быть объектом')
+    raw_size = len(json.dumps(body, ensure_ascii=False).encode())
+    if raw_size > MAX_CHAR_BYTES:
+        raise ApiError(413, 'Лист персонажа слишком большой')
+
+    if 'patch' in body:
+        patch = body.get('patch')
+        if not isinstance(patch, dict):
+            raise ApiError(400, 'patch должен быть объектом')
+        unknown = set(patch) - CHARACTER_PROFILE_FIELDS
+        if unknown:
+            raise ApiError(400, 'Механические поля изменяются только специальными операциями')
+    elif 'data' in body:
+        incoming = body.get('data')
+        if not isinstance(incoming, dict):
+            raise ApiError(400, 'Лист персонажа должен быть объектом')
+        changed = {key for key in set(old_data) | set(incoming)
+                   if old_data.get(key) != incoming.get(key)}
+        protected = changed - CHARACTER_PROFILE_FIELDS
+        if protected:
+            raise ApiError(400, 'Механические поля изменяются только специальными операциями')
+        patch = {key: incoming.get(key) for key in changed}
+    else:
+        patch = {key: value for key, value in body.items() if key != 'reason'}
+        unknown = set(patch) - CHARACTER_PROFILE_FIELDS
+        if unknown:
+            raise ApiError(400, 'Механические поля изменяются только специальными операциями')
+
+    clean = {}
+    if 'notes' in patch:
+        clean['notes'] = str(patch.get('notes') or '')[:20_000]
+    if 'portrait_media_id' in patch:
+        media_id = str(patch.get('portrait_media_id') or '')
+        if media_id and not re.fullmatch(r'[a-f0-9]{32}', media_id):
+            raise ApiError(400, 'Недопустимое изображение персонажа')
+        clean['portrait_media_id'] = media_id
+    if 'public' in patch:
+        if not isinstance(patch['public'], bool):
+            raise ApiError(400, 'public должен быть логическим значением')
+        clean['public'] = patch['public']
+    if 'visibility' in patch:
+        visibility = patch.get('visibility')
+        if not isinstance(visibility, dict):
+            raise ApiError(400, 'visibility должен быть объектом')
+        unknown = set(visibility) - set(CHARACTER_VISIBILITY_DEFAULTS)
+        if unknown or any(not isinstance(value, bool) for value in visibility.values()):
+            raise ApiError(400, 'Некорректные настройки видимости Dossier')
+        clean['visibility'] = {
+            key: visibility.get(key, old_data.get('visibility', {}).get(key, default))
+            for key, default in CHARACTER_VISIBILITY_DEFAULTS.items()
+        }
+    return clean
 
 
 def clean_character(data):
@@ -1594,6 +7248,13 @@ def clean_character(data):
     if len(raw.encode()) > MAX_CHAR_BYTES:
         raise ApiError(413, 'Лист персонажа слишком большой')
     out = dict(data)
+    # Runtime/audit containers are server-owned and never accepted on creation.
+    out.pop('cyberware_state', None)
+    out.pop('therapy_state', None)
+    out.pop('armor_tech_state', None)
+    out.pop('armor_repair_state', None)
+    out.pop('tech_maker_state', None)
+    out.pop('downtime_state', None)
     out['handle'] = str(out.get('handle') or '').strip()[:60]
     if not out['handle']:
         raise ApiError(400, 'Нужен псевдоним (Handle) персонажа')
@@ -1633,9 +7294,469 @@ def clean_character(data):
         raise ApiError(400, 'cash должен быть числом')
     out['portrait_media_id'] = str(out.get('portrait_media_id') or '')[:64]
     progressed = ensure_progression(out)
+    ensure_character_visibility(progressed)
     if any(role.get('role_lifepath') for role in progressed.get('roles', []) if not role.get('primary')):
         raise ApiError(400, 'Role-Based Lifepath разрешён только primary Role')
     return progressed
+
+
+TRUST_EDIT_TEXT_LIMITS = {
+    'handle': 60, 'first_name': 60, 'last_name': 60, 'player': 120,
+    'appearance': 4000, 'background': 4000, 'languages': 500,
+    'lifestyle': 200, 'housing': 200, 'notes': 20000,
+}
+ITEM_ACQUISITION_SOURCES = {
+    'loot', 'gift', 'crafted', 'role_access', 'gm_award', 'custom', 'other',
+    'fixer',
+}
+
+
+def clean_item_acquisition(entry, owned, require_source=False):
+    source = str(entry.get('acquisition_source') or owned.get('acquisition_source') or '').strip().lower()
+    if require_source and not source:
+        source = 'loot'
+    if source and source not in ITEM_ACQUISITION_SOURCES:
+        raise ApiError(400, 'Некорректный источник получения предмета')
+    if source:
+        owned['acquisition_source'] = source
+    note_value = entry.get('acquisition_note') if 'acquisition_note' in entry else owned.get('acquisition_note')
+    note = str(note_value or '').strip()[:500]
+    if note:
+        owned['acquisition_note'] = note
+    else:
+        owned.pop('acquisition_note', None)
+
+
+def trust_number(value, label, minimum, maximum, integer=False):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ApiError(400, f'{label}: требуется число')
+    if not math.isfinite(number) or number < minimum or number > maximum:
+        raise ApiError(400, f'{label}: допустимо от {minimum} до {maximum}')
+    return int(number) if integer else round(number, 2)
+
+
+def clean_custom_effect(body, effect_id):
+    if not isinstance(body, dict):
+        raise ApiError(400, 'Effect должен быть объектом')
+    allowed = {
+        'revision', 'label', 'target', 'operation', 'value', 'stack_policy',
+        'stack_group', 'duration_type', 'duration_value', 'reason',
+    }
+    if set(body) - allowed:
+        raise ApiError(400, 'Effect содержит неподдерживаемые поля')
+    label = str(body.get('label') or '').strip()[:120]
+    reason = str(body.get('reason') or '').strip()[:500]
+    if not label:
+        raise ApiError(400, 'Укажите название эффекта')
+    if len(reason) < 3:
+        raise ApiError(400, 'Укажите причину эффекта')
+    target = str(body.get('target') or '').strip()
+    operation = str(body.get('operation') or 'add').strip().lower()
+    try:
+        value = float(body.get('value'))
+    except (TypeError, ValueError):
+        raise ApiError(400, 'Effect value должен быть числом')
+    if not math.isfinite(value) or abs(value) > 100:
+        raise ApiError(400, 'Effect value должен быть от -100 до 100')
+    if operation == 'multiply' and not (0 <= value <= 10):
+        raise ApiError(400, 'Multiply effect должен быть от 0 до 10')
+    if value.is_integer():
+        value = int(value)
+    stack_policy = str(body.get('stack_policy') or 'stack').strip().lower()
+    stack_group = str(body.get('stack_group') or f'custom_{effect_id}').strip().lower()
+    if not re.fullmatch(r'[a-z0-9_.-]{1,80}', stack_group):
+        raise ApiError(400, 'Некорректная stacking group')
+    definition = {
+        'id': f'custom-{effect_id}', 'target': target,
+        'operation': operation, 'value': value,
+        'stack_group': stack_group, 'stack_policy': stack_policy,
+        'priority': 500, 'source': 'Custom Effect',
+    }
+    try:
+        validate_effect_definition(definition)
+    except RuntimeError as error:
+        raise ApiError(400, str(error))
+    duration_type = str(body.get('duration_type') or 'manual').strip().lower()
+    if duration_type not in CUSTOM_EFFECT_DURATIONS:
+        raise ApiError(400, 'Некорректный тип длительности эффекта')
+    expires_at = None
+    remaining_rounds = None
+    duration_value = None
+    if duration_type == 'real_time':
+        duration_value = trust_number(body.get('duration_value'), 'Duration minutes', 1, 10080, integer=True)
+        expires_at = time.time() + duration_value * 60
+    elif duration_type == 'rounds':
+        duration_value = trust_number(body.get('duration_value'), 'Duration rounds', 1, 100, integer=True)
+        remaining_rounds = duration_value
+    return {
+        'label': label, 'reason': reason, 'definition': definition,
+        'duration_type': duration_type, 'duration_value': duration_value,
+        'expires_at': expires_at, 'remaining_rounds': remaining_rounds,
+    }
+
+
+def canonical_owned_entry(entry, bucket, old_entries):
+    if not isinstance(entry, dict):
+        raise ApiError(400, 'Inventory должен содержать объекты')
+    instance_id = str(entry.get('instance_id') or '').lower()
+    existing = old_entries.get(instance_id) if INSTANCE_ID_RE.fullmatch(instance_id) else None
+    catalog_id = catalog_item_id_for_entry(entry) or catalog_item_id_for_entry(existing)
+    custom = not catalog_id and bool(entry.get('is_custom') or (existing or {}).get('is_custom'))
+    if not catalog_id and custom:
+        if bucket != 'inventory':
+            raise ApiError(400, 'Custom Cyberware требует отдельной механики установки')
+        name = str(entry.get('custom_name') or entry.get('name') or
+                   (existing or {}).get('custom_name') or (existing or {}).get('name') or '').strip()[:120]
+        if not name:
+            raise ApiError(400, 'Custom item требует название')
+        category = str(entry.get('cat') or (existing or {}).get('cat') or 'custom').strip().lower()
+        allowed_categories = {row['id'] for row in catalog().get('cats') or []} | {'custom'}
+        if category not in allowed_categories:
+            raise ApiError(400, 'Некорректная категория custom item')
+        price = trust_number(entry.get('price', (existing or {}).get('price') or 0),
+                             'Custom item value', 0, 9_999_999)
+        stackable = entry.get('stackable', (existing or {}).get('stackable', False))
+        if not isinstance(stackable, bool):
+            raise ApiError(400, 'stackable должен быть логическим значением')
+        owned = copy.deepcopy(existing or {})
+        owned.update({
+            'is_custom': True, 'key': str(owned.get('key') or 'custom'),
+            'cat': category, 'name': name, 'custom_name': name,
+            'desc': str(entry.get('desc') if 'desc' in entry else owned.get('desc') or '')[:4000],
+            'price': price, 'stackable': stackable, 'state': str(entry.get('state') or owned.get('state') or 'carried'),
+            'source': 'Custom / Trust + Audit', 'manual_resolution_required': True,
+        })
+        for unsafe in ('catalog_item_id', 'source_key', 'damage', 'sp', 'hl', 'fields',
+                       'mechanics', 'requirements', 'capacity', 'type',
+                       *ITEM_INTERACTION_FIELDS, *ITEM_MODIFICATION_FIELDS,
+                       'effect_coverage', 'active', 'equipped_mode',
+                       'equipped_slot', 'host_instance_id'):
+            owned.pop(unsafe, None)
+        # Custom items may control storage shape, but never Use/Equip mechanics.
+        owned['stackable'] = stackable
+    elif not catalog_id:
+        if not existing:
+            raise ApiError(400, 'Неизвестный предмет: выберите Database item или создайте Custom item')
+        owned = copy.deepcopy(existing)
+        for key in ('custom_name', 'notes', 'state', 'qty',
+                    'acquisition_source', 'acquisition_note'):
+            if key in entry:
+                owned[key] = entry[key]
+    else:
+        item = item_by_id(catalog_id)
+        if not item or (bucket == 'cyberware') != (item.get('cat') == 'cyberware'):
+            raise ApiError(400, 'Предмет находится в неправильном разделе Inventory')
+        owned = copy.deepcopy(entry)
+        raw_key = str(entry.get('key') or catalog_id)
+        if raw_key.split('@', 1)[0] != catalog_id:
+            raw_key = catalog_id
+        owned.update({
+            'key': raw_key, 'catalog_item_id': catalog_id, 'cat': item['cat'],
+            'name': item['name'], 'damage': item.get('damage'),
+            'sp': item.get('sp'), 'hl': item.get('hl'),
+            'fields': copy.deepcopy(item.get('fields') or {}),
+            'mechanics': copy.deepcopy(item.get('mechanics') or {}),
+            'requirements': copy.deepcopy(item.get('requirements') or []),
+            'capacity': copy.deepcopy(item.get('capacity')),
+            'source': item.get('source'),
+            'price': (existing or {}).get('price', item.get('price') or 0),
+        })
+        for key in ITEM_INTERACTION_FIELDS + ITEM_MODIFICATION_FIELDS:
+            if key in item:
+                owned[key] = copy.deepcopy(item[key])
+            else:
+                owned.pop(key, None)
+        coverage = item_effect_coverage(catalog_id)
+        if coverage:
+            owned['effect_coverage'] = coverage
+        else:
+            owned.pop('effect_coverage', None)
+        owned.pop('is_custom', None)
+    try:
+        owned['qty'] = max(1, min(999, int(entry.get('qty') or owned.get('qty') or 1)))
+    except (TypeError, ValueError):
+        raise ApiError(400, 'Некорректное количество')
+    if owned.get('cat') == 'ammo':
+        pack_size = ammo_pack_size(owned)
+        if existing:
+            old_qty = max(1, int(_num(existing.get('qty')) or 1))
+            old_rounds = ammo_rounds(existing)
+            quantity_delta = owned['qty'] - old_qty
+            owned['ammo_rounds'] = max(
+                0, min(owned['qty'] * pack_size,
+                       old_rounds + max(0, quantity_delta) * pack_size))
+        else:
+            owned['ammo_rounds'] = owned['qty'] * pack_size
+    if INSTANCE_ID_RE.fullmatch(instance_id):
+        owned['instance_id'] = instance_id
+    else:
+        owned.pop('instance_id', None)
+    if not custom:
+        custom_name_value = entry.get('custom_name') if 'custom_name' in entry else owned.get('custom_name')
+        owned['custom_name'] = str(custom_name_value or '')[:120]
+    notes_value = entry.get('notes') if 'notes' in entry else owned.get('notes')
+    owned['notes'] = str(notes_value or '')[:2000]
+    if bucket == 'cyberware':
+        # Concrete host links and installation state are changed only through the
+        # audited Cyberware lifecycle endpoint, never through a generic sheet PUT.
+        for key in ('host_instance', 'host_instances', 'installation_side'):
+            if existing and key in existing:
+                owned[key] = copy.deepcopy(existing[key])
+            else:
+                owned.pop(key, None)
+        state = str((existing or {}).get('state') or
+                    ('installed' if existing else 'carried'))
+    else:
+        state = str(entry.get('state') or owned.get('state') or 'carried')
+    if state not in ITEM_INSTANCE_STATES:
+        raise ApiError(400, 'Некорректное состояние предмета')
+    if bucket == 'inventory' and state == 'equipped' and owned.get('cat') != 'armor':
+        if custom or not owned.get('equippable'):
+            raise ApiError(400, 'Этот предмет нельзя экипировать')
+        if not existing or existing.get('state') != 'equipped':
+            raise ApiError(400, 'Используйте действие Equip в Character Sheet')
+        for key in ('active', 'equipped_mode', 'equipped_slot', 'host_instance_id'):
+            if key in existing:
+                owned[key] = copy.deepcopy(existing[key])
+            else:
+                owned.pop(key, None)
+    elif state != 'equipped':
+        for key in ('active', 'equipped_mode', 'equipped_slot', 'host_instance_id'):
+            owned.pop(key, None)
+    owned['state'] = state
+    clean_item_acquisition(entry, owned, require_source=existing is None)
+    return owned
+
+
+def clean_character_trust_update(old_data, incoming):
+    """Validate an owner-authored Trust + Audit sheet without creation-budget rules."""
+    if not isinstance(incoming, dict):
+        raise ApiError(400, 'Лист персонажа должен быть объектом')
+    if len(json.dumps(incoming, ensure_ascii=False).encode()) > MAX_CHAR_BYTES:
+        raise ApiError(413, 'Лист персонажа слишком большой')
+    data = copy.deepcopy(old_data)
+    for key, maximum in TRUST_EDIT_TEXT_LIMITS.items():
+        if key in incoming:
+            value = str(incoming.get(key) or '')[:maximum]
+            data[key] = value.strip() if key in ('handle', 'first_name', 'last_name') else value
+    if not data.get('handle'):
+        raise ApiError(400, 'Нужен псевдоним (Handle) персонажа')
+
+    role = str(incoming.get('role', data.get('role') or '')).strip()
+    if role not in ROLES:
+        raise ApiError(400, 'Неизвестная Role')
+    rank = trust_number(incoming.get('role_rank', data.get('role_rank') or 4),
+                        'Role Rank', 1, 10, integer=True)
+    previous_role = str(data.get('role') or '')
+    data['role'], data['role_rank'] = role, rank
+    roles = copy.deepcopy(data.get('roles') or [])
+    primary = next((item for item in roles if isinstance(item, dict) and item.get('primary')), None)
+    if primary:
+        old_primary_name = str(primary.get('name') or previous_role)
+        primary['name'], primary['rank'], primary['primary'] = role, rank, True
+        if data.get('active_role') == old_primary_name:
+            data['active_role'] = role
+    else:
+        roles.insert(0, {'name': role, 'rank': rank, 'primary': True,
+                         'setup': copy.deepcopy(data.get('role_setup') or {})})
+    if len({item.get('name') for item in roles if isinstance(item, dict)}) != len(roles):
+        raise ApiError(400, 'У персонажа не может быть двух одинаковых Roles')
+    data['roles'], data['primary_role'] = roles, role
+
+    if 'stats' in incoming:
+        raw_stats = incoming.get('stats')
+        if not isinstance(raw_stats, dict):
+            raise ApiError(400, 'stats должен быть объектом')
+        stats = {}
+        for stat in STATS:
+            if stat in raw_stats:
+                stats[stat] = trust_number(raw_stats[stat], stat, 1, 13, integer=True)
+            elif stat in (data.get('stats') or {}):
+                stats[stat] = data['stats'][stat]
+        data['stats'] = stats
+
+    if 'skills' in incoming:
+        raw_skills = incoming.get('skills')
+        if not isinstance(raw_skills, dict) or len(raw_skills) > 500:
+            raise ApiError(400, 'skills должен быть объектом до 500 записей')
+        skills = {}
+        old_skills = data.get('skills') or {}
+        for name, value in raw_skills.items():
+            name = str(name).strip()[:120]
+            if not skill_base(name) and name not in old_skills:
+                raise ApiError(400, f'Неизвестный Skill: {name}')
+            skills[name] = trust_number(value, f'Skill {name}', 0, 10, integer=True)
+        data['skills'] = skills
+    if 'skill_pools' in incoming:
+        pools = incoming.get('skill_pools')
+        if not isinstance(pools, dict) or set(pools) - SPECIALIZED_SKILLS:
+            raise ApiError(400, 'skill_pools содержит неизвестный специализированный навык')
+        data['skill_pools'] = {
+            key: trust_number(value, f'{key} Pool', 0, 10, integer=True)
+            for key, value in pools.items()
+        }
+    if 'native_language' in incoming:
+        data['native_language'] = str(incoming.get('native_language') or '')[:120]
+
+    for key, label, minimum, maximum, integer in (
+            ('cash', 'Cash', 0, 9_999_999, False),
+            ('reputation', 'Reputation', 0, 10, True),
+            ('hp_cur', 'Current HP', -1000, 1000, True),
+            ('humanity_cur', 'Current Humanity', 0, 100, True),
+            ('luck_cur', 'Current LUCK', 0, 20, True)):
+        if key in incoming and incoming[key] is not None:
+            data[key] = trust_number(incoming[key], label, minimum, maximum, integer)
+        elif key in incoming:
+            data[key] = None
+    if 'ip_available' in incoming:
+        old_ip = _num(data.get('ip_available')) or 0
+        new_ip = trust_number(incoming['ip_available'], 'Available IP', 0, 1_000_000, integer=True)
+        delta = new_ip - old_ip
+        data['ip_available'] = new_ip
+        if delta > 0:
+            data['ip_total_earned'] = (_num(data.get('ip_total_earned')) or old_ip) + delta
+        elif delta < 0:
+            data['ip_total_spent'] = (_num(data.get('ip_total_spent')) or 0) - delta
+    if 'public' in incoming:
+        if not isinstance(incoming['public'], bool):
+            raise ApiError(400, 'public должен быть логическим значением')
+        data['public'] = incoming['public']
+
+    old_entries = {}
+    for bucket in ('inventory', 'cyberware'):
+        for entry in old_data.get(bucket) or []:
+            if isinstance(entry, dict) and INSTANCE_ID_RE.fullmatch(str(entry.get('instance_id') or '')):
+                old_entries[entry['instance_id']] = entry
+        if bucket in incoming:
+            entries = incoming.get(bucket)
+            if not isinstance(entries, list) or len(entries) > 500:
+                raise ApiError(400, f'{bucket}: ожидается список до 500 записей')
+            data[bucket] = [canonical_owned_entry(entry, bucket, old_entries) for entry in entries]
+    ensure_character_item_instances(data)
+    valid_cyberware_ids = {item.get('instance_id') for item in data.get('cyberware') or []
+                           if isinstance(item, dict) and item.get('instance_id')}
+    if isinstance(data.get('cyberware_state'), dict):
+        data['cyberware_state'] = {
+            key: value for key, value in data['cyberware_state'].items()
+            if key in valid_cyberware_ids and isinstance(value, dict)}
+    if len(data.get('inventory') or []) + len(data.get('cyberware') or []) > 500:
+        raise ApiError(400, 'Инвентарь не может содержать больше 500 экземпляров')
+
+    raw_armor = incoming.get('armor', data.get('armor') or {})
+    if not isinstance(raw_armor, dict):
+        raise ApiError(400, 'armor должен быть объектом')
+    armor = {}
+    inventory = [entry for entry in data.get('inventory') or []
+                 if isinstance(entry, dict) and entry.get('cat') == 'armor']
+    for entry in inventory:
+        if entry.get('state') == 'equipped':
+            entry['state'] = 'carried'
+    used = set()
+    for location in ('head', 'body', 'shield'):
+        piece = raw_armor.get(location)
+        if not piece:
+            continue
+        if not isinstance(piece, dict):
+            raise ApiError(400, f'Armor {location}: ожидается объект')
+        catalog_id = catalog_item_id_for_entry(piece)
+        item = item_by_id(catalog_id)
+        if not item or item.get('cat') != 'armor' or location not in (item.get('armor_locations') or []):
+            raise ApiError(400, f'Недопустимая броня для локации {location}')
+        instance_id = str(piece.get('instance_id') or '')
+        bundled = bool(piece.get('bundled') or item.get('armor_bundled'))
+        owned = next((entry for entry in inventory
+                      if entry.get('instance_id') == instance_id), None)
+        if not owned:
+            owned = next((entry for entry in inventory
+                          if catalog_item_id_for_entry(entry) == catalog_id and
+                          (entry.get('instance_id') not in used or bundled)), None)
+        if not owned:
+            raise ApiError(400, f'Броня {item["name"]} отсутствует в Inventory')
+        used.add(owned['instance_id'])
+        owned['state'] = 'equipped'
+        tech_state = (data.get('armor_tech_state') or {}).get(owned['instance_id']) or {}
+        base_maximum = (armor_shield_hp(item) if location == 'shield' else
+                        (_num(item.get('sp')) or _num(item.get('sdp')) or 0))
+        automated_sp_upgrade = (
+            location != 'shield' and tech_state.get('active') is True and
+            tech_state.get('mode') == 'sp_plus_one')
+        maximum = base_maximum + (1 if automated_sp_upgrade else 0)
+        current = _num(piece.get('current'))
+        armor[location] = {
+            'key': str(piece.get('key') or owned.get('key') or catalog_id),
+            'source_key': catalog_id, 'catalog_item_id': catalog_id,
+            'instance_id': owned['instance_id'], 'name': item['name'],
+            'sp': maximum if location != 'shield' else item.get('sp'),
+            'sdp': maximum if location == 'shield' else item.get('sdp'),
+            'penalties': copy.deepcopy(item.get('penalties') or {}),
+            'bundled': bundled, 'maximum': maximum,
+            'current': max(0, min(maximum, current if current is not None else maximum)),
+        }
+    data['armor'] = armor
+
+    valid_weapon_ids = {
+        entry.get('instance_id') for entry in data.get('inventory') or []
+        if isinstance(entry, dict) and entry.get('cat') in ('guns', 'melee')
+    }
+    data['weapon_state'] = {
+        key: value for key, value in (old_data.get('weapon_state') or {}).items()
+        if key in valid_weapon_ids
+    }
+    ensure_progression(data)
+    ensure_character_visibility(data)
+    return data
+
+
+# Server-owned runtime/audit containers are never portable between deployments.
+# A JSON import carries the Dossier (identity, stats, skills, loadout, resources)
+# but resets transient runtime state to fresh defaults.
+IMPORT_STRIP_KEYS = (
+    'cyberware_state', 'therapy_state', 'armor_tech_state', 'armor_repair_state',
+    'tech_maker_state', 'modification_state', 'weapon_state', 'program_state',
+    'net_entities', 'vehicle_state', 'downtime_state',
+    'portrait_media_id', 'archived', 'archive_reason', 'public',
+)
+
+
+def canonical_import_character(raw):
+    """Validate a portable Dossier export without creation-budget rules."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise ApiError(400, 'Некорректный JSON импорта')
+    if not isinstance(raw, dict):
+        raise ApiError(400, 'Импорт должен быть JSON-объектом')
+    # Accept the plain data object or common envelopes (full char_payload, sheet).
+    for key in ('data', 'character', 'sheet'):
+        if isinstance(raw.get(key), dict):
+            raw = raw[key]
+            break
+    base = clean_character(raw)
+    for key in IMPORT_STRIP_KEYS:
+        base.pop(key, None)
+    # Unknown non-custom items are rejected instead of passed through silently.
+    for bucket in ('inventory', 'cyberware'):
+        for entry in base.get(bucket) or []:
+            if not isinstance(entry, dict):
+                raise ApiError(400, 'Inventory должен содержать объекты')
+            if not catalog_item_id_for_entry(entry) and not entry.get('is_custom'):
+                raise ApiError(400, 'Неизвестный предмет в импорте')
+    data = clean_character_trust_update(base, base)
+    data['public'] = False
+    data.pop('portrait_media_id', None)
+    ensure_character_item_instances(data, regenerate=True)
+    if len(data.get('inventory') or []) + len(data.get('cyberware') or []) > 500:
+        raise ApiError(400, 'Инвентарь не может содержать больше 500 экземпляров')
+    # Re-default runtime containers against the regenerated instance ids so no
+    # stale per-instance state from the source sheet survives the import.
+    for key in ('weapon_state', 'program_state', 'net_entities'):
+        data.pop(key, None)
+    ensure_progression(data)
+    ensure_character_visibility(data)
+    return data
 
 
 def skill_base(name):
@@ -1691,23 +7812,1061 @@ def creation_skill_cost(data):
     return total
 
 
+def armor_shield_hp(item):
+    catalog_item = item_by_id(catalog_item_id_for_entry(item)) or item or {}
+    text = ' '.join([str(catalog_item.get('desc') or ''),
+                     *[str(value) for value in (catalog_item.get('fields') or {}).values()]])
+    match = re.search(r'(\d+)\s*HP', text, re.I)
+    return int(match.group(1)) if match else 0
+
+
+def effective_armor_hosts(data):
+    """Project concrete Armor/Shield instances and permanent Tech upgrades."""
+    inventory = [item for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('cat') == 'armor' and
+                 item.get('instance_id')]
+    equipped = data.get('armor') if isinstance(data.get('armor'), dict) else {}
+    tech_states = data.get('armor_tech_state') \
+        if isinstance(data.get('armor_tech_state'), dict) else {}
+    repair_states = data.get('armor_repair_state') \
+        if isinstance(data.get('armor_repair_state'), dict) else {}
+    hosts = []
+    for item in inventory:
+        catalog_item = item_by_id(catalog_item_id_for_entry(item)) or item
+        locations = list(catalog_item.get('armor_locations') or item.get('armor_locations') or [])
+        shield = 'shield' in locations
+        base_sp = _num(catalog_item.get('sp') if not shield else None)
+        base_sdp = armor_shield_hp(item) if shield else None
+        state = tech_states.get(item['instance_id'])
+        state = state if isinstance(state, dict) else {}
+        upgraded = state.get('active') is True
+        mode = state.get('mode')
+        effective_sp = (base_sp + 1) if upgraded and mode == 'sp_plus_one' and \
+            base_sp is not None else base_sp
+        effective_sdp = base_sdp
+        tech_maker = None
+        for mod in character_tech_maker_modifications(data).values():
+            if mod.get('host_instance_id') != item['instance_id']:
+                continue
+            effect = mod.get('effect')
+            if not isinstance(effect, dict):
+                continue
+            if effect.get('target') == 'armor.sp' and not shield and effective_sp is not None:
+                effective_sp += int(effect.get('value') or 0)
+                tech_maker = copy.deepcopy(mod)
+        if tech_maker:
+            tech_maker['effective'] = effective_sp
+        equipped_locations = [
+            location for location in ('head', 'body', 'shield')
+            if isinstance(equipped.get(location), dict) and
+            equipped[location].get('instance_id') == item['instance_id']]
+        current_by_location = {
+            location: _num(equipped[location].get('current'))
+            for location in equipped_locations}
+        maximum = effective_sdp if shield else effective_sp
+        damaged = any(current is not None and maximum is not None and current < maximum
+                      for current in current_by_location.values())
+        description = str(catalog_item.get('desc') or '')
+        unrepairable = catalog_item_id_for_entry(item) == 'armor-26' or \
+            'cannot be restored' in description.lower()
+        repair_state = repair_states.get(item['instance_id'])
+        repair_state = copy.deepcopy(repair_state) if isinstance(repair_state, dict) else None
+        hosts.append({
+            'instance_id': item['instance_id'],
+            'catalog_item_id': catalog_item_id_for_entry(item),
+            'name': item.get('custom_name') or item.get('name') or 'Armor',
+            'host_kind': 'shield' if shield else 'armor',
+            'locations': locations, 'equipped_locations': equipped_locations,
+            'state': item.get('state') or 'carried',
+            'base_sp': base_sp, 'effective_sp': effective_sp,
+            'base_sdp': base_sdp, 'effective_sdp': effective_sdp,
+            'current_by_location': current_by_location,
+            'bundled': bool(catalog_item.get('armor_bundled')),
+            'damaged': damaged, 'repairable': not shield and not unrepairable,
+            'unrepairable': unrepairable, 'repair_state': repair_state,
+            'self_repair': ('executive_armor_daily' if catalog_item_id_for_entry(item) ==
+                            'armor-19' else None),
+            'tech_upgrade': copy.deepcopy(state) if upgraded else None,
+            'tech_upgrade_available': not upgraded and
+                (base_sp is not None or shield),
+            'automated_upgrade_available': not upgraded and base_sp is not None and not shield,
+            'manual_resolution_required': shield,
+            'tech_maker_modification': tech_maker,
+        })
+    return {'hosts': hosts, 'upgraded_count': sum(bool(item['tech_upgrade']) for item in hosts)}
+
+
+def validate_armor_tech_references(data):
+    states = data.get('armor_tech_state') if isinstance(data.get('armor_tech_state'), dict) else {}
+    armor_ids = {item.get('instance_id') for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('cat') == 'armor'}
+    if any(instance_id not in armor_ids or not isinstance(state, dict)
+           for instance_id, state in states.items()):
+        raise ApiError(409, 'Повреждена связь Armor/Shield Tech Upgrade')
+
+
+def validate_armor_repair_references(data):
+    states = data.get('armor_repair_state') if isinstance(data.get('armor_repair_state'), dict) else {}
+    armor_ids = {item.get('instance_id') for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('cat') == 'armor'}
+    if any(instance_id not in armor_ids or not isinstance(state, dict)
+           for instance_id, state in states.items()):
+        raise ApiError(409, 'Повреждена связь Armor Repair Workflow')
+
+
+# -------------------------------------------------------- Tech Maker
+
+TECH_MAKER_SPECIALTIES = ('upgrade', 'invention')
+TECH_MAKER_FABRICATION_SPECIALTIES = ('fabrication', 'invention')
+# Declarative allowlist of what a Tech Maker custom modification may do.
+# Values are bounded; no executable data is accepted.
+TECH_MAKER_EFFECT_TARGETS = {
+    'weapon.attack_check': {
+        'host_types': {'weapon'}, 'operations': ('add',),
+        'value_kind': 'number', 'value_min': -3, 'value_max': 3,
+        'label_en': 'Attack Check', 'label_ru': 'Бросок атаки',
+    },
+    'weapon.magazine': {
+        'host_types': {'weapon'}, 'operations': ('add',),
+        'value_kind': 'number', 'value_min': 1, 'value_max': 20,
+        'label_en': 'Magazine capacity', 'label_ru': 'Ёмкость магазина',
+    },
+    'weapon.concealable': {
+        'host_types': {'weapon'}, 'operations': ('set',),
+        'value_kind': 'choice', 'choices': ('YES', 'NO'),
+        'label_en': 'Concealability', 'label_ru': 'Скрываемость',
+    },
+    'armor.sp': {
+        'host_types': {'armor'}, 'operations': ('add',),
+        'value_kind': 'number', 'value_min': 1, 'value_max': 1,
+        'label_en': 'Stopping Power', 'label_ru': 'Stopping Power',
+    },
+    'vehicle.sdp_max': {
+        'host_types': {'vehicle'}, 'operations': ('add',),
+        'value_kind': 'number', 'value_min': 1, 'value_max': 50,
+        'label_en': 'Maximum SDP', 'label_ru': 'Максимальный SDP',
+    },
+}
+TECH_MAKER_SPECIALTY_LABELS = {
+    'upgrade': ('Upgrade Expertise', 'Upgrade Expertise'),
+    'invention': ('Invention Expertise', 'Invention Expertise'),
+    'fabrication': ('Fabrication Expertise', 'Fabrication Expertise'),
+}
+# Physical item categories a Tech can reproduce from a blueprint via
+# Fabrication Expertise. Cyberware and Services are excluded on purpose:
+# Cyberware requires a clinic install, Services are not physical goods.
+TECH_MAKER_FABRICABLE_CATS = {
+    'guns', 'melee', 'gun_upgrades', 'ammo', 'grenades', 'armor',
+    'gear', 'fashion', 'vehicles', 'vehicles_upgrades', 'net_stuff', 'programs',
+}
+
+
+def tech_maker_fabricable_item(item):
+    if not isinstance(item, dict):
+        return False
+    if not item_by_id(item.get('id')):
+        return False
+    return item.get('cat') in TECH_MAKER_FABRICABLE_CATS
+
+
+def tech_maker_host_type(entry):
+    """Map a concrete owned instance to a Tech Maker host type."""
+    if not isinstance(entry, dict):
+        return None
+    cat = str(entry.get('cat') or '')
+    if cat == 'guns':
+        return 'weapon'
+    if cat == 'armor':
+        return 'armor'
+    if cat == 'vehicles':
+        return 'vehicle'
+    if cat == 'cyberware':
+        return 'cyberware'
+    return None
+
+
+def character_maker_ranks(data):
+    """Return Maker specialty ranks for the character's active Tech Role."""
+    roles = data.get('roles') or []
+    active_name = str(data.get('active_role') or data.get('role') or '')
+    role = next((row for row in roles if isinstance(row, dict) and
+                 str(row.get('name') or '') == active_name), None)
+    if not role or role.get('name') != 'Tech':
+        role = next((row for row in roles if isinstance(row, dict) and
+                     row.get('name') == 'Tech'), None)
+    if not role:
+        return {}
+    setup = role.get('setup') if isinstance(role.get('setup'), dict) else {}
+    return {key: max(0, _num(setup.get(key)) or 0)
+            for key in ('field', 'upgrade', 'fabrication', 'invention')}
+
+
+def clean_tech_maker_effect(host_type, raw):
+    """Validate and normalize a declarative Tech Maker effect payload."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ApiError(400, 'Tech Maker effect должен быть объектом')
+    if set(raw) - {'target', 'operation', 'value'}:
+        raise ApiError(400, 'Tech Maker effect содержит неподдерживаемые поля')
+    target = str(raw.get('target') or '')
+    definition = TECH_MAKER_EFFECT_TARGETS.get(target)
+    if not definition:
+        raise ApiError(400, 'Недопустимый Tech Maker effect target')
+    if host_type not in definition['host_types']:
+        raise ApiError(400, f'Effect target {target} недопустим для host {host_type}')
+    operation = str(raw.get('operation') or '')
+    if operation not in definition['operations']:
+        raise ApiError(400, f'Недопустимая операция {operation} для {target}')
+    value = raw.get('value')
+    if definition['value_kind'] == 'number':
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ApiError(400, 'Tech Maker effect value должен быть целым числом')
+        if not definition['value_min'] <= value <= definition['value_max']:
+            raise ApiError(400, f'Tech Maker effect value вне диапазона '
+                                f'{definition["value_min"]}–{definition["value_max"]}')
+    else:
+        if value not in definition['choices']:
+            raise ApiError(400, f'Недопустимое значение {value} для {target}')
+    return {'target': target, 'operation': operation, 'value': value}
+
+
+def character_tech_maker_modifications(data):
+    """Return active Tech Maker custom modifications keyed by modification_id."""
+    state = data.get('tech_maker_state')
+    if not isinstance(state, dict):
+        return {}
+    mods = state.get('modifications')
+    if not isinstance(mods, dict):
+        return {}
+    return {key: value for key, value in mods.items()
+            if isinstance(value, dict) and value.get('active')}
+
+
+def validate_tech_maker_references(data):
+    state = data.get('tech_maker_state')
+    if not isinstance(state, dict):
+        return
+    mods = state.get('modifications')
+    if not isinstance(mods, dict):
+        return
+    owned_ids = {item.get('instance_id') for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('instance_id')}
+    owned_ids |= {item.get('instance_id') for item in data.get('cyberware') or []
+                  if isinstance(item, dict) and item.get('instance_id')}
+    for mod_id, mod in mods.items():
+        if not isinstance(mod, dict):
+            raise ApiError(409, 'Повреждена запись Tech Maker modification')
+        if mod.get('active') and mod.get('host_instance_id') not in owned_ids:
+            raise ApiError(409, 'Повреждена связь Tech Maker modification')
+    history = state.get('history')
+    if history is not None and not isinstance(history, list):
+        raise ApiError(409, 'Повреждена история Tech Maker modifications')
+
+
+def tech_maker_payload(data):
+    state = data.get('tech_maker_state')
+    state = state if isinstance(state, dict) else {}
+    mods = state.get('modifications')
+    mods = mods if isinstance(mods, dict) else {}
+    owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+             if isinstance(item, dict) and item.get('instance_id')}
+    owned.update({item.get('instance_id'): item for item in data.get('cyberware') or []
+                  if isinstance(item, dict) and item.get('instance_id')})
+    out = []
+    for mod_id, mod in sorted(mods.items()):
+        if not isinstance(mod, dict):
+            continue
+        host = owned.get(mod.get('host_instance_id')) or {}
+        out.append({
+            'modification_id': mod_id,
+            'name': mod.get('name') or 'Tech Maker Modification',
+            'description': mod.get('description') or '',
+            'host_instance_id': mod.get('host_instance_id'),
+            'host_name': host.get('custom_name') or host.get('name'),
+            'host_type': mod.get('host_type'),
+            'maker_specialty': mod.get('maker_specialty'),
+            'maker_rank': mod.get('maker_rank'),
+            'tech_name': mod.get('tech_name'),
+            'effect': copy.deepcopy(mod.get('effect')) if isinstance(mod.get('effect'), dict) else None,
+            'manual_rule': mod.get('manual_rule') or '',
+            'manual_resolution_required': bool(mod.get('manual_resolution_required')),
+            'source': mod.get('source'),
+            'active': bool(mod.get('active')),
+            'permanent': bool(mod.get('permanent')),
+            'installed_at': mod.get('installed_at'),
+            'reason': mod.get('reason') or '',
+            'notes': mod.get('notes') or '',
+        })
+    fabrications = [
+        copy.deepcopy(item) for item in state.get('fabrications') or []
+        if isinstance(item, dict)
+    ][-50:][::-1]
+    return {'modifications': out, 'fabrications': fabrications,
+            'history': [copy.deepcopy(item) for item in state.get('history') or []
+                        if isinstance(item, dict)][-50:][::-1]}
+
+
+CYBERWARE_HOST_ACCEPTED_NAMES = {
+    'Cyberarm': {'cyberarm', 'neo-soviet cyberarm'},
+    'Cyberleg': {'cyberleg', 'romanova cyberlegs'},
+    'Cybereye': {'cybereye', 'sponsored cybereye'},
+    'Cyberaudio Suite': {'cyberaudio suite', 'discount cyberaudio suite'},
+    'Neural Link or Neuroport': {'neural link', 'neuroport'},
+}
+CYBERWARE_SIDED_HOST_KINDS = {'Cyberarm', 'Cyberleg', 'Cybereye'}
+CYBERWARE_INSTALLATION_SITES = {'Mall', 'Clinic', 'Hospital', 'Zoo', 'Tech', 'Manual'}
+THERAPY_PROFILES = {
+    'standard_hl': {
+        'label': 'Therapy (Standard HL)', 'catalog_id': 'services-31',
+        'cost': 500, 'duration_days': 7, 'humanity_dice': 2,
+        'source': 'CP:R 230',
+    },
+    'extreme_hl': {
+        'label': 'Therapy (Extreme HL)', 'catalog_id': 'services-32',
+        'cost': 1000, 'duration_days': 7, 'humanity_dice': 4,
+        'source': 'CP:R 230',
+    },
+    'addiction': {
+        'label': 'Therapy (Addiction)', 'catalog_id': 'services-30',
+        'cost': 1000, 'duration_days': 7, 'humanity_dice': 0,
+        'source': 'CP:R 230', 'manual_effect': True,
+    },
+}
+CYBERWARE_CURATED_PAYLOADS = {
+    'cyberware-16': {
+        'id': 'reflex-co-processor-dodge', 'kind': 'capability',
+        'capability': 'dodge_ranged_attacks_below_ref_8',
+        'label': 'Dodge ranged attacks regardless of REF', 'source': 'BC 21',
+    },
+    'cyberware-62': {
+        'id': 'kerenzikov-initiative', 'kind': 'numeric_modifier',
+        'target': 'initiative.check', 'operation': 'add', 'value': 2,
+        'conflict_group': 'speedware', 'label': 'Initiative +2', 'source': 'CP:R 359',
+    },
+    'cyberware-63': {
+        'id': 'sandevistan-activation', 'kind': 'activation',
+        'target': 'initiative.check', 'operation': 'add', 'value': 3,
+        'duration_seconds': 60, 'cooldown_seconds': 3600,
+        'action_required': True, 'conflict_group': 'speedware',
+        'label': 'Activate: Initiative +3 for 1 minute', 'source': 'CP:R 359',
+    },
+    'cyberware-71': {
+        'id': 'image-enhance-sight', 'kind': 'contextual_skill_modifier',
+        'skills': ['Perception', 'Lip Reading', 'Conceal/Reveal Object'],
+        'operation': 'add', 'value': 2, 'condition': 'sight-based Check',
+        'label': 'Sight-based Checks +2', 'source': 'CP:R 360',
+    },
+    'cyberware-75': {
+        'id': 'amplified-hearing', 'kind': 'contextual_skill_modifier',
+        'skills': ['Perception'], 'operation': 'add', 'value': 2,
+        'condition': 'hearing-based Check', 'label': 'Hearing-based Perception +2',
+        'source': 'CP:R 361',
+    },
+    'cyberware-83': {
+        'id': 'targeting-scope-aimed-shot', 'kind': 'contextual_modifier',
+        'target': 'aimed_shot.check', 'operation': 'add', 'value': 1,
+        'condition': 'Aimed Shot', 'label': 'Aimed Shot Check +1', 'source': 'CP:R 361',
+    },
+    'cyberware-141': {
+        'id': 'sensor-array-slots', 'kind': 'host_slot_grant',
+        'target': 'Cyberaudio Suite', 'slots_granted': 5, 'slots_used_override': 0,
+        'label': 'Cyberaudio Option Slots +5', 'source': 'CP:R 367',
+    },
+    'cyberware-156': {
+        'id': 'micro-waldo-surgery', 'kind': 'contextual_skill_modifier',
+        'skills': ['Surgery'], 'operation': 'add', 'value': 1,
+        'condition': 'Medtech using MicroWaldo', 'label': 'Surgery +1',
+        'source': 'DL:12Cy 5 / DGD 146 / IR3 87',
+    },
+}
+CYBERWARE_WEAPON_PROFILES = {
+    'cyberware-13': {'id': 'popup-net-launcher', 'kind': 'ranged', 'weapon_type': 'Exotic Weapon', 'skill': 'Shoulder Arms', 'damage': '—', 'rof': 1, 'magazine': 1, 'ammo_kind': 'net', 'range_table': 'Shotgun', 'deployable': True, 'concealable': True, 'manual_effect': 'On hit the target is grappled: cannot use Move Action, cannot use two-handed weapons, -2 to physical Actions. Net HP 15, destroyed beyond repair at 0 HP. Escape DV13 Contortionist (target inside only) or DV13 Brawling (anyone); success destroys net. Firing into net damages both net and target equally. Range max 25m. Replacement net 50eb.', 'source': 'BC 20', 'special_ammo': True},
+    'cyberware-15': {'id': 'popup-shotgun', 'kind': 'ranged', 'weapon_type': 'Shotgun', 'skill': 'Shoulder Arms', 'damage': '5d6', 'rof': 1, 'magazine': 2, 'ammo_kind': 'shotgun', 'range_table': 'Shotgun', 'deployable': True, 'concealable': True, 'source': 'BC 21'},
+    'cyberware-25': {'id': 'dartgun-cyberfinger', 'kind': 'ranged', 'weapon_type': 'Exotic Weapon', 'skill': 'Handgun', 'damage': '—', 'rof': 1, 'magazine': 1, 'deployable': False, 'concealable': True, 'manual_effect': 'Single concealed dart; toxin/drug payload is manual. No conceal check if glove worn. Requires Modular Finger Cyberhand. Single shot clip.', 'source': 'BC 24', 'special_ammo': True},
+    'cyberware-42': {'id': 'mantis-blade', 'kind': 'melee', 'weapon_type': 'Heavy Melee Weapon', 'skill': 'Melee Weapon', 'damage': '3d6', 'rof': 2, 'quality': 'Excellent', 'hands_required': 1, 'deployable': True, 'concealable': True, 'source': 'CEMK 35'},
+    'cyberware-43': {'id': 'gorilla-arm', 'kind': 'melee', 'weapon_type': 'Heavy Melee Weapon', 'skill': 'Melee Weapon', 'damage': '3d6', 'rof': 2, 'quality': 'Excellent', 'hands_required': 1, 'deployable': False, 'concealable': True, 'manual_effect': 'BODY 11 weapon handling; paired BODY 11 feats are contextual.', 'source': 'CEMK 35'},
+    'cyberware-44': {'id': 'monowire', 'kind': 'melee', 'weapon_type': 'Exotic Heavy Melee Weapon', 'skill': 'Melee Weapon', 'damage': '3d6', 'rof': 2, 'hands_required': 1, 'deployable': True, 'concealable': True, 'reach_m': 6, 'manual_effect': 'On Critical Injury roll twice and choose one result.', 'source': 'CEMK 35'},
+    'cyberware-48': {'id': 'projectile-launch-system', 'kind': 'ranged_dual', 'weapon_type': 'Rocket/Grenade Launcher', 'skill': 'Heavy Weapons', 'damage': '6d6 / 8d6', 'damage_by_ammo': {'grenade': '6d6', 'rocket': '8d6'}, 'rof': 1, 'magazine': 1, 'ammo_kinds': ['grenade', 'rocket'], 'deployable': True, 'concealable': True, 'source': 'CEMK 36'},
+    'cyberware-107': {'id': 'big-knucks', 'kind': 'melee', 'weapon_type': 'Medium Melee Weapon', 'skill': 'Melee Weapon', 'damage': '2d6', 'rof': 2, 'hands_required': 1, 'deployable': False, 'concealable': True, 'source': 'CP:R 364'},
+    'cyberware-117': {'id': 'popup-grenade-launcher', 'kind': 'ranged', 'weapon_type': 'Grenade Launcher', 'skill': 'Heavy Weapons', 'damage': '6d6', 'rof': 1, 'magazine': 1, 'ammo_kind': 'grenade', 'range_table': 'Grenade Launcher', 'deployable': True, 'concealable': True, 'source': 'CP:R 365'},
+    'cyberware-121': {'id': 'rippers', 'kind': 'melee', 'weapon_type': 'Medium Melee Weapon', 'skill': 'Melee Weapon', 'damage': '2d6', 'rof': 2, 'hands_required': 1, 'deployable': True, 'concealable': True, 'source': 'CP:R 365'},
+    'cyberware-124': {'id': 'scratchers', 'kind': 'melee', 'weapon_type': 'Light Melee Weapon', 'skill': 'Melee Weapon', 'damage': '1d6', 'rof': 2, 'hands_required': 1, 'deployable': False, 'concealable': True, 'source': 'CP:R 366'},
+    'cyberware-131': {'id': 'slice-n-dice', 'kind': 'melee', 'weapon_type': 'Medium Melee Weapon', 'skill': 'Melee Weapon', 'damage': '2d6', 'rof': 2, 'hands_required': 1, 'deployable': True, 'concealable': True, 'source': 'CP:R 366'},
+    'cyberware-133': {'id': 'wolvers', 'kind': 'melee', 'weapon_type': 'Heavy Melee Weapon', 'skill': 'Melee Weapon', 'damage': '3d6', 'rof': 2, 'hands_required': 1, 'deployable': True, 'concealable': True, 'source': 'CP:R 366'},
+    'cyberware-70': {'id': 'dartgun', 'kind': 'ranged', 'weapon_type': 'Exotic Weapon', 'skill': 'Handgun', 'damage': '—', 'rof': 1, 'magazine': 1, 'deployable': False, 'concealable': True, 'manual_effect': 'Cybereye Dartgun Exotic Weapon, single shot clip concealed in Cybereye. Payload effects manual (toxin/drug).', 'source': 'CP:R 360', 'special_ammo': True},
+    'cyberware-146': {'id': 'mono-paw', 'kind': 'melee', 'weapon_type': 'Medium Melee Weapon', 'skill': 'Melee Weapon', 'damage': '1d6', 'rof': 2, 'quality': 'Excellent', 'hands_required': 1, 'deployable': True, 'concealable': True, 'manual_effect': 'Ignores armor below SP11; higher SP applies normally.', 'source': 'DL:12Cute 6'},
+    'cyberware-148': {'id': 'chainripp', 'kind': 'melee', 'weapon_type': 'Very Heavy Melee Weapon', 'skill': 'Melee Weapon', 'damage': '4d6', 'rof': 1, 'hands_required': 1, 'deployable': True, 'rev_action': True, 'concealable': False, 'manual_effect': 'Excellent Exotic quality only while revved.', 'source': 'DL:12Cy 3 / IR3 85'},
+    'cyberware-171': {'id': 'gas-jet', 'kind': 'ranged', 'weapon_type': 'Exotic Weapon', 'skill': 'Shoulder Arms', 'damage': '—', 'rof': 1, 'magazine': 1, 'ammo_kinds': ['street_drug', 'poison', 'biotoxin'], 'range_table': 'Shotgun', 'deployable': False, 'concealable': True, 'manual_effect': 'Acts as One-Handed Exotic Shotgun in Shotgun Shell mode only; instead of damage applies loaded Street Drug / Poison / Biotoxin to all vulnerable targets in spread. Nasal Filters negate. Requires fully loaded (3 doses) and drains entirely each shot.', 'source': 'DL:HP 5 / IR4 7', 'special_ammo': True, 'payload_options': ['street_drug', 'poison', 'biotoxin']},
+}
+
+
+def cyberware_weapon_profile(entry):
+    return copy.deepcopy(CYBERWARE_WEAPON_PROFILES.get(catalog_item_id_for_entry(entry)))
+
+
+def popup_weapon_binding_kind(entry):
+    catalog_id = catalog_item_id_for_entry(entry)
+    if catalog_id == 'cyberware-118':
+        return 'melee'
+    if catalog_id == 'cyberware-119':
+        return 'ranged'
+    return None
+
+
+def popup_shield_profile(data, option):
+    if catalog_item_id_for_entry(option) != 'cyberware-120':
+        return None
+    state = (data.get('cyberware_state') or {}).get(option.get('instance_id')) or {}
+    popup = state.get('popup_shield') if isinstance(state.get('popup_shield'), dict) else {}
+    shield_id = str(popup.get('shield_instance_id') or '')
+    shield = next((item for item in data.get('inventory') or []
+                   if isinstance(item, dict) and item.get('instance_id') == shield_id), None)
+    if not shield:
+        return {'option_instance_id': option.get('instance_id'), 'installed': False}
+    maximum = armor_shield_hp(shield)
+    current = max(0, min(maximum, int(_num(popup.get('hp_current'))
+                                      if _num(popup.get('hp_current')) is not None else maximum)))
+    return {
+        'option_instance_id': option.get('instance_id'), 'installed': True,
+        'shield_instance_id': shield_id,
+        'shield_name': shield.get('custom_name') or shield.get('name'),
+        'hp_current': current, 'hp_max': maximum,
+        'deployed': popup.get('deployed') is True and current > 0,
+        'destroyed': current <= 0, 'source': 'CP:R 365',
+        'manual_resolution_required': False,
+    }
+
+
+def validate_popup_shield_references(data):
+    chrome = {item.get('instance_id'): item for item in data.get('cyberware') or []
+              if isinstance(item, dict) and item.get('instance_id')}
+    inventory = {item.get('instance_id'): item for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('instance_id')}
+    states = data.get('cyberware_state') if isinstance(data.get('cyberware_state'), dict) else {}
+    claimed = set()
+    for option_id, runtime in states.items():
+        popup = runtime.get('popup_shield') if isinstance(runtime, dict) else None
+        if not isinstance(popup, dict) or not popup.get('shield_instance_id'):
+            continue
+        option = chrome.get(option_id)
+        shield_id = str(popup['shield_instance_id'])
+        shield = inventory.get(shield_id)
+        if (not option or catalog_item_id_for_entry(option) != 'cyberware-120' or
+                not shield or shield_id in claimed or
+                shield.get('installed_popup_shield_instance_id') != option_id):
+            raise ApiError(409, 'Повреждена связь Popup Shield')
+        claimed.add(shield_id)
+
+
+def popup_weapon_binding_compatibility(option, weapon):
+    kind = popup_weapon_binding_kind(option)
+    reasons = []
+    catalog_weapon = item_by_id(catalog_item_id_for_entry(weapon)) or {}
+    mechanics = (weapon or {}).get('mechanics') or catalog_weapon.get('mechanics') or {}
+    weapon_type = str(mechanics.get('type') or '')
+    if not kind:
+        reasons.append('Cyberware is not a generic Popup Weapon option')
+    if not weapon or weapon.get('state') != 'carried':
+        reasons.append('Weapon must be a free carried instance')
+    if (weapon or {}).get('mounted_modification_id') or \
+            (weapon or {}).get('installed_cyberware_instance_id'):
+        reasons.append('Weapon is already bound to another host')
+    if kind == 'ranged' and _num(mechanics.get('hands')) != 1:
+        reasons.append('Popup Ranged Weapon requires a one-handed weapon')
+    if kind == 'ranged' and (weapon or {}).get('cat') != 'guns':
+        reasons.append('Popup Ranged Weapon requires a ranged weapon')
+    if kind == 'melee':
+        if (weapon or {}).get('cat') != 'melee':
+            reasons.append('Popup Melee Weapon requires a melee weapon')
+        if not any(label in weapon_type for label in
+                   ('Light Melee Weapon', 'Medium Melee Weapon', 'Heavy Melee Weapon')) or \
+                'Very Heavy' in weapon_type:
+            reasons.append('Popup Melee Weapon accepts Light, Medium, or Heavy Melee Weapon')
+    return {'allowed': not reasons, 'reasons': reasons, 'kind': kind}
+
+
+def bound_popup_weapon_profile(data, option):
+    kind = popup_weapon_binding_kind(option)
+    if not kind:
+        return None
+    state = (data.get('cyberware_state') or {}).get(option.get('instance_id')) or {}
+    weapon_id = str(state.get('bound_weapon_instance_id') or '')
+    weapon = next((item for item in data.get('inventory') or []
+                   if isinstance(item, dict) and item.get('instance_id') == weapon_id), None)
+    if not weapon:
+        return None
+    catalog_weapon = item_by_id(catalog_item_id_for_entry(weapon)) or {}
+    mechanics = weapon.get('mechanics') or catalog_weapon.get('mechanics') or {}
+    damage = mechanics.get('damage')
+    if isinstance(damage, dict):
+        damage = damage.get('notation')
+    profile = {
+        'id': f'bound-popup-{kind}:{weapon_id}',
+        'kind': kind, 'weapon_type': mechanics.get('type'),
+        'skill': mechanics.get('skill') or ('Melee Weapon' if kind == 'melee' else None),
+        'damage': damage, 'rof': mechanics.get('rof'),
+        'quality': mechanics.get('quality'),
+        'hands_required': 1, 'deployable': True, 'concealable': True,
+        'bound_weapon_instance_id': weapon_id,
+        'bound_weapon_name': weapon.get('custom_name') or weapon.get('name'),
+        'attachments_preserved': True,
+        'source': (item_by_id(catalog_item_id_for_entry(option)) or option).get('source'),
+        'manual_effect': 'Bound weapon attachments remain installed; contextual attachment effects use the weapon Dossier.',
+    }
+    if kind == 'ranged':
+        profile.update({
+            'magazine': int(_num(mechanics.get('magazine')) or 0),
+            'range_table': weapon_range_table_info(weapon).get('base'),
+        })
+    return profile
+
+
+def cyberware_curated_payload(entry):
+    return copy.deepcopy(CYBERWARE_CURATED_PAYLOADS.get(
+        catalog_item_id_for_entry(entry)))
+
+
+def cyberware_is_installed(entry):
+    return str((entry or {}).get('state') or 'installed') == 'installed'
+
+
+def cyberware_is_paired_leg_foundation(entry):
+    catalog_item = item_by_id(catalog_item_id_for_entry(entry)) or entry or {}
+    return 'paired cyberlegs' in str(catalog_item.get('desc') or '').lower()
+
+
+def cyberware_secondary_host_id(instance_id):
+    """Derive a stable second physical host ID for one paired foundation item."""
+    value = str(instance_id or '').lower()
+    if INSTANCE_ID_RE.fullmatch(value):
+        return value[:-1] + format((int(value[-1], 16) + 1) % 16, 'x')
+    return f'{value}:paired-2'
+
+
+def cyberware_capacity(entry):
+    catalog_item = item_by_id(catalog_item_id_for_entry(entry)) or {}
+    capacity = copy.deepcopy(
+        catalog_item.get('capacity') or (entry or {}).get('capacity') or {})
+    description = str(catalog_item.get('desc') or (entry or {}).get('desc') or '')
+    if capacity.get('host'):
+        slot_match = re.search(
+            r'(?:takes?|uses?|requires?)\s+(?:up\s+)?(\d+)\s+(?:(?:cyberware|cyberarm|cybereye|cyberleg|cyberaudio)\s+)?option slots?',
+            description, re.I)
+        if slot_match:
+            capacity['slots_used'] = int(slot_match.group(1))
+    if cyberware_is_paired_leg_foundation(entry):
+        match = re.search(r'each cyberleg has\s+(\d+)\s+option slots?',
+                          description, re.I)
+        capacity.update({
+            'host': None, 'hosts_required': 0, 'slots_used': 0,
+            'slots_total': int(match.group(1)) if match else
+                max(1, int(_num(capacity.get('slots_total')) or 1)),
+        })
+    return capacity
+
+
+def cyberware_host_assignments(entry):
+    raw = entry.get('host_instances') if isinstance(entry, dict) else None
+    if not isinstance(raw, list) or not raw:
+        raw = [entry.get('host_instance')] if isinstance(entry, dict) and entry.get(
+            'host_instance') else []
+    result = []
+    for value in raw:
+        value = str(value or '')
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def cyberware_host_kind(entry):
+    if cyberware_is_paired_leg_foundation(entry):
+        return 'Cyberleg'
+    name = str((entry or {}).get('name') or '').lower()
+    for kind, accepted in CYBERWARE_HOST_ACCEPTED_NAMES.items():
+        if name in accepted:
+            return kind
+    return None
+
+
+def cyberware_installation_profile(entry):
+    catalog_item = item_by_id(catalog_item_id_for_entry(entry)) or entry or {}
+    raw = str((catalog_item.get('mechanics') or {}).get('installation') or
+              ((catalog_item.get('fields') or {}).get('Install')) or '').strip()
+    biosystem_required = 'requires biosystem' in raw.lower()
+    site = raw.split('(', 1)[0].strip().title() if raw else 'Manual'
+    if site not in CYBERWARE_INSTALLATION_SITES:
+        site = 'Manual'
+    return {
+        'required_site': site, 'source_installation': raw or 'Manual',
+        'biosystem_required': biosystem_required,
+        'manual_resolution_required': True,
+        'source': catalog_item.get('source'),
+    }
+
+
+def cyberware_side_required(entry):
+    return bool(cyberware_host_kind(entry) in CYBERWARE_SIDED_HOST_KINDS and
+                not cyberware_is_paired_leg_foundation(entry))
+
+
+def validate_cyberware_sides(data, allow_unassigned=False):
+    occupied = set()
+    for entry in data.get('cyberware') or []:
+        if not isinstance(entry, dict) or not cyberware_is_installed(entry) or \
+                not cyberware_side_required(entry):
+            continue
+        side = str(entry.get('installation_side') or '').lower()
+        if side not in ('left', 'right'):
+            if allow_unassigned:
+                continue
+            raise ApiError(400, f'{entry.get("name") or "Cyberware"}: выберите left/right side')
+        key = (cyberware_host_kind(entry), side)
+        if key in occupied:
+            raise ApiError(409, f'{cyberware_host_kind(entry)}: сторона {side} уже занята')
+        occupied.add(key)
+    # A paired Cyberleg foundation occupies both physical leg sides.
+    paired_count = sum(
+        1 for entry in data.get('cyberware') or []
+        if isinstance(entry, dict) and cyberware_is_installed(entry) and
+        cyberware_is_paired_leg_foundation(entry))
+    regular_legs = sum(
+        1 for kind, _side in occupied if kind == 'Cyberleg')
+    if paired_count > 1 or (paired_count and regular_legs):
+        raise ApiError(409, 'Paired Cyberlegs требуют обе свободные стороны')
+
+
+def validate_cyberware_payload_conflicts(data):
+    groups = {}
+    for entry in data.get('cyberware') or []:
+        if not isinstance(entry, dict) or not cyberware_is_installed(entry):
+            continue
+        payload = cyberware_curated_payload(entry) or {}
+        group = payload.get('conflict_group')
+        if not group:
+            continue
+        groups.setdefault(group, []).append(entry.get('name') or 'Cyberware')
+    for group, names in groups.items():
+        if len(names) > 1:
+            raise ApiError(
+                409, f'Cyberware conflict {group}: {", ".join(names[:5])}')
+
+
+def effective_cyberware_loadout(data):
+    """Return concrete Cyberware foundations, options, slots, and staged items."""
+    chrome = [item for item in data.get('cyberware') or []
+              if isinstance(item, dict) and item.get('instance_id')]
+    raw_runtime_states = data.get('cyberware_state') \
+        if isinstance(data.get('cyberware_state'), dict) else {}
+    runtime_states = {key: value for key, value in raw_runtime_states.items()
+                      if isinstance(value, dict)}
+    hosts = {}
+    for entry in chrome:
+        capacity = cyberware_capacity(entry)
+        kind = cyberware_host_kind(entry)
+        total = max(0, int(_num(capacity.get('slots_total')) or 0))
+        if kind and total and cyberware_is_installed(entry):
+            parent_id = entry['instance_id']
+            physical_ids = [parent_id]
+            if cyberware_is_paired_leg_foundation(entry):
+                physical_ids.append(cyberware_secondary_host_id(parent_id))
+            base_name = entry.get('custom_name') or entry.get('name') or kind
+            for side_index, physical_id in enumerate(physical_ids):
+                side = ('left' if side_index == 0 else 'right') \
+                    if len(physical_ids) > 1 else None
+                installation_side = side or str(entry.get('installation_side') or '').lower() or None
+                hosts[physical_id] = {
+                    'instance_id': physical_id,
+                    'foundation_instance_id': parent_id,
+                    'catalog_item_id': catalog_item_id_for_entry(entry),
+                    'name': f'{base_name} · {side.title()}' if side else base_name,
+                    'foundation_name': base_name,
+                    'host_kind': kind, 'physical_side': installation_side,
+                    'side_required': cyberware_side_required(entry),
+                    'side_status': 'assigned' if installation_side else
+                        ('required' if cyberware_side_required(entry) else 'not_applicable'),
+                    'paired_foundation': len(physical_ids) > 1,
+                    'installation_profile': cyberware_installation_profile(entry),
+                    'state': 'installed', 'slots_total': total,
+                    'slots_used': 0, 'slots_free': total,
+                    'overloaded': False, 'quick_change_mount': False,
+                    'options': [],
+                }
+
+    side_counts = {}
+    for host in hosts.values():
+        if host['side_required'] and host.get('physical_side'):
+            key = (host['host_kind'], host['physical_side'])
+            side_counts[key] = side_counts.get(key, 0) + 1
+    paired_legs = {host['foundation_instance_id'] for host in hosts.values()
+                   if host['host_kind'] == 'Cyberleg' and host['paired_foundation']}
+    regular_leg_hosts = [host for host in hosts.values()
+                         if host['host_kind'] == 'Cyberleg' and
+                         not host['paired_foundation']]
+    for host in hosts.values():
+        key = (host['host_kind'], host.get('physical_side'))
+        conflict = bool(
+            (host['side_required'] and host.get('physical_side') and
+             side_counts.get(key, 0) > 1) or
+            (host['host_kind'] == 'Cyberleg' and
+             ((len(paired_legs) > 1) or (paired_legs and regular_leg_hosts))))
+        if conflict:
+            host['side_status'] = 'conflict'
+    used = {host_id: 0 for host_id in hosts}
+    option_rows = []
+    unique_counts = {}
+    for entry in chrome:
+        capacity = cyberware_capacity(entry)
+        expected = capacity.get('host')
+        if not expected:
+            continue
+        installed = cyberware_is_installed(entry)
+        host_ids = cyberware_host_assignments(entry)
+        required = max(1, int(_num(capacity.get('hosts_required')) or 1))
+        payload = cyberware_curated_payload(entry)
+        slots_override = _num((payload or {}).get('slots_used_override'))
+        slots = max(0, int(slots_override if slots_override is not None else
+                           (_num(capacity.get('slots_used')) or 1)))
+        reasons = []
+        if installed:
+            unique_counts[catalog_item_id_for_entry(entry)] = \
+                unique_counts.get(catalog_item_id_for_entry(entry), 0) + 1
+            if len(host_ids) != required:
+                reasons.append(f'Requires {required} concrete hosts')
+            for host_id in host_ids:
+                host = hosts.get(host_id)
+                if not host:
+                    reasons.append('Assigned host is missing or not installed')
+                elif host['host_kind'] != expected:
+                    reasons.append(f'Host must be {expected}')
+                else:
+                    used[host_id] += slots
+        option_rows.append({
+            'instance_id': entry['instance_id'],
+            'catalog_item_id': catalog_item_id_for_entry(entry),
+            'name': entry.get('custom_name') or entry.get('name') or 'Cyberware Option',
+            'state': str(entry.get('state') or 'installed'),
+            'expected_host': expected, 'hosts_required': required,
+            'slots_used_per_host': slots, 'host_instance_ids': host_ids,
+            'compatible_host_ids': [],
+            'installation_profile': cyberware_installation_profile(entry),
+            'curated_payload': payload,
+            'weapon_profile': cyberware_weapon_profile(entry) or
+                bound_popup_weapon_profile(data, entry),
+            'popup_binding_kind': popup_weapon_binding_kind(entry),
+            'bound_weapon_instance_id': str(
+                ((data.get('cyberware_state') or {}).get(entry['instance_id']) or {}).get(
+                    'bound_weapon_instance_id') or '') or None,
+            'status': 'staged' if not installed else ('installed' if not reasons else 'unbound'),
+            'reasons': reasons,
+            'unique': bool(capacity.get('unique')),
+        })
+
+    for option in option_rows:
+        payload = option.get('curated_payload') or {}
+        if (option['state'] == 'installed' and not option['reasons'] and
+                payload.get('kind') == 'host_slot_grant'):
+            for host_id in option['host_instance_ids']:
+                host = hosts.get(host_id)
+                if host and host['host_kind'] == payload.get('target'):
+                    granted = max(0, int(_num(payload.get('slots_granted')) or 0))
+                    host['slots_base'] = host.get('slots_base', host['slots_total'])
+                    host['slots_granted'] = host.get('slots_granted', 0) + granted
+                    host['slots_total'] += granted
+    option_by_id = {item['instance_id']: item for item in option_rows}
+    for host_id, amount in used.items():
+        host = hosts[host_id]
+        host.setdefault('slots_base', host['slots_total'])
+        host.setdefault('slots_granted', 0)
+        host['slots_used'] = amount
+        host['slots_free'] = max(0, host['slots_total'] - amount)
+        host['overloaded'] = amount > host['slots_total']
+    for option in option_rows:
+        option['compatible_host_ids'] = [
+            host_id for host_id, host in hosts.items()
+            if host['host_kind'] == option['expected_host'] and
+            host['slots_used'] - (
+                option['slots_used_per_host']
+                if host_id in option['host_instance_ids'] and
+                option['state'] == 'installed' else 0) +
+            option['slots_used_per_host'] <= host['slots_total']]
+        if option['state'] != 'installed':
+            continue
+        for host_id in option['host_instance_ids']:
+            host = hosts.get(host_id)
+            if not host or host['host_kind'] != option['expected_host']:
+                continue
+            host['options'].append({
+                'instance_id': option['instance_id'], 'name': option['name'],
+                'slots_used': option['slots_used_per_host'],
+                'paired': option['hosts_required'] > 1,
+                'curated_payload': copy.deepcopy(option.get('curated_payload')),
+                'weapon_profile': copy.deepcopy(option.get('weapon_profile')),
+                'popup_binding_kind': option.get('popup_binding_kind'),
+                'bound_weapon_instance_id': option.get('bound_weapon_instance_id'),
+            })
+            if option['name'] == 'Quick Change Mount':
+                host['quick_change_mount'] = True
+            if host['overloaded']:
+                option['status'] = 'invalid'
+                if 'Host Option Slots exceeded' not in option['reasons']:
+                    option['reasons'].append('Host Option Slots exceeded')
+    for catalog_id, count in unique_counts.items():
+        if not catalog_id or count <= 1:
+            continue
+        for option in option_rows:
+            if option['catalog_item_id'] == catalog_id and option['unique']:
+                option['status'] = 'invalid'
+                option['reasons'].append('Only one installed copy is allowed')
+
+    hosted_ids = set(option_by_id)
+    host_ids = set(hosts)
+    staged = [{
+        'instance_id': item['instance_id'],
+        'catalog_item_id': catalog_item_id_for_entry(item),
+        'name': item.get('custom_name') or item.get('name') or 'Cyberware',
+        'state': str(item.get('state') or 'installed'),
+        'host_kind': cyberware_host_kind(item),
+        'expected_host': cyberware_capacity(item).get('host'),
+        'side_required': cyberware_side_required(item),
+        'installation_side': item.get('installation_side') or
+            (runtime_states.get(item['instance_id']) or {}).get('installation_side'),
+        'installation_profile': cyberware_installation_profile(item),
+        'quick_change_detached': bool(
+            (runtime_states.get(item['instance_id']) or {}).get('quick_change_detached')),
+        'hl': _num(item.get('hl')) or 0,
+    } for item in chrome if not cyberware_is_installed(item)]
+    standalone = [{
+        'instance_id': item['instance_id'],
+        'catalog_item_id': catalog_item_id_for_entry(item),
+        'name': item.get('custom_name') or item.get('name') or 'Cyberware',
+        'state': 'installed',
+        'installation_profile': cyberware_installation_profile(item),
+        'hl': _num(item.get('hl')) or 0,
+    } for item in chrome
+        if cyberware_is_installed(item) and item['instance_id'] not in hosted_ids and
+        item['instance_id'] not in host_ids]
+    active_payloads = [
+        copy.deepcopy(option['curated_payload']) | {
+            'instance_id': option['instance_id'], 'name': option['name']}
+        for option in option_rows
+        if option['state'] == 'installed' and option['status'] == 'installed' and
+        isinstance(option.get('curated_payload'), dict)]
+    initiative_modifier = sum(
+        int(_num(payload.get('value')) or 0) for payload in active_payloads
+        if payload.get('kind') == 'numeric_modifier' and
+        payload.get('target') == 'initiative.check')
+    weapon_profiles = []
+    for option in option_rows:
+        profile = copy.deepcopy(option.get('weapon_profile'))
+        if option['state'] != 'installed' or option['status'] != 'installed' or not profile:
+            continue
+        stored = runtime_states.get(option['instance_id']) or {}
+        if profile.get('bound_weapon_instance_id'):
+            weapon_state = (data.get('weapon_state') or {}).get(
+                profile['bound_weapon_instance_id']) or {}
+        else:
+            weapon_state = stored.get('weapon') if isinstance(stored.get('weapon'), dict) else {}
+        maximum = max(0, int(_num(profile.get('magazine')) or 0))
+        profile['instance_id'] = option['instance_id']
+        profile['name'] = option['name']
+        profile['state'] = {
+            'deployed': weapon_state.get('deployed') is True or
+                not profile.get('deployable'),
+            'revved': weapon_state.get('revved') is True,
+            'magazine': max(0, min(maximum, int(_num(weapon_state.get('magazine')) or 0))),
+            'magazine_max': maximum,
+            'loaded_ammo_catalog_id': weapon_state.get('loaded_ammo_catalog_id'),
+            'loaded_ammo_name': weapon_state.get('loaded_ammo_name'),
+            'loaded_ammo_kind': weapon_state.get('loaded_ammo_kind'),
+            'loaded_payload': weapon_state.get('loaded_payload'),
+        }
+        if profile.get('damage_by_ammo') and profile['state']['loaded_ammo_kind']:
+            profile['effective_damage'] = profile['damage_by_ammo'].get(
+                profile['state']['loaded_ammo_kind'], profile.get('damage'))
+        ammo_kinds = profile.get('ammo_kinds') or ([profile.get('ammo_kind')]
+                                                   if profile.get('ammo_kind') else [])
+        if profile.get('special_ammo'):
+            profile['shared_ammo_available'] = 0
+            # Track special payload availability manually
+            if profile.get('payload_options'):
+                profile['payload_options'] = list(profile['payload_options'])
+        elif profile.get('bound_weapon_instance_id'):
+            bound_weapon = next((item for item in data.get('inventory') or []
+                                 if isinstance(item, dict) and item.get('instance_id') ==
+                                 profile['bound_weapon_instance_id']), None)
+            profile['shared_ammo_available'] = shared_ammo_available(
+                data, weapon=bound_weapon)
+        else:
+            profile['shared_ammo_available'] = sum(
+                shared_ammo_available(data, ammo_kind=kind) for kind in ammo_kinds
+                if kind not in ('net', 'street_drug', 'poison', 'biotoxin'))
+        weapon_profiles.append(profile)
+    # Standalone cyberweapons (e.g. Dartgun Cyberfinger) also produce tracked profiles
+    for entry in chrome:
+        if entry.get('instance_id') in {opt['instance_id'] for opt in option_rows}:
+            continue
+        if entry['instance_id'] not in {item['instance_id'] for item in standalone}:
+            continue
+        profile = cyberware_weapon_profile(entry)
+        if not profile:
+            continue
+        stored = runtime_states.get(entry['instance_id']) or {}
+        weapon_state = stored.get('weapon') if isinstance(stored.get('weapon'), dict) else {}
+        maximum = max(0, int(_num(profile.get('magazine')) or 0))
+        profile = copy.deepcopy(profile)
+        profile['instance_id'] = entry['instance_id']
+        profile['name'] = entry.get('custom_name') or entry.get('name') or profile['id']
+        profile['state'] = {
+            'deployed': weapon_state.get('deployed') is True or not profile.get('deployable'),
+            'revved': weapon_state.get('revved') is True,
+            'magazine': max(0, min(maximum, int(_num(weapon_state.get('magazine')) or 0))),
+            'magazine_max': maximum,
+            'loaded_payload': weapon_state.get('loaded_payload'),
+        }
+        if profile.get('special_ammo'):
+            profile['shared_ammo_available'] = 0
+        else:
+            ammo_kinds = profile.get('ammo_kinds') or ([profile.get('ammo_kind')] if profile.get('ammo_kind') else [])
+            profile['shared_ammo_available'] = sum(shared_ammo_available(data, ammo_kind=kind) for kind in ammo_kinds)
+        weapon_profiles.append(profile)
+    popup_shields = [
+        popup_shield_profile(data, next(entry for entry in chrome
+                                        if entry.get('instance_id') == option['instance_id']))
+        for option in option_rows
+        if option['state'] == 'installed' and option['status'] == 'installed' and
+        option['catalog_item_id'] == 'cyberware-120']
+    popup_shields = [item for item in popup_shields if item]
+    return {
+        'hosts': sorted(hosts.values(), key=lambda item: (item['host_kind'], item['name'],
+                                                          item['instance_id'])),
+        'options': option_rows, 'standalone': standalone, 'staged': staged,
+        'active_payloads': active_payloads,
+        'initiative_modifier': initiative_modifier,
+        'capabilities': [payload['capability'] for payload in active_payloads
+                         if payload.get('kind') == 'capability'],
+        'contextual_modifiers': [payload for payload in active_payloads
+                                 if payload.get('kind') in (
+                                     'contextual_modifier', 'contextual_skill_modifier')],
+        'weapon_profiles': weapon_profiles,
+        'popup_shields': popup_shields,
+        'unbound_count': sum(item['status'] in ('unbound', 'invalid')
+                             for item in option_rows),
+    }
+
+
+def cyberware_option_compatibility(data, option_instance_id, requested_host_ids):
+    loadout = effective_cyberware_loadout(data)
+    option = next((item for item in loadout['options']
+                   if item['instance_id'] == option_instance_id), None)
+    if not option:
+        return {'allowed': False, 'reasons': ['Item is not a Cyberware Option']}
+    host_by_id = {item['instance_id']: item for item in loadout['hosts']}
+    host_ids = []
+    for value in requested_host_ids or []:
+        value = str(value or '').lower()
+        if value and value not in host_ids:
+            host_ids.append(value)
+    reasons = []
+    if len(host_ids) != option['hosts_required']:
+        reasons.append(f'Requires {option["hosts_required"]} different concrete hosts')
+    for host_id in host_ids:
+        host = host_by_id.get(host_id)
+        if not host:
+            reasons.append('Selected host is missing or not installed')
+            continue
+        if host['host_kind'] != option['expected_host']:
+            reasons.append(f'Selected host must be {option["expected_host"]}')
+        current_uses = option['slots_used_per_host'] \
+            if host_id in option['host_instance_ids'] and option['state'] == 'installed' else 0
+        if (host['slots_used'] - current_uses + option['slots_used_per_host'] >
+                host['slots_total']):
+            reasons.append(f'{host["name"]}: not enough Option Slots')
+    entry = next((item for item in data.get('cyberware') or []
+                  if isinstance(item, dict) and
+                  item.get('instance_id') == option_instance_id), {})
+    if cyberware_capacity(entry).get('unique'):
+        catalog_id = catalog_item_id_for_entry(entry)
+        if any(isinstance(item, dict) and item.get('instance_id') != option_instance_id and
+               cyberware_is_installed(item) and
+               catalog_item_id_for_entry(item) == catalog_id
+               for item in data.get('cyberware') or []):
+            reasons.append('Only one installed copy is allowed')
+    return {
+        'allowed': not reasons, 'reasons': reasons,
+        'option': option, 'host_instance_ids': host_ids,
+    }
+
+
+def validate_bound_popup_weapon_references(data):
+    chrome_by_id = {item.get('instance_id'): item for item in data.get('cyberware') or []
+                    if isinstance(item, dict) and item.get('instance_id')}
+    weapon_by_id = {item.get('instance_id'): item for item in data.get('inventory') or []
+                    if isinstance(item, dict) and item.get('instance_id')}
+    claimed = set()
+    states = data.get('cyberware_state') if isinstance(data.get('cyberware_state'), dict) else {}
+    for option_id, state in states.items():
+        if not isinstance(state, dict) or not state.get('bound_weapon_instance_id'):
+            continue
+        option = chrome_by_id.get(option_id)
+        weapon_id = str(state.get('bound_weapon_instance_id') or '')
+        weapon = weapon_by_id.get(weapon_id)
+        if (not option or not popup_weapon_binding_kind(option) or not weapon or
+                weapon_id in claimed or weapon.get('state') != 'installed' or
+                weapon.get('installed_cyberware_instance_id') != option_id):
+            raise ApiError(409, 'Повреждена связь Popup Cyberweapon')
+        claimed.add(weapon_id)
+    for weapon in weapon_by_id.values():
+        option_id = str(weapon.get('installed_cyberware_instance_id') or '')
+        if option_id and weapon.get('instance_id') not in claimed:
+            raise ApiError(409, 'Повреждена связь Popup Cyberweapon')
+
+
+def validate_cyberware_trust_lifecycle(before, after):
+    """Prevent generic sheet edits from bypassing surgical install/uninstall audit."""
+    old = {item.get('instance_id'): item for item in before.get('cyberware') or []
+           if isinstance(item, dict) and item.get('instance_id')}
+    new = {item.get('instance_id'): item for item in after.get('cyberware') or []
+           if isinstance(item, dict) and item.get('instance_id')}
+    for instance_id, previous in old.items():
+        if not cyberware_is_installed(previous):
+            continue
+        current = new.get(instance_id)
+        if not current:
+            raise ApiError(409, 'Сначала удалите Cyberware через audited Uninstall')
+        if not cyberware_is_installed(current):
+            raise ApiError(409, 'Изменяйте Cyberware installation только через lifecycle action')
+        if cyberware_host_assignments(previous) != cyberware_host_assignments(current):
+            raise ApiError(409, 'Изменяйте concrete Cyberware hosts только через lifecycle action')
+        if previous.get('installation_side') != current.get('installation_side'):
+            raise ApiError(409, 'Изменяйте Cyberware side только через lifecycle action')
+
+
 def validate_cyberware_requirements(data):
     """Проверяет явные фундаментальные требования из описаний Data Pool."""
-    chrome = [c for c in data.get('cyberware') or []
+    installed = [c for c in data.get('cyberware') or []
+                 if isinstance(c, dict) and cyberware_is_installed(c)]
+    chrome = [c for c in installed
               if not (c.get('creation_free') and c.get('key') == 'creation-neuroport')]
     items = [item_by_id(str(c.get('key') or '')) for c in chrome]
     items = [item for item in items if item]
     names = [item['name'].lower() for item in items]
     inventory_names = [str(entry.get('name') or '').lower() for entry in data.get('inventory') or []]
-    has_port = any(c.get('key') == 'creation-neuroport' for c in data.get('cyberware') or []) or 'neuroport' in names
+    has_port = any(c.get('key') == 'creation-neuroport' for c in installed) or \
+        'neuroport' in names
     foundations = {
         'cybereye': {'cybereye', 'sponsored cybereye'},
         'cyberarm': {'cyberarm', 'neo-soviet cyberarm'},
-        'cyberleg': {'cyberleg', 'romanova cyberlegs'},
+        'cyberleg': {'cyberleg', 'romanova cyberlegs',
+                     'rocklin augmentics skydrivers'},
         'cyberaudio suite': {'cyberaudio suite', 'discount cyberaudio suite'},
         'chipware socket': {'chipware socket', 'budget chipware socket'},
     }
-    count_foundation = lambda kind: sum(name in foundations[kind] for name in names)
+    def count_foundation(kind):
+        return sum(
+            (2 if kind == 'cyberleg' and name in {
+                'romanova cyberlegs', 'rocklin augmentics skydrivers'} else 1)
+            for name in names if name in foundations[kind])
     body = _num((data.get('stats') or {}).get('BODY')) or 0
 
     for item in items:
@@ -1770,60 +8929,36 @@ def validate_cyberware_requirements(data):
             raise ApiError(400, f'{item["name"]} требует: {missing}')
 
 
-def validate_cyberware_slots(data):
-    """Проверяет host assignment, Option Slots и явные запреты дубликатов."""
-    raw = data.get('cyberware') or []
-    hosts = {}
-    catalog_items = []
-    for index, entry in enumerate(raw):
-        if entry.get('creation_free') and entry.get('key') == 'creation-neuroport':
-            iid = str(entry.get('instance_id') or 'creation-neuroport')
-            hosts[iid] = {'name': 'Neuroport', 'total': 5}
-            catalog_items.append((entry, None))
-            continue
-        item = item_by_id(str(entry.get('key') or ''))
-        catalog_items.append((entry, item))
-        if not item:
-            continue
-        capacity = item.get('capacity') or {}
-        total = _num(capacity.get('slots_total')) or 0
-        iid = str(entry.get('instance_id') or f'{entry.get("key")}:{index}')
-        if total:
-            hosts[iid] = {'name': item['name'], 'total': total}
-
-    accepted = {
-        'Cyberarm': {'cyberarm', 'neo-soviet cyberarm'},
-        'Cyberleg': {'cyberleg', 'romanova cyberlegs'},
-        'Cybereye': {'cybereye', 'sponsored cybereye'},
-        'Cyberaudio Suite': {'cyberaudio suite', 'discount cyberaudio suite'},
-        'Neural Link or Neuroport': {'neural link', 'neuroport'},
-    }
-    used = {iid: 0 for iid in hosts}
+def validate_cyberware_slots(data, allow_unbound=False):
+    """Validate concrete host assignment, paired options, slots, and uniqueness."""
     unique_counts = {}
-    for entry, item in catalog_items:
-        if not item:
+    for entry in data.get('cyberware') or []:
+        if not isinstance(entry, dict) or not cyberware_is_installed(entry) or \
+                not cyberware_capacity(entry).get('unique'):
             continue
-        capacity = item.get('capacity') or {}
-        if capacity.get('unique'):
-            unique_counts[item['id']] = unique_counts.get(item['id'], 0) + 1
-            if unique_counts[item['id']] > 1:
-                raise ApiError(400, f'{item["name"]}: допустима только одна установка')
-        expected = capacity.get('host')
-        slots = _num(capacity.get('slots_used')) or 0
-        if not expected:
+        catalog_id = catalog_item_id_for_entry(entry)
+        unique_counts[catalog_id] = unique_counts.get(catalog_id, 0) + 1
+        if unique_counts[catalog_id] > 1:
+            name = (item_by_id(catalog_id) or entry).get('name') or 'Cyberware'
+            raise ApiError(400, f'{name}: допустима только одна установка')
+    loadout = effective_cyberware_loadout(data)
+    for option in loadout['options']:
+        if option['state'] != 'installed':
             continue
-        host_ids = entry.get('host_instances') or ([entry.get('host_instance')] if entry.get('host_instance') else [])
-        host_ids = [str(value) for value in host_ids if value]
-        required = _num(capacity.get('hosts_required')) or 1
-        if len(set(host_ids)) != required or any(host_id not in hosts for host_id in host_ids):
-            raise ApiError(400, f'{item["name"]}: требуется совместимых hosts: {required}')
-        for host_id in host_ids:
-            if hosts[host_id]['name'].lower() not in accepted.get(expected, set()):
-                raise ApiError(400, f'{item["name"]}: несовместимый host {hosts[host_id]["name"]}')
-            used[host_id] += slots
-    for iid, amount in used.items():
-        if amount > hosts[iid]['total']:
-            raise ApiError(400, f'{hosts[iid]["name"]}: Option Slots {amount}/{hosts[iid]["total"]}')
+        if option['status'] in ('unbound', 'invalid'):
+            if allow_unbound and not option['host_instance_ids']:
+                continue
+            if len(option['host_instance_ids']) != option['hosts_required']:
+                raise ApiError(
+                    400, f'{option["name"]}: требуется совместимых hosts: '
+                         f'{option["hosts_required"]}')
+            reason = '; '.join(option['reasons']) or 'invalid host assignment'
+            raise ApiError(400, f'{option["name"]}: {reason}')
+    for host in loadout['hosts']:
+        if host['overloaded']:
+            raise ApiError(
+                400, f'{host["name"]}: Option Slots '
+                     f'{host["slots_used"]}/{host["slots_total"]}')
 
 
 def validate_role_benefits(data):
@@ -2058,6 +9193,8 @@ def validate_creation(data):
     validate_creation_equipment(data)
     validate_cyberware_requirements(data)
     validate_cyberware_slots(data)
+    validate_cyberware_sides(data, allow_unassigned=True)
+    validate_cyberware_payload_conflicts(data)
     if (derive(data).get('humanity_cur') or 0) < 0:
         raise ApiError(400, 'Нельзя завершить создание с Humanity ниже 0')
     validate_creation_budget(data)
@@ -2164,7 +9301,9 @@ def ensure_progression(data):
     if data['roles']:
         primary = next((row for row in data['roles'] if row.get('primary')), data['roles'][0])
         primary['primary'] = True
-        data['primary_role'] = str(data.get('primary_role') or primary.get('name') or '')
+        data['primary_role'] = str(primary.get('name') or data.get('primary_role') or '')
+        data['role'] = data['primary_role']
+        data['role_rank'] = _num(primary.get('rank')) or _num(data.get('role_rank')) or 4
         data['active_role'] = str(data.get('active_role') or data['roles'][-1].get('name') or data['primary_role'])
     data['luck_cur'] = max(0, min(_num((data.get('stats') or {}).get('LUCK')) or 0,
                                   _num(data.get('luck_cur')) if _num(data.get('luck_cur')) is not None else (_num((data.get('stats') or {}).get('LUCK')) or 0)))
@@ -2181,20 +9320,18 @@ def ensure_progression(data):
             piece['maximum'] = maximum
     states = data.setdefault('weapon_state', {})
     inventory = data.get('inventory') or []
-    ammo = [item for item in inventory if item.get('cat') in ('ammo','grenades')]
     for weapon in [item for item in inventory if item.get('cat') in ('guns','melee')]:
-        key = str(weapon.get('key') or weapon.get('source_key') or weapon.get('name'))
+        key = str(weapon.get('instance_id') or weapon.get('key') or
+                  weapon.get('source_key') or weapon.get('name'))
         magazine = _num((weapon.get('mechanics') or {}).get('magazine')) or 0
         if key not in states:
-            weapon_type = str((weapon.get('mechanics') or {}).get('type') or '').lower()
-            reserve = 0
-            for pack in ammo:
-                suitable = str((pack.get('mechanics') or {}).get('compatible_weapons') or '').lower()
-                compatible = weapon_type and (weapon_type in suitable or ('all except' in suitable and not any(token in weapon_type for token in ('grenade','rocket'))))
-                if compatible:
-                    reserve += (_num(pack.get('qty')) or 1) * (_num((pack.get('mechanics') or {}).get('quantity_per_purchase')) or 1)
-            states[key] = {'magazine': magazine, 'magazine_max': magazine, 'reserve': reserve}
-    data['schema_version'] = max(4, _num(data.get('schema_version')) or 0)
+            states[key] = {'magazine': magazine, 'magazine_max': magazine, 'reserve': 0}
+    ensure_shared_ammo_state(data)
+    if not isinstance(data.get('program_state'), dict):
+        data['program_state'] = {}
+    if not isinstance(data.get('net_entities'), dict):
+        data['net_entities'] = {}
+    data['schema_version'] = max(8, _num(data.get('schema_version')) or 0)
     return data
 
 
@@ -2236,6 +9373,359 @@ SERVER_ERROR_EN = {
     'stats должен быть объектом': 'stats must be an object',
     'Баланс IP не может быть отрицательным': 'IP balance cannot be negative',
     'В корзине нет известных товаров': 'The Cart contains no recognized items',
+    'Покупка доступна только из текущего Night Market': 'Purchases are only available from the current Night Market stock',
+    'Инвентарь не может содержать больше 500 экземпляров': 'Inventory cannot contain more than 500 item instances',
+    'Некорректное количество': 'Invalid quantity',
+    'Сначала снимите или извлеките предмет': 'Unequip or uninstall the item first',
+    'Inventory должен содержать объекты': 'Inventory entries must be objects',
+    'Некорректное состояние предмета': 'Invalid item state',
+    'У персонажа не может быть двух одинаковых Roles': 'A character cannot have duplicate Roles',
+    'Custom items будут добавлены отдельным этапом; выберите предмет из Database': 'Custom items will be added in a later stage; choose an item from the Database',
+    'Предмет находится в неправильном разделе Inventory': 'The item is in the wrong Inventory section',
+    'skills должен быть объектом до 500 записей': 'skills must be an object with no more than 500 entries',
+    'armor должен быть объектом': 'armor must be an object',
+    'Укажите причину изменения Character Sheet': 'Provide a reason for the Character Sheet change',
+    'В Character Sheet нет изменений': 'There are no Character Sheet changes',
+    'Изменение Character Sheet не найдено': 'Character Sheet change not found',
+    'Откат доступен только до следующего изменения Dossier': 'Revert is only available before the next Dossier change',
+    'Snapshot для отката повреждён': 'The revert snapshot is corrupted',
+    'Некорректный источник получения предмета': 'Invalid item acquisition source',
+    'Custom Cyberware требует отдельной механики установки': 'Custom Cyberware requires a dedicated installation system',
+    'Custom item требует название': 'Custom item name is required',
+    'Некорректная категория custom item': 'Invalid custom item category',
+    'stackable должен быть логическим значением': 'stackable must be boolean',
+    'Неизвестный предмет: выберите Database item или создайте Custom item': 'Unknown item: choose a Database item or create a Custom item',
+    'Этот предмет нельзя экипировать': 'This item cannot be equipped',
+    'Используйте действие Equip в Character Sheet': 'Use the Equip action in the Character Sheet',
+    'Экземпляр предмета не найден': 'Item instance not found',
+    'Этот предмет не является расходником': 'This item is not consumable',
+    'Расходник должен быть исправен и находиться при персонаже': 'The consumable must be functional and carried by the character',
+    'Недостаточно единиц расходника': 'Not enough consumable units',
+    'Экипировать можно только carried предмет': 'Only a carried item can be equipped',
+    'Недопустимый режим экипировки': 'Invalid equip mode',
+    'Недостаточно свободных рук для экипировки': 'Not enough free hands to equip this item',
+    'Недопустимый слот экипировки': 'Invalid equipment slot',
+    'Достигнут лимит экипированных копий': 'Equipped copy limit reached',
+    'Предмет не экипирован': 'The item is not equipped',
+    'Неизвестное действие с предметом': 'Unknown item action',
+    'Предмет не поддерживает включение и выключение': 'The item cannot be activated or deactivated',
+    'Сначала экипируйте предмет': 'Equip the item first',
+    'Предмет уже находится в выбранном состоянии': 'The item is already in the requested state',
+    'Effect должен быть объектом': 'Effect must be an object',
+    'Effect содержит неподдерживаемые поля': 'Effect contains unsupported fields',
+    'Укажите название эффекта': 'Effect name is required',
+    'Укажите причину эффекта': 'Effect reason is required',
+    'Effect value должен быть от -100 до 100': 'Effect value must be between -100 and 100',
+    'Multiply effect должен быть от 0 до 10': 'Multiply effect must be between 0 and 10',
+    'Некорректная stacking group': 'Invalid stacking group',
+    'Некорректный тип длительности эффекта': 'Invalid effect duration type',
+    'Effect value должен быть числом': 'Effect value must be numeric',
+    'Effect action содержит неподдерживаемые поля': 'Effect action contains unsupported fields',
+    'Effect instance не найден': 'Effect instance not found',
+    'Effect instance уже архивирован': 'Effect instance is already archived',
+    'Неизвестное действие с эффектом': 'Unknown effect action',
+    'Эффект уже отключён': 'Effect is already disabled',
+    'Истёкший real-time эффект нельзя включить повторно': 'An expired real-time effect cannot be enabled again',
+    'Завершённый round effect нельзя включить повторно': 'A completed round effect cannot be enabled again',
+    'Эффект уже включён': 'Effect is already enabled',
+    'Tick доступен только для round effect': 'Tick is only available for round effects',
+    'Round effect сейчас не активен': 'Round effect is not currently active',
+    'Сначала снимите установленные модификации': 'Remove installed modifications first',
+    'Повреждена связь установленной модификации': 'Installed modification link is corrupted',
+    'Modification содержит неподдерживаемые поля': 'Modification contains unsupported fields',
+    'Некорректный host или upgrade instance': 'Invalid host or upgrade instance',
+    'Укажите причину установки modification': 'Modification installation reason is required',
+    'Host или upgrade не найден в Inventory': 'Host or upgrade was not found in Inventory',
+    'Host должен быть исправен и находиться при персонаже': 'Host must be functional and carried by the character',
+    'Upgrade должен находиться в состоянии carried': 'Upgrade must be in the carried state',
+    'Требуется ручное подтверждение сложного правила совместимости': 'Complex compatibility rule requires manual confirmation',
+    'Modification action содержит неподдерживаемые поля': 'Modification action contains unsupported fields',
+    'weapon_instance_id допустим только для mount_weapon': 'weapon_instance_id is only allowed for mount_weapon',
+    'ammo_instance_id допустим только для Reload': 'ammo_instance_id is only allowed for Reload',
+    'Выберите конкретный ammo stack': 'Choose a specific ammo stack',
+    'Выберите payload для Gas Jet: street_drug / poison / biotoxin': 'Choose a Gas Jet payload: street_drug / poison / biotoxin',
+    'Ammo stack недоступен для Reload': 'Ammo stack is unavailable for Reload',
+    'Ammo stack несовместим с этим оружием': 'Ammo stack is incompatible with this weapon',
+    'Магазин уже заполнен': 'The magazine is already full',
+    'Нельзя смешивать разные типы ammo в одном магазине': 'Different ammo types cannot be mixed in one magazine',
+    'В выбранном ammo stack нет боеприпасов': 'The selected ammo stack is empty',
+    'Частично использованный ammo stack нельзя продать': 'A partially used ammo stack cannot be sold',
+    'Vehicle repair содержит неподдерживаемые поля': 'Vehicle repair contains unsupported fields',
+    'Укажите причину Vehicle repair': 'Provide a reason for the Vehicle repair',
+    'Vehicle repair уже выполняется': 'A Vehicle repair is already in progress',
+    'Vehicle не нуждается в ремонте': 'The Vehicle does not need repair',
+    'Укажите техника для Vehicle repair': 'Specify the Vehicle repair technician',
+    'Нет активного Vehicle repair': 'There is no active Vehicle repair',
+    'Укажите итог Repair Check': 'Provide the Repair Check total',
+    'Используйте Vehicle Repair Workflow': 'Use the Vehicle Repair Workflow',
+    'Vehicle SDP action поддерживает только damage': 'Vehicle SDP actions only support damage',
+    'Modification не найдена': 'Modification not found',
+    'Modification уже снята': 'Modification is already removed',
+    'Эта modification не может быть снята': 'This modification cannot be removed',
+    'Неизвестное действие с modification': 'Unknown modification action',
+    'Укажите причину снятия modification': 'Modification removal reason is required',
+    'Сначала снимите modifications, зависящие от granted slots': 'Remove modifications that depend on granted slots first',
+    'Modification не имеет alternate attack profile': 'Modification has no alternate attack profile',
+    'Modification не имеет action resource profile': 'Modification has no action resource profile',
+    'Alternate weapon разряжен': 'Alternate weapon is unloaded',
+    'Нет боеприпасов для перезарядки alternate weapon': 'No ammunition is available to reload the alternate weapon',
+    'Modification не является баллоном NOS': 'Modification is not a NOS tank',
+    'Баллон NOS уже использован в этот игровой день': 'This NOS tank was already used this campaign day',
+    'Укажите причину сброса NOS': 'Provide a reason for resetting NOS',
+    'Баллон NOS уже готов к использованию': 'This NOS tank is already ready to use',
+    'Баллон NOS не является оружием': 'A NOS tank is not a weapon',
+    'Баллон NOS нельзя перезарядить': 'A NOS tank cannot be reloaded',
+    'Для атаки требуется X патронов': 'This attack requires X rounds',
+    'Vehicle configuration должна быть объектом': 'Vehicle configuration must be an object',
+    'Vehicle configuration содержит неизвестные поля': 'Vehicle configuration contains unknown fields',
+    'Выберите допустимое направление mounted weapon': 'Choose an allowed mounted weapon orientation',
+    'Выберите обязательную конфигурацию транспорта': 'Choose the required vehicle configuration',
+    'Некорректная конфигурация транспорта': 'Invalid vehicle configuration',
+    'Повреждена связь Vehicle Heavy Weapon Mount': 'Vehicle Heavy Weapon Mount link is corrupted',
+    'Modification не является Vehicle Heavy Weapon Mount': 'Modification is not a Vehicle Heavy Weapon Mount',
+    'Укажите причину изменения mounted weapon': 'Provide a reason for changing the mounted weapon',
+    'Сначала снимите оружие с Vehicle Heavy Weapon Mount': 'Unmount the weapon from the Vehicle Heavy Weapon Mount first',
+    'Сначала снимите текущее mounted weapon': 'Unmount the current weapon first',
+    'Выберите конкретный экземпляр оружия': 'Choose a specific weapon instance',
+    'Крепление принимает только двуручное дальнобойное оружие': 'The mount only accepts a two-handed ranged weapon',
+    'Оружие должно быть свободным и находиться в carried': 'The weapon must be free and in the carried state',
+    'Mounted weapon instance отсутствует': 'Mounted weapon instance is missing',
+    'Сначала снимите upgrades жилых комнат': 'Remove vehicle room upgrades first',
+    'Сначала освободите места, занятые Heavy Weapon Mount': 'Free the seats occupied by Heavy Weapon Mounts first',
+    'Housing Capacity требуется для нескольких Heavy Weapon Mounts': 'Housing Capacity is required for multiple Heavy Weapon Mounts',
+    'Сначала установите оружие в Vehicle Heavy Weapon Mount': 'Mount a weapon in the Vehicle Heavy Weapon Mount first',
+    'Оружие не имеет отслеживаемого магазина': 'The weapon has no tracked magazine',
+    'Mounted weapon управляется только через Vehicle Garage': 'Mounted weapons are managed only through the Vehicle Garage',
+    'Modification configuration должна быть объектом': 'Modification configuration must be an object',
+    'Modification configuration содержит неизвестные поля': 'Modification configuration contains unknown fields',
+    'Выберите обязательную конфигурацию modification': 'Choose the required modification configuration',
+    'Некорректный вариант configuration': 'Invalid configuration choice',
+    'Vehicle configuration пока не поддерживается': 'Vehicle configuration is not supported yet',
+    'Cyberdeck configuration пока не поддерживается': 'Cyberdeck configuration is not supported yet',
+    'Сначала освободите зависимые Cyberdeck slots': 'Free dependent Cyberdeck slots first',
+    'Program action содержит неподдерживаемые поля': 'Program action contains unsupported fields',
+    'Installed Program instance не найден': 'Installed Program instance not found',
+    'Повреждена связь установленной Program': 'Installed Program link is corrupted',
+    'Укажите причину Program action': 'Provide a reason for the Program action',
+    'Backup restore содержит неподдерживаемые поля': 'Backup restore contains unsupported fields',
+    'Installed Backup Drive не найден': 'Installed Backup Drive not found',
+    'Backup Drive не содержит Programs': 'Backup Drive contains no Programs',
+    'Укажите причину Backup restore': 'Provide a reason for Backup restore',
+    'Installed Defense Sequencer не найден': 'Installed Defense Sequencer not found',
+    'Defense Sequencer не имеет pending Armor trigger': 'Defense Sequencer has no pending Armor trigger',
+    'Выбранная Armor не входит в pending eligibility snapshot': 'The selected Armor is not in the pending eligibility snapshot',
+    'Eligible Armor больше не установлена в этом Cyberdeck': 'The eligible Armor is no longer installed in this Cyberdeck',
+    'Defense Sequencer может Rez только inactive Armor': 'Defense Sequencer can Rez only inactive Armor',
+    'Другая копия Armor уже Rezzed': 'Another Armor copy is already Rezzed',
+    'Defense Sequencer resolution содержит неподдерживаемые поля': 'Defense Sequencer resolution contains unsupported fields',
+    'Подтвердите, что выбранная Armor не использовалась в этом Netrun': 'Confirm that the selected Armor was not used during this Netrun',
+    'Выберите concrete Armor Program instance': 'Choose a concrete Armor Program instance',
+    'Укажите причину Defense Sequencer resolution': 'Provide a reason for the Defense Sequencer resolution',
+    'Black ICE не имеет curated STAT effect': 'Black ICE has no curated STAT effect',
+    'Black ICE STAT penalty roll должен быть от 1 до 6': 'Black ICE STAT penalty roll must be from 1 to 6',
+    'Сначала удалите Cyberware через audited Uninstall': 'Remove Cyberware through the audited Uninstall action first',
+    'Изменяйте Cyberware installation только через lifecycle action': 'Change Cyberware installation only through a lifecycle action',
+    'Изменяйте concrete Cyberware hosts только через lifecycle action': 'Change concrete Cyberware hosts only through a lifecycle action',
+    'Cyberware action содержит неподдерживаемые поля': 'Cyberware action contains unsupported fields',
+    'Укажите причину Cyberware lifecycle action': 'Provide a reason for the Cyberware lifecycle action',
+    'Cyberware instance не найден': 'Cyberware instance not found',
+    'Cyberware instance не связан с Data Pool': 'Cyberware instance is not linked to the Data Pool',
+    'host_instance_ids должен быть коротким списком': 'host_instance_ids must be a short list',
+    'Некорректный concrete Cyberware host': 'Invalid concrete Cyberware host',
+    'Cyberware уже установлена': 'Cyberware is already installed',
+    'Сломанную Cyberware нельзя установить': 'Broken Cyberware cannot be installed',
+    'Эта Cyberware не использует Option host': 'This Cyberware does not use an Option host',
+    'Допустима только одна установленная копия Cyberware': 'Only one installed Cyberware copy is allowed',
+    'Недостаточно Humanity для установки Cyberware': 'Not enough Humanity to install Cyberware',
+    'Rebind требует установленную Cyberware Option': 'Rebind requires an installed Cyberware Option',
+    'Cyberware уже не установлена': 'Cyberware is already uninstalled',
+    'Стартовый Neuroport нельзя извлечь этим действием': 'The starting Neuroport cannot be removed with this action',
+    'Одновременно допустим только один Cyberaudio Suite': 'Only one Cyberaudio Suite may be installed at a time',
+    'Paired Cyberlegs требуют обе свободные стороны': 'Paired Cyberlegs require both sides to be free',
+    'Изменяйте Cyberware side только через lifecycle action': 'Change Cyberware side only through a lifecycle action',
+    'Подтвердите manual surgery/service resolution': 'Confirm manual surgery/service resolution',
+    'Укажите clinic, surgeon или technician': 'Specify a clinic, surgeon, or technician',
+    'Подтвердите required Biosystem': 'Confirm the required Biosystem',
+    'Эта Cyberware не использует left/right side': 'This Cyberware does not use a left/right side',
+    'Configure side требует установленный sided foundation': 'Configure side requires an installed sided foundation',
+    'Выберите installation side: left/right': 'Choose installation side: left/right',
+    'Quick Detach требует установленный Cyberarm': 'Quick Detach requires an installed Cyberarm',
+    'Cyberarm не имеет установленный Quick Change Mount': 'Cyberarm has no installed Quick Change Mount',
+    'Quick Attach требует detached Quick Change Cyberarm': 'Quick Attach requires a detached Quick Change Cyberarm',
+    'Quick Change Cyberarm bundle повреждён': 'Quick Change Cyberarm bundle is corrupted',
+    'Therapy action содержит неподдерживаемые поля': 'Therapy action contains unsupported fields',
+    'Укажите причину Therapy action': 'Provide a reason for the Therapy action',
+    'Therapy course уже активен': 'A Therapy course is already active',
+    'Неизвестный Therapy type': 'Unknown Therapy type',
+    'Укажите therapist или clinic': 'Specify a therapist or clinic',
+    'Недостаточно средств для Therapy': 'Not enough funds for Therapy',
+    'Humanity уже достигла Therapy maximum': 'Humanity has already reached the Therapy maximum',
+    'Укажите addiction для Therapy': 'Specify the addiction for Therapy',
+    'Нет активного Therapy course': 'There is no active Therapy course',
+    'Therapy profile повреждён': 'Therapy profile is corrupted',
+    'Подтвердите завершение недели Therapy': 'Confirm completion of the Therapy week',
+    'Сначала освободите зависимые Cyberware Option Slots': 'Free dependent Cyberware Option Slots first',
+    'Cyberweapon action содержит неподдерживаемые поля': 'Cyberweapon action contains unsupported fields',
+    'Укажите причину Cyberweapon action': 'Provide a reason for the Cyberweapon action',
+    'Installed curated Cyberweapon не найден': 'Installed curated Cyberweapon not found',
+    'Cyberweapon не имеет deploy/stow state': 'Cyberweapon has no deploy/stow state',
+    'Cyberweapon не имеет rev action': 'Cyberweapon has no rev action',
+    'Сначала deploy Cyberweapon': 'Deploy the Cyberweapon first',
+    'Fire доступен только ranged Cyberweapon': 'Fire is available only for a ranged Cyberweapon',
+    'Cyberweapon magazine пуст': 'Cyberweapon magazine is empty',
+    'Cyberweapon не использует tracked ammo': 'Cyberweapon does not use tracked ammunition',
+    'Ammo stack несовместим с Cyberweapon': 'Ammo stack is incompatible with the Cyberweapon',
+    'Повреждена связь Popup Cyberweapon': 'Popup Cyberweapon binding is corrupted',
+    'Permanent Popup Weapon attachments нельзя изменять': 'Permanent Popup Weapon attachments cannot be changed',
+    'Popup Weapon binding содержит неподдерживаемые поля': 'Popup Weapon binding contains unsupported fields',
+    'Подтвердите permanent Popup Weapon binding': 'Confirm permanent Popup Weapon binding',
+    'Укажите причину Popup Weapon binding': 'Provide a reason for Popup Weapon binding',
+    'Installed generic Popup Weapon option не найден': 'Installed generic Popup Weapon option not found',
+    'Popup Weapon уже имеет permanent bound weapon': 'Popup Weapon already has a permanent bound weapon',
+    'Permanent Popup Weapon binding нельзя продать отдельно': 'Permanent Popup Weapon binding cannot be sold separately',
+    'Повреждена связь Armor/Shield Tech Upgrade': 'Armor/Shield Tech Upgrade binding is corrupted',
+    'Armor Tech Upgrade содержит неподдерживаемые поля': 'Armor Tech Upgrade contains unsupported fields',
+    'Подтвердите успешный Tech Upgrade Check': 'Confirm a successful Tech Upgrade Check',
+    'Укажите Tech и причину Armor Upgrade': 'Specify the Tech and Armor Upgrade reason',
+    'Concrete Armor/Shield instance не найден': 'Concrete Armor/Shield instance not found',
+    'Armor/Shield уже имеет Tech Upgrade': 'Armor/Shield already has a Tech Upgrade',
+    'Armor instance не имеет upgradeable SP': 'Armor instance has no upgradeable SP',
+    'Permanent Armor Tech Upgrade нельзя продать отдельно': 'Permanent Armor Tech Upgrade cannot be sold separately',
+    'Повреждена связь Armor Repair Workflow': 'Armor Repair Workflow binding is corrupted',
+    'Armor Repair action содержит неподдерживаемые поля': 'Armor Repair action contains unsupported fields',
+    'Укажите причину Armor Repair action': 'Provide a reason for the Armor Repair action',
+    'Concrete Armor instance не найден': 'Concrete Armor instance not found',
+    'Bulletproof Shields не подлежат ремонту': 'Bulletproof Shields cannot be repaired',
+    'Эта Armor не может восстанавливать SP': 'This Armor cannot restore SP',
+    'Armor Repair уже активен': 'Armor Repair is already active',
+    'Armor должна быть экипирована и повреждена': 'Armor must be equipped and damaged',
+    'Укажите Armor repair technician': 'Specify the Armor repair technician',
+    'Jeeves Executive Garment Bag недоступен': 'Jeeves Executive Garment Bag is unavailable',
+    'Jeeves не ремонтирует Luxury/Super Luxury Armor': 'Jeeves cannot repair Luxury or Super Luxury Armor',
+    'Нет активного Armor Repair': 'There is no active Armor Repair',
+    'Подтвердите завершение Armor Repair': 'Confirm completion of Armor Repair',
+    'Armor не имеет daily self-repair': 'Armor has no daily self-repair',
+    'Подтвердите день без потери SP': 'Confirm a day without losing SP',
+    'Повреждена связь Popup Shield': 'Popup Shield binding is corrupted',
+    'Popup Shield action содержит неподдерживаемые поля': 'Popup Shield action contains unsupported fields',
+    'Укажите причину Popup Shield action': 'Provide a reason for the Popup Shield action',
+    'Installed Popup Shield option не найден': 'Installed Popup Shield option not found',
+    'Сначала извлеките concrete Popup Shield': 'Remove the concrete Popup Shield first',
+    'Popup Shield уже содержит concrete shield': 'Popup Shield already contains a concrete shield',
+    'Popup Shield принимает только free Bulletproof Shield': 'Popup Shield accepts only a free Bulletproof Shield',
+    'Popup Shield не содержит concrete shield': 'Popup Shield contains no concrete shield',
+    'Destroyed Shield нельзя deploy': 'A destroyed Shield cannot be deployed',
+    'Укажите Popup Shield damage 1–100': 'Provide Popup Shield damage from 1 to 100',
+    'Укажите bounded Armor Repair service cost': 'Provide a bounded Armor Repair service cost',
+    'Подтвердите оплату Armor Repair service': 'Confirm payment for the Armor Repair service',
+    'Недостаточно средств для Armor Repair service': 'Not enough funds for the Armor Repair service',
+    'Run доступен только Attacker Program': 'Run is available only for an Attacker Program',
+    'Saved Program instance недоступен для восстановления': 'Saved Program instance is unavailable for restore',
+    'Недостаточно Cyberdeck slots для Backup restore': 'Not enough Cyberdeck slots for Backup restore',
+    'Black ICE требует NET entity deployment': 'Black ICE requires NET entity deployment',
+    'Activate доступен только Booster или Defender Program': 'Activate is available only for Booster or Defender Programs',
+    'Program необходимо сначала Deactivate': 'Deactivate the Program first',
+    'REZ damage требует Rezzed Program': 'REZ damage requires a Rezzed Program',
+    'Укажите REZ damage от 1 до 100': 'Provide REZ damage from 1 to 100',
+    'Только одна копия этой Program может быть Rezzed': 'Only one copy of this Program may be Rezzed',
+    'Derez требует Rezzed Program': 'Derez requires a Rezzed Program',
+    'Deactivate требует Rezzed или Derezzed Program': 'Deactivate requires a Rezzed or Derezzed Program',
+    'Black ICE deployment содержит неподдерживаемые поля': 'Black ICE deployment contains unsupported fields',
+    'Installed Black ICE instance не найден': 'Installed Black ICE instance not found',
+    'Выбранная Program не является Black ICE': 'The selected Program is not Black ICE',
+    'Для этой Black ICE уже существует active NET entity': 'This Black ICE already has an active NET entity',
+    'Black ICE необходимо сначала Deactivate': 'Deactivate Black ICE first',
+    'Укажите Floor для Black ICE': 'Specify a Floor for Black ICE',
+    'Укажите target для deployed Black ICE': 'Specify a target for deployed Black ICE',
+    'Укажите причину Black ICE deployment': 'Provide a reason for Black ICE deployment',
+    'NET entity action содержит неподдерживаемые поля': 'NET entity action contains unsupported fields',
+    'Black ICE NET entity не найдена': 'Black ICE NET entity not found',
+    'Black ICE NET entity уже завершена': 'Black ICE NET entity is already completed',
+    'Source Black ICE installation отсутствует': 'Source Black ICE installation is missing',
+    'Укажите причину NET entity action': 'Provide a reason for the NET entity action',
+    'REZ damage требует active Black ICE': 'REZ damage requires active Black ICE',
+    'Slide требует hunting Black ICE': 'Slide requires hunting Black ICE',
+    'Engage требует lying-in-wait Black ICE': 'Engage requires lying-in-wait Black ICE',
+    'Укажите Floor и target для Black ICE': 'Specify a Floor and target for Black ICE',
+    'Session NET entity link отсутствует': 'Session NET entity link is missing',
+    'Нет права редактировать Session NET Floors': 'No permission to edit Session NET Floors',
+    'NET Floor требует label': 'NET Floor requires a label',
+    'Укажите причину изменения NET Floors': 'Provide a reason for changing NET Floors',
+    'NET Floor уже существует или достигнут лимит': 'NET Floor already exists or the limit was reached',
+    'Session NET Floor не найден': 'Session NET Floor not found',
+    'NET Floor используется active entity': 'NET Floor is used by an active entity',
+    'Нет права управлять Session NET Queue': 'No permission to manage the Session NET Queue',
+    'Некорректный Session NET turn state': 'Invalid Session NET turn state',
+    'Укажите причину изменения NET Queue': 'Provide a reason for changing the NET Queue',
+    'Session NET snapshot для отката повреждён': 'Session NET revert snapshot is corrupted',
+    'Session NET context изменён после Character action': 'Session NET context changed after the Character action',
+    'Некорректная Live Session': 'Invalid Live Session',
+    'Нет доступа к Live NET Session': 'No access to the Live NET Session',
+    'Character не участвует в этой Session': 'Character does not participate in this Session',
+    'Выберите validated Session NET Floor': 'Choose a validated Session NET Floor',
+    'Нет права управлять Black ICE entity': 'No permission to manage the Black ICE entity',
+    'Выберите Session target combatant': 'Choose a Session target combatant',
+    'Некорректный Session target для Black ICE': 'Invalid Session target for Black ICE',
+    'Выберите validated Session Floor и target': 'Choose a validated Session Floor and target',
+    'Сначала удалите NET nodes с этого Floor': 'Delete NET nodes from this Floor first',
+    'Нет права редактировать NET Architecture': 'No permission to edit NET Architecture',
+    'NET node содержит неподдерживаемые поля': 'NET node contains unsupported fields',
+    'NET node требует validated Floor': 'NET node requires a validated Floor',
+    'Некорректный NET node type или label': 'Invalid NET node type or label',
+    'Укажите причину изменения NET Architecture': 'Provide a reason for changing NET Architecture',
+    'Достигнут лимит NET nodes': 'NET node limit reached',
+    'NET node не найден': 'NET node not found',
+    'Сначала удалите NET paths этого node': 'Delete NET paths connected to this node first',
+    'NET node используется active entity': 'NET node is used by an active entity',
+    'NET path содержит неподдерживаемые поля': 'NET path contains unsupported fields',
+    'Некорректные NET path endpoints или direction': 'Invalid NET path endpoints or direction',
+    'NET path уже существует': 'NET path already exists',
+    'Достигнут лимит NET paths': 'NET path limit reached',
+    'NET path не найден': 'NET path not found',
+    'Выберите validated Session NET node': 'Choose a validated Session NET node',
+    'Выберите validated Session Floor, node и target': 'Choose a validated Session Floor, node, and target',
+    'Live NET Session не найдена': 'Live NET Session not found',
+    'NET action содержит неподдерживаемые поля': 'NET action contains unsupported fields',
+    'NET action требует Character combatant': 'NET action requires a Character combatant',
+    'Character для NET action не найден': 'Character for NET action not found',
+    'Нет права выполнять NET action этим Character': 'No permission to perform a NET action with this Character',
+    'NET action требует Netrunner Role': 'NET action requires the Netrunner Role',
+    'Укажите причину NET action': 'Provide a reason for the NET action',
+    'Jack In требует Access Point node': 'Jack In requires an Access Point node',
+    'Access Point node ещё не revealed': 'Access Point node is not revealed yet',
+    'Netrunner не Jacked In': 'Netrunner is not Jacked In',
+    'NET action требует Jacked In Netrunner': 'NET action requires a Jacked In Netrunner',
+    'Move требует revealed target node': 'Move requires a revealed target node',
+    'NET nodes не соединены revealed path': 'NET nodes are not connected by a revealed path',
+    'Unresolved Password блокирует движение вперёд': 'Unresolved Password blocks forward movement',
+    'Pathfinder target node не найден': 'Pathfinder target node not found',
+    'Pathfinder target должен быть adjacent node': 'Pathfinder target must be an adjacent node',
+    'Backdoor требует текущий Password node': 'Backdoor requires the current Password node',
+    'Eye-Dee доступен только для текущего node': 'Eye-Dee is available only for the current node',
+    'Control action требует текущий Control node': 'Control action requires the current Control node',
+    'Program Attack требует Black ICE на текущем node': 'Program Attack requires Black ICE on the current node',
+    'Program Attack target entity недоступна': 'Program Attack target entity is unavailable',
+    'Program Attack требует installed Attacker Program': 'Program Attack requires an installed Attacker Program',
+    'NET Action budget исчерпан для текущего NET Round': 'NET Action budget is exhausted for the current NET Round',
+    'Target Dossier изменён в другой вкладке': 'Target Dossier changed in another tab',
+    'Нет допустимых Programs для curated Black ICE effect': 'No eligible Programs for the curated Black ICE effect',
+    'Выбранная target Program недопустима': 'Selected target Program is not eligible',
+    'Нет права выполнять Black ICE attack': 'No permission to perform a Black ICE attack',
+    'Black ICE attack содержит неподдерживаемые поля': 'Black ICE attack contains unsupported fields',
+    'Black ICE attack требует active target link': 'Black ICE attack requires an active target link',
+    'Source Black ICE Character отсутствует': 'Source Black ICE Character is missing',
+    'Black ICE attack требует hunting entity': 'Black ICE attack requires a hunting entity',
+    'Source Black ICE Program отсутствует': 'Source Black ICE Program is missing',
+    'Black ICE target требует Netrunner Character': 'Black ICE target requires a Netrunner Character',
+    'Black ICE target должен быть Jacked In на том же node': 'Black ICE target must be Jacked In on the same node',
+    'Black ICE target не имеет Interface Rank': 'Black ICE target has no Interface Rank',
+    'Укажите причину Black ICE attack': 'Provide a reason for the Black ICE attack',
+    'Нет Rezzed Programs для Anti-Program Black ICE': 'No Rezzed Programs are available for Anti-Program Black ICE',
+    'Anti-Program Black ICE effect требует manual resolution': 'Anti-Program Black ICE effect requires manual resolution',
+    'Выбранная target Program не является Rezzed': 'Selected target Program is not Rezzed',
+    'Неподдерживаемый тип modification host': 'Unsupported modification host type',
+    'Сначала снимите зависимые vehicle upgrades': 'Remove dependent vehicle upgrades first',
+    'Vehicle instance не найден': 'Vehicle instance not found',
     'Все слоты заняты': 'All slots are filled',
     'Вы уже записаны': 'You are already signed up',
     'Для специализированного навыка повышайте parent-pool': 'Increase the parent pool for a specialized Skill',
@@ -2360,6 +9850,16 @@ SERVER_ERROR_EN = {
     'Некорректный NPC template': 'Invalid NPC template',
     'Сессия не найдена': 'Session not found',
     'Нет права редактировать сессию': 'You cannot edit this Session',
+    'Нет права управлять доступом сессии': 'You cannot manage Session access',
+    'Некорректная роль участника сессии': 'Invalid Session member role',
+    'Назначение доступа не найдено': 'Session access assignment not found',
+    'Assistant может менять только ход и раунд': 'Assistant can only change the turn and round',
+    'Safety signal отключён для этой сессии': 'Safety signals are disabled for this Session',
+    'Некорректный тип Safety signal': 'Invalid Safety signal type',
+    'Нет права управлять Safety signal': 'You cannot manage Safety signals',
+    'Safety signal не найден': 'Safety signal not found',
+    'Некорректный статус Safety signal': 'Invalid Safety signal status',
+    'Resolved Safety signal нельзя открыть повторно': 'A resolved Safety signal cannot be reopened',
     'Некорректный статус сессии': 'Invalid Session status',
     'Участнику сессии нужно имя': 'Session combatant name is required',
     'Нет права редактировать участника': 'You cannot edit this combatant',
@@ -2368,8 +9868,190 @@ SERVER_ERROR_EN = {
     'Нет права завершить контракт': 'You cannot complete this Contract',
     'Результат контракта: completed/failed': 'Contract result must be completed or failed',
     'Выберите доступную персону для Aftermath': 'Choose an available Persona for the Aftermath',
+    'Изменение досье должно быть объектом': 'Dossier update must be an object',
+    'patch должен быть объектом': 'patch must be an object',
+    'Механические поля изменяются только специальными операциями': 'Mechanical fields can only be changed through dedicated operations',
+    'public должен быть логическим значением': 'public must be a boolean',
+    'Укажите одну конкретную запись: signup_id или character_id': 'Specify exactly one signup: signup_id or character_id',
+    'Связать публикацию с контрактом может его GM или участник Crew': 'Only the Contract GM or a Crew member can link a post to it',
+    'Сюжетную линию может связать её GM или Crew связанного контракта': 'Only the Storyline GM or Crew of its linked Contract can link a post to it',
+    'Награды должны быть списком до 100 записей': 'Rewards must be a list of no more than 100 entries',
+    'Некорректная награда': 'Invalid reward',
+    'Награду может получить только персонаж из Crew': 'Only a Crew character can receive a reward',
+    'Награда персонажа указана дважды': 'A character reward was specified twice',
+    'Некорректная сумма награды': 'Invalid reward amount',
+    'Награды Cash и IP должны быть неотрицательными числами, IP — целым': 'Cash and IP rewards must be nonnegative numbers, and IP must be an integer',
+    'Архивное досье не может получить награду': 'An archived Dossier cannot receive a reward',
+    'Деньги изменяются только через Market, Payroll или Aftermath': 'Cash can only be changed through Market, Payroll, or Aftermath',
+    'Legacy API доступен только для чтения; используйте NC//NET City Feed': 'Legacy API is read-only; use NC//NET City Feed',
+    'Legacy API доступен только для чтения; используйте NC//NET Contracts': 'Legacy API is read-only; use NC//NET Contracts',
+    'visibility должен быть объектом': 'visibility must be an object',
+    'Некорректные настройки видимости Dossier': 'Invalid Dossier visibility settings',
+    'Регистрация новых аккаунтов отключена': 'New account registration is disabled',
+    'Пароль: минимум 8 символов': 'Password must contain at least 8 characters',
+    'Пароль слишком длинный': 'Password is too long',
+    'Приглашение не найдено': 'Invite not found',
+    'Приглашение недействительно или уже использовано': 'Invite is invalid or has already been used',
+    'Аккаунт отключён администратором': 'Account has been disabled by an administrator',
+    'Сессия входа не найдена': 'Login session not found',
+    'Текущую сессию завершайте обычным выходом': 'Use regular sign out for the current session',
+    'Текущий пароль указан неверно': 'Current password is incorrect',
+    'Новый пароль должен отличаться от текущего': 'New password must differ from the current password',
+    'Нельзя отключить собственный аккаунт': 'You cannot disable your own account',
+    'Нельзя отключить последнего активного администратора': 'The last active administrator cannot be disabled',
+    'Укажите revision Dossier': 'Dossier revision is required',
+    'Dossier изменён в другой вкладке; обновите страницу': 'Dossier changed in another tab; reload the page',
     'Слишком много запросов; попробуйте позже': 'Too many requests; try again later',
+    'Слишком много неудачных входов; попробуйте позже': 'Too many failed sign-in attempts; try again later',
+    'Memorial уже опубликован': 'Memorial is already published',
+    'Только владелец персонажа заполняет memorial': 'Only the character owner may fill the memorial',
+    'Membership требует member и organization persona': 'Membership requires a member and an organization persona',
+    'Membership не найден': 'Membership not found',
+    'Укажите организацию': 'Specify an organization',
+    'Нет доступа к репутации персонажа': 'No access to this character reputation',
+    'Действие: store или take': 'Action: store or take',
+    'Предмет не найден в личном тайнике': 'Item not found in personal stash',
+    'Сначала снимите предмет': 'Unequip the item first',
+    'Нет права синхронизировать сессию': 'No permission to sync session',
+    'PDF обязателен (base64)': 'PDF is required (base64)',
+    'Некорректный base64': 'Invalid base64',
+    'Файл не является PDF': 'File is not a PDF',
+    'PDF слишком большой (макс 5 МБ)': 'PDF is too large (max 5 MB)',
+    'Ошибка парсинга PDF': 'PDF parsing error',
     'Недопустимый источник запроса': 'Invalid request origin',
+    'Tech Maker modification содержит неподдерживаемые поля': 'Tech Maker modification contains unsupported fields',
+    'Укажите название Tech Maker modification': 'Tech Maker modification name is required',
+    'Укажите Tech и причину Tech Maker modification': 'Provide the Tech and a reason for the Tech Maker modification',
+    'Выберите конкретный host instance': 'Choose a specific host instance',
+    'Host instance не найден': 'Host instance not found',
+    'Host не поддерживает Tech Maker modifications': 'The host does not support Tech Maker modifications',
+    'Tech Maker effect должен быть объектом': 'Tech Maker effect must be an object',
+    'Tech Maker effect содержит неподдерживаемые поля': 'Tech Maker effect contains unsupported fields',
+    'Недопустимый Tech Maker effect target': 'Invalid Tech Maker effect target',
+    'Tech Maker effect value должен быть целым числом': 'Tech Maker effect value must be an integer',
+    'Tech Maker modification требует effect или manual_rule': 'Tech Maker modification requires an effect or a manual rule',
+    'Подтвердите успешный Tech Maker Check за столом': 'Confirm the successful Tech Maker Check at the table',
+    'Host уже имеет Tech Maker modification этого типа': 'The host already has a Tech Maker modification of this type',
+    'Достигнут лимит Tech Maker modifications': 'Tech Maker modification limit reached',
+    'Tech Maker action содержит неподдерживаемые поля': 'Tech Maker action contains unsupported fields',
+    'Укажите причину Tech Maker action': 'Provide a reason for the Tech Maker action',
+    'Tech Maker modification не найдена': 'Tech Maker modification not found',
+    'Permanent Tech Maker modification нельзя снять': 'A permanent Tech Maker modification cannot be removed',
+    'Tech Maker modification уже снята': 'Tech Maker modification is already removed',
+    'Повреждена запись Tech Maker modification': 'Tech Maker modification record is corrupted',
+    'Повреждена связь Tech Maker modification': 'Tech Maker modification link is corrupted',
+    'Повреждена история Tech Maker modifications': 'Tech Maker modification history is corrupted',
+    'Tech Maker fabrication содержит неподдерживаемые поля': 'Tech Maker fabrication contains unsupported fields',
+    'Укажите название, Tech и причину Tech Maker fabrication': 'Provide a name, Tech, and reason for the Tech Maker fabrication',
+    'Неизвестный blueprint item': 'Unknown blueprint item',
+    'Этот предмет нельзя изготовить через Fabrication Expertise': 'This item cannot be fabricated with Fabrication Expertise',
+    'Blueprint fabrication требует maker_specialty fabrication': 'Blueprint fabrication requires maker_specialty fabrication',
+    'Fabrication Expertise требует blueprint item': 'Fabrication Expertise requires a blueprint item',
+    'Некорректная стоимость материалов': 'Invalid material cost',
+    'Campaign Clock содержит неподдерживаемые поля': 'Campaign Clock contains unsupported fields',
+    'Укажите причину изменения Campaign Clock': 'Provide a reason for changing the Campaign Clock',
+    'Укажите либо advance, либо set_to': 'Provide either advance or set_to',
+    'Укажите advance или set_to': 'Provide advance or set_to',
+    'advance должен быть объектом': 'advance must be an object',
+    'advance содержит неподдерживаемые поля': 'advance contains unsupported fields',
+    'advance должен быть от 1 минуты до 365 дней': 'advance must be from 1 minute to 365 days',
+    'Некорректное set_to время Campaign Clock': 'Invalid set_to Campaign Clock time',
+    'Item transfer содержит неподдерживаемые поля': 'Item transfer contains unsupported fields',
+    'Неизвестный тип передачи предмета': 'Unknown item transfer type',
+    'Некорректный идентификатор предмета': 'Invalid item identifier',
+    'Передавать можно только carried предмет (сначала снимите его)': 'Only carried items can be transferred (unequip it first)',
+    'Сначала снимите броню из слота': 'Unequip the armor from its slot first',
+    'Сначала снимите установленные модификации с предмета': 'Remove installed modifications from the item first',
+    'Предмет взят в долг — его можно только вернуть владельцу': 'The item is borrowed — it can only be returned to its owner',
+    'Предмет сейчас в долгу у другого персонажа': 'The item is currently loaned out to another character',
+    'Некорректное количество для передачи': 'Invalid transfer quantity',
+    'Этот предмет передаётся поштучно (не stackable)': 'This item transfers one at a time (not stackable)',
+    'Инвентарь получателя переполнен': 'The recipient inventory is full',
+    'Делить можно только stackable предметы': 'Only stackable items can be split',
+    'Предмет взят в долг — его нельзя делить': 'A borrowed item cannot be split',
+    'Для разделения укажите количество меньше размера стека': 'To split, choose an amount smaller than the stack size',
+    'Укажите получателя (to_char_id)': 'Provide a recipient (to_char_id)',
+    'Нельзя передать предмет самому себе': 'You cannot transfer an item to yourself',
+    'Досье получателя заархивировано': 'The recipient Dossier is archived',
+    'Досье партнёра заархивировано': 'The trade partner Dossier is archived',
+    'Предмет взят в долг — сначала верните владельцу': 'The item is borrowed — return it to its owner first',
+    'Предмет не числится за вами как долг': 'The item is not listed as borrowed by you',
+    'Досье владельца заархивировано': 'The owner Dossier is archived',
+    'Предмет не числится как выданный вами в долг': 'The item is not listed as loaned out by you',
+    'Укажите партнёра обмена (to_char_id)': 'Provide a trade partner (to_char_id)',
+    'Укажите предмет партнёра (to_instance_id)': 'Provide the partner item (to_instance_id)',
+    'Нельзя обменять предмет на самого себя': 'You cannot trade an item with itself',
+    'Нельзя обменяться с самим собой': 'You cannot trade with yourself',
+    'Dossier партнёра изменён в другой вкладке; обновите страницу': 'The partner Dossier changed in another tab; refresh the page',
+    'Crew Stash take содержит неподдерживаемые поля': 'Crew Stash take contains unsupported fields',
+    'Предмет не найден в Crew Stash': 'Item not found in the Crew Stash',
+    'Недостаточно единиц в Crew Stash': 'Not enough units in the Crew Stash',
+    'Этот предмет берётся поштучно (не stackable)': 'This item is taken one at a time (not stackable)',
+    'Некорректный JSON импорта': 'Invalid import JSON',
+    'Импорт должен быть JSON-объектом': 'Import must be a JSON object',
+    'Неизвестный предмет в импорте': 'Unknown item in the import',
+    'Market reserve содержит неподдерживаемые поля': 'Market reserve contains unsupported fields',
+    'Неизвестный предмет Night Market': 'Unknown Night Market item',
+    'Предмет не в текущем Night Market': 'Item is not in the current Night Market',
+    'Досье зарезервированного персонажа заархивировано': 'The reserved character Dossier is archived',
+    'Fixer request содержит неподдерживаемые поля': 'Fixer request contains unsupported fields',
+    'Укажите предмет или название запроса': 'Provide an item or a request name',
+    'Неизвестный предмет для запроса': 'Unknown item for the request',
+    'Запрос Fixer не найден': 'Fixer request not found',
+    'Запрос Fixer уже обработан': 'Fixer request is already resolved',
+    'Fixer resolve action: fulfill/decline': 'Fixer resolve action: fulfill/decline',
+    'Досье заказчика заархивировано': 'The requester Dossier is archived',
+    'Некорректная цена Fixer': 'Invalid Fixer price',
+    'Укажите название выдаваемого предмета': 'Provide a name for the granted item',
+    'Некорректное количество': 'Invalid quantity',
+    'NPC statblock должен быть объектом': 'NPC statblock must be an object',
+    'NPC skills должен быть объектом до 200 записей': 'NPC skills must be an object with up to 200 entries',
+    'NPC weapons должен быть списком до 30 записей': 'NPC weapons must be a list with up to 30 entries',
+    'NPC weapon должен быть объектом': 'NPC weapon must be an object',
+    'NPC weapon требует имя': 'NPC weapon requires a name',
+    'Recap должен быть объектом': 'Recap must be an object',
+    'Recap требует название': 'Recap requires a title',
+    'Некорректная дата Recap': 'Invalid Recap date',
+    'Recap списки должны быть массивами': 'Recap lists must be arrays',
+    'Recap participants должен быть списком': 'Recap participants must be a list',
+    'Сессия Recap не найдена': 'Recap session not found',
+    'Нет доступа к сессии Recap': 'No access to the Recap session',
+    'Нет права связывать Recap с этим контрактом': 'Not allowed to link the Recap to this contract',
+    'Нет права связывать Recap с этой сюжетной линией': 'Not allowed to link the Recap to this storyline',
+    'Recap не найден': 'Recap not found',
+    'Recap не опубликован': 'Recap is not published',
+    'Нет права редактировать Recap': 'Not allowed to edit this Recap',
+    'Нет права удалять Recap': 'Not allowed to delete this Recap',
+    'Downtime activity должен быть объектом': 'Downtime activity must be an object',
+    'Неизвестная Downtime activity': 'Unknown Downtime activity',
+    'Downtime activities должен быть списком до 12 записей': 'Downtime activities must be a list with up to 12 entries',
+    'Downtime start содержит неподдерживаемые поля': 'Downtime start contains unsupported fields',
+    'Downtime уже активен': 'Downtime is already active',
+    'Неизвестная длительность Downtime': 'Unknown Downtime duration',
+    'Downtime action содержит неподдерживаемые поля': 'Downtime action contains unsupported fields',
+    'Downtime action: resolve/complete/abandon': 'Downtime action: resolve/complete/abandon',
+    'Нет активного Downtime': 'There is no active Downtime',
+    'Downtime activity не найдена': 'Downtime activity not found',
+    'Downtime activity уже отмечена выполненной': 'Downtime activity is already resolved',
+    'Некорректная сумма Hustle': 'Invalid Hustle amount',
+    'Некорректное восстановление HP': 'Invalid HP recovery',
+    'Локации нужно название': 'Location requires a name',
+    'Неизвестный тип локации': 'Unknown location type',
+    'Некорректные координаты локации': 'Invalid location coordinates',
+    'Локация не найдена': 'Location not found',
+    'Некорректный идентификатор локации': 'Invalid location identifier',
+    'Локация с таким идентификатором уже существует': 'A location with this identifier already exists',
+    'Seed локации можно редактировать только через custom копию': 'Seed locations can only be edited via a custom copy',
+    'Seed локации нельзя удалить': 'Seed locations cannot be deleted',
+    'Неизвестный статус memorial': 'Unknown memorial status',
+    'Memorial требует handle': 'Memorial requires a handle',
+    'Персонаж уже помечен memorial': 'The character is already memorialized',
+    'Memorial для персонажа уже существует': 'A memorial already exists for this character',
+    'Укажите причину memorial': 'Provide a reason for the memorial',
+    'Memorial не найден': 'Memorial not found',
+    'Укажите причину отмены memorial': 'Provide a reason for restoring the character',
+    'Afterlife Legacy должен быть объектом': 'Afterlife Legacy must be an object',
+    'Напиток требует название': 'The drink requires a name',
 }
 
 def server_error_message(message, language):
@@ -2378,6 +10060,10 @@ def server_error_message(message, language):
     if message in SERVER_ERROR_EN:
         return SERVER_ERROR_EN[message]
     replacements = [
+        ('Распродано:', 'Sold out:'),
+        ('Зарезервировано для другого персонажа:', 'Reserved for another character:'),
+        ('Недостаточно единиц:', 'Not enough units:'),
+        ('(доступно ', '(available '),
         ('Неизвестный навык:', 'Unknown Skill:'),
         ('Обязательный навык', 'Required Skill'),
         ('должен быть минимум', 'must be at least'),
@@ -2403,6 +10089,16 @@ def server_error_message(message, language):
         ('Недопустимая броня для локации', 'Invalid Armor for location'),
         ('SP брони', 'Armor SP for'),
         ('Штрафы брони', 'Armor penalties for'),
+        ('Несовместимая модификация:', 'Incompatible modification:'),
+        ('допустимо от', 'allowed range is'),
+        (' до ', ' to '),
+        ('требуется число', 'must be numeric'),
+        ('Неизвестный Skill:', 'Unknown Skill:'),
+        ('Неизвестный NPC Skill:', 'Unknown NPC Skill:'),
+        ('ожидается список до 500 записей', 'must be a list with no more than 500 entries'),
+        ('ожидается объект', 'must be an object'),
+        ('Броня', 'Armor'),
+        ('отсутствует в Inventory', 'is not present in Inventory'),
         ('Надетая броня', 'Equipped Armor'),
         ('отсутствует в стартовой закупке', 'is missing from starting purchases'),
         ('распределите', 'allocate'),
@@ -2415,15 +10111,32 @@ def server_error_message(message, language):
         ('есть', 'available'),
         ('ожидается список', 'expected a list'),
         ('до 300 записей', 'up to 300 entries'),
+        ('записей', 'entries'),
         ('некорректный parent-pool', 'invalid parent pool'),
         ('распределено', 'allocated'),
         ('при parent-pool', 'with parent pool'),
         ('требуется совместимых hosts:', 'required compatible hosts:'),
+        ('Сначала извлеките зависимые Cyberware Options:', 'Uninstall dependent Cyberware Options first:'),
+        (': выберите left/right side', ': choose a left/right side'),
+        (': сторона ', ': side '),
+        (' уже занята', ' is already occupied'),
+        (': требуется installation site ', ': requires installation site '),
         ('заполните', 'complete'),
         ('выберите Team Member', 'choose a Team Member'),
         ('недоступный выбор', 'unavailable choice'),
         ('уже на минимальном Level', 'is already at minimum Level'),
         ('Некорректное число в поле контракта:', 'Invalid number in Contract field:'),
+        ('Не удалось прочитать резервные копии:', 'Could not read backups:'),
+        ('Не удалось создать резервную копию:', 'Could not create backup:'),
+        ('Резервная копия не прошла проверку:', 'Backup verification failed:'),
+        ('Резервная копия не найдена:', 'Backup not found:'),
+        ('Требуется Maker', 'Requires Maker'),
+        ('rank 1+ для Tech Maker modification', 'rank 1+ for the Tech Maker modification'),
+        ('недопустим для host', 'is not allowed for host'),
+        ('Недопустимая операция', 'Invalid operation'),
+        ('Tech Maker effect value вне диапазона', 'Tech Maker effect value is outside the range'),
+        ('Недопустимое значение', 'Invalid value'),
+        (' для ', ' for '),
     ]
     out = str(message)
     for ru, en in replacements:
@@ -2437,6 +10150,25 @@ class ApiError(Exception):
         self.message = message
 
 
+def atomic_endpoint(fn):
+    """Serialize a state-changing endpoint and always roll back on failure."""
+    @functools.wraps(fn)
+    def wrapped(self, conn, qs, match, body):
+        if conn.in_transaction:
+            conn.commit()
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            result = fn(self, conn, qs, match, body)
+            if conn.in_transaction:
+                conn.commit()
+            return result
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+    return wrapped
+
+
 def q1(v, default=None):
     return v[0] if v else default
 
@@ -2448,9 +10180,27 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write('%s - %s\n' % (self.address_string(), fmt % args))
 
+    def client_ip(self):
+        candidate = getattr(self, 'client_address', ('local',))[0]
+        if os.environ.get('CBPR_TRUST_PROXY', '').lower() in ('1', 'true', 'yes'):
+            headers = getattr(self, 'headers', {})
+            forwarded = [part.strip() for part in
+                         str(headers.get('X-Forwarded-For') or '').split(',') if part.strip()]
+            candidate = (headers.get('X-NCNET-Client-IP') or
+                         headers.get('CF-Connecting-IP') or
+                         (forwarded[-1] if forwarded else '') or candidate)
+        try:
+            return ipaddress.ip_address(str(candidate)).compressed
+        except ValueError:
+            return 'local'
+
     def rate_limit(self, scope, limit, window, user_id=None):
-        identity = str(user_id) if user_id is not None else getattr(self, 'client_address', ('local',))[0]
+        identity = str(user_id) if user_id is not None else self.client_ip()
         enforce_rate_limit(f'{scope}:{identity}', limit, window)
+
+    def send_security_headers(self):
+        for name, value in security_headers():
+            self.send_header(name, value)
 
     def send_json(self, obj, status=200, cookies=None):
         body = json.dumps(obj, ensure_ascii=False).encode()
@@ -2458,6 +10208,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-store')
+        self.send_security_headers()
         for c in cookies or []:
             self.send_header('Set-Cookie', c)
         self.end_headers()
@@ -2491,9 +10242,19 @@ class Handler(BaseHTTPRequestHandler):
         tok = self.cookies().get('sid')
         if not tok:
             return None
+        now = time.time()
         row = conn.execute(
-            'SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id '
-            'WHERE s.token=? AND s.expires > ?', (tok, time.time())).fetchone()
+            'SELECT u.*,s.rowid _session_id,s.last_seen _session_last_seen '
+            'FROM sessions s JOIN users u ON u.id=s.user_id '
+            'WHERE s.token=? AND s.expires>? AND u.disabled_at IS NULL',
+            (tok, now)).fetchone()
+        if row and (_row_value(row, '_session_last_seen') is None or
+                    _row_value(row, '_session_last_seen', 0) < now - 300):
+            was_in_transaction = conn.in_transaction
+            conn.execute('UPDATE sessions SET last_seen=? WHERE rowid=?',
+                         (now, row['_session_id']))
+            if not was_in_transaction:
+                conn.commit()
         return dict(row) if row else None
 
     def require_user(self, conn):
@@ -2557,8 +10318,12 @@ class Handler(BaseHTTPRequestHandler):
                         return
                 raise ApiError(404, 'Не найдено')
             except ApiError as e:
+                if conn.in_transaction:
+                    conn.rollback()
                 self.send_error_json(e.status, e.message)
             except Exception as e:  # noqa: BLE001
+                if conn.in_transaction:
+                    conn.rollback()
                 import traceback
                 traceback.print_exc()
                 self.send_error_json(500, 'Внутренняя ошибка сервера')
@@ -2574,10 +10339,12 @@ class Handler(BaseHTTPRequestHandler):
             fp = os.path.join(STATIC_DIR, 'index.html')
         else:
             rel = os.path.normpath(path.lstrip('/'))
-            if rel.startswith('..'):
+            fp = os.path.join(STATIC_DIR, rel)
+            # Resolve symlinks and '..' so a crafted path cannot escape STATIC_DIR.
+            real_fp = os.path.realpath(fp)
+            if not (real_fp == STATIC_DIR or real_fp.startswith(STATIC_DIR + os.sep)):
                 self.send_error_json(403, 'Запрещено')
                 return
-            fp = os.path.join(STATIC_DIR, rel)
         if not os.path.isfile(fp):
             # SPA-фолбэк на корневые не-/api пути
             if not os.path.splitext(path)[1]:
@@ -2598,6 +10365,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-cache')
+        self.send_security_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -2605,42 +10373,129 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_register(self, conn, qs, m, body):
         self.rate_limit('register', 5, 300)
+        mode = registration_mode()
+        if mode == 'closed':
+            raise ApiError(403, 'Регистрация новых аккаунтов отключена')
         username = str(body.get('username') or '').strip().lower()
         password = str(body.get('password') or '')
         display = str(body.get('display_name') or '').strip()[:60] or username
         if not re.fullmatch(r'[a-z0-9_.\-]{3,24}', username):
             raise ApiError(400, 'Логин: 3–24 символа, латиница/цифры/._-')
-        if len(password) < 4:
-            raise ApiError(400, 'Пароль: минимум 4 символа')
+        validate_new_password(password)
+        invite = None
         try:
+            conn.execute('BEGIN IMMEDIATE')
+            if mode == 'invite':
+                code_hash = invite_code_hash((body or {}).get('invite_code'))
+                now = time.time()
+                invite = conn.execute(
+                    'SELECT * FROM registration_invites WHERE code_hash=? AND disabled_at IS NULL '
+                    'AND (expires_at IS NULL OR expires_at>?) AND uses<max_uses',
+                    (code_hash, now)).fetchone()
+                if not invite:
+                    raise ApiError(403, 'Приглашение недействительно или уже использовано')
             cur = conn.execute(
                 'INSERT INTO users(username, display_name, pass_hash, is_gm, account_role, created) '
                 "VALUES(?,?,?,0,'player',?)",
                 (username, display, hash_password(password), time.time()))
+            if invite:
+                conn.execute('UPDATE registration_invites SET uses=uses+1 WHERE id=?',
+                             (invite['id'],))
             conn.commit()
+        except ApiError:
+            conn.rollback()
+            raise
         except sqlite3.IntegrityError:
+            conn.rollback()
             raise ApiError(409, 'Такой логин уже занят')
-        token = create_session(conn, cur.lastrowid)
+        token = create_session(
+            conn, cur.lastrowid, self.client_ip(),
+            getattr(self, 'headers', {}).get('User-Agent', ''))
         u = conn.execute('SELECT * FROM users WHERE id=?', (cur.lastrowid,)).fetchone()
-        self.send_json(self.me_payload(u), cookies=[
-            session_cookie(token)])
+        self.send_json(self.me_payload(u), cookies=[session_cookie(token)])
 
     def api_login(self, conn, qs, m, body):
         self.rate_limit('login', 12, 60)
         username = str(body.get('username') or '').strip().lower()
+        if account_login_locked(username):
+            raise ApiError(429, 'Слишком много неудачных входов; попробуйте позже')
         password = str(body.get('password') or '')
         u = conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
         if not u or not verify_password(password, u['pass_hash']):
+            record_failed_login(username)
             raise ApiError(401, 'Неверный логин или пароль')
-        token = create_session(conn, u['id'])
-        self.send_json(self.me_payload(u), cookies=[
-            session_cookie(token)])
+        if _row_value(u, 'disabled_at'):
+            raise ApiError(403, 'Аккаунт отключён администратором')
+        clear_failed_logins(username)
+        token = create_session(
+            conn, u['id'], self.client_ip(),
+            getattr(self, 'headers', {}).get('User-Agent', ''))
+        self.send_json(self.me_payload(u), cookies=[session_cookie(token)])
 
     def api_logout(self, conn, qs, m, body):
         tok = self.cookies().get('sid')
         if tok:
             conn.execute('DELETE FROM sessions WHERE token=?', (tok,))
             conn.commit()
+        self.send_json({'ok': True}, cookies=[session_cookie('', 0)])
+
+    def api_account_sessions(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        token = self.cookies().get('sid')
+        rows = conn.execute(
+            'SELECT rowid session_id,token,created,expires,last_seen,ip_address,user_agent '
+            'FROM sessions WHERE user_id=? AND expires>? ORDER BY last_seen DESC,created DESC',
+            (user['id'], time.time())).fetchall()
+        self.send_json({'sessions': [{
+            'id': row['session_id'], 'created': row['created'], 'expires': row['expires'],
+            'last_seen': row['last_seen'] or row['created'],
+            'ip_address': row['ip_address'] or '',
+            'user_agent': row['user_agent'] or '',
+            'current': hmac.compare_digest(row['token'], token or ''),
+        } for row in rows]})
+
+    def api_account_session_revoke(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session_id = int(m.group(1))
+        row = conn.execute(
+            'SELECT rowid session_id,* FROM sessions WHERE rowid=? AND user_id=?',
+            (session_id, user['id'])).fetchone()
+        if not row:
+            raise ApiError(404, 'Сессия входа не найдена')
+        if hmac.compare_digest(row['token'], self.cookies().get('sid') or ''):
+            raise ApiError(409, 'Текущую сессию завершайте обычным выходом')
+        conn.execute('DELETE FROM sessions WHERE rowid=? AND user_id=?',
+                     (session_id, user['id']))
+        record_account_security(conn, user['id'], user['id'], 'session_revoked',
+                                f'session:{session_id}')
+        conn.commit()
+        self.send_json({'ok': True})
+
+    def api_account_password(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        current_password = str((body or {}).get('current_password') or '')
+        new_password = str((body or {}).get('new_password') or '')
+        if not verify_password(current_password, user['pass_hash']):
+            raise ApiError(403, 'Текущий пароль указан неверно')
+        validate_new_password(new_password)
+        if verify_password(new_password, user['pass_hash']):
+            raise ApiError(400, 'Новый пароль должен отличаться от текущего')
+        token = self.cookies().get('sid') or ''
+        conn.execute('UPDATE users SET pass_hash=? WHERE id=?',
+                     (hash_password(new_password), user['id']))
+        conn.execute('DELETE FROM sessions WHERE user_id=? AND token!=?',
+                     (user['id'], token))
+        record_account_security(conn, user['id'], user['id'], 'password_changed',
+                                'Other sessions revoked')
+        conn.commit()
+        self.send_json({'ok': True})
+
+    def api_account_logout_all(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        record_account_security(conn, user['id'], user['id'], 'logout_all',
+                                'All sessions revoked')
+        conn.execute('DELETE FROM sessions WHERE user_id=?', (user['id'],))
+        conn.commit()
         self.send_json({'ok': True}, cookies=[session_cookie('', 0)])
 
     def me_payload(self, u):
@@ -2660,6 +10515,8 @@ class Handler(BaseHTTPRequestHandler):
             'show_display_name': bool(_row_value(u, 'show_display_name', 0)),
             'avatar_media_id': _row_value(u, 'avatar_media_id'),
             'vk_linked': bool(_row_value(u, 'vk_user_id')),
+            'disabled': bool(_row_value(u, 'disabled_at')),
+            'disabled_reason': _row_value(u, 'disabled_reason'),
             'notification_prefs': notification_prefs,
             'theme': theme,
         }
@@ -2721,6 +10578,12 @@ class Handler(BaseHTTPRequestHandler):
             'LEFT JOIN users actor ON actor.id=a.actor_user_id '
             'ORDER BY a.created DESC, a.id DESC LIMIT 50'
         ).fetchall()
+        security_rows = conn.execute(
+            'SELECT a.*,target.username target_username,actor.username actor_username '
+            'FROM account_security_audit a JOIN users target ON target.id=a.user_id '
+            'LEFT JOIN users actor ON actor.id=a.actor_user_id '
+            'ORDER BY a.created DESC,a.id DESC LIMIT 50'
+        ).fetchall()
         self.send_json({
             'users': [{
                 'id': row['id'], 'username': row['username'],
@@ -2728,6 +10591,9 @@ class Handler(BaseHTTPRequestHandler):
                 'account_role': user_account_role(row),
                 'show_display_name': bool(_row_value(row, 'show_display_name', 0)),
                 'vk_linked': bool(_row_value(row, 'vk_user_id')),
+                'disabled': bool(_row_value(row, 'disabled_at')),
+                'disabled_reason': _row_value(row, 'disabled_reason'),
+                'disabled_at': _row_value(row, 'disabled_at'),
                 'character_count': row['character_count'],
                 'created': row['created'],
             } for row in rows],
@@ -2737,8 +10603,15 @@ class Handler(BaseHTTPRequestHandler):
                 'role_before': row['role_before'], 'role_after': row['role_after'],
                 'reason': row['reason'], 'created': row['created'],
             } for row in audit_rows],
+            'security_audit': [{
+                'id': row['id'], 'target_username': row['target_username'],
+                'actor_username': row['actor_username'] or 'system',
+                'event_type': row['event_type'], 'detail': row['detail'],
+                'created': row['created'],
+            } for row in security_rows],
         })
 
+    @atomic_endpoint
     def api_admin_user_role(self, conn, qs, m, body):
         actor = self.require_admin(conn)
         reason = str((body or {}).get('reason') or '').strip()[:500]
@@ -2747,6 +10620,144 @@ class Handler(BaseHTTPRequestHandler):
         updated = assign_account_role(
             conn, actor, int(m.group(1)), (body or {}).get('account_role'), reason)
         self.send_json(self.me_payload(updated))
+
+    @atomic_endpoint
+    def api_admin_user_status(self, conn, qs, m, body):
+        actor = self.require_admin(conn)
+        target = conn.execute('SELECT * FROM users WHERE id=?',
+                              (int(m.group(1)),)).fetchone()
+        if not target:
+            raise ApiError(404, 'Пользователь не найден')
+        disabled = bool((body or {}).get('disabled'))
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if not reason:
+            raise ApiError(400, 'Укажите причину изменения доступа')
+        if disabled and target['id'] == actor['id']:
+            raise ApiError(409, 'Нельзя отключить собственный аккаунт')
+        if disabled and user_is_admin(target):
+            active_admins = conn.execute(
+                "SELECT COUNT(*) n FROM users WHERE account_role='admin' AND disabled_at IS NULL"
+            ).fetchone()['n']
+            if active_admins <= 1:
+                raise ApiError(409, 'Нельзя отключить последнего активного администратора')
+        currently_disabled = bool(_row_value(target, 'disabled_at'))
+        if disabled == currently_disabled:
+            self.send_json(self.me_payload(target))
+            return
+        if disabled:
+            conn.execute(
+                'UPDATE users SET disabled_at=?,disabled_reason=?,disabled_by=? WHERE id=?',
+                (time.time(), reason, actor['id'], target['id']))
+            conn.execute('DELETE FROM sessions WHERE user_id=?', (target['id'],))
+            event_type = 'account_disabled'
+        else:
+            conn.execute(
+                'UPDATE users SET disabled_at=NULL,disabled_reason=NULL,disabled_by=NULL WHERE id=?',
+                (target['id'],))
+            event_type = 'account_enabled'
+        record_account_security(conn, target['id'], actor['id'], event_type, reason)
+        conn.commit()
+        updated = conn.execute('SELECT * FROM users WHERE id=?', (target['id'],)).fetchone()
+        self.send_json(self.me_payload(updated))
+
+    def invite_payload(self, row):
+        now = time.time()
+        return {
+            'id': row['id'], 'label': row['label'],
+            'max_uses': row['max_uses'], 'uses': row['uses'],
+            'expires_at': row['expires_at'], 'disabled_at': row['disabled_at'],
+            'created_by': row['created_by'], 'created': row['created'],
+            'active': (not row['disabled_at'] and row['uses'] < row['max_uses'] and
+                       (row['expires_at'] is None or row['expires_at'] > now)),
+        }
+
+    def api_admin_invites(self, conn, qs, m, body):
+        self.require_admin(conn)
+        rows = conn.execute(
+            'SELECT * FROM registration_invites ORDER BY created DESC,id DESC LIMIT 200'
+        ).fetchall()
+        self.send_json({'registration_mode': registration_mode(),
+                        'invites': [self.invite_payload(row) for row in rows]})
+
+    def api_admin_invite_create(self, conn, qs, m, body):
+        actor = self.require_admin(conn)
+        label = str((body or {}).get('label') or '').strip()[:120]
+        max_uses = max(1, min(100, _num((body or {}).get('max_uses')) or 1))
+        expires_days = _num((body or {}).get('expires_days'))
+        expires_at = None if not expires_days else time.time() + max(1, min(365, expires_days)) * 86400
+        code = create_invite_code()
+        cur = conn.execute(
+            'INSERT INTO registration_invites(code_hash,label,created_by,max_uses,uses,'
+            'expires_at,created) VALUES(?,?,?,?,0,?,?)',
+            (invite_code_hash(code), label, actor['id'], max_uses, expires_at, time.time()))
+        conn.commit()
+        row = conn.execute('SELECT * FROM registration_invites WHERE id=?',
+                           (cur.lastrowid,)).fetchone()
+        self.send_json({**self.invite_payload(row), 'code': code}, status=201)
+
+    def api_admin_invite_revoke(self, conn, qs, m, body):
+        self.require_admin(conn)
+        row = conn.execute('SELECT * FROM registration_invites WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Приглашение не найдено')
+        conn.execute('UPDATE registration_invites SET disabled_at=? WHERE id=?',
+                     (time.time(), row['id']))
+        conn.commit()
+        updated = conn.execute('SELECT * FROM registration_invites WHERE id=?',
+                               (row['id'],)).fetchone()
+        self.send_json(self.invite_payload(updated))
+
+    def api_admin_backups(self, conn, qs, m, body):
+        self.require_admin(conn)
+        tools = backup_tools_module()
+        try:
+            backups = tools.list_bundles(BACKUP_DIR)
+        except (tools.BackupError, OSError) as error:
+            raise ApiError(500, f'Не удалось прочитать резервные копии: {error}')
+        self.send_json({'backups': backups, 'retention': backup_retention()})
+
+    def api_admin_backup_create(self, conn, qs, m, body):
+        actor = self.require_admin(conn)
+        tools = backup_tools_module()
+        try:
+            retention = backup_retention()
+            result = tools.create_bundle(
+                DB_PATH, UPLOAD_DIR, BACKUP_DIR, ITEMS_PATH, retention,
+                str((body or {}).get('reason') or 'manual')[:120])
+        except (tools.BackupError, OSError, sqlite3.DatabaseError) as error:
+            raise ApiError(500, f'Не удалось создать резервную копию: {error}')
+        record_account_security(conn, actor['id'], actor['id'], 'backup_created', result['name'])
+        conn.commit()
+        self.send_json({key: value for key, value in result.items() if key != 'path'}, status=201)
+
+    def api_admin_backup_verify(self, conn, qs, m, body):
+        self.require_admin(conn)
+        tools = backup_tools_module()
+        try:
+            path = tools.bundle_path(BACKUP_DIR, m.group(1))
+            result = tools.verify_bundle(path)
+        except (tools.BackupError, OSError, sqlite3.DatabaseError) as error:
+            raise ApiError(400, f'Резервная копия не прошла проверку: {error}')
+        self.send_json(result)
+
+    def api_admin_backup_download(self, conn, qs, m, body):
+        self.require_admin(conn)
+        tools = backup_tools_module()
+        try:
+            path = tools.bundle_path(BACKUP_DIR, m.group(1))
+        except (tools.BackupError, OSError) as error:
+            raise ApiError(404, f'Резервная копия не найдена: {error}')
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/gzip')
+        self.send_header('Content-Disposition', f'attachment; filename="{path.name}"')
+        self.send_header('Content-Length', str(path.stat().st_size))
+        self.send_header('Cache-Control', 'private, no-store')
+        self.send_security_headers()
+        self.end_headers()
+        with open(path, 'rb') as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b''):
+                self.wfile.write(chunk)
 
     # ------------------------------------------------------------ NC//NET notifications / VK
 
@@ -2760,8 +10771,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_notification_read(self, conn, qs, m, body):
         user = self.require_user(conn)
-        conn.execute('UPDATE notifications SET read_at=? WHERE id=? AND user_id=?',
-                     (time.time(), int(m.group(1)), user['id']))
+        if (body or {}).get('all'):
+            conn.execute('UPDATE notifications SET read_at=? WHERE user_id=? AND read_at IS NULL',
+                         (time.time(), user['id']))
+        else:
+            conn.execute('UPDATE notifications SET read_at=? WHERE id=? AND user_id=?',
+                         (time.time(), int(m.group(1)), user['id']))
         conn.commit(); self.send_json({'ok': True})
 
     def api_admin_vk_status(self, conn, qs, m, body):
@@ -2879,6 +10894,12 @@ class Handler(BaseHTTPRequestHandler):
             (row['id'], 1 if can_edit else 0)).fetchall()
         payload['contracts'] = [dict(item) for item in contract_rows]
         payload['posts'] = [dict(item) for item in post_rows]
+        gm = user_is_gm(user)
+        member_rows = conn.execute(
+            'SELECT * FROM persona_memberships WHERE member_persona_id=? OR organization_persona_id=? '
+            'ORDER BY sort_order,id', (row['id'], row['id'])).fetchall()
+        payload['memberships'] = [membership_payload(r) for r in member_rows
+                                  if gm or r['visibility'] == 'public']
         if can_edit:
             audit = conn.execute(
                 'SELECT a.*,u.display_name actor FROM persona_audit a '
@@ -2948,6 +10969,140 @@ class Handler(BaseHTTPRequestHandler):
             payload['private_summary'] = row['private_summary']
             payload['collaborators'] = [dict(item) for item in collaborators]
         return payload
+
+    def api_memberships(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        gm = user_is_gm(user)
+        pid = int(m.group(1))
+        rows = conn.execute(
+            'SELECT * FROM persona_memberships WHERE member_persona_id=? OR organization_persona_id=? '
+            'ORDER BY sort_order,id', (pid, pid)).fetchall()
+        visible = [membership_payload(r) for r in rows
+                   if gm or r['visibility'] == 'public']
+        self.send_json({'memberships': visible})
+
+    @atomic_endpoint
+    def api_membership_create(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        cleaned = clean_membership_input(body or {})
+        now = time.time()
+        cur = conn.execute(
+            'INSERT INTO persona_memberships(member_persona_id,organization_persona_id,'
+            'role_title,status,visibility,since_at,until_at,note,sort_order,created,updated) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+            (cleaned['member_persona_id'], cleaned['organization_persona_id'],
+             cleaned['role_title'], cleaned['status'], cleaned['visibility'],
+             cleaned['since_at'], cleaned['until_at'], cleaned['note'],
+             cleaned['sort_order'], now, now))
+        conn.commit()
+        row = conn.execute('SELECT * FROM persona_memberships WHERE id=?', (cur.lastrowid,)).fetchone()
+        self.send_json(membership_payload(row), status=201)
+
+    @atomic_endpoint
+    def api_membership_update(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM persona_memberships WHERE id=?', (int(m.group(2)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Membership не найден')
+        cleaned = clean_membership_input(body or {}, dict(row))
+        conn.execute(
+            'UPDATE persona_memberships SET member_persona_id=?,organization_persona_id=?,'
+            'role_title=?,status=?,visibility=?,since_at=?,until_at=?,note=?,sort_order=?,updated=? WHERE id=?',
+            (cleaned['member_persona_id'], cleaned['organization_persona_id'],
+             cleaned['role_title'], cleaned['status'], cleaned['visibility'],
+             cleaned['since_at'], cleaned['until_at'], cleaned['note'],
+             cleaned['sort_order'], time.time(), row['id']))
+        conn.commit()
+        fresh = conn.execute('SELECT * FROM persona_memberships WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(membership_payload(fresh))
+
+    @atomic_endpoint
+    def api_membership_delete(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        conn.execute('DELETE FROM persona_memberships WHERE id=?', (int(m.group(2)),))
+        conn.commit()
+        self.send_json({'ok': True})
+
+    def api_crew_reputation(self, conn, qs, m, body):
+        rows = conn.execute(
+            'SELECT cr.*,p.display_name org_name,p.handle org_handle '
+            'FROM crew_reputation cr JOIN personas p ON p.id=cr.organization_persona_id '
+            'ORDER BY cr.updated DESC').fetchall()
+        self.send_json({'reputation': [dict(r) for r in rows]})
+
+    @atomic_endpoint
+    def api_crew_reputation_set(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        cleaned = clean_reputation_input(body or {})
+        if not cleaned['organization_persona_id']:
+            raise ApiError(400, 'Укажите организацию')
+        now = time.time()
+        conn.execute(
+            'INSERT INTO crew_reputation(organization_persona_id,reputation,'
+            'favor,heat,standing,note,created_by,created,updated) '
+            'VALUES(?,?,?,?,?,?,?,?,?) '
+            'ON CONFLICT(organization_persona_id) DO UPDATE SET '
+            'reputation=excluded.reputation,favor=excluded.favor,heat=excluded.heat,'
+            'standing=excluded.standing,note=excluded.note,updated=excluded.updated',
+            (cleaned['organization_persona_id'], cleaned['reputation'],
+             cleaned['favor'], cleaned['heat'], cleaned['standing'],
+             cleaned['note'], user['id'], now, now))
+        conn.commit()
+        row = conn.execute(
+            'SELECT * FROM crew_reputation WHERE organization_persona_id=?',
+            (cleaned['organization_persona_id'],)).fetchone()
+        self.send_json(dict(row))
+
+    @atomic_endpoint
+    def api_crew_reputation_delete(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        conn.execute('DELETE FROM crew_reputation WHERE id=?', (int(m.group(1)),))
+        conn.commit()
+        self.send_json({'ok': True})
+
+    def api_character_reputation(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        gm = user_is_gm(user)
+        cid = int(m.group(1))
+        if not gm:
+            row = conn.execute('SELECT owner_id FROM characters WHERE id=?', (cid,)).fetchone()
+            if not row or row['owner_id'] != (user['id'] if user else -1):
+                raise ApiError(403, 'Нет доступа к репутации персонажа')
+        rows = conn.execute(
+            'SELECT * FROM character_reputation WHERE character_id=? ORDER BY updated DESC', (cid,)).fetchall()
+        self.send_json({'reputation': [dict(r) for r in rows]})
+
+    @atomic_endpoint
+    def api_character_reputation_set(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        cid = int(m.group(1))
+        cleaned = clean_reputation_input(body or {})
+        if not cleaned['organization_persona_id']:
+            raise ApiError(400, 'Укажите организацию')
+        now = time.time()
+        conn.execute(
+            'INSERT INTO character_reputation(character_id,organization_persona_id,reputation,'
+            'favor,heat,standing,note,created_by,created,updated) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?) '
+            'ON CONFLICT(character_id,organization_persona_id) DO UPDATE SET '
+            'reputation=excluded.reputation,favor=excluded.favor,heat=excluded.heat,'
+            'standing=excluded.standing,note=excluded.note,updated=excluded.updated',
+            (cid, cleaned['organization_persona_id'], cleaned['reputation'],
+             cleaned['favor'], cleaned['heat'], cleaned['standing'],
+             cleaned['note'], user['id'], now, now))
+        conn.commit()
+        row = conn.execute(
+            'SELECT * FROM character_reputation WHERE character_id=? AND organization_persona_id=?',
+            (cid, cleaned['organization_persona_id'])).fetchone()
+        self.send_json(dict(row))
+
+    @atomic_endpoint
+    def api_character_reputation_delete(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        conn.execute('DELETE FROM character_reputation WHERE id=? AND character_id=?',
+                     (int(m.group(2)), int(m.group(1))))
+        conn.commit()
+        self.send_json({'ok': True})
 
     def api_storylines(self, conn, qs, m, body):
         user = self.current_user(conn)
@@ -3106,7 +11261,8 @@ class Handler(BaseHTTPRequestHandler):
             'signups': signup_payload,
             'crew_count': sum(1 for item in signup_payload if item['status'] == 'crew'),
             'waitlist_count': sum(1 for item in signup_payload if item['status'] == 'waitlist'),
-            'my_signup': next((item for item in signup_payload if user and item['user_id'] == user['id']), None),
+            'my_signups': [item for item in signup_payload
+                           if user and item['user_id'] == user['id']],
             'can_edit': can_edit, 'has_classified_access': classified,
             'gm_display_name': owner['display_name'] if owner and owner['show_display_name'] else None,
         }
@@ -3192,6 +11348,7 @@ class Handler(BaseHTTPRequestHandler):
             visible.append(self.contract_payload(conn, row, user))
         self.send_json({'contracts': visible})
 
+    @atomic_endpoint
     def api_contract_create(self, conn, qs, m, body):
         user = self.require_gm(conn)
         data = self.clean_contract_input(body or {})
@@ -3227,6 +11384,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(404, 'Контракт не найден')
         self.send_json(self.contract_payload(conn, row, user))
 
+    @atomic_endpoint
     def api_contract_update(self, conn, qs, m, body):
         user = self.require_gm(conn)
         row = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
@@ -3265,6 +11423,55 @@ class Handler(BaseHTTPRequestHandler):
         updated = conn.execute('SELECT * FROM contracts WHERE id=?', (row['id'],)).fetchone()
         self.send_json(self.contract_payload(conn, updated, user))
 
+    def api_contract_preview(self, conn, qs, m, body):
+        """Normalise and permission-check a Contract draft without writing anything."""
+        user = self.require_gm(conn)
+        data = self.clean_contract_input(body or {})
+        if data['storyline_id']:
+            storyline = conn.execute('SELECT * FROM storylines WHERE id=?', (data['storyline_id'],)).fetchone()
+            if not storyline or not can_edit_storyline(conn, user, storyline):
+                raise ApiError(400, 'Недоступная сюжетная линия')
+        participants = []
+        for index, item in enumerate((body or {}).get('participants') or []):
+            persona = conn.execute('SELECT * FROM personas WHERE id=?',
+                                   (_num(item.get('persona_id')),)).fetchone()
+            if not persona or not can_manage_persona(user, persona):
+                raise ApiError(400, 'Недоступная персона в контракте')
+            participants.append({
+                'persona_id': persona['id'],
+                'role_key': str(item.get('role_key') or 'custom')[:40],
+                'role_label': str(item.get('role_label') or '')[:100],
+                'visibility': 'classified' if item.get('visibility') == 'classified' else 'public',
+                'note': str(item.get('note') or '')[:1000],
+                'sort_order': index,
+                'display_name': persona['display_name'], 'handle': persona['handle'],
+                'kind': persona['kind'], 'avatar_media_id': persona['avatar_media_id'],
+                'accent_color': persona['accent_color'],
+            })
+        now = time.time()
+        payload = {
+            'id': None, 'preview': True,
+            'storyline_id': data['storyline_id'], 'status': data['status'],
+            'title': data['title'], 'teaser': data['teaser'],
+            'public_brief': data['public_brief'], 'classified_brief': data['classified_brief'],
+            'district_id': data['district_id'] or None, 'risk_level': data['risk_level'],
+            'reward_mode': data['reward_mode'],
+            'reward_exact': data['reward_exact'], 'reward_min': data['reward_min'],
+            'reward_max': data['reward_max'], 'reward_text': data['reward_text'],
+            'scheduled_at': data['scheduled_at'], 'crew_capacity': data['crew_capacity'],
+            'requirements': data['requirements'], 'content_notes': data['content_notes'],
+            'service_format': data['service_format'], 'service_contact': data['service_contact'],
+            'service_vtt_url': data['service_vtt_url'], 'service_notes': data['service_notes'],
+            'cover_media_id': data['cover_media_id'],
+            'participants': participants,
+            'crew_count': 0, 'waitlist_count': 0, 'signups': [],
+            'has_classified_access': True, 'can_edit': True,
+            'gm_display_name': user['display_name'],
+            'created': now, 'updated': now,
+        }
+        self.send_json(payload)
+
+    @atomic_endpoint
     def api_contract_join(self, conn, qs, m, body):
         user = self.require_user(conn)
         contract = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
@@ -3314,12 +11521,25 @@ class Handler(BaseHTTPRequestHandler):
         updated = conn.execute('SELECT * FROM contracts WHERE id=?', (contract['id'],)).fetchone()
         self.send_json(self.contract_payload(conn, updated, user))
 
+    @atomic_endpoint
     def api_contract_leave(self, conn, qs, m, body):
         user = self.require_user(conn)
-        contract = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
-        signup = conn.execute(
-            "SELECT * FROM contract_signups WHERE contract_id=? AND user_id=? AND status IN ('crew','waitlist') "
-            'ORDER BY id DESC LIMIT 1', (int(m.group(1)), user['id'])).fetchone()
+        contract_id = int(m.group(1))
+        contract = conn.execute('SELECT * FROM contracts WHERE id=?', (contract_id,)).fetchone()
+        signup_id = _num((body or {}).get('signup_id'))
+        character_id = _num((body or {}).get('character_id'))
+        if bool(signup_id) == bool(character_id):
+            raise ApiError(400, 'Укажите одну конкретную запись: signup_id или character_id')
+        if signup_id:
+            signup = conn.execute(
+                "SELECT * FROM contract_signups WHERE id=? AND contract_id=? AND user_id=? "
+                "AND status IN ('crew','waitlist')",
+                (signup_id, contract_id, user['id'])).fetchone()
+        else:
+            signup = conn.execute(
+                "SELECT * FROM contract_signups WHERE character_id=? AND contract_id=? AND user_id=? "
+                "AND status IN ('crew','waitlist')",
+                (character_id, contract_id, user['id'])).fetchone()
         if not contract or not signup:
             raise ApiError(404, 'Запись на контракт не найдена')
         if contract['status'] not in ('open', 'crew_full', 'in_progress'):
@@ -3348,6 +11568,7 @@ class Handler(BaseHTTPRequestHandler):
         updated = conn.execute('SELECT * FROM contracts WHERE id=?', (contract['id'],)).fetchone()
         self.send_json(self.contract_payload(conn, updated, user))
 
+    @atomic_endpoint
     def api_contract_delete(self, conn, qs, m, body):
         user = self.require_gm(conn)
         contract = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
@@ -3402,7 +11623,6 @@ class Handler(BaseHTTPRequestHandler):
                                (row['author_persona_id'],)).fetchone() if row['author_persona_id'] else None
         character = conn.execute('SELECT * FROM characters WHERE id=?',
                                  (row['author_character_id'],)).fetchone() if row['author_character_id'] else None
-        char_data = parse_json_object(character['data']) if character else {}
         can_edit = bool(user and (user['id'] == row['creator_user_id'] or user_is_admin(user) or
                         (persona and can_manage_persona(user, persona))))
         payload = {
@@ -3410,13 +11630,7 @@ class Handler(BaseHTTPRequestHandler):
             'creator_user_id': row['creator_user_id'],
             'author_persona_id': row['author_persona_id'],
             'author_character_id': row['author_character_id'],
-            'author': persona_payload(persona, False) if persona else ({
-                'id': character['id'], 'kind': 'character',
-                'display_name': char_data.get('handle') or 'Unknown Edgerunner',
-                'handle': char_data.get('handle') or 'unknown',
-                'avatar_media_id': char_data.get('portrait_media_id'),
-                'accent_color': '#ff2d78',
-            } if character else None),
+            'author': persona_payload(persona, False) if persona else character_author_payload(character),
             'storyline_id': row['storyline_id'], 'contract_id': row['contract_id'],
             'reply_to_post_id': row['reply_to_post_id'], 'district_id': row['district_id'],
             'headline': row['headline'], 'lead': row['lead'], 'body': row['body'],
@@ -3451,7 +11665,6 @@ class Handler(BaseHTTPRequestHandler):
                                (row['author_persona_id'],)).fetchone() if row['author_persona_id'] else None
         character = conn.execute('SELECT * FROM characters WHERE id=?',
                                  (row['author_character_id'],)).fetchone() if row['author_character_id'] else None
-        char_data = parse_json_object(character['data']) if character else {}
         return {
             'id': row['id'], 'post_id': row['post_id'],
             'parent_comment_id': row['parent_comment_id'], 'body': row['body'],
@@ -3459,13 +11672,7 @@ class Handler(BaseHTTPRequestHandler):
             'hidden': bool(row['hidden_at']),
             'hidden_reason': row['hidden_reason'] if (user_is_gm(user) or
                               (user and row['creator_user_id'] == user['id'])) else None,
-            'author': persona_payload(persona, False) if persona else ({
-                'id': character['id'], 'kind': 'character',
-                'display_name': char_data.get('handle') or 'Unknown Edgerunner',
-                'handle': char_data.get('handle') or 'unknown',
-                'avatar_media_id': char_data.get('portrait_media_id'),
-                'accent_color': '#ff2d78',
-            } if character else None),
+            'author': persona_payload(persona, False) if persona else character_author_payload(character),
             'mine': bool(user and row['creator_user_id'] == user['id']),
         }
 
@@ -3481,28 +11688,45 @@ class Handler(BaseHTTPRequestHandler):
         user = self.require_user(conn)
         self.rate_limit('feed-post', 20, 3600, user['id'])
         persona_id, character_id = self.resolve_feed_author(conn, user, body or {})
-        fmt = str((body or {}).get('format') or 'short').lower()
+        fmt = str((body or {}).get('format') or FEED_DEFAULT_FORMAT).lower()
         if fmt not in FEED_FORMATS:
             raise ApiError(400, 'Некорректный формат публикации')
         headline = str((body or {}).get('headline') or '').strip()[:240] or None
         text = str((body or {}).get('body') or '').strip()[:30000]
-        if not text or (fmt in ('article', 'blog', 'bulletin') and not headline):
+        if not text:
             raise ApiError(400, 'Публикации нужен текст и, для длинного формата, заголовок')
         status = 'draft' if user_is_gm(user) and (body or {}).get('status') == 'draft' else 'published'
         truth = str((body or {}).get('truth_status') or 'unknown') if user_is_gm(user) else 'unknown'
         if truth not in FEED_TRUTH:
             truth = 'unknown'
-        storyline_id = _num((body or {}).get('storyline_id'))
-        if storyline_id:
-            storyline = conn.execute('SELECT * FROM storylines WHERE id=?', (storyline_id,)).fetchone()
-            if not storyline or storyline['status'] == 'archived':
-                raise ApiError(400, 'Недоступная сюжетная линия')
         contract_id = _num((body or {}).get('contract_id'))
+        contract = None
+        can_link_contract = False
         if contract_id:
             contract = conn.execute('SELECT * FROM contracts WHERE id=?', (contract_id,)).fetchone()
             if not contract or (contract['status'] in ('draft', 'archived') and
                                 not can_edit_contract(conn, user, contract)):
                 raise ApiError(400, 'Контракт не найден')
+            can_link_contract = can_edit_contract(conn, user, contract)
+            if character_id and not can_link_contract:
+                can_link_contract = bool(conn.execute(
+                    "SELECT 1 FROM contract_signups WHERE contract_id=? AND character_id=? "
+                    "AND user_id=? AND status='crew'",
+                    (contract_id, character_id, user['id'])).fetchone())
+            if not can_link_contract:
+                raise ApiError(403, 'Связать публикацию с контрактом может его GM или участник Crew')
+
+        storyline_id = _num((body or {}).get('storyline_id'))
+        if storyline_id:
+            storyline = conn.execute('SELECT * FROM storylines WHERE id=?', (storyline_id,)).fetchone()
+            if not storyline or storyline['status'] == 'archived':
+                raise ApiError(400, 'Недоступная сюжетная линия')
+            can_link_storyline = can_edit_storyline(conn, user, storyline)
+            if (not can_link_storyline and contract and can_link_contract and
+                    contract['storyline_id'] == storyline['id']):
+                can_link_storyline = True
+            if not can_link_storyline:
+                raise ApiError(403, 'Сюжетную линию может связать её GM или Crew связанного контракта')
         reply_to_post_id = _num((body or {}).get('reply_to_post_id'))
         if reply_to_post_id and not conn.execute(
                 "SELECT 1 FROM feed_posts WHERE id=? AND status='published'",
@@ -3556,7 +11780,7 @@ class Handler(BaseHTTPRequestHandler):
         if row['status'] == 'hidden' and not user_is_gm(user) and requested_status != 'archived':
             status = 'hidden'
         if (fmt not in FEED_FORMATS or status not in ('draft', 'published', 'archived', 'hidden') or
-                not text or (fmt in ('article', 'blog', 'bulletin') and not headline)):
+                not text):
             raise ApiError(400, 'Некорректная публикация')
         image_media_id = str((body or {}).get('image_media_id', row['image_media_id'] or ''))[:64] or None
         event_at = (optional_timestamp((body or {}).get('event_at'))
@@ -3578,6 +11802,86 @@ class Handler(BaseHTTPRequestHandler):
         after = self.feed_post_payload(conn, updated, user)
         record_feed_revision(conn, row['id'], user['id'], 'update', before, after)
         conn.commit(); self.send_json(after)
+
+    def api_feed_preview(self, conn, qs, m, body):
+        """Normalise and permission-check a draft post without writing anything."""
+        user = self.require_user(conn)
+        persona_id, character_id = self.resolve_feed_author(conn, user, body or {})
+        fmt = str((body or {}).get('format') or FEED_DEFAULT_FORMAT).lower()
+        if fmt not in FEED_FORMATS:
+            raise ApiError(400, 'Некорректный формат публикации')
+        headline = str((body or {}).get('headline') or '').strip()[:240] or None
+        text = str((body or {}).get('body') or '').strip()[:30000]
+        if not text:
+            raise ApiError(400, 'Публикации нужен текст и, для длинного формата, заголовок')
+        contract_id = _num((body or {}).get('contract_id'))
+        if contract_id:
+            contract = conn.execute('SELECT * FROM contracts WHERE id=?', (contract_id,)).fetchone()
+            if not contract or (contract['status'] in ('draft', 'archived') and
+                                not can_edit_contract(conn, user, contract)):
+                raise ApiError(400, 'Контракт не найден')
+            can_link_contract = can_edit_contract(conn, user, contract)
+            if character_id and not can_link_contract:
+                can_link_contract = bool(conn.execute(
+                    "SELECT 1 FROM contract_signups WHERE contract_id=? AND character_id=? "
+                    "AND user_id=? AND status='crew'",
+                    (contract_id, character_id, user['id'])).fetchone())
+            if not can_link_contract:
+                raise ApiError(403, 'Связать публикацию с контрактом может его GM или участник Crew')
+        storyline_id = _num((body or {}).get('storyline_id'))
+        if storyline_id:
+            storyline = conn.execute('SELECT * FROM storylines WHERE id=?', (storyline_id,)).fetchone()
+            if not storyline or storyline['status'] == 'archived':
+                raise ApiError(400, 'Недоступная сюжетная линия')
+            can_link_storyline = can_edit_storyline(conn, user, storyline)
+            if (not can_link_storyline and contract_id and can_link_contract and
+                    contract['storyline_id'] == storyline['id']):
+                can_link_storyline = True
+            if not can_link_storyline:
+                raise ApiError(403, 'Сюжетную линию может связать её GM или Crew связанного контракта')
+        reply_to_post_id = _num((body or {}).get('reply_to_post_id'))
+        if reply_to_post_id and not conn.execute(
+                "SELECT 1 FROM feed_posts WHERE id=? AND status='published'",
+                (reply_to_post_id,)).fetchone():
+            raise ApiError(400, 'Публикация не найдена')
+        truth = 'unknown'
+        if user_is_gm(user):
+            candidate = str((body or {}).get('truth_status') or 'unknown')
+            truth = candidate if candidate in FEED_TRUTH else 'unknown'
+        now = time.time()
+        preview_row = {
+            'id': None, 'format': fmt, 'status': 'preview',
+            'creator_user_id': user['id'],
+            'author_persona_id': persona_id, 'author_character_id': character_id,
+            'storyline_id': storyline_id, 'contract_id': contract_id,
+            'reply_to_post_id': reply_to_post_id,
+            'district_id': clean_location_id((body or {}).get('district_id')),
+            'headline': headline, 'lead': str((body or {}).get('lead') or '')[:500] or None,
+            'body': text,
+            'image_media_id': str((body or {}).get('image_media_id') or '')[:64] or None,
+            'truth_status': truth, 'hidden_reason': None,
+            'event_at': optional_timestamp((body or {}).get('event_at')),
+            'published_at': None, 'created': now, 'updated': now,
+        }
+        persona = conn.execute('SELECT * FROM personas WHERE id=?',
+                               (persona_id,)).fetchone() if persona_id else None
+        character = conn.execute('SELECT * FROM characters WHERE id=?',
+                                 (character_id,)).fetchone() if character_id else None
+        payload = {
+            'id': None, 'format': fmt, 'status': 'preview',
+            'creator_user_id': user['id'],
+            'author_persona_id': persona_id, 'author_character_id': character_id,
+            'author': persona_payload(persona, False) if persona else character_author_payload(character),
+            'storyline_id': storyline_id, 'contract_id': contract_id,
+            'reply_to_post_id': reply_to_post_id, 'district_id': preview_row['district_id'],
+            'headline': headline, 'lead': preview_row['lead'], 'body': text,
+            'image_media_id': preview_row['image_media_id'],
+            'event_at': preview_row['event_at'], 'published_at': None,
+            'created': now, 'updated': now, 'can_edit': True, 'preview': True,
+        }
+        if user_is_gm(user):
+            payload['truth_status'] = truth
+        self.send_json(payload)
 
     def api_feed_truth_update(self, conn, qs, m, body):
         user = self.require_gm(conn)
@@ -3697,9 +12001,20 @@ class Handler(BaseHTTPRequestHandler):
         user = self.current_user(conn)
         allowed = bool(user and user['id'] == row['owner_id']); public_media = False
         if row['attached_type'] == 'character' and row['attached_id']:
-            char = conn.execute('SELECT owner_id,public FROM characters WHERE id=?', (row['attached_id'],)).fetchone()
-            public_media = bool(char and char['public'])
-            allowed = bool(char and (public_media or (user and user['id'] == char['owner_id'])))
+            char = conn.execute('SELECT owner_id,public,data FROM characters WHERE id=?',
+                                (row['attached_id'],)).fetchone()
+            char_data = parse_json_object(char['data']) if char else {}
+            portrait_visible = ensure_character_visibility(char_data)['portrait'] if char else False
+            authored_public = False
+            if char and portrait_visible and not char['public']:
+                authored_public = bool(conn.execute(
+                    "SELECT 1 FROM feed_posts WHERE author_character_id=? AND status='published' "
+                    "UNION SELECT 1 FROM feed_comments fc JOIN feed_posts fp ON fp.id=fc.post_id "
+                    "WHERE fc.author_character_id=? AND fc.hidden_at IS NULL AND fp.status='published' LIMIT 1",
+                    (char['id'], char['id'])).fetchone())
+            public_media = bool(char and portrait_visible and (char['public'] or authored_public))
+            allowed = bool(char and (public_media or
+                           (user and (user['id'] == char['owner_id'] or user_is_admin(user)))))
         elif row['attached_type'] == 'account' and row['attached_id']:
             account = conn.execute('SELECT id,show_display_name FROM users WHERE id=?',
                                    (row['attached_id'],)).fetchone()
@@ -3729,6 +12044,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', row['mime'])
         self.send_header('Content-Length', str(len(raw)))
         self.send_header('Cache-Control', 'public, max-age=86400' if public_media else 'private, no-store')
+        self.send_security_headers()
         self.end_headers(); self.wfile.write(raw)
 
     def api_media_delete(self, conn, qs, m, body):
@@ -3763,6 +12079,9 @@ class Handler(BaseHTTPRequestHandler):
             'autofire_table': cat['autofire_table'],
             'general_dv': GENERAL_DV,
             'rule_sources': RULE_SOURCES,
+            'effects_rules_version': load_effect_rules().get('rules_version'),
+            'registration_mode': registration_mode(),
+            'character_visibility_defaults': CHARACTER_VISIBILITY_DEFAULTS,
         })
 
     def api_stats(self, conn, qs, m, body):
@@ -3776,6 +12095,62 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({'items': len(cat['items']), 'characters': c, 'users': u,
                         'news': nw, 'open_jobs': jb,
                         'feed_posts': feed, 'open_contracts': contracts})
+
+    def api_campaign_clock(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        ensure_campaign_clock(conn)
+        payload = campaign_clock_payload(conn)
+        if user and user_is_gm(user):
+            payload['pending'] = campaign_pending_services(conn)
+        self.send_json(payload)
+
+    @atomic_endpoint
+    def api_campaign_clock_advance(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        allowed = {'advance', 'set_to', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Campaign Clock содержит неподдерживаемые поля')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину изменения Campaign Clock')
+        before = campaign_now(conn)
+        advance = (body or {}).get('advance')
+        set_to = (body or {}).get('set_to')
+        if advance is not None and set_to is not None:
+            raise ApiError(400, 'Укажите либо advance, либо set_to')
+        if advance is not None:
+            if not isinstance(advance, dict):
+                raise ApiError(400, 'advance должен быть объектом')
+            if set(advance) - {'days', 'hours', 'minutes'}:
+                raise ApiError(400, 'advance содержит неподдерживаемые поля')
+            days = _num(advance.get('days')) or 0
+            hours = _num(advance.get('hours')) or 0
+            minutes = _num(advance.get('minutes')) or 0
+            delta = days * 86400 + hours * 3600 + minutes * 60
+            if not 0 < delta <= 365 * 86400:
+                raise ApiError(400, 'advance должен быть от 1 минуты до 365 дней')
+            after = before + delta
+        elif set_to is not None:
+            try:
+                after = float(set_to)
+            except (TypeError, ValueError):
+                raise ApiError(400, 'Некорректное set_to время Campaign Clock')
+            if not math.isfinite(after) or after < 0:
+                raise ApiError(400, 'Некорректное set_to время Campaign Clock')
+            delta = after - before
+        else:
+            raise ApiError(400, 'Укажите advance или set_to')
+        now = time.time()
+        conn.execute('UPDATE campaign_state SET campaign_time=?,updated=? WHERE id=1',
+                     (after, now))
+        conn.execute(
+            'INSERT INTO campaign_clock_audit(actor_user_id,delta_seconds,before_time,'
+            'after_time,reason,created) VALUES(?,?,?,?,?,?)',
+            (user['id'], delta, before, after, reason, now))
+        conn.commit()
+        payload = campaign_clock_payload(conn)
+        payload['pending'] = campaign_pending_services(conn)
+        self.send_json(payload)
 
     def api_items(self, conn, qs, m, body):
         cat = catalog()
@@ -3793,28 +12168,315 @@ class Handler(BaseHTTPRequestHandler):
             terms = q.split()
             items = [i for i in items if all(t in i['search'] for t in terms)]
         total = len(items)
-        items = items[offset:offset + limit]
+        items = [catalog_item_payload(item) for item in items[offset:offset + limit]]
         self.send_json({'total': total, 'items': items, 'offset': offset, 'limit': limit})
 
     def api_item(self, conn, qs, m, body):
         it = item_by_id(m.group(1))
         if not it:
             raise ApiError(404, 'Предмет не найден')
-        self.send_json(it)
+        self.send_json(catalog_item_payload(it))
 
     def api_nightmarket(self, conn, qs, m, body):
-        self.send_json(night_market())
+        ensure_market_stock(conn)
+        payload = night_market(conn=conn)
+        persona_rows = conn.execute(
+            "SELECT id,handle FROM personas WHERE handle IN (%s)" %
+            ','.join('?' for _ in NIGHT_MARKET_VENDORS),
+            tuple(vendor['handle'] for vendor in NIGHT_MARKET_VENDORS)).fetchall()
+        persona_ids = {row['handle']: row['id'] for row in persona_rows}
+        for vendor in payload['vendors']:
+            vendor['persona_id'] = persona_ids.get(vendor.get('handle'))
+        self.send_json(payload)
+
+    @atomic_endpoint
+    def api_nightmarket_reserve(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        allowed = {'item_id', 'character_id', 'note'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Market reserve содержит неподдерживаемые поля')
+        item_id = str((body or {}).get('item_id') or '').strip()
+        character_id = _num((body or {}).get('character_id'))
+        note = str((body or {}).get('note') or '').strip()[:200]
+        if not item_by_id(item_id):
+            raise ApiError(400, 'Неизвестный предмет Night Market')
+        ensure_market_stock(conn)
+        day = nm_day()
+        state_row = conn.execute(
+            'SELECT * FROM market_stock WHERE market_day=? AND item_id=?',
+            (day, item_id)).fetchone()
+        if not state_row:
+            raise ApiError(400, 'Предмет не в текущем Night Market')
+        if character_id:
+            target = self.get_char(conn, character_id)
+            if parse_json_object(target['data']).get('archived'):
+                raise ApiError(409, 'Досье зарезервированного персонажа заархивировано')
+            conn.execute(
+                'UPDATE market_stock SET reserved_character_id=?,reserved_note=?,updated=? '
+                'WHERE market_day=? AND item_id=?',
+                (target['id'], note, time.time(), day, item_id))
+        else:
+            conn.execute(
+                'UPDATE market_stock SET reserved_character_id=NULL,reserved_note=?,updated=? '
+                'WHERE market_day=? AND item_id=?',
+                (note, time.time(), day, item_id))
+        conn.commit()
+        self.send_json({'ok': True, 'item_id': item_id,
+                        'reserved_character_id': character_id})
+
+    @atomic_endpoint
+    def api_fixer_request_create(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        allowed = {'char_id', 'item_id', 'item_name', 'note'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Fixer request содержит неподдерживаемые поля')
+        row = self.get_char(conn, (body or {}).get('char_id'))
+        if row['owner_id'] != user['id'] and not user_is_gm(user):
+            raise ApiError(403, 'Это не ваш персонаж')
+        if parse_json_object(row['data']).get('archived'):
+            raise ApiError(409, 'Архивное досье доступно только для чтения')
+        item_id = str((body or {}).get('item_id') or '').strip()
+        item_name = str((body or {}).get('item_name') or '').strip()[:160]
+        note = str((body or {}).get('note') or '').strip()[:1000]
+        if not item_id and len(item_name) < 2:
+            raise ApiError(400, 'Укажите предмет или название запроса')
+        if item_id and not item_by_id(item_id):
+            raise ApiError(400, 'Неизвестный предмет для запроса')
+        if item_id:
+            item_name = item_by_id(item_id)['name']
+        now = time.time()
+        cur = conn.execute(
+            'INSERT INTO fixer_requests(character_id,requested_by,item_id,item_name,'
+            'note,status,created,updated) VALUES(?,?,?,?,?,?,?,?)',
+            (row['id'], user['id'], item_id or None, item_name, note, 'pending', now, now))
+        conn.commit()
+        self.send_json({'ok': True, 'request_id': cur.lastrowid}, status=201)
+
+    def api_fixer_requests(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        base = ('SELECT f.*,u.display_name requester,c.data character_data '
+                'FROM fixer_requests f JOIN users u ON u.id=f.requested_by '
+                'JOIN characters c ON c.id=f.character_id ')
+        if user_is_gm(user):
+            rows = conn.execute(
+                base + "ORDER BY (f.status='pending') DESC,f.created DESC,f.id DESC LIMIT 300").fetchall()
+        else:
+            rows = conn.execute(
+                base + 'WHERE f.requested_by=? '
+                'ORDER BY f.created DESC,f.id DESC LIMIT 300', (user['id'],)).fetchall()
+        payload = []
+        for row in rows:
+            item = dict(row)
+            character_data = parse_json_object(item.pop('character_data'))
+            item['character_name'] = character_data.get('handle') or 'Unknown Edgerunner'
+            payload.append(item)
+        self.send_json({'requests': payload})
+
+    @atomic_endpoint
+    def api_fixer_request_resolve(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        request = conn.execute('SELECT * FROM fixer_requests WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not request:
+            raise ApiError(404, 'Запрос Fixer не найден')
+        if request['status'] != 'pending':
+            raise ApiError(409, 'Запрос Fixer уже обработан')
+        action = str((body or {}).get('action') or '').strip().lower()
+        if action not in ('fulfill', 'decline'):
+            raise ApiError(400, 'Fixer resolve action: fulfill/decline')
+        note = str((body or {}).get('note') or '').strip()[:1000]
+        now = time.time()
+        if action == 'decline':
+            conn.execute('UPDATE fixer_requests SET status=?,resolved_by=?,resolved_at=?,'
+                         'resolution_note=?,updated=? WHERE id=?',
+                         ('declined', user['id'], now, note, now, request['id']))
+            conn.commit()
+            self.send_json({'ok': True, 'action': action})
+            return
+        row = self.get_char(conn, request['character_id'])
+        if parse_json_object(row['data']).get('archived'):
+            raise ApiError(409, 'Досье заказчика заархивировано')
+        before = json.loads(row['data'])
+        data = copy.deepcopy(before)
+        ensure_character_item_instances(data)
+        ensure_progression(data)
+        try:
+            qty = max(1, min(99, int((body or {}).get('qty') or 1)))
+        except (TypeError, ValueError):
+            raise ApiError(400, 'Некорректное количество')
+        raw_price = (body or {}).get('price')
+        item_id = str((body or {}).get('grant_item_id') or request['item_id'] or '').strip()
+        if item_id and item_by_id(item_id):
+            it = item_by_id(item_id)
+            if raw_price is None:
+                price = it.get('price') or 0
+            else:
+                try:
+                    price = float(raw_price)
+                except (TypeError, ValueError):
+                    raise ApiError(400, 'Некорректная цена Fixer')
+            price = max(0.0, min(9_999_999.0, price))
+            if price * qty > float(data.get('cash') or 0) + 1e-9:
+                raise ApiError(400, f'Не хватает €$: нужно {price * qty:,.0f}, '
+                                    f'есть {float(data.get("cash") or 0):,.0f}')
+            owned = {
+                'key': it['id'], 'catalog_item_id': it['id'], 'cat': it['cat'],
+                'name': it['name'], 'price': price, 'qty': 1, 'state': 'carried',
+                'damage': it.get('damage'), 'sp': it.get('sp'), 'hl': it.get('hl'),
+                'fields': copy.deepcopy(it.get('fields') or {}),
+                'mechanics': copy.deepcopy(it.get('mechanics') or {}),
+                'source': it.get('source'), 'acquisition_source': 'fixer',
+            }
+            owned.update(catalog_interaction_data(it))
+            owned.update({key: copy.deepcopy(it[key]) for key in ITEM_MODIFICATION_FIELDS if key in it})
+            coverage = item_effect_coverage(it.get('id'))
+            if coverage:
+                owned['effect_coverage'] = coverage
+            inv = data.setdefault('inventory', [])
+            if item_entry_stackable(owned):
+                owned['instance_id'] = new_item_instance_id()
+                owned['qty'] = qty
+                if it['cat'] == 'ammo':
+                    owned['ammo_rounds'] = qty * ammo_pack_size(owned)
+                inv.append(owned)
+            else:
+                if len(inv) + qty > 500:
+                    raise ApiError(400, 'Инвентарь не может содержать больше 500 экземпляров')
+                for _ in range(qty):
+                    instance = copy.deepcopy(owned)
+                    instance['instance_id'] = new_item_instance_id()
+                    inv.append(instance)
+        else:
+            name = str(request['item_name'] or (body or {}).get('item_name') or '').strip()[:120]
+            if len(name) < 2:
+                raise ApiError(400, 'Укажите название выдаваемого предмета')
+            if raw_price is None:
+                price = 0.0
+            else:
+                try:
+                    price = float(raw_price)
+                except (TypeError, ValueError):
+                    raise ApiError(400, 'Некорректная цена Fixer')
+            price = max(0.0, min(9_999_999.0, price))
+            if price * qty > float(data.get('cash') or 0) + 1e-9:
+                raise ApiError(400, f'Не хватает €$: нужно {price * qty:,.0f}, '
+                                    f'есть {float(data.get("cash") or 0):,.0f}')
+            owned = {
+                'is_custom': True, 'key': 'custom', 'cat': 'custom', 'name': name,
+                'custom_name': name, 'price': price, 'qty': qty, 'state': 'carried',
+                'stackable': False, 'desc': '', 'source': 'Fixer Request',
+                'manual_resolution_required': True, 'acquisition_source': 'fixer',
+                'acquisition_note': str(note or '')[:160],
+            }
+            owned['instance_id'] = new_item_instance_id()
+            data.setdefault('inventory', []).append(owned)
+        data['cash'] = round(float(data.get('cash') or 0) - price * qty, 2)
+        persist_character_item_instances(
+            conn, row['id'], data, 'fixer_request', source_ref=f'fixer:{request["id"]}')
+        record_character_changes(conn, row['id'], user['id'], before, data,
+                                 f'Fixer request #{request["id"]}: {request["item_name"]}')
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now, row['id']))
+        conn.execute('UPDATE fixer_requests SET status=?,resolved_by=?,resolved_at=?,'
+                     'resolution_note=?,updated=? WHERE id=?',
+                     ('fulfilled', user['id'], now, note, now, request['id']))
+        conn.commit()
+        self.send_json({'ok': True, 'action': action})
 
     # ------------------------------------------------------------ персонажи
 
     CHAR_LIST_FIELDS = ('id', 'owner_id', 'public', 'created', 'updated')
 
-    def char_payload(self, row, owner_name=None):
-        data = ensure_progression(json.loads(row['data']))
+    def _reputation_for(self, character_id, conn, public_view):
+        if conn is None:
+            return []
+        try:
+            rows = conn.execute(
+                'SELECT cr.*,p.display_name org_name,p.handle org_handle '
+                'FROM character_reputation cr JOIN personas p ON p.id=cr.organization_persona_id '
+                'WHERE cr.character_id=? ORDER BY cr.updated DESC', (int(character_id),)).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.OperationalError:
+            return []
+
+    def char_payload(self, row, owner_name=None, public_view=False, conn=None):
+        full_data = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        visibility = ensure_character_visibility(full_data)
+        data = public_character_data(full_data) if public_view else full_data
+        active_effects = character_effect_instances(conn, row['id']) if conn is not None else []
+        derived = derive(full_data, active_effects)
+        if conn is not None:
+            modifications = character_modifications(conn, row['id'])
+            derived['modifications'] = modifications
+            derived['effective_weapons'] = character_effective_weapons(
+                full_data, modifications)
+            derived['effective_vehicles'] = character_effective_vehicles(
+                full_data, modifications)
+            derived['effective_cyberdecks'] = character_effective_cyberdecks(
+                full_data, modifications)
+            derived['tech_maker'] = tech_maker_payload(full_data)
+            derived['campaign_services'] = character_campaign_services(full_data, conn)
+            derived['campaign_time'] = campaign_now(conn)
+            derived['loans'] = character_open_loans(conn, row['id'])
+            derived['downtime'] = downtime_payload(full_data, conn=conn)
+        if public_view:
+            derived.pop('loans', None)
+            derived.pop('downtime', None)
+        if public_view and not visibility['combat']:
+            derived = {}
+        elif public_view:
+            if not visibility['equipment']:
+                for private_key in ('modifications', 'effective_weapons',
+                                    'effective_vehicles', 'effective_cyberdecks',
+                                    'effective_cyberware', 'effective_armor_hosts',
+                                    'tech_maker', 'campaign_services', 'downtime'):
+                    derived.pop(private_key, None)
+            for effect in (derived.get('effects') or {}).get('instances') or []:
+                for private_key in ('reason', 'actor', 'source_item_instance_id'):
+                    effect.pop(private_key, None)
+            for modification in derived.get('modifications') or []:
+                for private_key in ('notes', 'installer', 'configuration'):
+                    modification.pop(private_key, None)
+            for armor_host in (derived.get('effective_armor_hosts') or {}).get('hosts', []):
+                tech_upgrade = armor_host.get('tech_upgrade')
+                if isinstance(tech_upgrade, dict):
+                    for private_key in ('tech_name', 'installed_by', 'reason'):
+                        tech_upgrade.pop(private_key, None)
+                tech_maker = armor_host.get('tech_maker_modification')
+                if isinstance(tech_maker, dict):
+                    for private_key in ('tech_name', 'installed_by', 'reason', 'notes'):
+                        tech_maker.pop(private_key, None)
+            for vehicle in (derived.get('effective_vehicles') or {}).values():
+                repair_state = vehicle.get('state') or {}
+                if isinstance(repair_state.get('repair'), dict):
+                    repair_state['repair'].pop('technician', None)
+                for repair in repair_state.get('repair_history') or []:
+                    if isinstance(repair, dict):
+                        repair.pop('technician', None)
+                tech_maker = vehicle.get('tech_maker_modification')
+                if isinstance(tech_maker, dict):
+                    for private_key in ('tech_name', 'installed_by', 'reason', 'notes'):
+                        tech_maker.pop(private_key, None)
+            for mod in (derived.get('tech_maker') or {}).get('modifications') or []:
+                for private_key in ('tech_name', 'reason', 'notes'):
+                    mod.pop(private_key, None)
+            for deck in (derived.get('effective_cyberdecks') or {}).values():
+                for program in deck.get('programs') or []:
+                    entity = program.get('net_entity')
+                    if isinstance(entity, dict):
+                        for private_key in ('floor_label', 'target_label',
+                                            'owner_character_id', 'initiative_roll',
+                                            'session_id', 'session_floor_id',
+                                            'session_node_id', 'session_node_label',
+                                            'target_combatant_id'):
+                            entity.pop(private_key, None)
         return {
-            'id': row['id'], 'owner_id': row['owner_id'], 'public': bool(row['public']),
+            'id': row['id'], 'revision': _row_value(row, 'revision', 0),
+            'owner_id': row['owner_id'] if (not public_view or owner_name) else None,
+            'public': bool(row['public']),
             'owner_name': owner_name, 'created': row['created'], 'updated': row['updated'],
-            'data': data, 'derived': derive(data),
+            'data': data, 'derived': derived,
+            'reputation': self._reputation_for(row['id'], conn, public_view),
         }
 
     def api_my_characters(self, conn, qs, m, body):
@@ -3822,12 +12484,19 @@ class Handler(BaseHTTPRequestHandler):
         rows = conn.execute(
             'SELECT * FROM characters WHERE owner_id=? ORDER BY updated DESC',
             (u['id'],)).fetchall()
-        self.send_json({'characters': [self.char_payload(r, u['display_name']) for r in rows]})
+        self.send_json({'characters': [self.char_payload(r, u['display_name'], conn=conn) for r in rows]})
 
+    @atomic_endpoint
     def api_create_character(self, conn, qs, m, body):
         u = self.require_user(conn)
         data = clean_character(body.get('data') if isinstance(body, dict) else body)
         validate_creation(data)
+        # Client-provided IDs are never trusted for a new Dossier. Durable items
+        # become separate owned instances; clearly stackable ammunition stays one row.
+        ensure_character_item_instances(data, regenerate=True)
+        if len(data.get('inventory') or []) + len(data.get('cyberware') or []) > 500:
+            raise ApiError(400, 'Инвентарь не может содержать больше 500 экземпляров')
+        ensure_progression(data)
         owned_rows = conn.execute('SELECT data FROM characters WHERE owner_id=?',
                                   (u['id'],)).fetchall()
         count = sum(1 for item in owned_rows if not parse_json_object(item['data']).get('archived'))
@@ -3839,10 +12508,60 @@ class Handler(BaseHTTPRequestHandler):
             'INSERT INTO characters(owner_id, public, data, created, updated) VALUES(?,?,?,?,?)',
             (u['id'], pub, json.dumps(data, ensure_ascii=False), now, now))
         attach_character_media(conn, u['id'], cur.lastrowid, data)
+        persist_character_item_instances(
+            conn, cur.lastrowid, data, 'character_creation', acquired_at=now, prune=True)
         record_character_changes(conn, cur.lastrowid, u['id'], {}, data, 'Character created')
         conn.commit()
         row = conn.execute('SELECT * FROM characters WHERE id=?', (cur.lastrowid,)).fetchone()
-        self.send_json(self.char_payload(row, u['display_name']), status=201)
+        self.send_json(self.char_payload(row, u['display_name'], conn=conn), status=201)
+
+    def api_pdf_import(self, conn, qs, m, body):
+        """Parse a fillable PDF character sheet and return draft character data."""
+        user = self.require_user(conn)
+        pdf_b64 = str((body or {}).get('pdf') or '')
+        if not pdf_b64:
+            raise ApiError(400, 'PDF обязателен (base64)')
+        try:
+            pdf_bytes = base64.b64decode(pdf_b64)
+        except Exception:
+            raise ApiError(400, 'Некорректный base64')
+        if len(pdf_bytes) < 100 or not pdf_bytes[:5].startswith(b'%PDF'):
+            raise ApiError(400, 'Файл не является PDF')
+        if len(pdf_bytes) > 5_000_000:
+            raise ApiError(413, 'PDF слишком большой (макс 5 МБ)')
+        try:
+            sys.path.insert(0, BASE)
+            import pdf_import
+            result = pdf_import.import_pdf(pdf_bytes)
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        except Exception as e:
+            raise ApiError(500, 'Ошибка парсинга PDF')
+        self.send_json(result)
+
+    @atomic_endpoint
+    def api_character_import(self, conn, qs, m, body):
+        u = self.require_user(conn)
+        raw = (body or {}).get('data')
+        if raw is None:
+            raw = (body or {})
+        data = canonical_import_character(raw)
+        owned_rows = conn.execute('SELECT data FROM characters WHERE owner_id=?',
+                                  (u['id'],)).fetchall()
+        count = sum(1 for item in owned_rows if not parse_json_object(item['data']).get('archived'))
+        if count >= 50:
+            raise ApiError(400, 'Слишком много персонажей (максимум 50)')
+        now = time.time()
+        cur = conn.execute(
+            'INSERT INTO characters(owner_id, public, data, created, updated) VALUES(?,?,?,?,?)',
+            (u['id'], 0, json.dumps(data, ensure_ascii=False), now, now))
+        persist_character_item_instances(
+            conn, cur.lastrowid, data, 'character_import', acquired_at=now, prune=True)
+        record_character_changes(conn, cur.lastrowid, u['id'], {}, data,
+                                 'Character imported from JSON')
+        conn.commit()
+        row = conn.execute('SELECT * FROM characters WHERE id=?', (cur.lastrowid,)).fetchone()
+        self.send_json(self.char_payload(row, u['display_name'], conn=conn), status=201)
 
     def get_char(self, conn, cid):
         try:
@@ -3850,19 +12569,26 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             raise ApiError(404, 'Персонаж не найден')
         row = conn.execute(
-            'SELECT c.*, u.display_name owner FROM characters c '
-            'JOIN users u ON u.id=c.owner_id WHERE c.id=?', (cid,)).fetchone()
+            'SELECT c.*,u.display_name owner,u.show_display_name owner_show_name '
+            'FROM characters c JOIN users u ON u.id=c.owner_id WHERE c.id=?',
+            (cid,)).fetchone()
         if not row:
             raise ApiError(404, 'Персонаж не найден')
         return row
 
     def api_get_character(self, conn, qs, m, body):
         row = self.get_char(conn, m.group(1))
-        u = self.current_user(conn)
-        if not row['public'] and (not u or u['id'] != row['owner_id']):
+        user = self.current_user(conn)
+        owner_view = bool(user and user['id'] == row['owner_id'])
+        admin_view = user_is_admin(user)
+        if not row['public'] and not (owner_view or admin_view):
             raise ApiError(403, 'Персонаж приватный')
-        self.send_json(self.char_payload(row, row['owner']))
+        privileged_name = bool(owner_view or user_is_gm(user))
+        owner_name = row['owner'] if (privileged_name or row['owner_show_name']) else None
+        self.send_json(self.char_payload(
+            row, owner_name, public_view=not (owner_view or admin_view), conn=conn))
 
+    @atomic_endpoint
     def api_save_character(self, conn, qs, m, body):
         u = self.require_user(conn)
         row = self.get_char(conn, m.group(1))
@@ -3871,8 +12597,16 @@ class Handler(BaseHTTPRequestHandler):
         old_data = json.loads(row['data'])
         if old_data.get('archived'):
             raise ApiError(409, 'Архивное досье доступно только для чтения')
-        data = clean_character(body.get('data') if isinstance(body, dict) else body)
-        pub = 1 if data.get('public', False) else 0
+        expected_revision = _num((body or {}).get('revision'))
+        if expected_revision is None:
+            raise ApiError(428, 'Укажите revision Dossier')
+        if expected_revision != (_row_value(row, 'revision', 0) or 0):
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        patch = clean_character_profile_patch(old_data, body or {})
+        data = dict(old_data)
+        data.update(patch)
+        pub = 1 if patch.get('public', bool(row['public'])) else 0
+        data['public'] = bool(pub)
         old_media = str(old_data.get('portrait_media_id') or '')
         new_media = str(data.get('portrait_media_id') or '')
         if old_media and old_media != new_media:
@@ -3880,13 +12614,53 @@ class Handler(BaseHTTPRequestHandler):
                          (old_media, u['id'], row['id']))
         attach_character_media(conn, u['id'], row['id'], data)
         record_character_changes(conn, row['id'], u['id'], old_data, data,
-                                 str((body or {}).get('reason') or 'Character sheet update'))
-        conn.execute('UPDATE characters SET data=?, public=?, updated=? WHERE id=?',
+                                 str((body or {}).get('reason') or 'Dossier profile update'))
+        conn.execute('UPDATE characters SET data=?,public=?,updated=?,revision=revision+1 WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), pub, time.time(), row['id']))
         conn.commit()
         row = self.get_char(conn, row['id'])
-        self.send_json(self.char_payload(row, row['owner']))
+        self.send_json(self.char_payload(row, row['owner'], conn=conn))
 
+    @atomic_endpoint
+    def api_character_sheet_update(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        expected_revision = _num((body or {}).get('revision'))
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if expected_revision is None:
+            raise ApiError(428, 'Укажите revision Dossier')
+        if expected_revision != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        reason = str((body or {}).get('reason') or '').strip()
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину изменения Character Sheet')
+        before = json.loads(row['data'])
+        after = clean_character_trust_update(before, (body or {}).get('data'))
+        if before == after:
+            raise ApiError(400, 'В Character Sheet нет изменений')
+        validate_cyberware_trust_lifecycle(before, after)
+        validate_bound_popup_weapon_references(after)
+        validate_popup_shield_references(after)
+        validate_armor_tech_references(after)
+        validate_armor_repair_references(after)
+        validate_tech_maker_references(after)
+        validate_active_modification_references(conn, row['id'], after)
+        sync_weapon_states_with_modifications(conn, row['id'], after)
+        sync_vehicle_states_with_modifications(conn, row['id'], after)
+        persist_character_item_instances(
+            conn, row['id'], after, 'trust_audit_edit', source_ref=reason, prune=True)
+        revision_after = current_revision + 1
+        record_character_change_set(
+            conn, row['id'], user['id'], before, after, reason,
+            current_revision, revision_after)
+        conn.execute(
+            'UPDATE characters SET data=?,public=?,updated=?,revision=? WHERE id=?',
+            (json.dumps(after, ensure_ascii=False), 1 if after.get('public') else 0,
+             time.time(), revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json(self.char_payload(fresh, fresh['owner'], conn=conn))
+
+    @atomic_endpoint
     def api_delete_character(self, conn, qs, m, body):
         u = self.require_user(conn)
         row = self.get_char(conn, m.group(1))
@@ -3925,7 +12699,7 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         conn.execute("UPDATE contracts SET status='open',updated=? WHERE id=? AND status='crew_full'",
                                      (now, signup['contract_id']))
-            conn.execute('UPDATE characters SET public=0,data=?,updated=? WHERE id=?',
+            conn.execute('UPDATE characters SET public=0,data=?,updated=?,revision=revision+1 WHERE id=?',
                          (json.dumps(data, ensure_ascii=False), now, row['id']))
             record_character_changes(conn, row['id'], u['id'], json.loads(row['data']), data,
                                      'Dossier archived with NC//NET history')
@@ -3936,6 +12710,9 @@ class Handler(BaseHTTPRequestHandler):
         conn.execute("DELETE FROM media WHERE attached_type='character' AND attached_id=?", (row['id'],))
         conn.execute('DELETE FROM ip_ledger WHERE character_id=?', (row['id'],))
         conn.execute('DELETE FROM character_ledger WHERE character_id=?', (row['id'],))
+        conn.execute('DELETE FROM item_modifications WHERE character_id=?', (row['id'],))
+        conn.execute('DELETE FROM item_instances WHERE character_id=?', (row['id'],))
+        conn.execute('DELETE FROM active_effect_instances WHERE character_id=?', (row['id'],))
         conn.execute('DELETE FROM characters WHERE id=?', (row['id'],))
         conn.commit()
         for media in media_rows:
@@ -3946,12 +12723,12 @@ class Handler(BaseHTTPRequestHandler):
     def save_character_data(self, conn, row, data, actor_id=None, reason='Character progression'):
         if actor_id is not None:
             record_character_changes(conn, row['id'], actor_id, json.loads(row['data']), data, reason)
-        conn.execute('UPDATE characters SET data=?, public=?, updated=? WHERE id=?',
+        conn.execute('UPDATE characters SET data=?,public=?,updated=?,revision=revision+1 WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), 1 if data.get('public') else 0,
                       time.time(), row['id']))
         conn.commit()
         fresh = self.get_char(conn, row['id'])
-        return self.char_payload(fresh, fresh['owner'])
+        return self.char_payload(fresh, fresh['owner'], conn=conn)
 
     def require_character_editor(self, conn, cid, allow_gm=False):
         user = self.require_user(conn)
@@ -3968,8 +12745,12 @@ class Handler(BaseHTTPRequestHandler):
                      (character_id, actor_id, amount, before, after, kind,
                       str(subject or '')[:120] or None, str(reason or '')[:500], time.time()))
 
+    @atomic_endpoint
     def api_character_ip(self, conn, qs, m, body):
-        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        user = self.require_gm(conn)
+        row = self.get_char(conn, m.group(1))
+        if parse_json_object(row['data']).get('archived'):
+            raise ApiError(409, 'Архивное досье доступно только для чтения')
         data = ensure_progression(json.loads(row['data']))
         amount = _num((body or {}).get('amount')) or 0
         reason = str((body or {}).get('reason') or '').strip()
@@ -4013,12 +12794,3652 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_character_ledger(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        current_revision = _row_value(row, 'revision', 0) or 0
         entries = conn.execute(
             'SELECT l.*,u.display_name actor FROM character_ledger l '
             'JOIN users u ON u.id=l.actor_user_id WHERE character_id=? '
             'ORDER BY l.id DESC LIMIT 500', (row['id'],)).fetchall()
-        self.send_json({'entries': [dict(item) for item in entries]})
+        payload = []
+        for raw in entries:
+            item = dict(raw)
+            delta = parse_json_object(item.get('delta_json'))
+            item['delta'] = delta
+            item['changes'] = delta.get('changes') if isinstance(delta.get('changes'), list) else []
+            item['can_revert'] = bool(
+                delta.get('revertible') and
+                _num(delta.get('revision_after')) == current_revision and
+                item['category'] in (
+                    'sheet_update', 'sheet_revert', 'item_action', 'modification', 'vehicle'))
+            item['has_snapshot'] = bool(item.get('before_json'))
+            item.pop('before_json', None)
+            item.pop('after_json', None)
+            item.pop('delta_json', None)
+            payload.append(item)
+        self.send_json({'entries': payload, 'current_revision': current_revision})
 
+    @atomic_endpoint
+    def api_character_ledger_revert(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        expected_revision = _num((body or {}).get('revision'))
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if expected_revision is None or expected_revision != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        entry = conn.execute(
+            'SELECT * FROM character_ledger WHERE id=? AND character_id=?',
+            (int(m.group(2)), row['id'])).fetchone()
+        if not entry or entry['category'] not in (
+                'sheet_update', 'sheet_revert', 'item_action', 'modification', 'vehicle'):
+            raise ApiError(404, 'Изменение Character Sheet не найдено')
+        delta = parse_json_object(entry['delta_json'])
+        if (not delta.get('revertible') or
+                _num(delta.get('revision_after')) != current_revision):
+            raise ApiError(409, 'Откат доступен только до следующего изменения Dossier')
+        try:
+            target = json.loads(entry['before_json'])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise ApiError(409, 'Snapshot для отката повреждён')
+        if not isinstance(target, dict):
+            raise ApiError(409, 'Snapshot для отката повреждён')
+        before = json.loads(row['data'])
+        now = time.time()
+        session_net_change = delta.get('session_net_change')
+        if isinstance(session_net_change, dict):
+            session_id = _num(session_net_change.get('session_id'))
+            session_before = session_net_change.get('before')
+            session_after = session_net_change.get('after')
+            session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                                   (session_id,)).fetchone() if session_id else None
+            if (not session or not isinstance(session_before, dict) or
+                    not isinstance(session_after, dict)):
+                raise ApiError(409, 'Session NET snapshot для отката повреждён')
+            clean_session_before = session_net_state(session_before)
+            clean_session_after = session_net_state(session_after)
+            current_session_net = session_net_state(
+                _row_value(session, 'net_state_json', '{}'))
+            if current_session_net != clean_session_after:
+                raise ApiError(409, 'Session NET context изменён после Character action')
+            conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                         (json.dumps(clean_session_before, ensure_ascii=False), now,
+                          session['id']))
+            conn.execute(
+                'INSERT INTO session_activity(session_id,actor_user_id,event_type,note,created) '
+                'VALUES(?,?,?,?,?)',
+                (session['id'], user['id'], 'net_entity_revert',
+                 f'Revert character ledger #{entry["id"]}', now))
+        for effect_id in delta.get('created_effect_ids') or []:
+            conn.execute(
+                'UPDATE active_effect_instances SET active=0,archived_at=?,updated=? '
+                'WHERE effect_id=? AND character_id=?',
+                (now, now, str(effect_id), row['id']))
+        for effect_id in delta.get('replaced_effect_ids') or []:
+            replaced = conn.execute(
+                'SELECT * FROM active_effect_instances WHERE effect_id=? AND character_id=?',
+                (str(effect_id), row['id'])).fetchone()
+            if not replaced or replaced['archived_at']:
+                continue
+            if replaced['duration_type'] == 'real_time' and replaced['expires_at'] is not None and replaced['expires_at'] <= now:
+                continue
+            if replaced['duration_type'] == 'rounds' and (_num(replaced['remaining_rounds']) or 0) <= 0:
+                continue
+            conn.execute('UPDATE active_effect_instances SET active=1,updated=? WHERE effect_id=?',
+                         (now, str(effect_id)))
+        for modification_id in delta.get('created_modification_ids') or []:
+            conn.execute(
+                'UPDATE item_modifications SET active=0,removed_by=?,removed_at=?,updated=? '
+                'WHERE modification_id=? AND character_id=?',
+                (user['id'], now, now, str(modification_id), row['id']))
+        for modification_id in delta.get('removed_modification_ids') or []:
+            conn.execute(
+                'UPDATE item_modifications SET active=1,removed_by=NULL,removed_at=NULL,updated=? '
+                'WHERE modification_id=? AND character_id=?',
+                (now, str(modification_id), row['id']))
+        ensure_character_item_instances(target)
+        ensure_progression(target)
+        validate_armor_tech_references(target)
+        validate_armor_repair_references(target)
+        validate_tech_maker_references(target)
+        validate_bound_popup_weapon_references(target)
+        validate_popup_shield_references(target)
+        validate_active_modification_references(conn, row['id'], target)
+        sync_weapon_states_with_modifications(conn, row['id'], target)
+        sync_vehicle_states_with_modifications(conn, row['id'], target)
+        persist_character_item_instances(
+            conn, row['id'], target, 'ledger_revert',
+            source_ref=f'ledger:{entry["id"]}', prune=True)
+        revision_after = current_revision + 1
+        reason = str((body or {}).get('reason') or '').strip()
+        reason = reason[:500] or f'Revert ledger entry #{entry["id"]}'
+        revert_ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, target, reason,
+            current_revision, revision_after, category='sheet_revert',
+            reverts_ledger_id=entry['id'])
+        if (delta.get('created_effect_ids') or delta.get('replaced_effect_ids') or
+                delta.get('created_modification_ids') or delta.get('removed_modification_ids') or
+                session_net_change):
+            revert_delta_row = conn.execute(
+                'SELECT delta_json FROM character_ledger WHERE id=?',
+                (revert_ledger_id,)).fetchone()
+            revert_delta = parse_json_object(revert_delta_row['delta_json'])
+            revert_delta['revertible'] = False
+            revert_delta['effect_linked_revert'] = True
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(revert_delta, ensure_ascii=False), revert_ledger_id))
+        conn.execute(
+            'UPDATE characters SET data=?,public=?,updated=?,revision=? WHERE id=?',
+            (json.dumps(target, ensure_ascii=False), 1 if target.get('public') else 0,
+             time.time(), revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json(self.char_payload(fresh, fresh['owner'], conn=conn))
+
+    def api_character_items(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        instances = conn.execute(
+            'SELECT * FROM item_instances WHERE character_id=? '
+            'ORDER BY bucket,acquired_at,instance_id', (row['id'],)).fetchall()
+        payload = []
+        for instance in instances:
+            item = dict(instance)
+            item['item'] = parse_json_object(item.pop('data_json'))
+            payload.append(item)
+        self.send_json({'character_id': row['id'], 'instances': payload})
+
+    def modification_management_payload(self, conn, row):
+        data = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        owned = {entry.get('instance_id'): entry for bucket in ('inventory', 'cyberware')
+                 for entry in data.get(bucket) or [] if isinstance(entry, dict) and entry.get('instance_id')}
+        modifications = character_modifications(conn, row['id'])
+        hosts = []
+        for host in (entry for entry in data.get('inventory') or []
+                     if isinstance(entry, dict) and entry.get('cat') == 'guns'):
+            active = [mod for mod in modifications if mod['host_instance_id'] == host.get('instance_id')]
+            pools = weapon_slot_capacity(host, active, owned)
+            host_summary = {
+                'instance_id': host.get('instance_id'), 'name': host.get('custom_name') or host.get('name'),
+                'catalog_item_id': catalog_item_id_for_entry(host), 'state': host.get('state'),
+                'weapon_type': (host.get('mechanics') or {}).get('type'),
+                'skill': (host.get('mechanics') or {}).get('skill'),
+                'exotic': weapon_is_exotic(host),
+                'slots_total': sum(pool['total'] for pool in pools.values()),
+                'slots_used': sum(pool['used'] for pool in pools.values()),
+                'slot_pools': pools,
+                'modification_ids': [mod['modification_id'] for mod in active],
+            }
+            hosts.append(host_summary)
+        upgrades = []
+        for upgrade in (entry for entry in data.get('inventory') or []
+                        if isinstance(entry, dict) and entry.get('cat') == 'gun_upgrades'):
+            matrix = {}
+            configuration_by_host = {}
+            for host in (entry for entry in data.get('inventory') or []
+                         if isinstance(entry, dict) and entry.get('cat') == 'guns'):
+                active = [mod for mod in modifications if mod['host_instance_id'] == host.get('instance_id')]
+                matrix[host['instance_id']] = weapon_upgrade_compatibility(
+                    host, upgrade, active, owned)
+                configuration_by_host[host['instance_id']] = weapon_modification_configuration_schema(
+                    catalog_item_id_for_entry(upgrade), host)
+            upgrades.append({
+                'instance_id': upgrade.get('instance_id'),
+                'catalog_item_id': catalog_item_id_for_entry(upgrade),
+                'name': upgrade.get('custom_name') or upgrade.get('name'),
+                'state': upgrade.get('state'), 'slots_used': upgrade.get('slots_used') or 0,
+                'permanent_installation': bool(upgrade.get('permanent_installation')),
+                'compatibility_manual': bool(upgrade.get('compatibility_manual')),
+                'compatibility_text': upgrade.get('compatibility_text') or '',
+                'configuration_schemas': weapon_modification_configuration_schema(
+                    catalog_item_id_for_entry(upgrade)),
+                'configuration_by_host': configuration_by_host,
+                'compatibility': matrix,
+            })
+        effective_vehicle_map = character_effective_vehicles(data, modifications)
+        vehicle_hosts = []
+        for host in (entry for entry in data.get('inventory') or []
+                     if isinstance(entry, dict) and entry.get('cat') == 'vehicles'):
+            active = [mod for mod in modifications if mod['host_instance_id'] == host.get('instance_id')]
+            mechanics = host.get('mechanics') or {}
+            vehicle_effective = effective_vehicle_map.get(host.get('instance_id')) or {}
+            vehicle_hosts.append({
+                'instance_id': host.get('instance_id'),
+                'catalog_item_id': catalog_item_id_for_entry(host),
+                'name': host.get('custom_name') or host.get('name'),
+                'state': host.get('state'), 'classes': sorted(vehicle_classification(host)),
+                'sdp': mechanics.get('sdp'), 'sp': mechanics.get('sp'),
+                'seats': mechanics.get('seats'),
+                'combat_speed': mechanics.get('combat_speed'),
+                'narrative_speed': mechanics.get('narrative_speed'),
+                'nomad_access': mechanics.get('nomad_access'),
+                'base': vehicle_effective.get('base') or mechanics,
+                'effective': vehicle_effective.get('effective') or mechanics,
+                'vehicle_state': vehicle_effective.get('state') or {},
+                'effect_sources': vehicle_effective.get('sources') or [],
+                'nos_tanks': vehicle_effective.get('nos_tanks') or [],
+                'mounted_weapons': vehicle_effective.get('mounted_weapons') or [],
+                'weapon_mounts': vehicle_effective.get('weapon_mounts') or [],
+                'interior': vehicle_effective.get('interior') or {},
+                'cargo_modules': vehicle_effective.get('cargo_modules') or [],
+                'modification_ids': [mod['modification_id'] for mod in active],
+            })
+        vehicle_upgrades = []
+        for upgrade in (entry for entry in data.get('inventory') or []
+                        if isinstance(entry, dict) and entry.get('cat') == 'vehicles_upgrades'):
+            matrix = {}
+            for host in (entry for entry in data.get('inventory') or []
+                         if isinstance(entry, dict) and entry.get('cat') == 'vehicles'):
+                active = [mod for mod in modifications if mod['host_instance_id'] == host.get('instance_id')]
+                matrix[host['instance_id']] = vehicle_upgrade_compatibility(
+                    host, upgrade, active, owned, data)
+            vehicle_upgrades.append({
+                'instance_id': upgrade.get('instance_id'),
+                'catalog_item_id': catalog_item_id_for_entry(upgrade),
+                'name': upgrade.get('custom_name') or upgrade.get('name'),
+                'state': upgrade.get('state'),
+                'availability_text': upgrade.get('availability_text') or '',
+                'nomad_access_required': upgrade.get('nomad_access_required'),
+                'repeatable_max': upgrade.get('repeatable_max') or 1,
+                'permanent_installation': bool(upgrade.get('permanent_installation')),
+                'compatibility_manual': bool(upgrade.get('compatibility_manual')),
+                'configuration_schemas': vehicle_modification_configuration_schema(
+                    catalog_item_id_for_entry(upgrade)),
+                'compatibility': matrix,
+            })
+        effective_deck_map = character_effective_cyberdecks(data, modifications)
+        cyberdeck_hosts = []
+        deck_entries = [
+            entry for entry in data.get('inventory') or []
+            if isinstance(entry, dict) and entry.get('cat') == 'net_stuff' and
+            (entry.get('mechanics') or {}).get('type') == 'Cyberdeck']
+        for host in deck_entries:
+            effective = effective_deck_map.get(host.get('instance_id')) or {}
+            cyberdeck_hosts.append({
+                'instance_id': host.get('instance_id'),
+                'catalog_item_id': catalog_item_id_for_entry(host),
+                'name': host.get('custom_name') or host.get('name'),
+                'state': host.get('state'),
+                'slot_pools': effective.get('pools') or {},
+                'slots_total': effective.get('slots_total') or 0,
+                'slots_used': effective.get('slots_used') or 0,
+                'hardware': effective.get('hardware') or [],
+                'programs': effective.get('programs') or [],
+                'modification_ids': [
+                    mod['modification_id'] for mod in modifications
+                    if mod.get('host_instance_id') == host.get('instance_id')],
+            })
+        cyberdeck_items = []
+        for upgrade in (entry for entry in data.get('inventory') or []
+                        if isinstance(entry, dict) and
+                        entry.get('host_type') == 'cyberdeck'):
+            matrix = {}
+            for host in deck_entries:
+                active = [mod for mod in modifications
+                          if mod.get('host_instance_id') == host.get('instance_id')]
+                matrix[host['instance_id']] = cyberdeck_item_compatibility(
+                    host, upgrade, active, owned)
+            cyberdeck_items.append({
+                'instance_id': upgrade.get('instance_id'),
+                'catalog_item_id': catalog_item_id_for_entry(upgrade),
+                'name': upgrade.get('custom_name') or upgrade.get('name'),
+                'state': upgrade.get('state'),
+                'item_kind': upgrade.get('modification_kind'),
+                'program_class': (upgrade.get('mechanics') or {}).get('program_class'),
+                'slots_used': upgrade.get('slots_used') or 1,
+                'compatibility': matrix,
+            })
+        for modification in modifications:
+            config = modification.get('configuration') or {}
+            modification['host_name'] = (owned.get(modification['host_instance_id']) or {}).get('custom_name') or (owned.get(modification['host_instance_id']) or {}).get('name') or config.get('host_name')
+            modification['upgrade_name'] = (owned.get(modification['upgrade_instance_id']) or {}).get('custom_name') or (owned.get(modification['upgrade_instance_id']) or {}).get('name') or config.get('upgrade_name')
+        return {
+            'character_id': row['id'], 'revision': _row_value(row, 'revision', 0) or 0,
+            'hosts': hosts, 'upgrades': upgrades,
+            'vehicle_hosts': vehicle_hosts, 'vehicle_upgrades': vehicle_upgrades,
+            'cyberdeck_hosts': cyberdeck_hosts, 'cyberdeck_items': cyberdeck_items,
+            'modifications': modifications,
+        }
+
+    def api_character_modifications(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        self.send_json(self.modification_management_payload(conn, row))
+
+    @atomic_endpoint
+    def api_character_modification_install(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        if set(body or {}) - {'revision', 'host_instance_id', 'upgrade_instance_id',
+                              'manual_confirm', 'configuration', 'reason', 'notes'}:
+            raise ApiError(400, 'Modification содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        host_id = str((body or {}).get('host_instance_id') or '').lower()
+        upgrade_id = str((body or {}).get('upgrade_instance_id') or '').lower()
+        if not INSTANCE_ID_RE.fullmatch(host_id) or not INSTANCE_ID_RE.fullmatch(upgrade_id):
+            raise ApiError(400, 'Некорректный host или upgrade instance')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину установки modification')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        owned = {entry.get('instance_id'): entry for entry in data.get('inventory') or []
+                 if isinstance(entry, dict) and entry.get('instance_id')}
+        host, upgrade = owned.get(host_id), owned.get(upgrade_id)
+        if not host or not upgrade:
+            raise ApiError(404, 'Host или upgrade не найден в Inventory')
+        if host.get('state') in ('stored', 'broken', 'consumed'):
+            raise ApiError(409, 'Host должен быть исправен и находиться при персонаже')
+        if host.get('installed_cyberware_instance_id'):
+            raise ApiError(409, 'Permanent Popup Weapon attachments нельзя изменять')
+        if upgrade.get('state') != 'carried':
+            raise ApiError(409, 'Upgrade должен находиться в состоянии carried')
+        host_type = str(upgrade.get('host_type') or '')
+        active = [mod for mod in character_modifications(conn, row['id'])
+                  if mod['host_instance_id'] == host_id]
+        if host_type == 'weapon':
+            choices = clean_weapon_modification_choices(
+                catalog_item_id_for_entry(upgrade), (body or {}).get('configuration'), host)
+            compatibility = weapon_upgrade_compatibility(host, upgrade, active, owned)
+            effect_rules = weapon_modification_rules_for_catalog(
+                catalog_item_id_for_entry(upgrade))
+        elif host_type == 'vehicle':
+            choices = clean_vehicle_modification_choices(
+                catalog_item_id_for_entry(upgrade), (body or {}).get('configuration'))
+            compatibility = vehicle_upgrade_compatibility(
+                host, upgrade, active, owned, data)
+            effect_rules = vehicle_modification_rules_for_catalog(
+                catalog_item_id_for_entry(upgrade))
+        elif host_type == 'cyberdeck':
+            if (body or {}).get('configuration') not in (None, {}):
+                raise ApiError(400, 'Cyberdeck configuration пока не поддерживается')
+            choices = {}
+            compatibility = cyberdeck_item_compatibility(
+                host, upgrade, active, owned)
+            effect_rules = []
+        else:
+            raise ApiError(400, 'Неподдерживаемый тип modification host')
+        if not compatibility['allowed']:
+            raise ApiError(400, 'Несовместимая модификация: ' + '; '.join(compatibility['reasons']))
+        if compatibility['manual_resolution_required'] and not bool((body or {}).get('manual_confirm')):
+            raise ApiError(409, 'Требуется ручное подтверждение сложного правила совместимости')
+        modification_id = secrets.token_hex(16)
+        now = time.time()
+        configuration = {
+            'host_catalog_item_id': catalog_item_id_for_entry(host),
+            'upgrade_catalog_item_id': catalog_item_id_for_entry(upgrade),
+            'host_name': host.get('custom_name') or host.get('name'),
+            'upgrade_name': upgrade.get('custom_name') or upgrade.get('name'),
+            'compatibility': compatibility,
+            'manual_confirmed': bool((body or {}).get('manual_confirm')),
+            'slot_pool': compatibility.get('slot_pool'),
+            'grants_slots': copy.deepcopy(upgrade.get('grants_slots') or {}),
+            'choices': choices,
+            'effect_rules': effect_rules,
+            'effects_rules_version': load_effect_rules().get('rules_version'),
+        }
+        profiles = weapon_profiles_from_rules(configuration['effect_rules'])
+        if profiles:
+            profile = profiles[0]
+            data.setdefault('modification_state', {})[modification_id] = {
+                'profile_id': profile['id'],
+                'magazine': 0,
+                'magazine_max': int(profile['magazine']),
+                'reserve': 0,
+            }
+        elif host_type == 'vehicle':
+            initial_state = initial_vehicle_modification_state(
+                configuration['effect_rules'], data, choices)
+            if initial_state:
+                data.setdefault('modification_state', {})[modification_id] = initial_state
+        elif host_type == 'cyberdeck':
+            if upgrade.get('modification_kind') == 'cyberdeck_program':
+                data.setdefault('program_state', {})[upgrade_id] = \
+                    initial_program_runtime_state(
+                        upgrade, host_id, modification_id)
+            elif upgrade.get('name') == 'Backup Drive':
+                data.setdefault('modification_state', {})[modification_id] = {
+                    'resource_type': 'backup_drive', 'saved_programs': [],
+                }
+        conn.execute(
+            'INSERT INTO item_modifications(modification_id,character_id,host_instance_id,'
+            'upgrade_instance_id,host_type,slot_type,slots_used,active,permanent,'
+            'configuration_json,notes,source_type,installed_by,installed_at,created,updated) '
+            'VALUES(?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?)',
+            (modification_id, row['id'], host_id, upgrade_id, host_type,
+             compatibility.get('slot_pool') or upgrade.get('slot_type') or f'{host_type}_upgrade',
+             int(upgrade.get('slots_used') or 0), 1 if upgrade.get('permanent_installation') else 0,
+             json.dumps(configuration, ensure_ascii=False), str((body or {}).get('notes') or '')[:2000],
+             upgrade.get('acquisition_source') or 'inventory', user['id'], now, now, now))
+        upgrade['state'] = 'installed'
+        upgrade['host_instance_id'] = host_id
+        if host_type == 'weapon':
+            sync_weapon_states_with_modifications(conn, row['id'], data)
+        elif host_type == 'vehicle':
+            sync_vehicle_states_with_modifications(conn, row['id'], data)
+        revision_after = current_revision + 1
+        persist_character_item_instances(conn, row['id'], data, 'modification_install')
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data,
+            f'Install {configuration["upgrade_name"]} on {configuration["host_name"]}: {reason}',
+            current_revision, revision_after, category='modification')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['created_modification_ids'] = [modification_id]
+        if upgrade.get('permanent_installation'):
+            delta['revertible'] = False
+            delta['permanent_modification'] = True
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now, revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'modification_id': modification_id,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+            'management': self.modification_management_payload(conn, fresh),
+        }, status=201)
+
+    @atomic_endpoint
+    def api_character_modification_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        if set(body or {}) - {
+                'revision', 'action', 'reason', 'weapon_instance_id', 'ammo_instance_id'}:
+            raise ApiError(400, 'Modification action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        modification_id = str(m.group(2)).lower()
+        modification_row = conn.execute(
+            'SELECT * FROM item_modifications WHERE modification_id=? AND character_id=?',
+            (modification_id, row['id'])).fetchone()
+        if not modification_row:
+            raise ApiError(404, 'Modification не найдена')
+        modification = item_modification_payload(modification_row)
+        if not modification['active']:
+            raise ApiError(409, 'Modification уже снята')
+        action = str((body or {}).get('action') or '').lower()
+        if 'weapon_instance_id' in (body or {}) and action != 'mount_weapon':
+            raise ApiError(400, 'weapon_instance_id допустим только для mount_weapon')
+        if 'ammo_instance_id' in (body or {}) and action != 'reload':
+            raise ApiError(400, 'ammo_instance_id допустим только для Reload')
+        if action in ('fire', 'reload', 'use_nos', 'reset_nos',
+                      'mount_weapon', 'unmount_weapon'):
+            before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+            data = copy.deepcopy(before)
+            state = (data.get('modification_state') or {}).get(modification_id)
+            config = modification.get('configuration') or {}
+            owned = {entry.get('instance_id'): entry for entry in data.get('inventory') or []
+                     if isinstance(entry, dict) and entry.get('instance_id')}
+            upgrade = owned.get(modification['upgrade_instance_id']) or {}
+            resource_rules = config.get('effect_rules')
+            if not isinstance(resource_rules, list) or not resource_rules:
+                rule_loader = (vehicle_modification_rules_for_catalog
+                               if modification.get('host_type') == 'vehicle'
+                               else weapon_modification_rules_for_catalog)
+                resource_rules = rule_loader(
+                    catalog_item_id_for_entry(upgrade) or
+                    config.get('upgrade_catalog_item_id'))
+            if modification.get('host_type') == 'vehicle':
+                authoritative = initial_vehicle_modification_state(
+                    resource_rules, data, config.get('choices') or {})
+                state = normalize_vehicle_modification_state(state, authoritative)
+                if state:
+                    data.setdefault('modification_state', {})[modification_id] = state
+            if not isinstance(state, dict) or not state.get('profile_id'):
+                raise ApiError(400, 'Modification не имеет action resource profile')
+            profile_label = config.get('upgrade_name') or state.get('profile_id')
+            action_state = state
+            reload_weapon = None
+            action_reason = str((body or {}).get('reason') or '').strip()[:500]
+
+            if action in ('mount_weapon', 'unmount_weapon'):
+                if state.get('resource_type') != 'heavy_weapon_mount':
+                    raise ApiError(400, 'Modification не является Vehicle Heavy Weapon Mount')
+                if len(action_reason) < 3:
+                    raise ApiError(400, 'Укажите причину изменения mounted weapon')
+                if action == 'mount_weapon':
+                    if state.get('weapon_instance_id'):
+                        raise ApiError(409, 'Сначала снимите текущее mounted weapon')
+                    weapon_instance_id = str(
+                        (body or {}).get('weapon_instance_id') or '').lower()
+                    if not INSTANCE_ID_RE.fullmatch(weapon_instance_id):
+                        raise ApiError(400, 'Выберите конкретный экземпляр оружия')
+                    weapon = owned.get(weapon_instance_id)
+                    catalog_weapon = item_by_id(catalog_item_id_for_entry(weapon)) or {}
+                    mechanics = catalog_weapon.get('mechanics') or {}
+                    if not weapon or weapon.get('cat') != 'guns' or _num(mechanics.get('hands')) != 2:
+                        raise ApiError(400, 'Крепление принимает только двуручное дальнобойное оружие')
+                    if weapon.get('state') != 'carried' or weapon.get('mounted_modification_id'):
+                        raise ApiError(409, 'Оружие должно быть свободным и находиться в carried')
+                    state['weapon_instance_id'] = weapon_instance_id
+                    weapon.update({
+                        'state': 'installed',
+                        'mounted_modification_id': modification_id,
+                        'mounted_vehicle_id': modification['host_instance_id'],
+                    })
+                    sync_weapon_states_with_modifications(conn, row['id'], data)
+                    profile_label = weapon.get('custom_name') or weapon.get('name') or 'Weapon'
+                    reason = f'Mount {profile_label} on Vehicle Heavy Weapon Mount: {action_reason}'
+                else:
+                    weapon_instance_id = str(state.get('weapon_instance_id') or '')
+                    weapon = owned.get(weapon_instance_id)
+                    if not weapon:
+                        raise ApiError(409, 'Mounted weapon instance отсутствует')
+                    profile_label = weapon.get('custom_name') or weapon.get('name') or 'Weapon'
+                    state['weapon_instance_id'] = None
+                    weapon['state'] = 'carried'
+                    weapon.pop('mounted_modification_id', None)
+                    weapon.pop('mounted_vehicle_id', None)
+                    reason = f'Unmount {profile_label} from Vehicle Heavy Weapon Mount: {action_reason}'
+            elif action in ('use_nos', 'reset_nos'):
+                if state.get('resource_type') != 'nos_tank':
+                    raise ApiError(400, 'Modification не является баллоном NOS')
+                current = max(0, int(_num(state.get('uses_remaining')) or 0))
+                maximum = max(1, int(_num(state.get('uses_max')) or 1))
+                if action == 'use_nos':
+                    if current <= 0:
+                        raise ApiError(409, 'Баллон NOS уже использован в этот игровой день')
+                    state['uses_remaining'] = current - 1
+                    reason = f'Use {profile_label}: {current} → {state["uses_remaining"]}'
+                else:
+                    if len(action_reason) < 3:
+                        raise ApiError(400, 'Укажите причину сброса NOS')
+                    if current >= maximum:
+                        raise ApiError(409, 'Баллон NOS уже готов к использованию')
+                    state['uses_remaining'] = maximum
+                    reason = f'Reset {profile_label}: {current} → {maximum}; {action_reason}'
+            else:
+                if state.get('resource_type') == 'nos_tank':
+                    raise ApiError(400, 'Баллон NOS не является оружием')
+                if state.get('resource_type') == 'heavy_weapon_mount':
+                    weapon_instance_id = str(state.get('weapon_instance_id') or '')
+                    weapon = owned.get(weapon_instance_id)
+                    if not weapon:
+                        raise ApiError(409, 'Сначала установите оружие в Vehicle Heavy Weapon Mount')
+                    sync_weapon_states_with_modifications(conn, row['id'], data)
+                    all_modifications = character_modifications(conn, row['id'])
+                    weapon_modifications = [
+                        item for item in all_modifications
+                        if item.get('host_instance_id') == weapon_instance_id]
+                    effective_weapon = evaluate_effective_weapon(
+                        weapon, weapon_modifications, owned, data)
+                    bound_profile = bound_vehicle_weapon_profile(
+                        weapon, effective_weapon, data)
+                    action_state = (data.get('weapon_state') or {}).get(weapon_instance_id) or {}
+                    profile_label = weapon.get('custom_name') or weapon.get('name') or 'Weapon'
+                    reload_weapon = weapon
+                    ammo_cost = max(1, int(bound_profile.get('ammo_cost') or 1))
+                else:
+                    ammo_cost = max(1, int(_num(state.get('ammo_cost')) or 1))
+                if action == 'fire':
+                    maximum = max(0, int(_num(action_state.get('magazine_max')) or 0))
+                    if maximum <= 0:
+                        raise ApiError(409, 'Оружие не имеет отслеживаемого магазина')
+                    current = max(0, int(_num(action_state.get('magazine')) or 0))
+                    if current < ammo_cost:
+                        raise ApiError(409, f'Для атаки требуется {ammo_cost} патронов')
+                    action_state['magazine'] = current - ammo_cost
+                    clear_loaded_ammo_if_empty(action_state)
+                    reason = f'Fire {profile_label}: magazine {current} → {action_state["magazine"]}'
+                else:
+                    reload_ammo_kind = None if reload_weapon else \
+                        ammo_kind_for_modification_profile(
+                            resource_rules, state.get('profile_id'))
+                    transfer = consume_shared_ammo(
+                        data, action_state, (body or {}).get('ammo_instance_id'),
+                        ammo_kind=reload_ammo_kind, weapon=reload_weapon)
+                    reason = (
+                        f'Reload {profile_label} with {transfer["ammo_name"]} '
+                        f'×{transfer["moved"]}: magazine {action_state["magazine"]}')
+
+            validate_active_modification_references(conn, row['id'], data)
+            persist_character_item_instances(
+                conn, row['id'], data, 'vehicle_action', source_ref=reason,
+                prune=True)
+            now = time.time()
+            revision_after = current_revision + 1
+            ledger_id = record_character_change_set(
+                conn, row['id'], user['id'], before, data, reason,
+                current_revision, revision_after,
+                category='vehicle' if modification.get('host_type') == 'vehicle'
+                else 'modification')
+            conn.execute('UPDATE item_modifications SET updated=? WHERE modification_id=?',
+                         (now, modification_id))
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                         (json.dumps(data, ensure_ascii=False), now, revision_after, row['id']))
+            conn.commit()
+            fresh = self.get_char(conn, row['id'])
+            self.send_json({
+                'ledger_id': ledger_id,
+                'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+                'management': self.modification_management_payload(conn, fresh),
+            })
+            return
+        if modification['permanent']:
+            raise ApiError(409, 'Эта modification не может быть снята')
+        if action != 'remove':
+            raise ApiError(400, 'Неизвестное действие с modification')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину снятия modification')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        upgrade = next((entry for entry in data.get('inventory') or []
+                        if isinstance(entry, dict) and entry.get('instance_id') == modification['upgrade_instance_id']), None)
+        if not upgrade:
+            raise ApiError(409, 'Upgrade instance отсутствует в Inventory')
+        host = next((entry for entry in data.get('inventory') or []
+                     if isinstance(entry, dict) and entry.get('instance_id') == modification['host_instance_id']), None)
+        if host and host.get('installed_cyberware_instance_id'):
+            raise ApiError(409, 'Permanent Popup Weapon attachments нельзя изменять')
+        remaining_modifications = [item for item in character_modifications(conn, row['id'])
+                                   if item['modification_id'] != modification_id]
+        owned = {entry.get('instance_id'): entry for entry in data.get('inventory') or []
+                 if isinstance(entry, dict) and entry.get('instance_id')}
+        erased_backup_count = 0
+        if host and modification.get('host_type') == 'weapon':
+            remaining_pools = weapon_slot_capacity(host, remaining_modifications, owned)
+            overloaded = [name for name, pool in remaining_pools.items()
+                          if pool['used'] > pool['total']]
+            if overloaded:
+                raise ApiError(409, 'Сначала снимите modifications, зависящие от granted slots')
+        elif host and modification.get('host_type') == 'cyberdeck':
+            remaining_deck_modifications = [
+                item for item in remaining_modifications
+                if item.get('host_instance_id') == host.get('instance_id')]
+            remaining_usage = cyberdeck_slot_usage(
+                host, remaining_deck_modifications, owned)
+            if remaining_usage['overloaded']:
+                raise ApiError(409, 'Сначала освободите зависимые Cyberdeck slots')
+            if upgrade.get('modification_kind') == 'cyberdeck_program':
+                runtime = (data.get('program_state') or {}).get(
+                    upgrade.get('instance_id')) or {}
+                if runtime.get('status') in ('rezzed', 'derezzed'):
+                    raise ApiError(409, 'Deactivate Program before Uninstall')
+            if upgrade.get('name') == 'Backup Drive':
+                backup_state = (data.get('modification_state') or {}).get(
+                    modification_id) or {}
+                erased_backup_count = len(backup_state.get('saved_programs') or [])
+        elif host and modification.get('host_type') == 'vehicle':
+            removed_name = str(upgrade.get('name') or '')
+            removed_state = (data.get('modification_state') or {}).get(modification_id) or {}
+            if (removed_state.get('resource_type') == 'heavy_weapon_mount' and
+                    removed_state.get('weapon_instance_id')):
+                raise ApiError(409, 'Сначала снимите оружие с Vehicle Heavy Weapon Mount')
+            if removed_name == 'Housing Capacity':
+                remaining_upgrades = [owned.get(item.get('upgrade_instance_id')) or {}
+                                      for item in remaining_modifications]
+                remaining_names = [str(item.get('name') or '')
+                                   for item in remaining_upgrades]
+                base_room_count = vehicle_base_interior(host)['base_rooms']
+                remaining_room_upgrades = sum(
+                    name in ('Luxury Vehicle Room', 'Complex Vehicle Room')
+                    for name in remaining_names)
+                if remaining_room_upgrades > base_room_count:
+                    raise ApiError(409, 'Сначала снимите upgrades жилых комнат')
+                remaining_mounts = sum(
+                    name == 'Vehicle Heavy Weapon Mount' for name in remaining_names)
+                if 'groundcar' in vehicle_classification(host) and remaining_mounts > 1:
+                    raise ApiError(409, 'Housing Capacity требуется для нескольких Heavy Weapon Mounts')
+            for remaining in remaining_modifications:
+                dependent = owned.get(remaining.get('upgrade_instance_id')) or {}
+                host_names = (dependent.get('prerequisite_host_names') or {}).get(removed_name) or []
+                applies = not host_names or str(host.get('name') or '') in host_names
+                required_names = dependent.get('prerequisite_upgrades') or []
+                removes_prerequisite = any(
+                    removed_name == required or removed_name.startswith(required + ' (')
+                    for required in required_names)
+                if applies and removes_prerequisite:
+                    raise ApiError(409, 'Сначала снимите зависимые vehicle upgrades')
+            prospective_host_modifications = [
+                item for item in remaining_modifications
+                if item.get('host_instance_id') == host.get('instance_id')]
+            prospective = evaluate_effective_vehicle(
+                host, prospective_host_modifications, owned, data,
+                remaining_modifications)
+            prospective_seats = _num((prospective.get('effective') or {}).get('seats'))
+            if prospective_seats is not None and prospective_seats < 0:
+                raise ApiError(409, 'Сначала освободите места, занятые Heavy Weapon Mount')
+        upgrade['state'] = 'carried'
+        upgrade.pop('host_instance_id', None)
+        data.setdefault('modification_state', {}).pop(modification_id, None)
+        if upgrade.get('modification_kind') == 'cyberdeck_program':
+            data.setdefault('program_state', {}).pop(upgrade.get('instance_id'), None)
+        now = time.time()
+        conn.execute(
+            'UPDATE item_modifications SET active=0,removed_by=?,removed_at=?,updated=? '
+            'WHERE modification_id=?', (user['id'], now, now, modification_id))
+        if modification.get('host_type') == 'weapon':
+            sync_weapon_states_with_modifications(conn, row['id'], data)
+        elif modification.get('host_type') == 'vehicle':
+            sync_vehicle_states_with_modifications(conn, row['id'], data)
+        revision_after = current_revision + 1
+        persist_character_item_instances(conn, row['id'], data, 'modification_remove')
+        config = modification.get('configuration') or {}
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data,
+            f'Remove {config.get("upgrade_name") or upgrade.get("name")}: {reason}',
+            current_revision, revision_after, category='modification')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['removed_modification_ids'] = [modification_id]
+        if erased_backup_count:
+            delta['revertible'] = False
+            delta['backup_drive_erased_programs'] = erased_backup_count
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now, revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+            'management': self.modification_management_payload(conn, fresh),
+        })
+
+    @atomic_endpoint
+    def api_character_black_ice_deploy(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {
+            'revision', 'mode', 'floor_label', 'target_label', 'reason',
+            'session_id', 'session_floor_id', 'session_node_id',
+            'target_combatant_id'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Black ICE deployment содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        deck_id, program_id = str(m.group(2)).lower(), str(m.group(3)).lower()
+        modifications = character_modifications(conn, row['id'])
+        modification = next((item for item in modifications
+                             if item.get('host_instance_id') == deck_id and
+                             item.get('upgrade_instance_id') == program_id and
+                             item.get('host_type') == 'cyberdeck'), None)
+        if not modification:
+            raise ApiError(404, 'Installed Black ICE instance не найден')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('instance_id')}
+        program = owned.get(program_id)
+        if not program or cyberdeck_program_category(program) != 'black_ice':
+            raise ApiError(400, 'Выбранная Program не является Black ICE')
+        if active_black_ice_entity(data, program_id):
+            raise ApiError(409, 'Для этой Black ICE уже существует active NET entity')
+        runtime = initial_program_runtime_state(
+            program, deck_id, modification['modification_id'],
+            (data.get('program_state') or {}).get(program_id))
+        if runtime['status'] != 'inactive':
+            raise ApiError(409, 'Black ICE необходимо сначала Deactivate')
+        mode = str((body or {}).get('mode') or '')
+        if mode not in ('lie_in_wait', 'deploy_combat'):
+            raise ApiError(400, 'Black ICE mode: lie_in_wait/deploy_combat')
+        session = None
+        net_state = None
+        net_state_before = None
+        session_floor_id = None
+        session_node_id = None
+        session_node_label = None
+        target_combatant_id = None
+        session_id = _num((body or {}).get('session_id'))
+        floor_label = str((body or {}).get('floor_label') or '').strip()[:120]
+        target_label = str((body or {}).get('target_label') or '').strip()[:120]
+        if session_id is not None:
+            if int(session_id) != session_id:
+                raise ApiError(400, 'Некорректная Live Session')
+            session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                                   (int(session_id),)).fetchone()
+            role, capabilities = self.session_capabilities(conn, user, session)
+            if (not session or not role or
+                    session['status'] not in ('preparing', 'active', 'paused')):
+                raise ApiError(403, 'Нет доступа к Live NET Session')
+            if ('view_gm' not in capabilities and not conn.execute(
+                    'SELECT 1 FROM session_combatants WHERE session_id=? AND character_id=?',
+                    (session['id'], row['id'])).fetchone()):
+                raise ApiError(403, 'Character не участвует в этой Session')
+            net_state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+            net_state_before = copy.deepcopy(net_state)
+            session_floor_id = str((body or {}).get('session_floor_id') or '').lower()
+            floor = next((item for item in net_state['floors']
+                          if item['floor_id'] == session_floor_id), None)
+            if not floor:
+                raise ApiError(400, 'Выберите validated Session NET Floor')
+            floor_label = floor['label']
+            floor_nodes = [item for item in net_state['nodes']
+                           if item['floor_id'] == session_floor_id]
+            session_node_id = str((body or {}).get('session_node_id') or '').lower()
+            node = None
+            if floor_nodes:
+                node = next((item for item in floor_nodes
+                             if item['node_id'] == session_node_id), None)
+                if not node:
+                    raise ApiError(400, 'Выберите validated Session NET node')
+                session_node_label = node['label']
+            else:
+                session_node_id = None
+            if mode == 'deploy_combat':
+                target_combatant_id = _num((body or {}).get('target_combatant_id'))
+                if (target_combatant_id is None or int(target_combatant_id) != target_combatant_id):
+                    raise ApiError(400, 'Выберите Session target combatant')
+                target = conn.execute(
+                    'SELECT * FROM session_combatants WHERE session_id=? AND id=?',
+                    (session['id'], int(target_combatant_id))).fetchone()
+                if not target or target['character_id'] == row['id']:
+                    raise ApiError(400, 'Некорректный Session target для Black ICE')
+                target_combatant_id = target['id']
+                target_label = target['name']
+                if node:
+                    node['visible'] = True
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(floor_label) < 1:
+            raise ApiError(400, 'Укажите Floor для Black ICE')
+        if mode == 'deploy_combat' and len(target_label) < 2:
+            raise ApiError(400, 'Укажите target для deployed Black ICE')
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Black ICE deployment')
+        entity = initial_black_ice_entity(
+            program, deck_id, row['id'], mode, floor_label, target_label)
+        if session:
+            entity.update({
+                'session_id': session['id'], 'session_floor_id': session_floor_id,
+                'session_node_id': session_node_id,
+                'session_node_label': session_node_label,
+                'target_combatant_id': target_combatant_id,
+            })
+        entities = data.setdefault('net_entities', {})
+        entities[entity['net_entity_id']] = entity
+        if len(entities) > 200:
+            archived = sorted(
+                (item for item in entities.values()
+                 if item.get('status') in ('deactivated', 'destroyed')),
+                key=lambda item: item.get('archived_at') or 0)
+            for old in archived[:max(0, len(entities) - 200)]:
+                entities.pop(old.get('net_entity_id'), None)
+        runtime['status'] = 'rezzed'
+        runtime['rez_current'] = runtime['rez_max']
+        data.setdefault('program_state', {})[program_id] = runtime
+        reason = (
+            f'Deploy Black ICE {program.get("name")} as {entity["status"]} '
+            f'on {floor_label}: {reason_detail}')
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='item_action')
+        now = time.time()
+        if session:
+            net_state['links'].append({
+                'net_entity_id': entity['net_entity_id'],
+                'character_id': row['id'], 'floor_id': session_floor_id,
+                'node_id': session_node_id,
+                'target_combatant_id': target_combatant_id,
+                'initiative': entity.get('initiative') or 0,
+                'active': True, 'visible': mode == 'deploy_combat',
+                'linked_at': now,
+            })
+            conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                         (json.dumps(net_state, ensure_ascii=False), now, session['id']))
+            conn.execute(
+                'INSERT INTO session_activity(session_id,actor_user_id,event_type,after_json,note,created) '
+                'VALUES(?,?,?,?,?,?)',
+                (session['id'], user['id'], 'net_entity_deploy',
+                 json.dumps(entity, ensure_ascii=False), reason_detail, now))
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            delta['session_net_change'] = {
+                'session_id': session['id'], 'before': net_state_before,
+                'after': copy.deepcopy(net_state),
+            }
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'net_entity': entity,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        }, status=201)
+
+    @atomic_endpoint
+    def api_character_net_entity_action(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        row = self.get_char(conn, m.group(1))
+        if parse_json_object(row['data']).get('archived'):
+            raise ApiError(409, 'Архивное досье доступно только для чтения')
+        allowed = {'revision', 'action', 'amount', 'floor_label',
+                   'target_label', 'reason', 'session_floor_id', 'session_node_id',
+                   'target_combatant_id'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'NET entity action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        entity_id = str(m.group(2)).lower()
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        entity = (data.get('net_entities') or {}).get(entity_id)
+        if not isinstance(entity, dict) or entity.get('type') != 'black_ice':
+            raise ApiError(404, 'Black ICE NET entity не найдена')
+        linked_session = None
+        if entity.get('session_id'):
+            linked_session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                                          (int(entity['session_id']),)).fetchone()
+        if row['owner_id'] != user['id']:
+            if (not linked_session or
+                    'edit_combatants' not in self.session_capabilities(
+                        conn, user, linked_session)[1]):
+                raise ApiError(403, 'Нет права управлять Black ICE entity')
+        if entity.get('status') not in ('lying_in_wait', 'hunting', 'derezzed'):
+            raise ApiError(409, 'Black ICE NET entity уже завершена')
+        before_entity = copy.deepcopy(entity)
+        program_id = str(entity.get('source_program_instance_id') or '')
+        deck_id = str(entity.get('deck_instance_id') or '')
+        modifications = character_modifications(conn, row['id'])
+        modification = next((item for item in modifications
+                             if item.get('host_instance_id') == deck_id and
+                             item.get('upgrade_instance_id') == program_id), None)
+        owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('instance_id')}
+        program = owned.get(program_id)
+        if not modification or not program:
+            raise ApiError(409, 'Source Black ICE installation отсутствует')
+        runtime = initial_program_runtime_state(
+            program, deck_id, modification['modification_id'],
+            (data.get('program_state') or {}).get(program_id))
+        linked_net_state = session_net_state(
+            _row_value(linked_session, 'net_state_json', '{}')) if linked_session else None
+        linked_net_link = next((item for item in linked_net_state['links']
+                                if item['net_entity_id'] == entity_id), None) \
+            if linked_net_state else None
+        linked_net_state_before = copy.deepcopy(linked_net_state) \
+            if linked_net_state else None
+        if linked_session and not linked_net_link:
+            raise ApiError(409, 'Session NET entity link отсутствует')
+        action = str((body or {}).get('action') or '').lower()
+        detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(detail) < 3:
+            raise ApiError(400, 'Укажите причину NET entity action')
+        now = time.time()
+        removed_modification_ids = []
+        if action == 'damage':
+            if entity.get('status') not in ('lying_in_wait', 'hunting'):
+                raise ApiError(409, 'REZ damage требует active Black ICE')
+            amount = _num((body or {}).get('amount'))
+            if amount is None or int(amount) != amount or not 1 <= amount <= 100:
+                raise ApiError(400, 'Укажите REZ damage от 1 до 100')
+            previous = int(entity.get('rez_current') or 0)
+            entity['rez_current'] = max(0, previous - int(amount))
+            runtime['rez_current'] = entity['rez_current']
+            if entity['rez_current'] == 0:
+                entity['status'] = 'derezzed'
+                runtime['status'] = 'derezzed'
+                if linked_net_link:
+                    linked_net_link['initiative'] = 0
+            reason = (f'Black ICE REZ damage {entity.get("name")}: '
+                      f'{previous} → {entity["rez_current"]}; {detail}')
+        elif action == 'slide':
+            if entity.get('status') != 'hunting':
+                raise ApiError(409, 'Slide требует hunting Black ICE')
+            entity['status'] = 'lying_in_wait'
+            entity['target_label'] = None
+            entity['initiative'] = None
+            entity['initiative_roll'] = None
+            entity['target_combatant_id'] = None
+            if linked_net_link:
+                linked_net_link['target_combatant_id'] = None
+                linked_net_link['initiative'] = 0
+            reason = f'Slide from Black ICE {entity.get("name")}: {detail}'
+        elif action == 'engage':
+            if entity.get('status') != 'lying_in_wait':
+                raise ApiError(409, 'Engage требует lying-in-wait Black ICE')
+            if linked_session:
+                floor_id = str((body or {}).get('session_floor_id') or
+                               linked_net_link.get('floor_id') or '').lower()
+                floor = next((item for item in linked_net_state['floors']
+                              if item['floor_id'] == floor_id), None)
+                floor_nodes = [item for item in linked_net_state['nodes']
+                               if item['floor_id'] == floor_id]
+                node_id = str((body or {}).get('session_node_id') or
+                              linked_net_link.get('node_id') or '').lower()
+                node = next((item for item in floor_nodes
+                             if item['node_id'] == node_id), None) if floor_nodes else None
+                target_id = _num((body or {}).get('target_combatant_id'))
+                target = conn.execute(
+                    'SELECT * FROM session_combatants WHERE session_id=? AND id=?',
+                    (linked_session['id'], int(target_id))).fetchone() \
+                    if target_id is not None and int(target_id) == target_id else None
+                if (not floor or not target or target['character_id'] == row['id'] or
+                        (floor_nodes and not node)):
+                    raise ApiError(400, 'Выберите validated Session Floor, node и target')
+                floor_label, target_label = floor['label'], target['name']
+                entity['session_floor_id'] = floor_id
+                entity['session_node_id'] = node_id if node else None
+                entity['session_node_label'] = node['label'] if node else None
+                entity['target_combatant_id'] = target['id']
+                linked_net_link['floor_id'] = floor_id
+                linked_net_link['node_id'] = node_id if node else None
+                linked_net_link['target_combatant_id'] = target['id']
+                linked_net_link['visible'] = True
+                if node:
+                    node['visible'] = True
+            else:
+                target_label = str((body or {}).get('target_label') or '').strip()[:120]
+                floor_label = str((body or {}).get('floor_label') or
+                                  entity.get('floor_label') or '').strip()[:120]
+                if len(target_label) < 2 or not floor_label:
+                    raise ApiError(400, 'Укажите Floor и target для Black ICE')
+            roll = secrets.randbelow(10) + 1
+            entity.update({
+                'status': 'hunting', 'target_label': target_label,
+                'floor_label': floor_label, 'initiative_roll': roll,
+                'initiative': int(entity.get('spd') or 0) + roll,
+            })
+            if linked_net_link:
+                linked_net_link['initiative'] = entity['initiative']
+            reason = f'Engage Black ICE {entity.get("name")} vs {target_label}: {detail}'
+        elif action == 'deactivate':
+            entity['status'] = 'deactivated'
+            entity['archived_at'] = now
+            runtime['status'] = 'inactive'
+            runtime['rez_current'] = runtime['rez_max']
+            if linked_net_link:
+                linked_net_link['active'] = False
+            reason = f'Deactivate Black ICE {entity.get("name")}: {detail}'
+        elif action == 'destroy':
+            entity['status'] = 'destroyed'
+            entity['rez_current'] = 0
+            entity['archived_at'] = now
+            runtime['status'] = 'destroyed'
+            runtime['rez_current'] = 0
+            program['state'] = 'broken'
+            program.pop('host_instance_id', None)
+            conn.execute(
+                'UPDATE item_modifications SET active=0,removed_by=?,removed_at=?,updated=? '
+                'WHERE modification_id=?',
+                (user['id'], now, now, modification['modification_id']))
+            removed_modification_ids.append(modification['modification_id'])
+            if linked_net_link:
+                linked_net_link['active'] = False
+            reason = f'Destroy Black ICE entity {entity.get("name")}: {detail}'
+        else:
+            raise ApiError(400, 'NET entity action: damage/slide/engage/deactivate/destroy')
+        entity['updated_at'] = now
+        data.setdefault('program_state', {})[program_id] = runtime
+        validate_active_modification_references(conn, row['id'], data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'net_entity_action', source_ref=reason, prune=True)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after,
+            category='modification' if removed_modification_ids else 'item_action')
+        if removed_modification_ids:
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            delta['removed_modification_ids'] = removed_modification_ids
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(delta, ensure_ascii=False), ledger_id))
+        if linked_session:
+            queue_count = sum(1 for item in linked_net_state['links']
+                              if item['active'] and (_num(item.get('initiative')) or 0) > 0)
+            linked_net_state['active_turn'] = min(
+                linked_net_state['active_turn'], max(0, queue_count - 1))
+            conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                         (json.dumps(linked_net_state, ensure_ascii=False), now,
+                          linked_session['id']))
+            conn.execute(
+                'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+                'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+                (linked_session['id'], user['id'], f'net_entity_{action}',
+                 json.dumps(before_entity, ensure_ascii=False),
+                 json.dumps(entity, ensure_ascii=False), detail, now))
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            delta['session_net_change'] = {
+                'session_id': linked_session['id'],
+                'before': linked_net_state_before,
+                'after': copy.deepcopy(linked_net_state),
+            }
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'net_entity': copy.deepcopy(entity),
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
+    def api_character_program_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        if set(body or {}) - {'revision', 'action', 'amount', 'reason'}:
+            raise ApiError(400, 'Program action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        deck_id, program_id = str(m.group(2)).lower(), str(m.group(3)).lower()
+        modifications = character_modifications(conn, row['id'])
+        modification = next((item for item in modifications
+                             if item.get('host_instance_id') == deck_id and
+                             item.get('upgrade_instance_id') == program_id and
+                             item.get('host_type') == 'cyberdeck'), None)
+        if not modification:
+            raise ApiError(404, 'Installed Program instance не найден')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('instance_id')}
+        deck, program = owned.get(deck_id), owned.get(program_id)
+        if (not deck or not program or
+                program.get('modification_kind') != 'cyberdeck_program'):
+            raise ApiError(409, 'Повреждена связь установленной Program')
+        runtime = initial_program_runtime_state(
+            program, deck_id, modification['modification_id'],
+            (data.get('program_state') or {}).get(program_id))
+        data.setdefault('program_state', {})[program_id] = runtime
+        action = str((body or {}).get('action') or '').lower()
+        detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(detail) < 3:
+            raise ApiError(400, 'Укажите причину Program action')
+        category = runtime['category']
+        status = runtime['status']
+        active_entity = active_black_ice_entity(data, program_id) \
+            if category == 'black_ice' else None
+        if category == 'black_ice' and action != 'destroy':
+            raise ApiError(409, 'Black ICE actions require NET entity')
+        if category == 'black_ice' and action == 'destroy' and active_entity:
+            raise ApiError(409, 'Destroy active Black ICE through its NET entity')
+        now = time.time()
+        removed_modification_ids = []
+        if action == 'run':
+            if category != 'attacker':
+                raise ApiError(409, 'Run доступен только Attacker Program')
+            runtime['run_count'] += 1
+            runtime['last_run_at'] = now
+            reason = f'Run Attacker Program {program.get("name")}: {detail}'
+        elif action == 'rez':
+            if category == 'black_ice':
+                raise ApiError(409, 'Black ICE требует NET entity deployment')
+            if category not in ('booster', 'defender'):
+                raise ApiError(409, 'Activate доступен только Booster или Defender Program')
+            if status != 'inactive':
+                raise ApiError(409, 'Program необходимо сначала Deactivate')
+            catalog_program = item_by_id(catalog_item_id_for_entry(program)) or {}
+            if re.search(r'Only 1 copy of this Program can be running',
+                         str(catalog_program.get('desc') or ''), re.I):
+                for other in (data.get('program_state') or {}).values():
+                    if (other is not runtime and
+                            other.get('catalog_item_id') == runtime['catalog_item_id'] and
+                            other.get('status') == 'rezzed'):
+                        raise ApiError(409, 'Только одна копия этой Program может быть Rezzed')
+            runtime['status'] = 'rezzed'
+            runtime['rez_current'] = runtime['rez_max']
+            reason = f'Rez {program.get("name")} at REZ {runtime["rez_current"]}: {detail}'
+        elif action == 'damage':
+            if status != 'rezzed' or runtime['rez_max'] <= 0:
+                raise ApiError(409, 'REZ damage требует Rezzed Program')
+            amount = _num((body or {}).get('amount'))
+            if amount is None or int(amount) != amount or not 1 <= amount <= 100:
+                raise ApiError(400, 'Укажите REZ damage от 1 до 100')
+            previous = runtime['rez_current']
+            runtime['rez_current'] = max(0, previous - int(amount))
+            if runtime['rez_current'] == 0:
+                runtime['status'] = 'derezzed'
+            reason = (f'Program REZ damage {program.get("name")}: '
+                      f'{previous} → {runtime["rez_current"]}; {detail}')
+        elif action == 'derez':
+            if status != 'rezzed':
+                raise ApiError(409, 'Derez требует Rezzed Program')
+            runtime['status'] = 'derezzed'
+            runtime['rez_current'] = 0
+            reason = f'Derez Program {program.get("name")}: {detail}'
+        elif action == 'deactivate':
+            if status not in ('rezzed', 'derezzed'):
+                raise ApiError(409, 'Deactivate требует Rezzed или Derezzed Program')
+            runtime['status'] = 'inactive'
+            runtime['rez_current'] = runtime['rez_max']
+            reason = f'Deactivate Program {program.get("name")}: {detail}'
+        elif action == 'destroy':
+            backup_modification = next((item for item in modifications
+                                        if item.get('host_instance_id') == deck_id and
+                                        (owned.get(item.get('upgrade_instance_id')) or {}).get('name') == 'Backup Drive'), None)
+            if category != 'black_ice' and backup_modification:
+                backup_state = data.setdefault('modification_state', {}).setdefault(
+                    backup_modification['modification_id'],
+                    {'resource_type': 'backup_drive', 'saved_programs': []})
+                saved = backup_state.setdefault('saved_programs', [])
+                if not any(item.get('program_instance_id') == program_id for item in saved):
+                    saved.append({
+                        'program_instance_id': program_id,
+                        'modification_id': modification['modification_id'],
+                        'catalog_item_id': catalog_item_id_for_entry(program),
+                        'name': program.get('custom_name') or program.get('name'),
+                        'runtime_before': copy.deepcopy(runtime),
+                        'saved_at': now,
+                    })
+            runtime['status'] = 'destroyed'
+            runtime['rez_current'] = 0
+            program['state'] = 'broken'
+            program.pop('host_instance_id', None)
+            conn.execute(
+                'UPDATE item_modifications SET active=0,removed_by=?,removed_at=?,updated=? '
+                'WHERE modification_id=?',
+                (user['id'], now, now, modification['modification_id']))
+            removed_modification_ids.append(modification['modification_id'])
+            reason = f'Destroy Program {program.get("name")}: {detail}'
+        else:
+            raise ApiError(400, 'Program action: run/rez/damage/derez/deactivate/destroy')
+        if runtime['status'] in ('derezzed', 'destroyed'):
+            queue_defense_sequencer_trigger(
+                data, modifications, deck_id, program_id)
+        validate_active_modification_references(conn, row['id'], data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'program_action', source_ref=reason, prune=True)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after,
+            category='modification' if removed_modification_ids else 'item_action')
+        if removed_modification_ids:
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            delta['removed_modification_ids'] = removed_modification_ids
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
+    def api_character_backup_restore(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        if set(body or {}) - {'revision', 'reason'}:
+            raise ApiError(400, 'Backup restore содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        deck_id, hardware_id = str(m.group(2)).lower(), str(m.group(3)).lower()
+        modifications = character_modifications(conn, row['id'])
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('instance_id')}
+        backup_modification = next((item for item in modifications
+                                    if item.get('host_instance_id') == deck_id and
+                                    item.get('upgrade_instance_id') == hardware_id and
+                                    (owned.get(hardware_id) or {}).get('name') == 'Backup Drive'), None)
+        if not backup_modification:
+            raise ApiError(404, 'Installed Backup Drive не найден')
+        backup_state = (data.get('modification_state') or {}).get(
+            backup_modification['modification_id']) or {}
+        saved = backup_state.get('saved_programs') or []
+        if not saved:
+            raise ApiError(409, 'Backup Drive не содержит Programs')
+        detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(detail) < 3:
+            raise ApiError(400, 'Укажите причину Backup restore')
+        active_deck = [item for item in modifications
+                       if item.get('host_instance_id') == deck_id]
+        restored_rows = []
+        for snapshot in saved:
+            program_id = str(snapshot.get('program_instance_id') or '')
+            program = owned.get(program_id)
+            inactive = conn.execute(
+                'SELECT * FROM item_modifications WHERE modification_id=? '
+                'AND character_id=? AND host_instance_id=? AND upgrade_instance_id=? AND active=0',
+                (snapshot.get('modification_id'), row['id'], deck_id, program_id)).fetchone()
+            if not program or program.get('state') != 'broken' or not inactive:
+                raise ApiError(409, 'Saved Program instance недоступен для восстановления')
+            compatibility = cyberdeck_item_compatibility(
+                owned.get(deck_id) or {}, program, active_deck, owned)
+            if not compatibility['allowed']:
+                raise ApiError(409, 'Недостаточно Cyberdeck slots для Backup restore')
+            restored_modification = item_modification_payload(inactive)
+            restored_modification['active'] = True
+            active_deck.append(restored_modification)
+            restored_rows.append((snapshot, program, restored_modification))
+        now = time.time()
+        restored_ids = []
+        for snapshot, program, restored_modification in restored_rows:
+            modification_id = restored_modification['modification_id']
+            conn.execute(
+                'UPDATE item_modifications SET active=1,removed_by=NULL,removed_at=NULL,updated=? '
+                'WHERE modification_id=?', (now, modification_id))
+            program['state'] = 'installed'
+            program['host_instance_id'] = deck_id
+            data.setdefault('program_state', {})[program['instance_id']] = \
+                initial_program_runtime_state(
+                    program, deck_id, modification_id,
+                    snapshot.get('runtime_before'))
+            restored_ids.append(modification_id)
+        backup_state['saved_programs'] = []
+        validate_active_modification_references(conn, row['id'], data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'backup_restore', source_ref=detail, prune=True)
+        revision_after = current_revision + 1
+        reason = f'Restore {len(restored_ids)} Programs from Backup Drive: {detail}'
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='modification')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['created_modification_ids'] = restored_ids
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id,
+            'restored': len(restored_ids),
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
+    def api_character_defense_sequencer_resolve(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'armor_instance_id', 'not_used_in_netrun_confirmed',
+                   'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Defense Sequencer resolution содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        if (body or {}).get('not_used_in_netrun_confirmed') is not True:
+            raise ApiError(
+                400, 'Подтвердите, что выбранная Armor не использовалась в этом Netrun')
+        deck_id, hardware_id = str(m.group(2)).lower(), str(m.group(3)).lower()
+        armor_id = str((body or {}).get('armor_instance_id') or '').lower()
+        if not INSTANCE_ID_RE.fullmatch(armor_id):
+            raise ApiError(400, 'Выберите concrete Armor Program instance')
+        detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(detail) < 3:
+            raise ApiError(400, 'Укажите причину Defense Sequencer resolution')
+        modifications = character_modifications(conn, row['id'])
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        now = time.time()
+        resolved = resolve_defense_sequencer_trigger(
+            data, modifications, deck_id, hardware_id, armor_id, now=now)
+        validate_active_modification_references(conn, row['id'], data)
+        reason = (f'Defense Sequencer Rez {resolved["armor_name"]} at REZ '
+                  f'{resolved["rez_current"]}: {detail}; '
+                  'not-used-in-this-Netrun eligibility confirmed manually')
+        persist_character_item_instances(
+            conn, row['id'], data, 'defense_sequencer', source_ref=reason, prune=True)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='item_action')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta.update({
+            'defense_sequencer_resolution': True,
+            'manual_eligibility_confirmed': True,
+            'resolved_armor_instance_id': armor_id,
+        })
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'resolved': resolved,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    def api_character_effects(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        self.send_json({
+            'character_id': row['id'], 'revision': _row_value(row, 'revision', 0) or 0,
+            'effects': character_effect_instances(conn, row['id']),
+        })
+
+    @atomic_endpoint
+    def api_character_effect_create(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        current_revision = _row_value(row, 'revision', 0) or 0
+        expected_revision = _num((body or {}).get('revision'))
+        if expected_revision is None or expected_revision != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        effect_id = secrets.token_hex(16)
+        clean = clean_custom_effect(body or {}, effect_id)
+        now = time.time()
+        conn.execute(
+            'INSERT INTO active_effect_instances(effect_id,character_id,source_type,label,'
+            'definition_json,duration_type,started_at,expires_at,remaining_rounds,active,'
+            'created_by,reason,created,updated) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,?,?)',
+            (effect_id, row['id'], 'custom', clean['label'],
+             json.dumps(clean['definition'], ensure_ascii=False), clean['duration_type'],
+             now, clean['expires_at'], clean['remaining_rounds'], user['id'],
+             clean['reason'], now, now))
+        created_row = conn.execute(
+            'SELECT e.*,u.display_name actor FROM active_effect_instances e '
+            'JOIN users u ON u.id=e.created_by WHERE e.effect_id=?',
+            (effect_id,)).fetchone()
+        created = effect_instance_payload(created_row, now)
+        revision_after = current_revision + 1
+        record_effect_change(
+            conn, row['id'], user['id'], effect_id, clean['label'], None, created,
+            clean['reason'], current_revision, revision_after)
+        conn.execute('UPDATE characters SET updated=?,revision=? WHERE id=?',
+                     (now, revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'effect': created,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        }, status=201)
+
+    @atomic_endpoint
+    def api_character_effect_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        if set(body or {}) - {'revision', 'action'}:
+            raise ApiError(400, 'Effect action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        expected_revision = _num((body or {}).get('revision'))
+        if expected_revision is None or expected_revision != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        effect_id = str(m.group(2)).lower()
+        raw = conn.execute(
+            'SELECT e.*,u.display_name actor FROM active_effect_instances e '
+            'JOIN users u ON u.id=e.created_by WHERE e.effect_id=? AND e.character_id=?',
+            (effect_id, row['id'])).fetchone()
+        if not raw:
+            raise ApiError(404, 'Effect instance не найден')
+        before = effect_instance_payload(raw)
+        if before.get('archived_at'):
+            raise ApiError(409, 'Effect instance уже архивирован')
+        action = str((body or {}).get('action') or '').strip().lower()
+        if action not in ACTIVE_EFFECT_ACTIONS | {'archive'}:
+            raise ApiError(400, 'Неизвестное действие с эффектом')
+        now = time.time()
+        if action == 'disable':
+            if not before['active']:
+                raise ApiError(409, 'Эффект уже отключён')
+            conn.execute('UPDATE active_effect_instances SET active=0,updated=? WHERE effect_id=?',
+                         (now, effect_id))
+            reason = f'Disable effect {before["label"]}'
+        elif action == 'enable':
+            if before['duration_type'] == 'real_time' and before.get('expires_at', 0) <= now:
+                raise ApiError(409, 'Истёкший real-time эффект нельзя включить повторно')
+            if before['duration_type'] == 'rounds' and (_num(before.get('remaining_rounds')) or 0) <= 0:
+                raise ApiError(409, 'Завершённый round effect нельзя включить повторно')
+            if before['active']:
+                raise ApiError(409, 'Эффект уже включён')
+            conn.execute('UPDATE active_effect_instances SET active=1,updated=? WHERE effect_id=?',
+                         (now, effect_id))
+            reason = f'Enable effect {before["label"]}'
+        elif action == 'tick':
+            if before['duration_type'] != 'rounds':
+                raise ApiError(400, 'Tick доступен только для round effect')
+            if before['status'] != 'active':
+                raise ApiError(409, 'Round effect сейчас не активен')
+            remaining = max(0, (_num(before.get('remaining_rounds')) or 0) - 1)
+            conn.execute(
+                'UPDATE active_effect_instances SET remaining_rounds=?,active=?,updated=? '
+                'WHERE effect_id=?', (remaining, 1 if remaining else 0, now, effect_id))
+            reason = f'Advance effect round {before["label"]}: {remaining} remaining'
+        else:
+            conn.execute(
+                'UPDATE active_effect_instances SET active=0,archived_at=?,updated=? '
+                'WHERE effect_id=?', (now, now, effect_id))
+            reason = f'Archive effect {before["label"]}'
+        after_row = conn.execute(
+            'SELECT e.*,u.display_name actor FROM active_effect_instances e '
+            'JOIN users u ON u.id=e.created_by WHERE e.effect_id=?',
+            (effect_id,)).fetchone()
+        after = effect_instance_payload(after_row, now)
+        revision_after = current_revision + 1
+        record_effect_change(
+            conn, row['id'], user['id'], effect_id, before['label'], before, after,
+            reason, current_revision, revision_after)
+        conn.execute('UPDATE characters SET updated=?,revision=? WHERE id=?',
+                     (now, revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'effect': after,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
+    def api_character_cyberware_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {
+            'revision', 'action', 'host_instance_ids', 'installation_side',
+            'installation_site', 'technician', 'manual_resolution_confirmed',
+            'biosystem_confirmed', 'reason',
+        }
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Cyberware action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Cyberware lifecycle action')
+        instance_id = str(m.group(2)).lower()
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        chrome = next((item for item in data.get('cyberware') or []
+                       if isinstance(item, dict) and
+                       item.get('instance_id') == instance_id), None)
+        if not chrome:
+            raise ApiError(404, 'Cyberware instance не найден')
+        catalog_item = item_by_id(catalog_item_id_for_entry(chrome))
+        if not catalog_item or catalog_item.get('cat') != 'cyberware':
+            raise ApiError(409, 'Cyberware instance не связан с Data Pool')
+        action = str((body or {}).get('action') or '').lower()
+        if action not in ('install', 'uninstall', 'rebind', 'configure',
+                          'quick_detach', 'quick_attach'):
+            raise ApiError(
+                400, 'Cyberware action: install/uninstall/rebind/configure/'
+                     'quick_detach/quick_attach')
+        raw_host_ids = (body or {}).get('host_instance_ids') or []
+        if not isinstance(raw_host_ids, list) or len(raw_host_ids) > 4:
+            raise ApiError(400, 'host_instance_ids должен быть коротким списком')
+        host_ids = []
+        for value in raw_host_ids:
+            value = str(value or '').lower()
+            if not INSTANCE_ID_RE.fullmatch(value):
+                raise ApiError(400, 'Некорректный concrete Cyberware host')
+            if value not in host_ids:
+                host_ids.append(value)
+        capacity = cyberware_capacity(chrome)
+        expected_host = capacity.get('host')
+        installed_before = cyberware_is_installed(chrome)
+        humanity_before = derive(data)
+        before_current = humanity_before.get('humanity_cur')
+        before_maximum = humanity_before.get('humanity_max')
+        now = time.time()
+        installation_side = str((body or {}).get('installation_side') or '').lower()
+        installation_site = str((body or {}).get('installation_site') or '').title() \
+            if action in ('install', 'uninstall') else ''
+        technician = str((body or {}).get('technician') or '').strip()[:120] \
+            if action in ('install', 'uninstall') else ''
+        profile = cyberware_installation_profile(chrome)
+        runtime_states = data.setdefault('cyberware_state', {})
+        if not isinstance(runtime_states, dict):
+            runtime_states = {}
+            data['cyberware_state'] = runtime_states
+        runtime = runtime_states.get(instance_id)
+        if not isinstance(runtime, dict):
+            runtime = {'installation_count': 0, 'humanity_loss_events': 0,
+                       'history': []}
+            runtime_states[instance_id] = runtime
+        if not isinstance(runtime.get('history'), list):
+            runtime['history'] = []
+
+        def append_history(event_action, *, affected_ids=None, humanity_loss=0):
+            runtime['history'].append({
+                'action': event_action, 'created': now,
+                'installation_side': chrome.get('installation_side') or
+                    runtime.get('installation_side'),
+                'installation_site': installation_site or None,
+                'technician': technician or None,
+                'affected_instance_ids': affected_ids or [instance_id],
+                'humanity_loss': humanity_loss,
+                'reason': reason_detail,
+                'manual_resolution_confirmed': bool(
+                    event_action in ('install', 'uninstall') and
+                    (body or {}).get('manual_resolution_confirmed') is True),
+            })
+            runtime['history'] = runtime['history'][-30:]
+            runtime['last_action'] = event_action
+            runtime['last_action_at'] = now
+
+        def validate_installation_context():
+            if (body or {}).get('manual_resolution_confirmed') is not True:
+                raise ApiError(400, 'Подтвердите manual surgery/service resolution')
+            if installation_site != profile['required_site']:
+                raise ApiError(
+                    400, f'{chrome.get("name")}: требуется installation site '
+                         f'{profile["required_site"]}')
+            if len(technician) < 2:
+                raise ApiError(400, 'Укажите clinic, surgeon или technician')
+            if profile['biosystem_required'] and \
+                    (body or {}).get('biosystem_confirmed') is not True:
+                raise ApiError(400, 'Подтвердите required Biosystem')
+
+        def assign_side(required=True):
+            if cyberware_is_paired_leg_foundation(chrome):
+                chrome['installation_side'] = 'paired'
+            elif cyberware_side_required(chrome):
+                if installation_side not in ('left', 'right'):
+                    if required:
+                        raise ApiError(400, 'Выберите installation side: left/right')
+                else:
+                    chrome['installation_side'] = installation_side
+            elif installation_side:
+                raise ApiError(400, 'Эта Cyberware не использует left/right side')
+
+        def assign_hosts():
+            compatibility = cyberware_option_compatibility(
+                data, instance_id, host_ids)
+            if not compatibility['allowed']:
+                raise ApiError(400, '; '.join(compatibility['reasons']))
+            chrome['host_instance'] = host_ids[0]
+            chrome['host_instances'] = host_ids
+            return compatibility
+
+        compatibility = None
+        affected_ids = [instance_id]
+        if action == 'install':
+            if installed_before:
+                raise ApiError(409, 'Cyberware уже установлена')
+            if chrome.get('state') == 'broken':
+                raise ApiError(409, 'Сломанную Cyberware нельзя установить')
+            validate_installation_context()
+            assign_side()
+            if expected_host:
+                compatibility = assign_hosts()
+            elif host_ids:
+                raise ApiError(400, 'Эта Cyberware не использует Option host')
+            catalog_id = catalog_item_id_for_entry(chrome)
+            other_installed = [
+                item for item in data.get('cyberware') or []
+                if isinstance(item, dict) and item.get('instance_id') != instance_id and
+                cyberware_is_installed(item)]
+            if capacity.get('unique') and any(
+                    catalog_item_id_for_entry(item) == catalog_id
+                    for item in other_installed):
+                raise ApiError(409, 'Допустима только одна установленная копия Cyberware')
+            chrome_name = str(chrome.get('name') or '').lower()
+            if chrome_name == 'neuroport' and any(
+                    str(item.get('name') or '').lower() == 'neuroport'
+                    for item in other_installed):
+                raise ApiError(409, 'Одновременно допустим только один Neuroport')
+            if cyberware_host_kind(chrome) == 'Cyberaudio Suite' and any(
+                    cyberware_host_kind(item) == 'Cyberaudio Suite'
+                    for item in other_installed):
+                raise ApiError(409, 'Одновременно допустим только один Cyberaudio Suite')
+            chrome['state'] = 'installed'
+            validate_cyberware_requirements(data)
+            validate_cyberware_sides(data, allow_unassigned=True)
+            validate_cyberware_payload_conflicts(data)
+            if expected_host:
+                compatibility = cyberware_option_compatibility(data, instance_id, host_ids)
+                if not compatibility['allowed']:
+                    raise ApiError(400, '; '.join(compatibility['reasons']))
+            loss = max(0, int(_num(chrome.get('hl')) or 0))
+            if before_current is not None:
+                if before_current - loss < 0:
+                    raise ApiError(409, 'Недостаточно Humanity для установки Cyberware')
+                data['humanity_cur'] = before_current - loss
+            runtime['installation_count'] = max(
+                0, int(_num(runtime.get('installation_count')) or 0)) + 1
+            runtime['humanity_loss_events'] = max(
+                0, int(_num(runtime.get('humanity_loss_events')) or 0)) + 1
+            runtime['first_installed_at'] = runtime.get('first_installed_at') or now
+            runtime['installation_side'] = chrome.get('installation_side')
+            runtime['last_installation_site'] = installation_site
+            runtime['last_technician'] = technician
+            runtime['quick_change_detached'] = False
+            append_history('install', humanity_loss=loss)
+            reason = f'Install Cyberware {chrome.get("name")}: {reason_detail}'
+        elif action == 'rebind':
+            if not installed_before or not expected_host:
+                raise ApiError(409, 'Rebind требует установленную Cyberware Option')
+            compatibility = assign_hosts()
+            append_history('rebind')
+            reason = f'Rebind Cyberware Option {chrome.get("name")}: {reason_detail}'
+        elif action == 'configure':
+            if not installed_before or not cyberware_side_required(chrome):
+                raise ApiError(409, 'Configure side требует установленный sided foundation')
+            assign_side()
+            validate_cyberware_sides(data, allow_unassigned=True)
+            runtime['installation_side'] = chrome.get('installation_side')
+            append_history('configure')
+            reason = f'Configure Cyberware side {chrome.get("name")}: {reason_detail}'
+        elif action == 'quick_detach':
+            if not installed_before or cyberware_host_kind(chrome) != 'Cyberarm':
+                raise ApiError(409, 'Quick Detach требует установленный Cyberarm')
+            loadout = effective_cyberware_loadout(data)
+            foundation_host_ids = {
+                host['instance_id'] for host in loadout['hosts']
+                if host.get('foundation_instance_id') == instance_id}
+            dependents = [
+                item for item in data.get('cyberware') or []
+                if isinstance(item, dict) and cyberware_is_installed(item) and
+                foundation_host_ids.intersection(cyberware_host_assignments(item))]
+            if not any(item.get('name') == 'Quick Change Mount' for item in dependents):
+                raise ApiError(409, 'Cyberarm не имеет установленный Quick Change Mount')
+            affected_ids = [instance_id] + [item['instance_id'] for item in dependents]
+            for item in [chrome, *dependents]:
+                item['state'] = 'carried'
+            runtime['quick_change_detached'] = True
+            runtime['quick_change_bundle_instance_ids'] = affected_ids[1:]
+            runtime['installation_side'] = chrome.get('installation_side')
+            if before_current is not None:
+                data['humanity_cur'] = before_current
+            append_history('quick_detach', affected_ids=affected_ids)
+            reason = f'Quick Detach Cyberarm {chrome.get("name")}: {reason_detail}'
+        elif action == 'quick_attach':
+            if installed_before or cyberware_host_kind(chrome) != 'Cyberarm' or \
+                    not runtime.get('quick_change_detached'):
+                raise ApiError(409, 'Quick Attach требует detached Quick Change Cyberarm')
+            bundle_ids = [str(value) for value in
+                          runtime.get('quick_change_bundle_instance_ids') or []]
+            bundle = [
+                item for item in data.get('cyberware') or []
+                if isinstance(item, dict) and item.get('instance_id') in bundle_ids]
+            if len(bundle) != len(set(bundle_ids)) or not any(
+                    item.get('name') == 'Quick Change Mount' for item in bundle):
+                raise ApiError(409, 'Quick Change Cyberarm bundle повреждён')
+            assign_side()
+            chrome['state'] = 'installed'
+            for item in bundle:
+                item['state'] = 'installed'
+            validate_cyberware_requirements(data)
+            validate_cyberware_sides(data, allow_unassigned=True)
+            validate_cyberware_payload_conflicts(data)
+            validate_cyberware_slots(data, allow_unbound=True)
+            affected_ids = [instance_id, *bundle_ids]
+            runtime['quick_change_detached'] = False
+            runtime['installation_side'] = chrome.get('installation_side')
+            if before_current is not None:
+                data['humanity_cur'] = before_current
+            append_history('quick_attach', affected_ids=affected_ids, humanity_loss=0)
+            reason = f'Quick Attach Cyberarm {chrome.get("name")}: {reason_detail}'
+        else:
+            if not installed_before:
+                raise ApiError(409, 'Cyberware уже не установлена')
+            if chrome.get('creation_free') and chrome.get('key') == 'creation-neuroport':
+                raise ApiError(409, 'Стартовый Neuroport нельзя извлечь этим действием')
+            validate_installation_context()
+            foundation_host_ids = {
+                host['instance_id'] for host in
+                effective_cyberware_loadout(data)['hosts']
+                if host.get('foundation_instance_id') == instance_id}
+            dependents = [
+                item for item in data.get('cyberware') or []
+                if isinstance(item, dict) and item.get('instance_id') != instance_id and
+                cyberware_is_installed(item) and
+                foundation_host_ids.intersection(cyberware_host_assignments(item))]
+            if dependents:
+                names = ', '.join(str(item.get('name') or 'Option') for item in dependents[:5])
+                raise ApiError(409, f'Сначала извлеките зависимые Cyberware Options: {names}')
+            runtime['installation_side'] = chrome.get('installation_side')
+            chrome['state'] = 'carried'
+            chrome.pop('host_instance', None)
+            chrome.pop('host_instances', None)
+            chrome.pop('installation_side', None)
+            validate_cyberware_requirements(data)
+            post_remove_loadout = effective_cyberware_loadout(data)
+            if any(host['overloaded'] for host in post_remove_loadout['hosts']):
+                raise ApiError(409, 'Сначала освободите зависимые Cyberware Option Slots')
+            if before_current is not None:
+                data['humanity_cur'] = before_current
+            append_history('uninstall')
+            reason = f'Uninstall Cyberware {chrome.get("name")}: {reason_detail}'
+
+        bound_weapon_id = str(runtime.get('bound_weapon_instance_id') or '')
+        if bound_weapon_id:
+            bound_weapon = next((item for item in data.get('inventory') or []
+                                 if isinstance(item, dict) and
+                                 item.get('instance_id') == bound_weapon_id), None)
+            if bound_weapon:
+                current_hosts = cyberware_host_assignments(chrome)
+                bound_weapon['installed_cyberarm_host_id'] = (
+                    current_hosts[0] if current_hosts else None)
+        humanity_after = derive(data)
+        validate_bound_popup_weapon_references(data)
+        validate_popup_shield_references(data)
+        validate_active_modification_references(conn, row['id'], data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'cyberware_lifecycle', source_ref=reason, prune=True)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='modification')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['cyberware_lifecycle'] = {
+            'action': action, 'instance_id': instance_id,
+            'affected_instance_ids': affected_ids,
+            'host_instance_ids': host_ids,
+            'installation_side': chrome.get('installation_side') or
+                runtime.get('installation_side'),
+            'installation_site': installation_site or None,
+            'technician': technician or None,
+            'manual_resolution_confirmed': bool(
+                action in ('install', 'uninstall') and
+                (body or {}).get('manual_resolution_confirmed') is True),
+            'humanity_current_before': before_current,
+            'humanity_current_after': humanity_after.get('humanity_cur'),
+            'humanity_maximum_before': before_maximum,
+            'humanity_maximum_after': humanity_after.get('humanity_max'),
+            'humanity_restored_on_uninstall': 0,
+            'quick_change_no_humanity_loss': action == 'quick_attach',
+        }
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        now = time.time()
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'action': action,
+            'humanity': delta['cyberware_lifecycle'],
+            'compatibility': compatibility,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
+    def api_character_therapy_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {
+            'revision', 'action', 'therapy_type', 'therapist',
+            'addiction_label', 'manual_time_confirmed', 'reason',
+        }
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Therapy action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Therapy action')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        therapy_state = data.get('therapy_state')
+        if not isinstance(therapy_state, dict):
+            therapy_state = {'active': None, 'history': []}
+            data['therapy_state'] = therapy_state
+        if not isinstance(therapy_state.get('history'), list):
+            therapy_state['history'] = []
+        active = therapy_state.get('active') \
+            if isinstance(therapy_state.get('active'), dict) else None
+        action = str((body or {}).get('action') or '').lower()
+        now = time.time()
+        result = {'action': action}
+        if action == 'start':
+            if active:
+                raise ApiError(409, 'Therapy course уже активен')
+            therapy_type = str((body or {}).get('therapy_type') or '').lower()
+            profile = THERAPY_PROFILES.get(therapy_type)
+            if not profile:
+                raise ApiError(400, 'Неизвестный Therapy type')
+            therapist = str((body or {}).get('therapist') or '').strip()[:120]
+            if len(therapist) < 2:
+                raise ApiError(400, 'Укажите therapist или clinic')
+            cash = float(data.get('cash') or 0)
+            if cash < profile['cost']:
+                raise ApiError(409, 'Недостаточно средств для Therapy')
+            current_humanity = derive(data).get('humanity_cur')
+            maximum_humanity = derive(data).get('humanity_max')
+            if (profile['humanity_dice'] and current_humanity is not None and
+                    maximum_humanity is not None and
+                    current_humanity >= maximum_humanity):
+                raise ApiError(409, 'Humanity уже достигла Therapy maximum')
+            addiction_label = str((body or {}).get('addiction_label') or '').strip()[:120]
+            if therapy_type == 'addiction' and len(addiction_label) < 2:
+                raise ApiError(400, 'Укажите addiction для Therapy')
+            data['cash'] = round(cash - profile['cost'], 2)
+            campaign_started = campaign_now(conn)
+            active = {
+                'therapy_id': secrets.token_hex(16), 'therapy_type': therapy_type,
+                'label': profile['label'], 'catalog_id': profile['catalog_id'],
+                'cost': profile['cost'], 'duration_days': profile['duration_days'],
+                'humanity_dice': profile['humanity_dice'],
+                'therapist': therapist, 'addiction_label': addiction_label or None,
+                'started_at': now, 'status': 'active', 'source': profile['source'],
+                'manual_time_required': True,
+                'campaign_started_at': campaign_started,
+                'campaign_due_at': campaign_started + campaign_duration_seconds('1_week'),
+            }
+            therapy_state['active'] = active
+            result['therapy'] = copy.deepcopy(active)
+            reason = f'Start {profile["label"]}: {reason_detail}'
+        elif action in ('resolve', 'cancel'):
+            if not active:
+                raise ApiError(409, 'Нет активного Therapy course')
+            profile = THERAPY_PROFILES.get(active.get('therapy_type'))
+            if not profile:
+                raise ApiError(409, 'Therapy profile повреждён')
+            completed = action == 'resolve'
+            if completed and (body or {}).get('manual_time_confirmed') is not True:
+                raise ApiError(400, 'Подтвердите завершение недели Therapy')
+            history = copy.deepcopy(active)
+            history['resolved_at'] = now
+            history['status'] = 'completed' if completed else 'canceled'
+            history['reason'] = reason_detail
+            if completed and profile['humanity_dice']:
+                rolled = roll_dice(profile['humanity_dice'], 6)
+                derived_before = derive(data)
+                current = int(_num(derived_before.get('humanity_cur')) or 0)
+                maximum = int(_num(derived_before.get('humanity_max')) or current)
+                after = min(maximum, current + rolled['total'])
+                data['humanity_cur'] = after
+                history.update({
+                    'rolls': rolled['rolls'], 'rolled_humanity': rolled['total'],
+                    'humanity_before': current, 'humanity_after': after,
+                    'humanity_restored': after - current, 'humanity_maximum': maximum,
+                })
+                result['humanity'] = {
+                    'rolls': rolled['rolls'], 'rolled': rolled['total'],
+                    'before': current, 'after': after,
+                    'restored': after - current, 'maximum': maximum,
+                }
+            elif completed:
+                history['manual_effect'] = (
+                    f'Addiction therapy completed for {active.get("addiction_label")}; '
+                    'addiction state remains MANUAL RESOLUTION')
+                result['manual_effect'] = history['manual_effect']
+            therapy_state['history'].append(history)
+            therapy_state['history'] = therapy_state['history'][-50:]
+            therapy_state['active'] = None
+            result['therapy'] = history
+            reason = f'{"Resolve" if completed else "Cancel"} {active.get("label")}: {reason_detail}'
+        else:
+            raise ApiError(400, 'Therapy action: start/resolve/cancel')
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='item_action')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['therapy_lifecycle'] = copy.deepcopy(result)
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'result': result,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
+    def api_character_popup_shield_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'action', 'shield_instance_id', 'amount', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Popup Shield action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Popup Shield action')
+        option_id = str(m.group(2)).lower()
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        option = next((item for item in data.get('cyberware') or []
+                       if isinstance(item, dict) and item.get('instance_id') == option_id), None)
+        if not option or not cyberware_is_installed(option) or \
+                catalog_item_id_for_entry(option) != 'cyberware-120':
+            raise ApiError(404, 'Installed Popup Shield option не найден')
+        runtime = data.setdefault('cyberware_state', {}).setdefault(option_id, {})
+        popup = runtime.get('popup_shield') if isinstance(runtime.get('popup_shield'), dict) else {}
+        action = str((body or {}).get('action') or '').lower()
+        shield_id = str(popup.get('shield_instance_id') or '')
+        shield = next((item for item in data.get('inventory') or []
+                       if isinstance(item, dict) and item.get('instance_id') == shield_id), None)
+        result = {'action': action}
+        if action == 'install':
+            if shield:
+                raise ApiError(409, 'Popup Shield уже содержит concrete shield')
+            shield_id = str((body or {}).get('shield_instance_id') or '').lower()
+            shield = next((item for item in data.get('inventory') or []
+                           if isinstance(item, dict) and item.get('instance_id') == shield_id), None)
+            if (not shield or catalog_item_id_for_entry(shield) != 'armor-0' or
+                    shield.get('state') != 'carried' or
+                    shield.get('installed_popup_shield_instance_id')):
+                raise ApiError(400, 'Popup Shield принимает только free Bulletproof Shield')
+            maximum = armor_shield_hp(shield)
+            popup = {'shield_instance_id': shield_id, 'hp_current': maximum,
+                     'hp_max': maximum, 'deployed': False, 'installed_at': time.time()}
+            runtime['popup_shield'] = popup
+            shield['state'] = 'installed'
+            shield['installed_popup_shield_instance_id'] = option_id
+            reason = f'Install concrete Bulletproof Shield into Popup Shield: {reason_detail}'
+        elif action == 'remove':
+            if not shield:
+                raise ApiError(409, 'Popup Shield не содержит concrete shield')
+            current = max(0, int(_num(popup.get('hp_current')) or 0))
+            shield['state'] = 'broken' if current <= 0 else 'carried'
+            shield.pop('installed_popup_shield_instance_id', None)
+            runtime['popup_shield'] = {}
+            reason = f'Remove concrete Shield from Popup Shield: {reason_detail}'
+        elif action in ('deploy', 'stow'):
+            if not shield:
+                raise ApiError(409, 'Popup Shield не содержит concrete shield')
+            if action == 'deploy' and (_num(popup.get('hp_current')) or 0) <= 0:
+                raise ApiError(409, 'Destroyed Shield нельзя deploy')
+            popup['deployed'] = action == 'deploy'
+            runtime['popup_shield'] = popup
+            reason = f'{action.title()} Popup Shield: {reason_detail}'
+        elif action == 'damage':
+            if not shield:
+                raise ApiError(409, 'Popup Shield не содержит concrete shield')
+            amount = _num((body or {}).get('amount'))
+            if amount is None or not 1 <= amount <= 100:
+                raise ApiError(400, 'Укажите Popup Shield damage 1–100')
+            previous = max(0, int(_num(popup.get('hp_current')) or 0))
+            popup['hp_current'] = max(0, previous - int(amount))
+            if popup['hp_current'] == 0:
+                popup['deployed'] = False
+                shield['state'] = 'broken'
+            runtime['popup_shield'] = popup
+            result.update({'hp_before': previous, 'hp_after': popup['hp_current']})
+            reason = f'Popup Shield damage {previous} → {popup["hp_current"]}: {reason_detail}'
+        else:
+            raise ApiError(400, 'Popup Shield action: install/remove/deploy/stow/damage')
+        validate_popup_shield_references(data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'popup_shield_action', source_ref=reason, prune=True)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='item_action')
+        now = time.time()
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({'ledger_id': ledger_id, 'result': result,
+                        'character': self.char_payload(fresh, fresh['owner'], conn=conn)})
+
+    @atomic_endpoint
+    def api_character_armor_repair_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {
+            'revision', 'action', 'method', 'technician', 'jeeves_instance_id',
+            'manual_resolution_confirmed', 'no_sp_loss_confirmed',
+            'service_cost', 'payment_confirmed', 'reason',
+        }
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Armor Repair action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Armor Repair action')
+        instance_id = str(m.group(2)).lower()
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        host = next((item for item in effective_armor_hosts(data)['hosts']
+                     if item['instance_id'] == instance_id), None)
+        if not host:
+            raise ApiError(404, 'Concrete Armor instance не найден')
+        if host['host_kind'] == 'shield':
+            raise ApiError(409, 'Bulletproof Shields не подлежат ремонту')
+        if host['unrepairable']:
+            raise ApiError(409, 'Эта Armor не может восстанавливать SP')
+        states = data.setdefault('armor_repair_state', {})
+        workflow = states.setdefault(instance_id, {'active': None, 'history': []})
+        if not isinstance(workflow.get('history'), list):
+            workflow['history'] = []
+        active = workflow.get('active') if isinstance(workflow.get('active'), dict) else None
+        action = str((body or {}).get('action') or '').lower()
+        now = time.time()
+        result = {'action': action}
+        if action == 'start':
+            if active:
+                raise ApiError(409, 'Armor Repair уже активен')
+            if not host['damaged'] or not host['equipped_locations']:
+                raise ApiError(409, 'Armor должна быть экипирована и повреждена')
+            method = str((body or {}).get('method') or '').lower()
+            if method not in ('manual_tech', 'jeeves', 'paid_service'):
+                raise ApiError(400, 'Armor Repair method: manual_tech/jeeves/paid_service')
+            technician = str((body or {}).get('technician') or '').strip()[:120]
+            if len(technician) < 2:
+                raise ApiError(400, 'Укажите Armor repair technician')
+            duration_label = 'MANUAL TECH TIME'
+            duration_key = None
+            jeeves_id = None
+            if method == 'jeeves':
+                jeeves_id = str((body or {}).get('jeeves_instance_id') or '').lower()
+                jeeves = next((item for item in data.get('inventory') or []
+                               if isinstance(item, dict) and item.get('instance_id') == jeeves_id and
+                               catalog_item_id_for_entry(item) == 'gear-39' and
+                               item.get('state') in ('carried', 'stored')), None)
+                if not jeeves:
+                    raise ApiError(409, 'Jeeves Executive Garment Bag недоступен')
+                price = float((item_by_id(host['catalog_item_id']) or {}).get('price') or 0)
+                if price > 1000:
+                    raise ApiError(409, 'Jeeves не ремонтирует Luxury/Super Luxury Armor')
+                duration_label = ('1 Hour' if price <= 20 else '6 Hours' if price <= 50 else
+                                  '1 Day' if price <= 100 else '1 Week' if price <= 500 else
+                                  '2 Weeks')
+                duration_key = ('1_hour' if price <= 20 else '6_hours' if price <= 50 else
+                                '1_day' if price <= 100 else '1_week' if price <= 500 else
+                                '2_weeks')
+            service_cost = 0
+            if method == 'paid_service':
+                service_cost = _num((body or {}).get('service_cost'))
+                if service_cost is None or not 0 <= service_cost <= 1_000_000:
+                    raise ApiError(400, 'Укажите bounded Armor Repair service cost')
+                if (body or {}).get('payment_confirmed') is not True:
+                    raise ApiError(400, 'Подтвердите оплату Armor Repair service')
+                cash = float(data.get('cash') or 0)
+                if cash < service_cost:
+                    raise ApiError(409, 'Недостаточно средств для Armor Repair service')
+                data['cash'] = round(cash - service_cost, 2)
+                duration_label = 'MANUAL PAID SERVICE TIME'
+            campaign_started = campaign_now(conn)
+            active = {
+                'repair_id': secrets.token_hex(16), 'method': method,
+                'technician': technician, 'jeeves_instance_id': jeeves_id,
+                'service_cost': service_cost,
+                'payment_refundable': False if service_cost else None,
+                'duration_label': duration_label,
+                'target_locations': host['equipped_locations'],
+                'before': copy.deepcopy(host['current_by_location']),
+                'target_maximum': host['effective_sp'], 'started_at': now,
+                'status': 'active', 'source': 'CP:R 140 / BC 43',
+                'manual_resolution_required': True,
+                'campaign_started_at': campaign_started,
+                'campaign_due_at': (
+                    campaign_started + campaign_duration_seconds(duration_key)
+                    if duration_key else None),
+            }
+            workflow['active'] = active
+            result['repair'] = copy.deepcopy(active)
+            reason = f'Start Armor Repair {host["name"]}: {reason_detail}'
+        elif action in ('resolve', 'cancel'):
+            if not active:
+                raise ApiError(409, 'Нет активного Armor Repair')
+            completed = action == 'resolve'
+            if completed and (body or {}).get('manual_resolution_confirmed') is not True:
+                raise ApiError(400, 'Подтвердите завершение Armor Repair')
+            history = copy.deepcopy(active)
+            history['status'] = 'completed' if completed else 'canceled'
+            history['resolved_at'] = now
+            history['reason'] = reason_detail
+            if completed:
+                after_values = {}
+                for location in active.get('target_locations') or []:
+                    piece = (data.get('armor') or {}).get(location)
+                    if isinstance(piece, dict) and piece.get('instance_id') == instance_id:
+                        maximum = int(_num(piece.get('maximum')) or
+                                      _num(active.get('target_maximum')) or 0)
+                        piece['current'] = maximum
+                        after_values[location] = maximum
+                history['after'] = after_values
+                result['restored'] = after_values
+            workflow['history'].append(history)
+            workflow['history'] = workflow['history'][-30:]
+            workflow['active'] = None
+            result['repair'] = history
+            reason = f'{"Resolve" if completed else "Cancel"} Armor Repair {host["name"]}: {reason_detail}'
+        elif action == 'self_repair_tick':
+            if host.get('self_repair') != 'executive_armor_daily':
+                raise ApiError(409, 'Armor не имеет daily self-repair')
+            if (body or {}).get('no_sp_loss_confirmed') is not True:
+                raise ApiError(400, 'Подтвердите день без потери SP')
+            restored = {}
+            for location in host['equipped_locations']:
+                piece = (data.get('armor') or {}).get(location)
+                if isinstance(piece, dict):
+                    maximum = int(_num(piece.get('maximum')) or host['effective_sp'] or 0)
+                    current = int(_num(piece.get('current')) or 0)
+                    piece['current'] = min(maximum, current + 1)
+                    restored[location] = piece['current']
+            result['restored'] = restored
+            workflow['history'].append({
+                'action': action, 'status': 'completed', 'resolved_at': now,
+                'after': restored, 'reason': reason_detail, 'source': 'BC 34'})
+            workflow['history'] = workflow['history'][-30:]
+            reason = f'Executive Armor daily self-repair {host["name"]}: {reason_detail}'
+        else:
+            raise ApiError(400, 'Armor Repair action: start/resolve/cancel/self_repair_tick')
+        validate_armor_repair_references(data)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='item_action')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['armor_repair_lifecycle'] = copy.deepcopy(result)
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'result': result,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
+    def api_character_armor_tech_upgrade(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'tech_name', 'manual_confirm', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Armor Tech Upgrade содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        if (body or {}).get('manual_confirm') is not True:
+            raise ApiError(400, 'Подтвердите успешный Tech Upgrade Check')
+        tech_name = str((body or {}).get('tech_name') or '').strip()[:120]
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(tech_name) < 2 or len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите Tech и причину Armor Upgrade')
+        instance_id = str(m.group(2)).lower()
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        armor_item = next((item for item in data.get('inventory') or []
+                           if isinstance(item, dict) and item.get('instance_id') == instance_id and
+                           item.get('cat') == 'armor'), None)
+        if not armor_item:
+            raise ApiError(404, 'Concrete Armor/Shield instance не найден')
+        states = data.setdefault('armor_tech_state', {})
+        if isinstance(states.get(instance_id), dict) and states[instance_id].get('active'):
+            raise ApiError(409, 'Armor/Shield уже имеет Tech Upgrade')
+        catalog_item = item_by_id(catalog_item_id_for_entry(armor_item)) or armor_item
+        locations = catalog_item.get('armor_locations') or []
+        shield = 'shield' in locations
+        base_sp = _num(catalog_item.get('sp'))
+        if not shield and base_sp is None:
+            raise ApiError(409, 'Armor instance не имеет upgradeable SP')
+        mode = 'manual_shield_upgrade' if shield else 'sp_plus_one'
+        now = time.time()
+        state = {
+            'active': True, 'mode': mode, 'permanent': True,
+            'tech_name': tech_name, 'installed_by': user['id'],
+            'installed_at': now, 'source': 'CP:R 148 · Upgrade Expertise',
+            'manual_resolution_required': shield,
+            'reason': reason_detail,
+        }
+        states[instance_id] = state
+        if not shield:
+            for location in ('head', 'body'):
+                piece = (data.get('armor') or {}).get(location)
+                if isinstance(piece, dict) and piece.get('instance_id') == instance_id:
+                    previous_max = _num(piece.get('maximum'))
+                    previous_max = previous_max if previous_max is not None else base_sp
+                    previous_current = _num(piece.get('current'))
+                    previous_current = previous_current if previous_current is not None else previous_max
+                    piece['sp'] = base_sp + 1
+                    piece['maximum'] = base_sp + 1
+                    piece['current'] = min(base_sp + 1, previous_current + 1)
+        validate_armor_tech_references(data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'armor_tech_upgrade',
+            source_ref=reason_detail, prune=True)
+        revision_after = current_revision + 1
+        reason = (f'Tech Upgrade {armor_item.get("name")} '
+                  f'({"SP +1" if not shield else "MANUAL SHIELD"}): {reason_detail}')
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='modification')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['armor_tech_upgrade'] = {
+            'instance_id': instance_id, 'mode': mode, 'permanent': True,
+            'tech_name': tech_name, 'manual_resolution_required': shield,
+        }
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'upgrade': state,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
+    def api_character_tech_maker_create(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'name', 'description', 'host_instance_id',
+                   'maker_specialty', 'tech_name', 'effect', 'manual_rule',
+                   'manual_confirm', 'reason', 'notes'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Tech Maker modification содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        name = str((body or {}).get('name') or '').strip()[:120]
+        if len(name) < 2:
+            raise ApiError(400, 'Укажите название Tech Maker modification')
+        tech_name = str((body or {}).get('tech_name') or '').strip()[:120]
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(tech_name) < 2 or len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите Tech и причину Tech Maker modification')
+        specialty = str((body or {}).get('maker_specialty') or '').strip().lower()
+        if specialty not in TECH_MAKER_SPECIALTIES:
+            raise ApiError(400, 'maker_specialty: upgrade/invention')
+        host_id = str((body or {}).get('host_instance_id') or '').lower()
+        if not INSTANCE_ID_RE.fullmatch(host_id):
+            raise ApiError(400, 'Выберите конкретный host instance')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+                 if isinstance(item, dict) and item.get('instance_id')}
+        owned.update({item.get('instance_id'): item for item in data.get('cyberware') or []
+                      if isinstance(item, dict) and item.get('instance_id')})
+        host = owned.get(host_id)
+        if not host:
+            raise ApiError(404, 'Host instance не найден')
+        if host.get('state') in ('stored', 'broken', 'consumed'):
+            raise ApiError(409, 'Host должен быть исправен и находиться при персонаже')
+        host_type = tech_maker_host_type(host)
+        if not host_type:
+            raise ApiError(400, 'Host не поддерживает Tech Maker modifications')
+        ranks = character_maker_ranks(data)
+        rank = ranks.get(specialty, 0)
+        if rank < 1:
+            raise ApiError(409, f'Требуется Maker {specialty} rank 1+ для Tech Maker modification')
+        effect = clean_tech_maker_effect(host_type, (body or {}).get('effect'))
+        manual_rule = str((body or {}).get('manual_rule') or '').strip()[:1000]
+        if effect is None and not manual_rule:
+            raise ApiError(400, 'Tech Maker modification требует effect или manual_rule')
+        if effect is not None and not bool((body or {}).get('manual_confirm')):
+            raise ApiError(409, 'Подтвердите успешный Tech Maker Check за столом')
+        state = data.setdefault('tech_maker_state', {})
+        mods = state.setdefault('modifications', {})
+        stack_key = (host_id, (effect or {}).get('target') or 'manual')
+        for mod in mods.values():
+            if (isinstance(mod, dict) and mod.get('active') and
+                    (mod.get('host_instance_id'), (mod.get('effect') or {}).get('target') or 'manual') == stack_key):
+                raise ApiError(409, 'Host уже имеет Tech Maker modification этого типа')
+        if len(mods) >= 100:
+            raise ApiError(409, 'Достигнут лимит Tech Maker modifications')
+        modification_id = secrets.token_hex(16)
+        now = time.time()
+        source = f'Maker: {TECH_MAKER_SPECIALTY_LABELS[specialty][0]} · CP:R 148'
+        record = {
+            'modification_id': modification_id, 'name': name,
+            'description': str((body or {}).get('description') or '').strip()[:2000],
+            'host_instance_id': host_id, 'host_type': host_type,
+            'host_catalog_item_id': catalog_item_id_for_entry(host),
+            'maker_specialty': specialty, 'maker_rank': rank,
+            'tech_name': tech_name, 'effect': effect,
+            'manual_rule': manual_rule,
+            'manual_resolution_required': effect is None,
+            'source': source, 'active': True, 'permanent': False,
+            'installed_by': user['id'], 'installed_at': now,
+            'reason': reason_detail,
+            'notes': str((body or {}).get('notes') or '')[:2000],
+        }
+        mods[modification_id] = record
+        state.setdefault('history', []).append({
+            'action': 'create', 'modification_id': modification_id,
+            'name': name, 'host_instance_id': host_id, 'host_type': host_type,
+            'maker_specialty': specialty, 'tech_name': tech_name, 'at': now,
+        })
+        state['history'] = state['history'][-50:]
+        validate_tech_maker_references(data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'tech_maker_create', source_ref=reason_detail, prune=True)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data,
+            f'Tech Maker {specialty}: {name} on {host.get("name")}: {reason_detail}',
+            current_revision, revision_after, category='modification')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['tech_maker_modification'] = {
+            'modification_id': modification_id, 'name': name,
+            'host_instance_id': host_id, 'host_type': host_type,
+            'maker_specialty': specialty, 'effect': copy.deepcopy(effect),
+            'manual_rule': manual_rule,
+        }
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now, revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'modification_id': modification_id,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        }, status=201)
+
+    @atomic_endpoint
+    def api_character_tech_maker_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'action', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Tech Maker action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Tech Maker action')
+        modification_id = str(m.group(2)).lower()
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        state = data.get('tech_maker_state')
+        mods = state.get('modifications') if isinstance(state, dict) else {}
+        mod = mods.get(modification_id) if isinstance(mods, dict) else None
+        if not isinstance(mod, dict):
+            raise ApiError(404, 'Tech Maker modification не найдена')
+        action = str((body or {}).get('action') or '').lower()
+        if action == 'remove':
+            if mod.get('permanent'):
+                raise ApiError(409, 'Permanent Tech Maker modification нельзя снять')
+            if not mod.get('active'):
+                raise ApiError(409, 'Tech Maker modification уже снята')
+            mod['active'] = False
+            mod['removed_by'] = user['id']
+            mod['removed_at'] = time.time()
+            state.setdefault('history', []).append({
+                'action': 'remove', 'modification_id': modification_id,
+                'name': mod.get('name'), 'host_instance_id': mod.get('host_instance_id'),
+                'host_type': mod.get('host_type'), 'at': time.time(),
+            })
+            state['history'] = state['history'][-50:]
+            reason = f'Remove Tech Maker modification {mod.get("name")}: {reason_detail}'
+        else:
+            raise ApiError(400, 'Tech Maker action: remove')
+        validate_tech_maker_references(data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'tech_maker_action', source_ref=reason_detail, prune=True)
+        revision_after = current_revision + 1
+        record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='modification')
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), time.time(),
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'modification_id': modification_id,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
+    def api_character_tech_maker_fabricate(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'name', 'description', 'blueprint_catalog_id',
+                   'category', 'price', 'qty', 'maker_specialty', 'tech_name',
+                   'material_cost', 'manual_confirm', 'reason', 'notes'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Tech Maker fabrication содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        name = str((body or {}).get('name') or '').strip()[:120]
+        tech_name = str((body or {}).get('tech_name') or '').strip()[:120]
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(name) < 2 or len(tech_name) < 2 or len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите название, Tech и причину Tech Maker fabrication')
+        specialty = str((body or {}).get('maker_specialty') or '').strip().lower()
+        if specialty not in TECH_MAKER_FABRICATION_SPECIALTIES:
+            raise ApiError(400, 'maker_specialty: fabrication/invention')
+        if (body or {}).get('manual_confirm') is not True:
+            raise ApiError(400, 'Подтвердите успешный Tech Maker Check за столом')
+        try:
+            material_cost = max(0, min(9_999_999, int((body or {}).get('material_cost') or 0)))
+        except (TypeError, ValueError):
+            raise ApiError(400, 'Некорректная стоимость материалов')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        ranks = character_maker_ranks(data)
+        rank = ranks.get(specialty, 0)
+        if rank < 1:
+            raise ApiError(409, f'Требуется Maker {specialty} rank 1+ для Tech Maker fabrication')
+        blueprint_id = str((body or {}).get('blueprint_catalog_id') or '').strip()
+        blueprint = item_by_id(blueprint_id) if blueprint_id else None
+        if blueprint_id and not blueprint:
+            raise ApiError(400, 'Неизвестный blueprint item')
+        if blueprint and not tech_maker_fabricable_item(blueprint):
+            raise ApiError(400, 'Этот предмет нельзя изготовить через Fabrication Expertise')
+        if blueprint and specialty != 'fabrication':
+            raise ApiError(400, 'Blueprint fabrication требует maker_specialty fabrication')
+        if not blueprint and specialty == 'fabrication':
+            raise ApiError(400, 'Fabrication Expertise требует blueprint item')
+        try:
+            qty = max(1, min(99, int((body or {}).get('qty') or 1)))
+        except (TypeError, ValueError):
+            raise ApiError(400, 'Некорректное количество')
+        if len(data.get('inventory') or []) + len(data.get('cyberware') or []) + qty > 500:
+            raise ApiError(400, 'Инвентарь не может содержать больше 500 экземпляров')
+        cash = float(data.get('cash') or 0)
+        if material_cost > cash + 1e-9:
+            raise ApiError(400, f'Не хватает €$: нужно {material_cost:,.0f}, есть {cash:,.0f}')
+        inventory = data.setdefault('inventory', [])
+        created_instance_ids = []
+        if blueprint:
+            owned = {
+                'key': blueprint['id'], 'catalog_item_id': blueprint['id'],
+                'cat': blueprint['cat'], 'name': blueprint['name'],
+                'price': blueprint.get('price'), 'qty': 1, 'state': 'carried',
+                'damage': blueprint.get('damage'), 'sp': blueprint.get('sp'),
+                'hl': blueprint.get('hl'),
+                'fields': copy.deepcopy(blueprint.get('fields') or {}),
+                'mechanics': copy.deepcopy(blueprint.get('mechanics') or {}),
+                'source': blueprint.get('source'),
+                'acquisition_source': 'crafted',
+                'acquisition_note': f'Fabricated by {tech_name}: {reason_detail}'[:500],
+            }
+            owned.update(catalog_interaction_data(blueprint))
+            owned.update({key: copy.deepcopy(blueprint[key]) for key in ITEM_MODIFICATION_FIELDS if key in blueprint})
+            coverage = item_effect_coverage(blueprint.get('id'))
+            if coverage:
+                owned['effect_coverage'] = coverage
+            if item_entry_stackable(owned):
+                owned['instance_id'] = new_item_instance_id()
+                owned['qty'] = qty
+                if blueprint.get('cat') == 'ammo':
+                    owned['ammo_rounds'] = qty * ammo_pack_size(owned)
+                inventory.append(owned)
+                created_instance_ids.append(owned['instance_id'])
+            else:
+                for _ in range(qty):
+                    instance = copy.deepcopy(owned)
+                    instance['instance_id'] = new_item_instance_id()
+                    inventory.append(instance)
+                    created_instance_ids.append(instance['instance_id'])
+        else:
+            category = str((body or {}).get('category') or 'custom').strip().lower()
+            allowed_categories = {row2['id'] for row2 in catalog().get('cats') or []} | {'custom'}
+            if category not in allowed_categories:
+                raise ApiError(400, 'Некорректная категория custom item')
+            price = trust_number((body or {}).get('price', 0),
+                                 'Custom item value', 0, 9_999_999)
+            stackable = False
+            owned = {
+                'is_custom': True, 'key': 'custom', 'cat': category,
+                'name': name, 'custom_name': name,
+                'desc': str((body or {}).get('description') or '')[:4000],
+                'price': price, 'stackable': stackable, 'qty': 1,
+                'state': 'carried', 'source': 'Tech Maker Invention',
+                'manual_resolution_required': True,
+                'acquisition_source': 'crafted',
+                'acquisition_note': f'Invented by {tech_name}: {reason_detail}'[:500],
+            }
+            for _ in range(qty):
+                instance = copy.deepcopy(owned)
+                instance['instance_id'] = new_item_instance_id()
+                instance['key'] = f'custom-{instance["instance_id"]}'
+                inventory.append(instance)
+                created_instance_ids.append(instance['instance_id'])
+        data['cash'] = round(cash - material_cost, 2)
+        # Fabricated firearms start unloaded, mirroring Night Market purchases.
+        for instance_id in created_instance_ids:
+            weapon = next((item for item in inventory
+                           if isinstance(item, dict) and
+                           item.get('instance_id') == instance_id), None)
+            if weapon and weapon.get('cat') in ('guns', 'melee'):
+                state = (data.get('weapon_state') or {}).get(instance_id)
+                if state:
+                    state['magazine'] = 0
+        state = data.setdefault('tech_maker_state', {})
+        fabrication_record = {
+            'fabrication_id': secrets.token_hex(16), 'name': name,
+            'blueprint_catalog_id': blueprint_id or None,
+            'category': blueprint.get('cat') if blueprint else str(
+                (body or {}).get('category') or 'custom'),
+            'qty': qty, 'maker_specialty': specialty, 'maker_rank': rank,
+            'tech_name': tech_name, 'material_cost': material_cost,
+            'source': f'Maker: {TECH_MAKER_SPECIALTY_LABELS[specialty][0]} · CP:R 148',
+            'at': time.time(), 'reason': reason_detail,
+            'instance_ids': created_instance_ids,
+        }
+        fabrications = state.setdefault('fabrications', [])
+        if not isinstance(fabrications, list):
+            fabrications = []
+            state['fabrications'] = fabrications
+        fabrications.append(fabrication_record)
+        state['fabrications'] = fabrications[-50:]
+        validate_tech_maker_references(data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'tech_maker_fabricate',
+            source_ref=reason_detail, prune=True)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data,
+            f'Tech Maker {specialty}: fabricate {name} ×{qty}: {reason_detail}',
+            current_revision, revision_after, category='item_action')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['tech_maker_fabrication'] = {
+            'fabrication_id': fabrication_record['fabrication_id'],
+            'name': name, 'blueprint_catalog_id': blueprint_id or None,
+            'qty': qty, 'maker_specialty': specialty, 'material_cost': material_cost,
+            'instance_ids': created_instance_ids,
+        }
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), time.time(),
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'fabrication': fabrication_record,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        }, status=201)
+
+    def api_downtime_activities(self, conn, qs, m, body):
+        self.require_user(conn)
+        self.send_json({'activities': DOWNTIME_ACTIVITIES})
+
+    def api_character_downtime(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        data = ensure_progression(json.loads(row['data']))
+        self.send_json(downtime_payload(data, conn=conn))
+
+    @atomic_endpoint
+    def api_character_downtime_start(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        allowed = {'revision', 'duration_key', 'activities', 'note'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Downtime start содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        state = downtime_state(data)
+        if isinstance(state.get('active'), dict):
+            raise ApiError(409, 'Downtime уже активен')
+        duration_key = str((body or {}).get('duration_key') or '') or None
+        duration_label = None
+        if duration_key:
+            duration = campaign_duration_seconds(duration_key)
+            if duration is None:
+                raise ApiError(400, 'Неизвестная длительность Downtime')
+            duration_label = CAMPAIGN_DURATION_LABELS.get(duration_key)
+        activities = clean_downtime_activities((body or {}).get('activities'))
+        note = str((body or {}).get('note') or '').strip()[:1000]
+        now = time.time()
+        campaign_started = campaign_now(conn)
+        active = {
+            'downtime_id': secrets.token_hex(16),
+            'started_at': now,
+            'campaign_started_at': campaign_started,
+            'campaign_due_at': campaign_started + duration if duration_key else None,
+            'duration_key': duration_key,
+            'duration_label': duration_label,
+            'note': note,
+            'created_by': user['id'],
+            'activities': activities,
+        }
+        state['active'] = active
+        reason = f'Downtime started: {note or duration_key or "manual"}'
+        persist_character_item_instances(conn, row['id'], data, 'downtime_start',
+                                         source_ref=reason)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='downtime')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['revertible'] = False
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now, revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({'ok': True, 'downtime': downtime_payload(
+            ensure_progression(json.loads(fresh['data'])), conn=conn)}, status=201)
+
+    @atomic_endpoint
+    def api_character_downtime_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        allowed = {'revision', 'action', 'activity_id', 'earned', 'hp', 'note'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Downtime action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        action = str((body or {}).get('action') or '').strip().lower()
+        if action not in ('resolve', 'complete', 'abandon'):
+            raise ApiError(400, 'Downtime action: resolve/complete/abandon')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        state = downtime_state(data)
+        active = state.get('active') if isinstance(state.get('active'), dict) else None
+        if not active:
+            raise ApiError(409, 'Нет активного Downtime')
+        note = str((body or {}).get('note') or '').strip()[:1000]
+        reason = None
+        if action == 'resolve':
+            activity_id = str((body or {}).get('activity_id') or '').strip().lower()
+            activity = next((item for item in active.get('activities') or []
+                             if item.get('id') == activity_id), None)
+            if not activity:
+                raise ApiError(404, 'Downtime activity не найдена')
+            if activity.get('resolved'):
+                raise ApiError(409, 'Downtime activity уже отмечена выполненной')
+            catalog = DOWNTIME_ACTIVITY_BY_ID[activity_id]
+            kind = catalog['kind']
+            if kind == 'hustle':
+                try:
+                    earned = max(0.0, min(9_999_999.0, float((body or {}).get('earned') or 0)))
+                except (TypeError, ValueError):
+                    raise ApiError(400, 'Некорректная сумма Hustle')
+                cash = float(data.get('cash') or 0)
+                if not math.isfinite(cash) or cash + earned > 9_999_999:
+                    raise ApiError(400, 'Слишком большая сумма')
+                data['cash'] = round(cash + earned, 2)
+                resolution_note = note or f'Hustle: +€$ {earned:,.0f} (manual roll)'
+                reason = f'Downtime Hustle: +€$ {earned:,.0f}'
+            elif kind == 'recover_hp':
+                try:
+                    hp = max(0, min(1000, int((body or {}).get('hp') or 0)))
+                except (TypeError, ValueError):
+                    raise ApiError(400, 'Некорректное восстановление HP')
+                derived = derive(data)
+                hp_max = _num(derived.get('hp_max')) or _num(data.get('hp_cur')) or 0
+                hp_cur = _num(data.get('hp_cur'))
+                if hp_cur is not None and hp_max:
+                    data['hp_cur'] = min(hp_max, hp_cur + hp)
+                elif hp_cur is not None:
+                    data['hp_cur'] = hp_cur + hp
+                else:
+                    data['hp_cur'] = hp
+                resolution_note = note or f'Recover HP: +{hp}'
+                reason = f'Downtime Recover HP: +{hp}'
+            else:
+                resolution_note = note or 'Resolved at the table'
+                reason = f'Downtime activity resolved: {catalog["label_ru"]}'
+            activity['resolved'] = True
+            activity['resolution_note'] = resolution_note
+            revision_after = current_revision + 1
+            persist_character_item_instances(conn, row['id'], data, 'downtime_resolve',
+                                             source_ref=reason)
+            ledger_id = record_character_change_set(
+                conn, row['id'], user['id'], before, data, reason,
+                current_revision, revision_after, category='downtime')
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            delta['revertible'] = False
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(delta, ensure_ascii=False), ledger_id))
+        elif action == 'complete':
+            summary = str(note or 'Downtime completed').strip()[:1000]
+            active['completed_at'] = time.time()
+            active['summary'] = summary
+            state['history'].append(active)
+            state['history'] = state['history'][-50:]
+            state['active'] = None
+            reason = f'Downtime completed: {summary}'
+            revision_after = current_revision + 1
+            persist_character_item_instances(conn, row['id'], data, 'downtime_complete',
+                                             source_ref=reason)
+            ledger_id = record_character_change_set(
+                conn, row['id'], user['id'], before, data, reason,
+                current_revision, revision_after, category='downtime')
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            delta['revertible'] = False
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(delta, ensure_ascii=False), ledger_id))
+        else:  # abandon
+            summary = str(note or 'Downtime abandoned').strip()[:1000]
+            active['completed_at'] = time.time()
+            active['summary'] = summary
+            state['history'].append(active)
+            state['history'] = state['history'][-50:]
+            state['active'] = None
+            reason = f'Downtime abandoned: {summary}'
+            revision_after = current_revision + 1
+            persist_character_item_instances(conn, row['id'], data, 'downtime_abandon',
+                                             source_ref=reason)
+            ledger_id = record_character_change_set(
+                conn, row['id'], user['id'], before, data, reason,
+                current_revision, revision_after, category='downtime')
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            delta['revertible'] = False
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), time.time(),
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({'ok': True, 'action': action,
+                        'downtime': downtime_payload(
+                            ensure_progression(json.loads(fresh['data'])), conn=conn)})
+
+    @atomic_endpoint
+    def api_character_popup_weapon_bind(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'weapon_instance_id', 'permanent_confirmed', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Popup Weapon binding содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        if (body or {}).get('permanent_confirmed') is not True:
+            raise ApiError(400, 'Подтвердите permanent Popup Weapon binding')
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Popup Weapon binding')
+        option_id = str(m.group(2)).lower()
+        weapon_id = str((body or {}).get('weapon_instance_id') or '').lower()
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        option = next((item for item in data.get('cyberware') or []
+                       if isinstance(item, dict) and item.get('instance_id') == option_id), None)
+        if not option or not cyberware_is_installed(option) or not popup_weapon_binding_kind(option):
+            raise ApiError(404, 'Installed generic Popup Weapon option не найден')
+        runtime_states = data.setdefault('cyberware_state', {})
+        runtime = runtime_states.setdefault(option_id, {})
+        if runtime.get('bound_weapon_instance_id'):
+            raise ApiError(409, 'Popup Weapon уже имеет permanent bound weapon')
+        weapon = next((item for item in data.get('inventory') or []
+                       if isinstance(item, dict) and item.get('instance_id') == weapon_id), None)
+        compatibility = popup_weapon_binding_compatibility(option, weapon)
+        if not compatibility['allowed']:
+            raise ApiError(400, '; '.join(compatibility['reasons']))
+        weapon['state'] = 'installed'
+        weapon['installed_cyberware_instance_id'] = option_id
+        host_ids = cyberware_host_assignments(option)
+        weapon['installed_cyberarm_host_id'] = host_ids[0] if host_ids else None
+        runtime['bound_weapon_instance_id'] = weapon_id
+        runtime['bound_weapon_permanent'] = True
+        runtime['bound_at'] = time.time()
+        runtime['binding_reason'] = reason_detail
+        validate_bound_popup_weapon_references(data)
+        validate_active_modification_references(conn, row['id'], data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'popup_weapon_binding',
+            source_ref=reason_detail, prune=True)
+        revision_after = current_revision + 1
+        reason = (f'Permanently bind {weapon.get("name")} to '
+                  f'{option.get("name")}: {reason_detail}')
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='modification')
+        ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                  (ledger_id,)).fetchone()
+        delta = parse_json_object(ledger_row['delta_json'])
+        delta['popup_weapon_binding'] = {
+            'option_instance_id': option_id, 'weapon_instance_id': weapon_id,
+            'permanent': True, 'attachments_preserved': True,
+        }
+        conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                     (json.dumps(delta, ensure_ascii=False), ledger_id))
+        now = time.time()
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'compatibility': compatibility,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
+    def api_character_cyberware_weapon_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'action', 'ammo_instance_id', 'payload_type', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Cyberweapon action содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Cyberweapon action')
+        instance_id = str(m.group(2)).lower()
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        chrome = next((item for item in data.get('cyberware') or []
+                       if isinstance(item, dict) and item.get('instance_id') == instance_id), None)
+        profile = cyberware_weapon_profile(chrome) or bound_popup_weapon_profile(data, chrome)
+        if not chrome or not cyberware_is_installed(chrome) or not profile:
+            raise ApiError(404, 'Installed curated Cyberweapon не найден')
+        runtime_states = data.setdefault('cyberware_state', {})
+        runtime = runtime_states.setdefault(instance_id, {})
+        bound_weapon = next((item for item in data.get('inventory') or []
+                             if isinstance(item, dict) and item.get('instance_id') ==
+                             profile.get('bound_weapon_instance_id')), None)
+        if bound_weapon:
+            weapon_state = data.setdefault('weapon_state', {}).setdefault(
+                bound_weapon['instance_id'], {
+                    'magazine': int(profile.get('magazine') or 0),
+                    'magazine_max': int(profile.get('magazine') or 0), 'reserve': 0,
+                })
+            weapon_state.setdefault('deployed', False)
+            weapon_state.setdefault('revved', False)
+        else:
+            weapon_state = runtime.setdefault('weapon', {
+                'deployed': not profile.get('deployable'), 'revved': False,
+                'magazine': 0, 'magazine_max': int(profile.get('magazine') or 0),
+            })
+        maximum = max(0, int(_num(profile.get('magazine')) or 0))
+        weapon_state['magazine_max'] = maximum
+        weapon_state['magazine'] = max(
+            0, min(maximum, int(_num(weapon_state.get('magazine')) or 0)))
+        action = str((body or {}).get('action') or '').lower()
+        result = {'action': action, 'profile_id': profile['id']}
+        if action in ('deploy', 'stow'):
+            if not profile.get('deployable'):
+                raise ApiError(409, 'Cyberweapon не имеет deploy/stow state')
+            weapon_state['deployed'] = action == 'deploy'
+            if action == 'stow':
+                weapon_state['revved'] = False
+            reason = f'{action.title()} Cyberweapon {chrome.get("name")}: {reason_detail}'
+        elif action in ('rev', 'rev_down'):
+            if not profile.get('rev_action'):
+                raise ApiError(409, 'Cyberweapon не имеет rev action')
+            if profile.get('deployable') and not weapon_state.get('deployed'):
+                raise ApiError(409, 'Сначала deploy Cyberweapon')
+            weapon_state['revved'] = action == 'rev'
+            reason = f'{action} Cyberweapon {chrome.get("name")}: {reason_detail}'
+        elif action == 'fire':
+            if profile.get('kind') not in ('ranged', 'ranged_dual'):
+                raise ApiError(409, 'Fire доступен только ranged Cyberweapon')
+            if profile.get('deployable') and not weapon_state.get('deployed'):
+                raise ApiError(409, 'Сначала deploy Cyberweapon')
+            current = weapon_state['magazine']
+            if current < 1:
+                raise ApiError(409, 'Cyberweapon magazine пуст')
+            weapon_state['magazine'] = current - 1
+            clear_loaded_ammo_if_empty(weapon_state)
+            # Special payload drains entirely on fire (Gas Jet)
+            if profile.get('special_ammo') and weapon_state.get('magazine', 0) == 0:
+                weapon_state.pop('loaded_payload', None)
+                weapon_state.pop('loaded_ammo_kind', None)
+            result.update({'magazine_before': current,
+                           'magazine_after': weapon_state['magazine']})
+            # Manual effect hint for special weapons
+            if profile.get('special_ammo') and profile.get('manual_effect'):
+                result['manual_effect'] = profile['manual_effect']
+                result['manual_resolution_required'] = True
+            reason = f'Fire Cyberweapon {chrome.get("name")}: {reason_detail}'
+        elif action == 'reload':
+            if maximum <= 0:
+                raise ApiError(409, 'Cyberweapon не использует tracked ammo')
+            if profile.get('special_ammo'):
+                if weapon_state.get('magazine', 0) >= maximum:
+                    raise ApiError(409, 'Магазин уже заполнен')
+                payload = None
+                if profile['id'] == 'gas-jet':
+                    payload_raw = str((body or {}).get('payload_type') or '').strip().lower()
+                    allowed = set(profile.get('payload_options') or ['street_drug', 'poison', 'biotoxin'])
+                    if payload_raw not in allowed:
+                        raise ApiError(400, 'Выберите payload для Gas Jet: street_drug / poison / biotoxin')
+                    payload = payload_raw
+                    weapon_state['loaded_payload'] = payload
+                elif profile['id'] == 'popup-net-launcher':
+                    weapon_state['loaded_payload'] = 'net'
+                elif profile['id'] in ('dartgun', 'dartgun-cyberfinger'):
+                    weapon_state['loaded_payload'] = 'dart'
+                    weapon_state.pop('loaded_ammo_kind', None)
+                weapon_state['magazine'] = maximum
+                weapon_state.pop('loaded_ammo_catalog_id', None)
+                weapon_state.pop('loaded_ammo_name', None)
+                if payload != 'street_drug' and payload is not None:
+                    weapon_state.pop('loaded_ammo_kind', None)
+                result['special_reload'] = True
+                result['loaded_payload'] = weapon_state.get('loaded_payload')
+                result['magazine_after'] = maximum
+                if payload:
+                    reason = f'Reload Cyberweapon {chrome.get("name")} [{payload}]: {reason_detail}'
+                else:
+                    reason = f'Reload Cyberweapon {chrome.get("name")} [special ammo]: {reason_detail}'
+            else:
+                ammo_id = str((body or {}).get('ammo_instance_id') or '').lower()
+                ammo = next((item for item in data.get('inventory') or []
+                             if isinstance(item, dict) and item.get('instance_id') == ammo_id), None)
+                ammo_kinds = profile.get('ammo_kinds') or ([profile.get('ammo_kind')]
+                                                           if profile.get('ammo_kind') else [])
+                if bound_weapon:
+                    if not ammo_matches_requirement(ammo, weapon=bound_weapon):
+                        raise ApiError(400, 'Ammo stack несовместим с Cyberweapon')
+                    transfer = consume_shared_ammo(
+                        data, weapon_state, ammo_id, weapon=bound_weapon)
+                    ammo_kind = None
+                else:
+                    ammo_kind = next((kind for kind in ammo_kinds
+                                      if ammo_matches_requirement(ammo, kind)), None)
+                    if not ammo_kind:
+                        raise ApiError(400, 'Ammo stack несовместим с Cyberweapon')
+                    transfer = consume_shared_ammo(
+                        data, weapon_state, ammo_id, ammo_kind=ammo_kind)
+                if ammo_kind:
+                    weapon_state['loaded_ammo_kind'] = ammo_kind
+                result['transfer'] = transfer
+                reason = (f'Reload Cyberweapon {chrome.get("name")} with '
+                          f'{transfer["ammo_name"]} ×{transfer["moved"]}: {reason_detail}')
+        else:
+            raise ApiError(400, 'Cyberweapon action: deploy/stow/rev/rev_down/fire/reload')
+        if not bound_weapon:
+            runtime['weapon'] = weapon_state
+        validate_bound_popup_weapon_references(data)
+        validate_active_modification_references(conn, row['id'], data)
+        persist_character_item_instances(
+            conn, row['id'], data, 'cyberweapon_action', source_ref=reason, prune=True)
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='item_action')
+        now = time.time()
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id, 'result': result,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
+    def api_character_item_action(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        expected_revision = _num((body or {}).get('revision'))
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if expected_revision is None or expected_revision != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        instance_id = str(m.group(2)).lower()
+        index = next((position for position, entry in enumerate(data.get('inventory') or [])
+                      if isinstance(entry, dict) and entry.get('instance_id') == instance_id), None)
+        if index is None:
+            raise ApiError(404, 'Экземпляр предмета не найден')
+        entry = data['inventory'][index]
+        catalog_item = item_by_id(catalog_item_id_for_entry(entry))
+        interaction = catalog_interaction_data(catalog_item)
+        action = str((body or {}).get('action') or '').strip().lower()
+        display_name = str(entry.get('custom_name') or entry.get('name') or 'Item')
+        effect = None
+        use_effect_result = {'created': [], 'replaced_effect_ids': [], 'manual_rules': []}
+
+        if action == 'use':
+            if not interaction.get('consumable'):
+                raise ApiError(400, 'Этот предмет не является расходником')
+            if entry.get('state') in ('stored', 'broken', 'consumed'):
+                raise ApiError(409, 'Расходник должен быть исправен и находиться при персонаже')
+            try:
+                uses = max(1, min(99, int((body or {}).get('amount') or 1)))
+            except (TypeError, ValueError):
+                raise ApiError(400, 'Некорректное количество')
+            consume_amount = max(1, int(interaction.get('consume_amount') or 1))
+            spent = uses * consume_amount
+            quantity = max(1, int(entry.get('qty') or 1))
+            if spent > quantity:
+                raise ApiError(400, 'Недостаточно единиц расходника')
+            remaining = quantity - spent
+            if remaining:
+                entry['qty'] = remaining
+            else:
+                data['inventory'].pop(index)
+            effect = copy.deepcopy(interaction.get('use_effect'))
+            reason = f'Use {display_name} ×{spent}'
+            use_effect_result = instantiate_consumable_effects(
+                conn, row['id'], user['id'], entry)
+        elif action == 'equip':
+            if not interaction.get('equippable'):
+                raise ApiError(400, 'Этот предмет нельзя экипировать')
+            if entry.get('state') != 'carried':
+                raise ApiError(409, 'Экипировать можно только carried предмет')
+            modes = interaction.get('equip_modes') or ['ready']
+            mode = str((body or {}).get('mode') or modes[0])
+            if mode not in modes:
+                raise ApiError(400, 'Недопустимый режим экипировки')
+            hands_required = max(0, int(interaction.get('hands_required') or 0)) if mode == 'held' else 0
+            occupied_hands = 0
+            for equipped in data.get('inventory') or []:
+                if (not isinstance(equipped, dict) or equipped.get('state') != 'equipped' or
+                        equipped.get('equipped_mode') != 'held'):
+                    continue
+                equipped_item = item_by_id(catalog_item_id_for_entry(equipped))
+                occupied_hands += max(0, int((equipped_item or {}).get('hands_required') or 0))
+            shoulder_mounts = sum(
+                1 for chrome in data.get('cyberware') or []
+                if isinstance(chrome, dict) and chrome.get('state') == 'installed' and
+                str(chrome.get('name') or '').lower() == 'artificial shoulder mount')
+            available_hands = 2 + shoulder_mounts * 2
+            if occupied_hands + hands_required > available_hands:
+                raise ApiError(409, 'Недостаточно свободных рук для экипировки')
+            limit = _num(interaction.get('equip_limit'))
+            if limit is not None:
+                equipped_count = sum(
+                    1 for owned in data.get('inventory') or []
+                    if isinstance(owned, dict) and owned.get('state') == 'equipped' and
+                    catalog_item_id_for_entry(owned) == catalog_item_id_for_entry(entry))
+                if equipped_count >= limit:
+                    raise ApiError(409, 'Достигнут лимит экипированных копий')
+            slots = interaction.get('equip_slots') or []
+            slot_defaults = {'held': 'hand', 'worn': 'ear', 'ready': 'belt',
+                             'workspace': 'workspace', 'mounted': 'weapon'}
+            slot = str((body or {}).get('slot') or slot_defaults.get(mode) or (slots[0] if slots else 'other'))
+            if slots and slot not in slots:
+                raise ApiError(400, 'Недопустимый слот экипировки')
+            entry.update({
+                'state': 'equipped', 'equipped_mode': mode, 'equipped_slot': slot,
+                'active': not bool(interaction.get('activation_required')),
+            })
+            reason = f'Equip {display_name} ({mode})'
+        elif action == 'unequip':
+            if entry.get('state') != 'equipped':
+                raise ApiError(409, 'Предмет не экипирован')
+            entry['state'] = 'carried'
+            for key in ('active', 'equipped_mode', 'equipped_slot', 'host_instance_id'):
+                entry.pop(key, None)
+            reason = f'Unequip {display_name}'
+        elif action in ('activate', 'deactivate'):
+            if not interaction.get('equippable') or not interaction.get('activation_required'):
+                raise ApiError(400, 'Предмет не поддерживает включение и выключение')
+            if entry.get('state') != 'equipped':
+                raise ApiError(409, 'Сначала экипируйте предмет')
+            active = action == 'activate'
+            if bool(entry.get('active')) == active:
+                raise ApiError(409, 'Предмет уже находится в выбранном состоянии')
+            entry['active'] = active
+            reason = f'{"Activate" if active else "Deactivate"} {display_name}'
+        else:
+            raise ApiError(400, 'Неизвестное действие с предметом')
+
+        revision_after = current_revision + 1
+        persist_character_item_instances(
+            conn, row['id'], data, 'item_action', source_ref=reason, prune=True)
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='item_action')
+        if use_effect_result['created']:
+            ledger_row = conn.execute(
+                'SELECT delta_json FROM character_ledger WHERE id=?', (ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            delta['created_effect_ids'] = [item['effect_id'] for item in use_effect_result['created']]
+            delta['replaced_effect_ids'] = use_effect_result['replaced_effect_ids']
+            delta['manual_rules'] = use_effect_result['manual_rules']
+            for created_effect in use_effect_result['created']:
+                definition = created_effect.get('definition') or {}
+                delta.setdefault('changes', []).append({
+                    'path': f'effects.instances.{created_effect["effect_id"]}',
+                    'label': f'Effect: {created_effect["label"]}', 'kind': 'added',
+                    'before': '—',
+                    'after': readable_change_value({
+                        'status': created_effect.get('status'),
+                        'target': definition.get('target'),
+                        'operation': definition.get('operation'),
+                        'value': definition.get('value'),
+                        'duration': created_effect.get('duration_type'),
+                    }),
+                })
+            delta['change_count'] = len(delta.get('changes') or [])
+            conn.execute('UPDATE character_ledger SET delta_json=? WHERE id=?',
+                         (json.dumps(delta, ensure_ascii=False), ledger_id))
+        conn.execute(
+            'UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+            (json.dumps(data, ensure_ascii=False), time.time(), revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ok': True, 'action': action, 'message': reason, 'effect': effect,
+            'created_effects': use_effect_result['created'],
+            'manual_rules': use_effect_result['manual_rules'],
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
+    def api_character_item_transfer(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1), allow_gm=True)
+        allowed = {'revision', 'action', 'to_char_id', 'to_instance_id',
+                   'to_revision', 'quantity', 'notes'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Item transfer содержит неподдерживаемые поля')
+        action = str((body or {}).get('action') or '').strip().lower()
+        if action not in TRANSFER_KINDS:
+            raise ApiError(400, 'Неизвестный тип передачи предмета')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        instance_id = str(m.group(2)).lower()
+        if not INSTANCE_ID_RE.fullmatch(instance_id):
+            raise ApiError(400, 'Некорректный идентификатор предмета')
+        notes = str((body or {}).get('notes') or '').strip()[:500]
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        sides = []
+
+        def load_side(target_row):
+            target_before = enrich_owned_item_interactions(
+                ensure_progression(json.loads(target_row['data'])))
+            return target_before, copy.deepcopy(target_before)
+
+        def parse_qty():
+            raw = (body or {}).get('quantity')
+            if raw is None:
+                return None
+            try:
+                return max(1, int(raw))
+            except (TypeError, ValueError):
+                raise ApiError(400, 'Некорректное количество')
+
+        def move(source_data, source_row_id, target_instance_id, qty, dest,
+                 loan_ok=False, force_unequip=False):
+            """Move one instance out of ``source_data`` into stash or a character.
+
+            ``dest`` is ``('stash',)`` or ``('char', target_data, target_char_id)``.
+            Returns ``(moved_instance_id, moved_qty, name)``.
+            """
+            index, entry = _inventory_entry(source_data, target_instance_id)
+            if index is None:
+                raise ApiError(404, 'Экземпляр предмета не найден')
+            if force_unequip and entry.get('state') in ('equipped', 'installed'):
+                entry['state'] = 'carried'
+                for key in ('equipped_mode', 'equipped_slot', 'active',
+                            'host_instance_id', 'host_instances'):
+                    entry.pop(key, None)
+            loan = active_loan_for_instance(conn, target_instance_id)
+            _transferable_item_error(conn, source_row_id, entry, source_data,
+                                     loan, loan_ok=loan_ok)
+            full_qty = max(1, int(entry.get('qty') or 1))
+            qty = full_qty if qty is None else int(qty)
+            if qty <= 0 or qty > full_qty:
+                raise ApiError(400, 'Некорректное количество для передачи')
+            if not item_entry_stackable(entry) and qty > 1:
+                raise ApiError(400, 'Этот предмет передаётся поштучно (не stackable)')
+            name = _character_item_name(entry)
+            partial = qty < full_qty
+            if partial:
+                remaining, taken = _split_stack(entry, qty)
+                source_data['inventory'][index] = remaining
+                moved_id = new_item_instance_id()
+                taken['instance_id'] = moved_id
+            else:
+                source_data['inventory'].pop(index)
+                taken = entry
+                moved_id = target_instance_id
+                _detach_runtime_state(source_data, taken, target_instance_id)
+                _detach_tech_maker_modifications(source_data, taken, target_instance_id)
+                # Rehome the relational row now so persist never regenerates the
+                # stable instance_id across characters.
+                if dest[0] == 'stash':
+                    conn.execute('DELETE FROM item_instances WHERE instance_id=?',
+                                 (moved_id,))
+                else:
+                    conn.execute(
+                        'UPDATE item_instances SET character_id=? WHERE instance_id=?',
+                        (dest[2], moved_id))
+            if dest[0] == 'stash':
+                cleaned = _prepare_entry_for_holder(taken, 'stash')
+                cleaned['instance_id'] = moved_id
+                now = time.time()
+                conn.execute(
+                    'INSERT INTO crew_stash(instance_id,catalog_item_id,custom_name,'
+                    'state,quantity,notes,stored_at,data_json,created,updated) '
+                    'VALUES(?,?,?,?,?,?,?,?,?,?)',
+                    (moved_id, catalog_item_id_for_entry(taken),
+                     str(cleaned.get('custom_name') or '')[:120] or None, 'stored',
+                     cleaned['qty'], '', now, json.dumps(cleaned, ensure_ascii=False),
+                     now, now))
+            else:
+                target_data = dest[1]
+                if len(target_data.get('inventory') or []) + 1 > 500:
+                    raise ApiError(400, 'Инвентарь получателя переполнен')
+                cleaned = _prepare_entry_for_holder(taken, 'char')
+                cleaned['instance_id'] = moved_id
+                _attach_runtime_state(target_data, cleaned, moved_id)
+                _attach_tech_maker_modifications(target_data, cleaned)
+                target_data.setdefault('inventory', []).append(cleaned)
+            return moved_id, qty, name
+
+        message = ''
+        if action == 'split':
+            index, entry = _inventory_entry(data, instance_id)
+            if index is None:
+                raise ApiError(404, 'Экземпляр предмета не найден')
+            if not item_entry_stackable(entry):
+                raise ApiError(400, 'Делить можно только stackable предметы')
+            loan = active_loan_for_instance(conn, instance_id)
+            if loan is not None and loan['borrower_character_id'] == row['id']:
+                raise ApiError(409, 'Предмет взят в долг — его нельзя делить')
+            full_qty = max(1, int(entry.get('qty') or 1))
+            try:
+                take_qty = max(1, int((body or {}).get('quantity') or 0))
+            except (TypeError, ValueError):
+                raise ApiError(400, 'Некорректное количество')
+            if take_qty >= full_qty:
+                raise ApiError(400, 'Для разделения укажите количество меньше размера стека')
+            remaining, taken = _split_stack(entry, take_qty)
+            data['inventory'][index] = remaining
+            new_id = new_item_instance_id()
+            taken['instance_id'] = new_id
+            data['inventory'].append(taken)
+            message = f'Split {_character_item_name(entry)} ×{take_qty}'
+            _record_item_transfer(
+                conn, new_id, 'split', user['id'], notes,
+                from_character_id=row['id'], to_character_id=row['id'],
+                from_bucket='inventory', to_bucket='inventory', quantity=take_qty)
+            sides.append({'id': row['id'], 'before': before, 'data': data, 'reason': message})
+        elif action == 'stash':
+            moved_id, qty, name = move(data, row['id'], instance_id, parse_qty(), ('stash',))
+            message = f'Move {name} ×{qty} to Crew Stash'
+            _record_item_transfer(
+                conn, moved_id, 'stash', user['id'], notes,
+                from_character_id=row['id'], to_character_id=None,
+                from_bucket='inventory', to_bucket='stash', quantity=qty)
+            sides.append({'id': row['id'], 'before': before, 'data': data, 'reason': message})
+        elif action in ('give', 'loan'):
+            to_char_id = _num((body or {}).get('to_char_id'))
+            if not to_char_id:
+                raise ApiError(400, 'Укажите получателя (to_char_id)')
+            target_row = self.get_char(conn, to_char_id)
+            if target_row['id'] == row['id']:
+                raise ApiError(400, 'Нельзя передать предмет самому себе')
+            if parse_json_object(target_row['data']).get('archived'):
+                raise ApiError(409, 'Досье получателя заархивировано')
+            target_before, target_data = load_side(target_row)
+            moved_id, qty, name = move(data, row['id'], instance_id, parse_qty(),
+                                       ('char', target_data, target_row['id']))
+            if action == 'loan':
+                conn.execute(
+                    'INSERT INTO item_loans(loan_id,instance_id,owner_character_id,'
+                    'borrower_character_id,quantity,loaned_by,loaned_at,notes) '
+                    'VALUES(?,?,?,?,?,?,?,?)',
+                    (secrets.token_hex(16), moved_id, row['id'], target_row['id'], qty,
+                     user['id'], time.time(), notes))
+            message = f'{"Loan" if action == "loan" else "Give"} {name} ×{qty}'
+            _record_item_transfer(
+                conn, moved_id, action, user['id'], notes,
+                from_character_id=row['id'], to_character_id=target_row['id'],
+                from_bucket='inventory', to_bucket='inventory', quantity=qty)
+            sides.append({'id': row['id'], 'before': before, 'data': data, 'reason': message})
+            sides.append({'id': target_row['id'], 'before': target_before,
+                          'data': target_data, 'reason': message})
+        elif action == 'return':
+            loan = active_loan_for_instance(conn, instance_id)
+            if not loan or loan['borrower_character_id'] != row['id']:
+                raise ApiError(409, 'Предмет не числится за вами как долг')
+            owner_row = self.get_char(conn, loan['owner_character_id'])
+            if parse_json_object(owner_row['data']).get('archived'):
+                raise ApiError(409, 'Досье владельца заархивировано')
+            owner_before, owner_data = load_side(owner_row)
+            moved_id, qty, name = move(data, row['id'], instance_id, None,
+                                       ('char', owner_data, owner_row['id']), loan_ok=True)
+            conn.execute('UPDATE item_loans SET returned_at=?,returned_by=? WHERE loan_id=?',
+                         (time.time(), user['id'], loan['loan_id']))
+            message = f'Return {name} ×{qty} to owner'
+            _record_item_transfer(
+                conn, moved_id, 'return', user['id'], notes,
+                from_character_id=row['id'], to_character_id=owner_row['id'],
+                from_bucket='inventory', to_bucket='inventory', quantity=qty)
+            sides.append({'id': row['id'], 'before': before, 'data': data, 'reason': message})
+            sides.append({'id': owner_row['id'], 'before': owner_before,
+                          'data': owner_data, 'reason': message})
+        elif action == 'recall':
+            loan = active_loan_for_instance(conn, instance_id)
+            if not loan or loan['owner_character_id'] != row['id']:
+                raise ApiError(409, 'Предмет не числится как выданный вами в долг')
+            borrower_row = self.get_char(conn, loan['borrower_character_id'])
+            borrower_before, borrower_data = load_side(borrower_row)
+            moved_id, qty, name = move(borrower_data, borrower_row['id'], instance_id,
+                                       None, ('char', data, row['id']), loan_ok=True,
+                                       force_unequip=True)
+            conn.execute('UPDATE item_loans SET returned_at=?,returned_by=? WHERE loan_id=?',
+                         (time.time(), user['id'], loan['loan_id']))
+            message = f'Recall {name} ×{qty} from borrower'
+            _record_item_transfer(
+                conn, moved_id, 'recall', user['id'], notes,
+                from_character_id=borrower_row['id'], to_character_id=row['id'],
+                from_bucket='inventory', to_bucket='inventory', quantity=qty)
+            # The losing side must persist first so the stable instance_id is freed.
+            sides.append({'id': borrower_row['id'], 'before': borrower_before,
+                          'data': borrower_data, 'reason': message})
+            sides.append({'id': row['id'], 'before': before, 'data': data, 'reason': message})
+        elif action == 'trade':
+            to_char_id = _num((body or {}).get('to_char_id'))
+            to_instance_id = str((body or {}).get('to_instance_id') or '').lower()
+            if not to_char_id:
+                raise ApiError(400, 'Укажите партнёра обмена (to_char_id)')
+            if not INSTANCE_ID_RE.fullmatch(to_instance_id):
+                raise ApiError(400, 'Укажите предмет партнёра (to_instance_id)')
+            if to_instance_id == instance_id:
+                raise ApiError(400, 'Нельзя обменять предмет на самого себя')
+            target_row = self.get_char(conn, to_char_id)
+            if target_row['id'] == row['id']:
+                raise ApiError(400, 'Нельзя обменяться с самим собой')
+            if parse_json_object(target_row['data']).get('archived'):
+                raise ApiError(409, 'Досье партнёра заархивировано')
+            target_revision = _row_value(target_row, 'revision', 0) or 0
+            if _num((body or {}).get('to_revision')) != target_revision:
+                raise ApiError(409, 'Dossier партнёра изменён в другой вкладке; обновите страницу')
+            target_before, target_data = load_side(target_row)
+            moved_id, qty, name = move(data, row['id'], instance_id, None,
+                                       ('char', target_data, target_row['id']))
+            other_id, other_qty, other_name = move(
+                target_data, target_row['id'], to_instance_id, None,
+                ('char', data, row['id']))
+            message = f'Trade {name} ↔ {other_name}'
+            _record_item_transfer(
+                conn, moved_id, 'trade', user['id'], notes,
+                from_character_id=row['id'], to_character_id=target_row['id'],
+                from_bucket='inventory', to_bucket='inventory', quantity=qty)
+            _record_item_transfer(
+                conn, other_id, 'trade', user['id'], notes,
+                from_character_id=target_row['id'], to_character_id=row['id'],
+                from_bucket='inventory', to_bucket='inventory', quantity=other_qty)
+            sides.append({'id': row['id'], 'before': before, 'data': data, 'reason': message})
+            sides.append({'id': target_row['id'], 'before': target_before,
+                          'data': target_data, 'reason': message})
+
+        if not sides:
+            raise ApiError(400, 'Неизвестный тип передачи предмета')
+        for side in sides:
+            _persist_transfer_side(conn, side['id'], side['data'],
+                                   'item_transfer', side['reason'])
+            side_row = self.get_char(conn, side['id'])
+            revision = _row_value(side_row, 'revision', 0) or 0
+            _record_transfer_ledger(conn, side['id'], user['id'], side['before'],
+                                    side['data'], side['reason'], revision, revision + 1)
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                         (json.dumps(side['data'], ensure_ascii=False), time.time(),
+                          revision + 1, side['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({'ok': True, 'action': action, 'message': message,
+                        'character': self.char_payload(fresh, fresh['owner'], conn=conn)})
+
+    def api_personal_stash(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        cid = int(m.group(1))
+        char = conn.execute('SELECT * FROM characters WHERE id=?', (cid,)).fetchone()
+        if not char:
+            raise ApiError(404, 'Персонаж не найден')
+        if char['owner_id'] != user['id'] and not user_is_gm(user):
+            raise ApiError(403, 'Это не ваш персонаж')
+        rows = conn.execute(
+            'SELECT * FROM personal_stash WHERE character_id=? ORDER BY stored_at', (cid,)).fetchall()
+        payload = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item.update(json.loads(row['data_json'] or '{}'))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+            payload.append(item)
+        self.send_json({'stash': payload, 'character_id': cid})
+
+    @atomic_endpoint
+    def api_personal_stash_action(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        cid = int(m.group(1))
+        char = conn.execute('SELECT * FROM characters WHERE id=?', (cid,)).fetchone()
+        if not char:
+            raise ApiError(404, 'Персонаж не найден')
+        if char['owner_id'] != user['id'] and not user_is_gm(user):
+            raise ApiError(403, 'Это не ваш персонаж')
+        action = str((body or {}).get('action') or '').lower()
+        instance_id = str((body or {}).get('instance_id') or '').lower()
+        if action not in ('store', 'take'):
+            raise ApiError(400, 'Действие: store или take')
+        if action == 'take':
+            row = conn.execute(
+                'SELECT * FROM personal_stash WHERE instance_id=? AND character_id=?',
+                (instance_id, cid)).fetchone()
+            if not row:
+                raise ApiError(404, 'Предмет не найден в личном тайнике')
+            data = json.loads(char['data'])
+            data = ensure_progression(data)
+            ensure_character_item_instances(data)
+            item_data = json.loads(row['data_json'] or '{}')
+            item_data['instance_id'] = instance_id
+            item_data['state'] = 'carried'
+            data.setdefault('inventory', []).append(item_data)
+            persist_character_item_instances(conn, cid, data, 'personal_stash_take')
+            conn.execute('DELETE FROM personal_stash WHERE instance_id=? AND character_id=?',
+                         (instance_id, cid))
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
+                         (json.dumps(data, ensure_ascii=False), time.time(), cid))
+            conn.commit()
+            self.send_json({'ok': True, 'action': 'take'})
+        else:  # store
+            data = json.loads(char['data'])
+            data = ensure_progression(data)
+            inv = data.get('inventory') or []
+            item = next((e for e in inv if isinstance(e, dict) and e.get('instance_id') == instance_id), None)
+            if not item:
+                raise ApiError(404, 'Предмет не найден в инвентаре')
+            if item.get('state') in ('equipped', 'installed'):
+                raise ApiError(409, 'Сначала снимите предмет')
+            stash_data = copy.deepcopy(item)
+            for key in ('active',):
+                stash_data.pop(key, None)
+            stash_data['state'] = 'stored'
+            now = time.time()
+            conn.execute(
+                'INSERT OR REPLACE INTO personal_stash(instance_id,character_id,catalog_item_id,'
+                'custom_name,state,quantity,notes,stored_at,data_json,created,updated) '
+                'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                (instance_id, cid, stash_data.get('catalog_item_id') or stash_data.get('key') or '',
+                 str(stash_data.get('custom_name') or stash_data.get('name') or '')[:120],
+                 'stored', max(1, int(stash_data.get('qty') or 1)),
+                 str(stash_data.get('notes') or '')[:5000], now,
+                 json.dumps(stash_data, ensure_ascii=False), now, now))
+            inv = [e for e in inv if not (isinstance(e, dict) and e.get('instance_id') == instance_id)]
+            data['inventory'] = inv
+            persist_character_item_instances(conn, cid, data, 'personal_stash_store')
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
+                         (json.dumps(data, ensure_ascii=False), time.time(), cid))
+            conn.commit()
+            self.send_json({'ok': True, 'action': 'store'})
+
+    def api_crew_stash(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        self.send_json({
+            'stash': crew_stash_payload(conn),
+            'characters': transfer_targets(conn, user),
+        })
+
+    @atomic_endpoint
+    def api_crew_stash_take(self, conn, qs, m, body):
+        user, target_row = self.require_character_editor(
+            conn, _num((body or {}).get('char_id')), allow_gm=True)
+        allowed = {'char_id', 'instance_id', 'quantity', 'notes'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Crew Stash take содержит неподдерживаемые поля')
+        instance_id = str((body or {}).get('instance_id') or '').lower()
+        if not INSTANCE_ID_RE.fullmatch(instance_id):
+            raise ApiError(400, 'Некорректный идентификатор предмета')
+        stash_row = conn.execute(
+            'SELECT * FROM crew_stash WHERE instance_id=?', (instance_id,)).fetchone()
+        if not stash_row:
+            raise ApiError(404, 'Предмет не найден в Crew Stash')
+        notes = str((body or {}).get('notes') or '').strip()[:500]
+        target_before = enrich_owned_item_interactions(
+            ensure_progression(json.loads(target_row['data'])))
+        target_data = copy.deepcopy(target_before)
+        entry = parse_json_object(stash_row['data_json'])
+        full_qty = max(1, int(entry.get('qty') or 1))
+        try:
+            qty = max(1, int((body or {}).get('quantity') or 0)) \
+                if (body or {}).get('quantity') is not None else full_qty
+        except (TypeError, ValueError):
+            raise ApiError(400, 'Некорректное количество')
+        if qty > full_qty:
+            raise ApiError(400, 'Недостаточно единиц в Crew Stash')
+        if not item_entry_stackable(entry) and qty > 1:
+            raise ApiError(400, 'Этот предмет берётся поштучно (не stackable)')
+        partial = qty < full_qty
+        taken = copy.deepcopy(entry)
+        taken['qty'] = qty
+        if entry.get('cat') == 'ammo':
+            pack = ammo_pack_size(entry)
+            rounds = ammo_rounds(entry)
+            taken['ammo_rounds'] = qty * pack
+            remaining_rounds = max(0, rounds - qty * pack)
+        else:
+            remaining_rounds = None
+        moved_id = instance_id
+        if partial:
+            remaining = copy.deepcopy(entry)
+            remaining['qty'] = full_qty - qty
+            if remaining_rounds is not None:
+                remaining['ammo_rounds'] = remaining_rounds
+            moved_id = new_item_instance_id()
+            taken['instance_id'] = moved_id
+            conn.execute(
+                'UPDATE crew_stash SET quantity=?,data_json=?,updated=? WHERE instance_id=?',
+                (remaining['qty'], json.dumps(remaining, ensure_ascii=False),
+                 time.time(), instance_id))
+        else:
+            conn.execute('DELETE FROM crew_stash WHERE instance_id=?', (instance_id,))
+        taken['instance_id'] = moved_id
+        _attach_runtime_state(target_data, taken, moved_id)
+        _attach_tech_maker_modifications(target_data, taken)
+        cleaned = _prepare_entry_for_holder(taken, 'char')
+        cleaned['instance_id'] = moved_id
+        target_data.setdefault('inventory', []).append(cleaned)
+        message = f'Take {_character_item_name(taken)} ×{qty} from Crew Stash'
+        _record_item_transfer(
+            conn, moved_id, 'take', user['id'], notes,
+            from_character_id=None, to_character_id=target_row['id'],
+            from_bucket='stash', to_bucket='inventory', quantity=qty)
+        _persist_transfer_side(conn, target_row['id'], target_data,
+                               'crew_stash_take', message)
+        revision = _row_value(target_row, 'revision', 0) or 0
+        _record_transfer_ledger(conn, target_row['id'], user['id'], target_before,
+                                target_data, message, revision, revision + 1)
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(target_data, ensure_ascii=False), time.time(),
+                      revision + 1, target_row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, target_row['id'])
+        self.send_json({'ok': True, 'action': 'take', 'message': message,
+                        'character': self.char_payload(fresh, fresh['owner'], conn=conn)})
+
+    @atomic_endpoint
     def api_character_improve(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
         data = ensure_progression(json.loads(row['data']))
@@ -4077,6 +16498,7 @@ class Handler(BaseHTTPRequestHandler):
                            data['ip_available'], 'improvement', subject, reason)
         self.send_json(self.save_character_data(conn, row, data, user['id'], reason))
 
+    @atomic_endpoint
     def api_character_specialization(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
         data = ensure_progression(json.loads(row['data']))
@@ -4107,6 +16529,106 @@ class Handler(BaseHTTPRequestHandler):
                            data['ip_available'], 'allocation', key, reason)
         self.send_json(self.save_character_data(conn, row, data, user['id'], reason))
 
+    @atomic_endpoint
+    def api_character_vehicle_repair(self, conn, qs, m, body):
+        user, row = self.require_character_editor(conn, m.group(1))
+        allowed = {'revision', 'action', 'technician', 'check_total', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Vehicle repair содержит неподдерживаемые поля')
+        current_revision = _row_value(row, 'revision', 0) or 0
+        if _num((body or {}).get('revision')) != current_revision:
+            raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+        before = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
+        data = copy.deepcopy(before)
+        instance_id = str(m.group(2)).lower()
+        vehicle = next((item for item in data.get('inventory') or []
+                        if isinstance(item, dict) and item.get('instance_id') == instance_id and
+                        item.get('cat') == 'vehicles'), None)
+        if not vehicle:
+            raise ApiError(404, 'Vehicle instance не найден')
+        sync_vehicle_states_with_modifications(conn, row['id'], data)
+        state = (data.get('vehicle_state') or {}).get(instance_id) or {}
+        current = max(0, int(_num(state.get('sdp_current')) or 0))
+        maximum = max(0, int(_num(state.get('sdp_max')) or 0))
+        action = str((body or {}).get('action') or '').lower()
+        reason_detail = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason_detail) < 3:
+            raise ApiError(400, 'Укажите причину Vehicle repair')
+        active = state.get('repair') if isinstance(state.get('repair'), dict) else None
+        now = time.time()
+        if action == 'start':
+            if active:
+                raise ApiError(409, 'Vehicle repair уже выполняется')
+            if maximum <= 0 or current >= maximum:
+                raise ApiError(409, 'Vehicle не нуждается в ремонте')
+            technician = str((body or {}).get('technician') or '').strip()[:120]
+            if len(technician) < 2:
+                raise ApiError(400, 'Укажите техника для Vehicle repair')
+            severity = vehicle_repair_severity(current, maximum)
+            rule = VEHICLE_REPAIR_RULES[severity]
+            campaign_started = campaign_now(conn)
+            active = {
+                'repair_id': secrets.token_hex(16), 'status': 'in_progress',
+                'severity': severity, 'skill': vehicle_repair_skill(vehicle),
+                'dv': rule['dv'], 'duration_key': rule['duration_key'],
+                'duration_en': rule['duration_en'],
+                'duration_ru': rule['duration_ru'],
+                'technician': technician, 'sdp_before': current,
+                'sdp_target': maximum, 'started_at': now,
+                'source': 'CP:R 140', 'manual_resolution_required': True,
+                'campaign_started_at': campaign_started,
+                'campaign_due_at': campaign_started + campaign_duration_seconds(rule['duration_key']),
+            }
+            state['repair'] = active
+            reason = (
+                f'Start Vehicle repair for {vehicle.get("custom_name") or vehicle.get("name")}: '
+                f'{severity} DV{rule["dv"]}, {rule["duration_en"]}; {reason_detail}')
+        elif action in ('resolve', 'cancel'):
+            if not active or active.get('status') != 'in_progress':
+                raise ApiError(409, 'Нет активного Vehicle repair')
+            history_entry = copy.deepcopy(active)
+            history_entry['resolved_at'] = now
+            if action == 'resolve':
+                total = _num((body or {}).get('check_total'))
+                if total is None or int(total) != total or not -50 <= total <= 100:
+                    raise ApiError(400, 'Укажите итог Repair Check')
+                total = int(total)
+                success = total >= int(active.get('dv') or 0)
+                history_entry.update({
+                    'check_total': total,
+                    'status': 'success' if success else 'failed',
+                    'sdp_after': maximum if success else current,
+                })
+                if success:
+                    state['sdp_current'] = maximum
+                reason = (
+                    f'Resolve Vehicle repair {active.get("repair_id")}: '
+                    f'{total} vs DV{active.get("dv")} → '
+                    f'{"success" if success else "failed"}; {reason_detail}')
+            else:
+                history_entry.update({'status': 'canceled', 'sdp_after': current})
+                reason = f'Cancel Vehicle repair {active.get("repair_id")}: {reason_detail}'
+            history = state.setdefault('repair_history', [])
+            history.append(history_entry)
+            state['repair_history'] = history[-50:]
+            state.pop('repair', None)
+        else:
+            raise ApiError(400, 'Vehicle repair action: start/resolve/cancel')
+        revision_after = current_revision + 1
+        ledger_id = record_character_change_set(
+            conn, row['id'], user['id'], before, data, reason,
+            current_revision, revision_after, category='vehicle')
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                     (json.dumps(data, ensure_ascii=False), now,
+                      revision_after, row['id']))
+        conn.commit()
+        fresh = self.get_char(conn, row['id'])
+        self.send_json({
+            'ledger_id': ledger_id,
+            'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+        })
+
+    @atomic_endpoint
     def api_character_resource(self, conn, qs, m, body):
         user, row = self.require_character_editor(conn, m.group(1))
         data = ensure_progression(json.loads(row['data']))
@@ -4122,7 +16644,7 @@ class Handler(BaseHTTPRequestHandler):
             current = _num(data.get('hp_cur')) if _num(data.get('hp_cur')) is not None else maximum
             data['hp_cur'] = max(-maximum, min(maximum, current + value))
         elif resource == 'cash':
-            data['cash'] = max(0, min(9_999_999, (float(data.get('cash') or 0) + value) if action == 'delta' else value))
+            raise ApiError(403, 'Деньги изменяются только через Market, Payroll или Aftermath')
         elif resource == 'reputation':
             data['reputation'] = max(0, min(10, data['reputation'] + value))
         elif resource == 'armor':
@@ -4131,39 +16653,111 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(piece, dict): raise ApiError(400, 'Локация брони не экипирована')
             maximum = _num(piece.get('maximum')) or _num(piece.get('sp')) or _num(piece.get('sdp')) or 0
             piece['current'] = maximum if action == 'reset' else max(0, min(maximum, (_num(piece.get('current')) or 0) + value))
+        elif resource == 'vehicle_sdp':
+            if _num((body or {}).get('revision')) != (_row_value(row, 'revision', 0) or 0):
+                raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+            instance_id = str((body or {}).get('subject') or '')
+            sync_vehicle_states_with_modifications(conn, row['id'], data)
+            state = (data.get('vehicle_state') or {}).get(instance_id)
+            if not state:
+                raise ApiError(400, 'Vehicle instance не найден')
+            maximum = _num(state.get('sdp_max')) or 0
+            current = _num(state.get('sdp_current')) or 0
+            if action == 'reset' or value > 0:
+                raise ApiError(409, 'Используйте Vehicle Repair Workflow')
+            if action != 'delta' or value >= 0:
+                raise ApiError(400, 'Vehicle SDP action поддерживает только damage')
+            state['sdp_current'] = max(0, min(maximum, current + value))
+            self.send_json(self.save_character_data(
+                conn, row, data, user['id'],
+                f'Vehicle SDP {instance_id}: {current} → {state["sdp_current"]}'))
+            return
         elif resource == 'weapon':
+            current_revision = _row_value(row, 'revision', 0) or 0
+            if _num((body or {}).get('revision')) != current_revision:
+                raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+            sync_weapon_states_with_modifications(conn, row['id'], data)
+            before = copy.deepcopy(data)
             key = str((body or {}).get('subject') or '')
+            weapon = next((item for item in data.get('inventory') or []
+                           if isinstance(item, dict) and item.get('instance_id') == key), None)
+            if weapon and weapon.get('mounted_modification_id'):
+                raise ApiError(409, 'Mounted weapon управляется только через Vehicle Garage')
             state = (data.get('weapon_state') or {}).get(key)
-            if not state: raise ApiError(400, 'Оружие не найдено')
-            if action == 'fire': state['magazine'] = max(0, (_num(state.get('magazine')) or 0) - max(1, abs(value) or 1))
+            if not weapon or not state:
+                raise ApiError(400, 'Оружие не найдено')
+            if action == 'fire':
+                modifications = character_modifications(conn, row['id'])
+                weapon_modifications = [item for item in modifications
+                                        if item.get('host_instance_id') == key]
+                owned = {item.get('instance_id'): item for item in data.get('inventory') or []
+                         if isinstance(item, dict) and item.get('instance_id')}
+                effective_weapon = evaluate_effective_weapon(
+                    weapon, weapon_modifications, owned, data)
+                action_profile = bound_vehicle_weapon_profile(
+                    weapon, effective_weapon, data)
+                ammo_cost = max(1, int(action_profile.get('ammo_cost') or 1))
+                current = max(0, int(_num(state.get('magazine')) or 0))
+                if current < ammo_cost:
+                    raise ApiError(409, f'Для атаки требуется {ammo_cost} патронов')
+                state['magazine'] = current - ammo_cost
+                clear_loaded_ammo_if_empty(state)
+                reason = (f'Fire {weapon.get("custom_name") or weapon.get("name")}: '
+                          f'magazine {current} → {state["magazine"]}')
             elif action == 'reload':
-                need = max(0, (_num(state.get('magazine_max')) or 0) - (_num(state.get('magazine')) or 0)); moved = min(need, _num(state.get('reserve')) or 0)
-                state['magazine'] = (_num(state.get('magazine')) or 0) + moved; state['reserve'] = (_num(state.get('reserve')) or 0) - moved
-            else: raise ApiError(400, 'Weapon action: fire/reload')
+                transfer = consume_shared_ammo(
+                    data, state, (body or {}).get('ammo_instance_id'), weapon=weapon)
+                reason = (
+                    f'Reload {weapon.get("custom_name") or weapon.get("name")} '
+                    f'with {transfer["ammo_name"]} ×{transfer["moved"]}')
+            else:
+                raise ApiError(400, 'Weapon action: fire/reload')
+            validate_active_modification_references(conn, row['id'], data)
+            persist_character_item_instances(
+                conn, row['id'], data, 'weapon_action', source_ref=reason, prune=True)
+            now = time.time()
+            revision_after = current_revision + 1
+            ledger_id = record_character_change_set(
+                conn, row['id'], user['id'], before, data, reason,
+                current_revision, revision_after, category='item_action')
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                         (json.dumps(data, ensure_ascii=False), now,
+                          revision_after, row['id']))
+            conn.commit()
+            fresh = self.get_char(conn, row['id'])
+            self.send_json({
+                'ledger_id': ledger_id,
+                'character': self.char_payload(fresh, fresh['owner'], conn=conn),
+            })
+            return
         else:
             raise ApiError(400, 'Неизвестный ресурс')
         self.send_json(self.save_character_data(conn, row, data))
 
 
     def api_roster(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        privileged = user_is_gm(user)
         rows = conn.execute(
-            'SELECT c.*, u.display_name owner FROM characters c '
-            'JOIN users u ON u.id=c.owner_id WHERE c.public=1 '
-            'ORDER BY u.id, c.id').fetchall()
+            'SELECT c.*,u.display_name owner,u.show_display_name owner_show_name '
+            'FROM characters c JOIN users u ON u.id=c.owner_id WHERE c.public=1 '
+            'ORDER BY u.id,c.id').fetchall()
         q = (q1(qs.get('q')) or '').strip().lower()
         out = []
-        for r in rows:
-            p = self.char_payload(r, r['owner'])
-            d = p['data']
-            hay = ' '.join(filter(None, [d.get('handle'), d.get('role'),
-                                         d.get('player'), r['owner']])).lower()
+        for row in rows:
+            owner_name = row['owner'] if (privileged or row['owner_show_name']) else None
+            payload = self.char_payload(row, owner_name, public_view=not privileged, conn=conn)
+            data = payload['data']
+            hay = ' '.join(filter(None, [data.get('handle'), data.get('role'),
+                                         data.get('player'), owner_name])).lower()
             if q and q not in hay:
                 continue
-            out.append(p)
+            out.append(payload)
         self.send_json({'characters': out})
 
     # ------------------------------------------------------------ рынок
 
+    @atomic_endpoint
     def api_buy(self, conn, qs, m, body):
         u = self.require_user(conn)
         row = self.get_char(conn, body.get('char_id'))
@@ -4172,44 +16766,121 @@ class Handler(BaseHTTPRequestHandler):
         if parse_json_object(row['data']).get('archived'):
             raise ApiError(409, 'Архивное досье доступно только для чтения')
         before_data = json.loads(row['data'])
-        data = json.loads(row['data'])
+        data = copy.deepcopy(before_data)
+        ensure_character_item_instances(data)
+        ensure_progression(data)
         cart = body.get('items') or []
         if not cart or not isinstance(cart, list):
             raise ApiError(400, 'Пустая корзина')
         nm = nm_price_map()
+        ensure_market_stock(conn)
+        day = nm_day()
+        stock_rows = market_stock_rows(conn, day)
+        pm = {item_id: item_by_id(item_id)['price']
+              for item_ids in market_permanent_rows(conn).values()
+              for item_id in item_ids if item_by_id(item_id)}
         total = 0.0
         bought = []
+        wanted = {}
         for entry in cart[:50]:
             it = item_by_id(str(entry.get('id') or ''))
             if not it or not it.get('price'):
                 continue
             qty = max(1, min(99, int(entry.get('qty') or 1)))
-            if entry.get('mode') == 'nm' and it['id'] in nm:
+            is_permanent = bool(entry.get('permanent')) and it['id'] in pm
+            if entry.get('mode') != 'nm':
+                raise ApiError(400, 'Покупка доступна только из текущего Night Market')
+            if is_permanent:
+                price = pm[it['id']]
+            elif it['id'] in nm:
                 price = nm[it['id']]
             else:
-                price = it['price']
+                raise ApiError(400, 'Покупка доступна только из текущего Night Market')
+            if not is_permanent:
+                wanted[it['id']] = wanted.get(it['id'], 0) + qty
             total += price * qty
             bought.append((it, qty, price))
         if not bought:
             raise ApiError(400, 'В корзине нет известных товаров')
+        # Finite stock and reservations only apply to offers actually seeded today.
+        for item_id, qty in wanted.items():
+            state_row = stock_rows.get(item_id)
+            if state_row is None:
+                continue
+            name = item_by_id(item_id)['name']
+            remaining = max(0, int(state_row['stock_remaining'] or 0))
+            if remaining <= 0:
+                raise ApiError(400, f'Распродано: {name}')
+            if (state_row.get('reserved_character_id') and
+                    int(state_row['reserved_character_id']) != int(row['id'])):
+                raise ApiError(400, f'Зарезервировано для другого персонажа: {name}')
+            if qty > remaining:
+                raise ApiError(400, f'Недостаточно единиц: {name} (доступно {remaining})')
         cash = float(data.get('cash') or 0)
         if total > cash + 1e-9:
             raise ApiError(400, f'Не хватает €$: нужно {total:,.0f}, есть {cash:,.0f}')
         inv = data.setdefault('inventory', [])
+        chrome = data.setdefault('cyberware', [])
+        purchased_weapon_ids = []
         for it, qty, price in bought:
-            found = next((x for x in inv if x.get('key') == it['id']), None)
-            if found:
-                found['qty'] = int(found.get('qty') or 1) + qty
+            target_bucket = chrome if it['cat'] == 'cyberware' else inv
+            owned = {
+                'key': it['id'], 'catalog_item_id': it['id'], 'cat': it['cat'],
+                'name': it['name'], 'price': price, 'qty': 1, 'state': 'carried',
+                'damage': it.get('damage'), 'sp': it.get('sp'), 'hl': it.get('hl'),
+                'fields': copy.deepcopy(it.get('fields') or {}),
+                'mechanics': copy.deepcopy(it.get('mechanics') or {}),
+                'source': it.get('source'),
+            }
+            owned.update(catalog_interaction_data(it))
+            owned.update({key: copy.deepcopy(it[key]) for key in ITEM_MODIFICATION_FIELDS if key in it})
+            coverage = item_effect_coverage(it.get('id'))
+            if coverage:
+                owned['effect_coverage'] = coverage
+            if item_entry_stackable(owned):
+                found = next((entry for entry in target_bucket if isinstance(entry, dict) and
+                              catalog_item_id_for_entry(entry) == it['id'] and
+                              item_entry_stackable(entry) and
+                              str(entry.get('state') or 'carried') == 'carried' and
+                              not entry.get('custom_name')), None)
+                if found:
+                    current_rounds = ammo_rounds(found) if it['cat'] == 'ammo' else 0
+                    found['qty'] = int(found.get('qty') or 1) + qty
+                    if it['cat'] == 'ammo':
+                        found['ammo_rounds'] = current_rounds + qty * ammo_pack_size(found)
+                else:
+                    owned['instance_id'] = new_item_instance_id()
+                    owned['qty'] = qty
+                    if it['cat'] == 'ammo':
+                        owned['ammo_rounds'] = qty * ammo_pack_size(owned)
+                    target_bucket.append(owned)
             else:
-                inv.append({
-                    'key': it['id'], 'cat': it['cat'], 'name': it['name'],
-                    'price': price, 'qty': qty,
-                    'damage': it.get('damage'), 'sp': it.get('sp'), 'hl': it.get('hl'),
-                })
+                if len(inv) + len(chrome) + qty > 500:
+                    raise ApiError(400, 'Инвентарь не может содержать больше 500 экземпляров')
+                for _ in range(qty):
+                    instance = copy.deepcopy(owned)
+                    instance['instance_id'] = new_item_instance_id()
+                    target_bucket.append(instance)
+                    if it['cat'] == 'guns':
+                        purchased_weapon_ids.append(instance['instance_id'])
+        for item_id, qty in wanted.items():
+            state_row = stock_rows.get(item_id)
+            if state_row is not None:
+                conn.execute(
+                    'UPDATE market_stock SET stock_remaining=stock_remaining-?,updated=? '
+                    'WHERE market_day=? AND item_id=?',
+                    (qty, time.time(), day, item_id))
         data['cash'] = round(cash - total, 2)
+        ensure_progression(data)
+        for instance_id in purchased_weapon_ids:
+            state = (data.get('weapon_state') or {}).get(instance_id)
+            if state:
+                state['magazine'] = 0
+        persist_character_item_instances(
+            conn, row['id'], data, 'night_market', source_ref=nm_day())
         record_character_changes(conn, row['id'], u['id'], before_data, data,
                                  'Night Market purchase')
-        conn.execute('UPDATE characters SET data=?, updated=? WHERE id=?',
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), time.time(), row['id']))
         conn.commit()
         receipt = [{'name': it['name'], 'qty': qty, 'price': price}
@@ -4217,6 +16888,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({'ok': True, 'total': round(total, 2), 'cash': data['cash'],
                         'receipt': receipt})
 
+    @atomic_endpoint
     def api_sell(self, conn, qs, m, body):
         u = self.require_user(conn)
         row = self.get_char(conn, body.get('char_id'))
@@ -4225,27 +16897,93 @@ class Handler(BaseHTTPRequestHandler):
         if parse_json_object(row['data']).get('archived'):
             raise ApiError(409, 'Архивное досье доступно только для чтения')
         before_data = json.loads(row['data'])
-        data = json.loads(row['data'])
+        data = copy.deepcopy(before_data)
+        ensure_character_item_instances(data)
+        ensure_progression(data)
         key = str(body.get('key') or '')
-        qty = max(1, int(body.get('qty') or 1))
+        instance_id = str(body.get('instance_id') or '').lower()
+        try:
+            qty = max(1, int(body.get('qty') or 1))
+        except (TypeError, ValueError):
+            raise ApiError(400, 'Некорректное количество')
         inv = data.get('inventory') or []
-        ent = next((x for x in inv if x.get('key') == key), None)
-        if not ent:
+        chrome = data.get('cyberware') or []
+        bucket = inv
+        index = next((position for position, entry in enumerate(bucket)
+                      if isinstance(entry, dict) and instance_id and
+                      entry.get('instance_id') == instance_id), None)
+        if index is None:
+            index = next((position for position, entry in enumerate(bucket)
+                          if isinstance(entry, dict) and key and entry.get('key') == key), None)
+        if index is None:
+            bucket = chrome
+            index = next((position for position, entry in enumerate(bucket)
+                          if isinstance(entry, dict) and instance_id and
+                          entry.get('instance_id') == instance_id), None)
+        if index is None:
+            index = next((position for position, entry in enumerate(bucket)
+                          if isinstance(entry, dict) and key and entry.get('key') == key), None)
+        if index is None:
             raise ApiError(404, 'Предмет не найден в инвентаре')
-        qty = min(qty, int(ent.get('qty') or 1))
+        ent = bucket[index]
+        if ent.get('instance_id'):
+            loan = active_loan_for_instance(conn, ent.get('instance_id'))
+            if loan and loan['borrower_character_id'] == row['id']:
+                raise ApiError(409, 'Предмет взят в долг — сначала верните владельцу')
+        linked = conn.execute(
+            'SELECT 1 FROM item_modifications WHERE character_id=? AND active=1 '
+            'AND (host_instance_id=? OR upgrade_instance_id=?)',
+            (row['id'], ent.get('instance_id'), ent.get('instance_id'))).fetchone()
+        if linked:
+            raise ApiError(409, 'Сначала снимите установленные модификации')
+        cyber_states = data.get('cyberware_state') if isinstance(
+            data.get('cyberware_state'), dict) else {}
+        ent_cyber_state = cyber_states.get(ent.get('instance_id'))
+        if (ent.get('installed_cyberware_instance_id') or
+                (isinstance(ent_cyber_state, dict) and
+                 ent_cyber_state.get('bound_weapon_instance_id'))):
+            raise ApiError(409, 'Permanent Popup Weapon binding нельзя продать отдельно')
+        if (ent.get('installed_popup_shield_instance_id') or
+                (isinstance(ent_cyber_state, dict) and
+                 isinstance(ent_cyber_state.get('popup_shield'), dict) and
+                 ent_cyber_state['popup_shield'].get('shield_instance_id'))):
+            raise ApiError(409, 'Сначала извлеките concrete Popup Shield')
+        armor_tech = data.get('armor_tech_state') if isinstance(
+            data.get('armor_tech_state'), dict) else {}
+        if isinstance(armor_tech.get(ent.get('instance_id')), dict):
+            raise ApiError(409, 'Permanent Armor Tech Upgrade нельзя продать отдельно')
+        if str(ent.get('state') or 'carried') in ('equipped', 'installed'):
+            raise ApiError(409, 'Сначала снимите или извлеките предмет')
+        ammo_units_before = ammo_rounds(ent) if ent.get('cat') == 'ammo' else None
+        if ammo_units_before is not None:
+            full_packs = ammo_units_before // ammo_pack_size(ent)
+            if full_packs <= 0:
+                raise ApiError(409, 'Частично использованный ammo stack нельзя продать')
+            qty = min(qty, int(ent.get('qty') or 1), full_packs)
+        else:
+            qty = min(qty, int(ent.get('qty') or 1))
         back = round(float(ent.get('price') or 0) * 0.5 * qty, 2)
         ent['qty'] = int(ent.get('qty') or 1) - qty
+        if ammo_units_before is not None:
+            ent['ammo_rounds'] = ammo_units_before - qty * ammo_pack_size(ent)
+            ent['qty'] = math.ceil(ent['ammo_rounds'] / ammo_pack_size(ent)) \
+                if ent['ammo_rounds'] > 0 else 0
         if ent['qty'] <= 0:
-            data['inventory'] = [x for x in inv if x.get('key') != key]
+            bucket.pop(index)
+            (data.get('weapon_state') or {}).pop(str(ent.get('instance_id') or ''), None)
         data['cash'] = round(float(data.get('cash') or 0) + back, 2)
+        persist_character_item_instances(
+            conn, row['id'], data, 'night_market_resale', prune=True)
         record_character_changes(conn, row['id'], u['id'], before_data, data,
-                                 'Night Market resale')
-        conn.execute('UPDATE characters SET data=?, updated=? WHERE id=?',
+                                 f'Night Market resale: {ent.get("name") or key}')
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), time.time(), row['id']))
         conn.commit()
         self.send_json({'ok': True, 'cash': data['cash'], 'got': back,
-                        'name': ent.get('name'), 'qty': qty})
+                        'name': ent.get('name'), 'qty': qty,
+                        'instance_id': ent.get('instance_id')})
 
+    @atomic_endpoint
     def api_payroll(self, conn, qs, m, body):
         u = self.require_gm(conn)
         row = self.get_char(conn, body.get('char_id'))
@@ -4262,28 +17000,259 @@ class Handler(BaseHTTPRequestHandler):
         data['cash'] = max(0.0, round(float(data.get('cash') or 0) + amount, 2))
         record_character_changes(conn, row['id'], u['id'], before_data, data,
                                  str((body or {}).get('reason') or 'GM payout'))
-        conn.execute('UPDATE characters SET data=?, updated=? WHERE id=?',
+        conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
                      (json.dumps(data, ensure_ascii=False), time.time(), row['id']))
         conn.commit()
         self.send_json({'ok': True, 'cash': data['cash'], 'by': u['display_name']})
 
     # ------------------------------------------------------------ NC//NET operations
 
-    def can_edit_nc_session(self, conn, user, session):
-        if not user or not user_is_gm(user):
-            return False
+    def session_access_role(self, conn, user, session):
+        if not user or not session:
+            return None
         if user_is_admin(user) or session['owner_user_id'] == user['id']:
-            return True
+            return 'owner'
+        explicit = conn.execute(
+            'SELECT role FROM session_access WHERE session_id=? AND user_id=?',
+            (session['id'], user['id'])).fetchone()
+        if explicit and explicit['role'] in SESSION_ACCESS_ROLES:
+            return explicit['role']
+        if conn.execute(
+                'SELECT 1 FROM session_combatants sc JOIN characters c '
+                'ON c.id=sc.character_id WHERE sc.session_id=? AND c.owner_id=?',
+                (session['id'], user['id'])).fetchone():
+            return 'crew'
         if session['contract_id']:
             contract = conn.execute('SELECT * FROM contracts WHERE id=?',
                                     (session['contract_id'],)).fetchone()
-            return can_edit_contract(conn, user, contract)
-        return False
+            if user_is_gm(user) and can_edit_contract(conn, user, contract):
+                return 'co_gm'
+            if conn.execute(
+                    "SELECT 1 FROM contract_signups WHERE contract_id=? AND user_id=? AND status='crew'",
+                    (session['contract_id'], user['id'])).fetchone():
+                return 'crew'
+        return None
+
+    def session_capabilities(self, conn, user, session):
+        role = self.session_access_role(conn, user, session)
+        return role, set(SESSION_ROLE_CAPABILITIES.get(role, set()))
+
+    def can_edit_nc_session(self, conn, user, session):
+        return 'edit_session' in self.session_capabilities(conn, user, session)[1]
+
+    def can_manage_session_access(self, conn, user, session):
+        return 'manage_access' in self.session_capabilities(conn, user, session)[1]
 
     def ordered_session_combatants(self, conn, session_id):
         return conn.execute(
             'SELECT * FROM session_combatants WHERE session_id=? '
             'ORDER BY initiative DESC,sort_order,id', (session_id,)).fetchall()
+
+    def session_net_payload(self, conn, row, user=None, player_view=False):
+        state = session_net_state(_row_value(row, 'net_state_json', '{}'))
+        floor_by_id = {item['floor_id']: item for item in state['floors']}
+        node_by_id = {item['node_id']: item for item in state['nodes']}
+        combatants = {item['id']: item for item in self.ordered_session_combatants(
+            conn, row['id'])}
+        entities = []
+        skunk_sources_by_target = {}
+        for link in state['links']:
+            if not link['active'] or (player_view and not link['visible']):
+                continue
+            character = conn.execute(
+                'SELECT id,revision,data FROM characters WHERE id=?',
+                (link['character_id'],)).fetchone()
+            if not character:
+                continue
+            character_data = ensure_progression(json.loads(character['data']))
+            entity = (character_data.get('net_entities') or {}).get(
+                link['net_entity_id'])
+            if (not isinstance(entity, dict) or
+                    entity.get('status') not in ('lying_in_wait', 'hunting', 'derezzed')):
+                continue
+            floor = floor_by_id.get(link['floor_id'])
+            node = node_by_id.get(link.get('node_id'))
+            target = combatants.get(link.get('target_combatant_id'))
+            payload = {
+                'net_entity_id': link['net_entity_id'],
+                'character_id': link['character_id'],
+                'name': entity.get('name') or 'Black ICE',
+                'status': entity.get('status'),
+                'initiative': link['initiative'] if entity.get('status') == 'hunting' else None,
+                'in_queue': entity.get('status') == 'hunting',
+                'floor_id': link['floor_id'],
+                'floor_label': floor['label'] if floor else entity.get('floor_label'),
+                'node_id': link.get('node_id'),
+                'node_label': node['label'] if node else None,
+                'target_combatant_id': link.get('target_combatant_id'),
+                'target_label': target['name'] if target and
+                    (not player_view or target['visible']) else None,
+                'target_type': entity.get('target_type'),
+                'per': entity.get('per'), 'spd': entity.get('spd'),
+                'atk': entity.get('atk'), 'def': entity.get('def'),
+                'rez_current': entity.get('rez_current'),
+                'rez_max': entity.get('rez_max'),
+                'entity_character_revision': character['revision'],
+                'visible': link['visible'],
+            }
+            source_program = next((item for item in character_data.get('inventory') or []
+                                   if isinstance(item, dict) and
+                                   item.get('instance_id') == entity.get('source_program_instance_id')), {})
+            effect_profile = black_ice_effect_profile(source_program)
+            payload['effect_resolution'] = effect_profile['resolution']
+            if (payload.get('name') == 'Skunk' and
+                    payload.get('status') == 'hunting' and
+                    link.get('target_combatant_id')):
+                skunk_sources_by_target.setdefault(
+                    link['target_combatant_id'], []).append(link['net_entity_id'])
+            if not player_view:
+                payload['character_revision'] = character['revision']
+                payload['initiative_roll'] = entity.get('initiative_roll')
+                payload['effect_profile'] = effect_profile
+                if target and target['character_id']:
+                    target_character = conn.execute(
+                        'SELECT id,revision,data FROM characters WHERE id=?',
+                        (target['character_id'],)).fetchone()
+                    if target_character:
+                        target_data = enrich_owned_item_interactions(
+                            ensure_progression(json.loads(target_character['data'])))
+                        target_modifications = character_modifications(
+                            conn, target_character['id'])
+                        target_decks = character_effective_cyberdecks(
+                            target_data, target_modifications)
+                        payload['target_interface_rank'] = character_interface_rank(target_data)
+                        payload['target_character_revision'] = target_character['revision']
+                        all_target_programs = [
+                            {
+                                'instance_id': program['instance_id'],
+                                'name': program['name'],
+                                'def': int(_num((program.get('mechanics') or {}).get('def')) or 0),
+                                'rez_current': int(_num((program.get('runtime') or {}).get('rez_current')) or 0),
+                                'rez_max': int(_num((program.get('runtime') or {}).get('rez_max')) or 0),
+                                'category': (program.get('runtime') or {}).get('category'),
+                                'status': (program.get('runtime') or {}).get('status'),
+                            }
+                            for deck in target_decks.values()
+                            for program in deck.get('programs') or []]
+                        payload['valid_target_programs'] = [
+                            program for program in all_target_programs
+                            if program['status'] == 'rezzed']
+                        if effect_profile['resolution'] == 'automated_random_destroy':
+                            payload['curated_target_programs'] = all_target_programs
+                        elif effect_profile['resolution'] == 'automated_random_derez_plus_manual':
+                            payload['curated_target_programs'] = [
+                                program for program in all_target_programs
+                                if program['status'] == 'rezzed' and
+                                program['category'] == 'defender']
+            else:
+                for private_key in ('character_id', 'target_combatant_id', 'visible',
+                                    'node_id'):
+                    payload.pop(private_key, None)
+            entities.append(payload)
+        queue = sorted(
+            (item for item in entities if item['in_queue']),
+            key=lambda item: (-(_num(item.get('initiative')) or 0), item['net_entity_id']))
+        active_turn = min(state['active_turn'], max(0, len(queue) - 1))
+        active_id = queue[active_turn]['net_entity_id'] if queue else None
+        for item in entities:
+            item['active'] = item['net_entity_id'] == active_id
+        entities.sort(key=lambda item: (
+            0 if item['in_queue'] else 1,
+            -(_num(item.get('initiative')) or 0), item['net_entity_id']))
+        runners = []
+        runner_by_combatant = {item['combatant_id']: item
+                              for item in state.get('runners') or []}
+        for combatant in combatants.values():
+            if not combatant['character_id'] or (player_view and not combatant['visible']):
+                continue
+            character = conn.execute(
+                'SELECT id,owner_id,revision,data FROM characters WHERE id=?',
+                (combatant['character_id'],)).fetchone()
+            if not character:
+                continue
+            character_data = enrich_owned_item_interactions(
+                ensure_progression(json.loads(character['data'])))
+            interface_rank = character_interface_rank(character_data)
+            if interface_rank <= 0:
+                continue
+            runner = runner_by_combatant.get(combatant['id']) or {
+                'combatant_id': combatant['id'], 'character_id': character['id'],
+                'node_id': None, 'jacked_in': False, 'actions_recorded': 0,
+                'action_round': state['round'], 'actions_used': 0,
+                'action_penalty': 0, 'next_action_penalty': 0,
+            }
+            node = node_by_id.get(runner.get('node_id'))
+            same_action_round = runner.get('action_round') == state['round']
+            current_actions_used = runner.get('actions_used', 0) if same_action_round else 0
+            action_penalty = (runner.get('action_penalty', 0) if same_action_round else
+                              runner.get('next_action_penalty', 0))
+            actions_max = max(2, net_actions_for_interface(interface_rank) - action_penalty)
+            skunk_sources = skunk_sources_by_target.get(combatant['id'], [])
+            runner_payload = {
+                'combatant_id': combatant['id'],
+                'character_id': character['id'],
+                'name': combatant['name'], 'jacked_in': runner.get('jacked_in', False),
+                'node_id': runner.get('node_id'),
+                'node_label': node['label'] if node else None,
+                'interface_rank': interface_rank,
+                'actions_recorded': runner.get('actions_recorded', 0),
+                'actions_used': current_actions_used,
+                'actions_max': actions_max,
+                'actions_remaining': max(0, actions_max - current_actions_used),
+                'action_penalty': action_penalty,
+                'skunk_slide_penalty': -2 * len(skunk_sources),
+                'skunk_source_count': len(skunk_sources),
+            }
+            can_act = bool(user and character['owner_id'] == user['id'])
+            if not player_view or can_act:
+                modifications = character_modifications(conn, character['id'])
+                decks = character_effective_cyberdecks(character_data, modifications)
+                runner_payload['character_revision'] = character['revision']
+                runner_payload['attacker_programs'] = [
+                    {'instance_id': program['instance_id'], 'name': program['name'],
+                     'atk': (program.get('mechanics') or {}).get('atk') or 0}
+                    for deck in decks.values() for program in deck.get('programs') or []
+                    if (program.get('runtime') or {}).get('category') == 'attacker']
+            if player_view:
+                runner_payload['can_act'] = can_act
+                runner_payload.pop('character_id', None)
+                runner_payload.pop('node_id', None)
+            runners.append(runner_payload)
+        if player_view:
+            visible_nodes = [item for item in state['nodes'] if item['visible']]
+            visible_node_ids = {item['node_id'] for item in visible_nodes}
+            nodes = [{
+                key: value for key, value in item.items()
+                if key not in ('gm_note', 'visible', 'sort_order', 'floor_id',
+                               'controlled_by_combatant_id')
+            } | {
+                'floor_label': (floor_by_id.get(item['floor_id']) or {}).get('label'),
+                'controlled': item.get('controlled_by_combatant_id') is not None,
+            } for item in visible_nodes]
+            paths = [copy.deepcopy(item) for item in state['paths']
+                     if item['visible'] and item['from_node_id'] in visible_node_ids and
+                     item['to_node_id'] in visible_node_ids]
+            visible_floor_ids = {item['floor_id'] for item in visible_nodes} | {
+                item['floor_id'] for item in entities}
+            floors = [{'label': item['label']} for item in state['floors']
+                      if item['floor_id'] in visible_floor_ids]
+            for item in entities:
+                item.pop('floor_id', None)
+        else:
+            floors = state['floors']
+            nodes = state['nodes']
+            paths = state['paths']
+        actions = state.get('action_log', [])[-20:]
+        if player_view:
+            actions = [{key: item.get(key) for key in (
+                'action', 'success', 'actor_total', 'defense_total',
+                'created', 'summary')} for item in actions]
+        return {
+            'round': state['round'], 'active_turn': active_turn,
+            'floors': floors, 'nodes': nodes, 'paths': paths,
+            'entities': entities, 'runners': runners,
+            'action_log': actions,
+        }
 
     def session_activity_payload(self, row):
         before = parse_json_object(row['before_json'])
@@ -4298,13 +17267,15 @@ class Handler(BaseHTTPRequestHandler):
                 return bool(value)
             if key == 'player_view_config':
                 return session_view_config(value)
+            if key == 'safety_config':
+                return session_safety_config(value)
             if isinstance(value, (dict, list)):
                 return value
             return value
 
         if event_type == 'session_update':
             for key in ('title', 'status', 'round', 'active_turn',
-                        'player_view_config', 'notes'):
+                        'player_view_config', 'safety_config', 'notes'):
                 if key not in after:
                     continue
                 old_value = before.get(key)
@@ -4333,6 +17304,35 @@ class Handler(BaseHTTPRequestHandler):
                 else snapshot.get('name'),
                 'after': snapshot.get('name') if event_type == 'combatant_create' else None,
             })
+        elif event_type == 'net_action':
+            changes.append({
+                'field': after.get('action') or 'net_action',
+                'before': None,
+                'after': after.get('summary') or 'resolved',
+            })
+        elif event_type.startswith('net_'):
+            def net_summary(value):
+                if not value:
+                    return None
+                if value.get('type') == 'black_ice':
+                    return {
+                        'name': value.get('name'), 'status': value.get('status'),
+                        'floor': value.get('floor_label'),
+                        'target': value.get('target_label'),
+                        'initiative': value.get('initiative'),
+                        'rez': f"{value.get('rez_current')}/{value.get('rez_max')}",
+                    }
+                return {
+                    'round': value.get('round'),
+                    'active_turn': value.get('active_turn'),
+                    'floors': len(value.get('floors') or []),
+                    'nodes': len(value.get('nodes') or []),
+                    'paths': len(value.get('paths') or []),
+                    'links': len(value.get('links') or []),
+                }
+            changes.append({'field': 'net_context',
+                            'before': net_summary(before),
+                            'after': net_summary(after)})
         else:
             fields = (
                 'name', 'initiative', 'hp_current', 'hp_max',
@@ -4356,8 +17356,10 @@ class Handler(BaseHTTPRequestHandler):
         }
 
     def session_payload(self, conn, row, user, player_view=False):
-        can_edit = self.can_edit_nc_session(conn, user, row)
+        access_role, capabilities = self.session_capabilities(conn, user, row)
+        can_edit = 'edit_session' in capabilities
         config = session_view_config(row['player_view_config'])
+        safety = session_safety_config(_row_value(row, 'safety_config', '{}'))
         combatants = self.ordered_session_combatants(conn, row['id'])
         active_turn = min(max(0, _num(row['active_turn']) or 0), max(0, len(combatants) - 1))
         out_combatants = []
@@ -4383,8 +17385,9 @@ class Handler(BaseHTTPRequestHandler):
                     'move': item['move'], 'conditions': parse_json_list(item['conditions_json']),
                     'injuries': parse_json_list(item['injuries_json']),
                     'death_penalty': item['death_penalty'],
-                    'secret': parse_json_object(item['secret_json']),
                 })
+                if 'view_secrets' in capabilities:
+                    data['secret'] = parse_json_object(item['secret_json'])
             else:
                 if item['kind'] == 'character' and config['show_ally_hp']:
                     data.update({'hp_current': item['hp_current'], 'hp_max': item['hp_max']})
@@ -4405,6 +17408,11 @@ class Handler(BaseHTTPRequestHandler):
                 if config['show_injuries']:
                     data['injuries'] = parse_json_list(item['injuries_json'])
                     data['death_penalty'] = item['death_penalty']
+            if item['kind'] == 'npc':
+                statblock = parse_json_object(item['statblock_json'])
+                if statblock and (not player_view or config['show_npc_stats']):
+                    data['statblock'] = statblock
+                    data['derived'] = npc_statblock_derived(statblock)
             out_combatants.append(data)
         visible_active_turn = next(
             (index for index, item in enumerate(out_combatants) if item['active']), None)
@@ -4412,11 +17420,18 @@ class Handler(BaseHTTPRequestHandler):
             'id': row['id'], 'contract_id': row['contract_id'], 'title': row['title'],
             'status': row['status'], 'round': row['round'],
             'active_turn': visible_active_turn if player_view else active_turn,
-            'player_view_config': config, 'combatants': out_combatants,
+            'player_view_config': config, 'safety_config': safety,
+            'combatants': out_combatants,
+            'net': self.session_net_payload(conn, row, user=user, player_view=player_view),
             'created': row['created'], 'updated': row['updated'], 'can_edit': can_edit,
+            'access_role': access_role,
+            'capabilities': {key: key in capabilities for key in (
+                'view_gm', 'view_secrets', 'edit_session', 'edit_combatants',
+                'manage_access', 'manage_safety')},
         }
-        if can_edit and not player_view:
+        if not player_view and 'edit_session' in capabilities:
             payload['notes'] = row['notes']
+        if not player_view and capabilities.intersection({'edit_session', 'edit_combatants'}):
             activity = conn.execute(
                 'SELECT a.*,u.display_name actor FROM session_activity a '
                 'JOIN users u ON u.id=a.actor_user_id WHERE session_id=? '
@@ -4429,15 +17444,24 @@ class Handler(BaseHTTPRequestHandler):
                     (user_is_admin(user) or template['owner_user_id'] == user['id']))
 
     def npc_template_payload(self, row, user):
+        data = parse_json_object(row['data_json'])
         return {
             'id': row['id'], 'owner_user_id': row['owner_user_id'],
             'access': row['access'], 'name': row['name'], 'role': row['role'],
-            'data': parse_json_object(row['data_json']), 'updated': row['updated'],
+            'data': data,
+            'derived': npc_statblock_derived(data.get('statblock') or {}),
+            'updated': row['updated'],
             'can_edit': self.can_edit_npc_template(user, row),
         }
 
     def api_npc_templates(self, conn, qs, m, body):
-        user = self.require_gm(conn)
+        user = self.require_user(conn)
+        if not user_is_gm(user):
+            session_id = _num(q1(qs.get('session_id')))
+            session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                                   (session_id,)).fetchone() if session_id else None
+            if not session or 'edit_combatants' not in self.session_capabilities(conn, user, session)[1]:
+                raise ApiError(403, 'Только для пользователей с ролью ГМ')
         rows = conn.execute(
             "SELECT * FROM npc_templates WHERE archived=0 AND "
             "(? OR access='shared' OR owner_user_id=?) ORDER BY updated DESC",
@@ -4510,12 +17534,1888 @@ class Handler(BaseHTTPRequestHandler):
                      (time.time(), row['id']))
         conn.commit(); self.send_json({'ok': True, 'archived': True})
 
-    def api_sessions(self, conn, qs, m, body):
-        user = self.require_gm(conn)
-        rows = conn.execute('SELECT * FROM nc_sessions ORDER BY updated DESC').fetchall()
-        self.send_json({'sessions': [self.session_payload(conn, row, user) for row in rows
-                                     if self.can_edit_nc_session(conn, user, row)]})
+    # ------------------------------------------------------------ Session Recap / Chronicle
 
+    def recap_links(self, conn, cleaned, user):
+        """Validate optional session/contract/storyline links for a recap."""
+        session_id, contract_id, storyline_id = (
+            cleaned['session_id'], cleaned['contract_id'], cleaned['storyline_id'])
+        if session_id:
+            session = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (session_id,)).fetchone()
+            if not session:
+                raise ApiError(400, 'Сессия Recap не найдена')
+            role, capabilities = self.session_capabilities(conn, user, session)
+            if 'view_gm' not in capabilities:
+                raise ApiError(403, 'Нет доступа к сессии Recap')
+            if contract_id is None and session['contract_id']:
+                contract_id = session['contract_id']
+        if contract_id:
+            contract = conn.execute('SELECT * FROM contracts WHERE id=?', (contract_id,)).fetchone()
+            if not contract or not can_edit_contract(conn, user, contract):
+                raise ApiError(403, 'Нет права связывать Recap с этим контрактом')
+            if storyline_id is None:
+                storyline_id = contract['storyline_id']
+        if storyline_id:
+            storyline = conn.execute('SELECT * FROM storylines WHERE id=?', (storyline_id,)).fetchone()
+            if not storyline or not can_edit_storyline(conn, user, storyline):
+                raise ApiError(403, 'Нет права связывать Recap с этой сюжетной линией')
+        return session_id, contract_id, storyline_id
+
+    def recap_apply_feed(self, conn, user, recap_id, cleaned, existing_feed_id=None):
+        """Create or refresh the City Feed draft linked to a recap."""
+        if not cleaned['publish_feed']:
+            return existing_feed_id
+        summary = cleaned['public_summary']
+        if not summary:
+            return existing_feed_id
+        now = time.time()
+        if existing_feed_id:
+            conn.execute(
+                "UPDATE feed_posts SET headline=?,body=?,event_at=?,storyline_id=?,contract_id=?,updated=? "
+                'WHERE id=? AND creator_user_id=?',
+                (cleaned['title'], summary, cleaned['session_date'],
+                 cleaned['storyline_id'], cleaned['contract_id'], now,
+                 existing_feed_id, user['id']))
+            return existing_feed_id
+        cur = conn.execute(
+            'INSERT INTO feed_posts(format,status,creator_user_id,storyline_id,contract_id,'
+            'headline,body,truth_status,event_at,created,updated) '
+            "VALUES('article','draft',?,?,?,?,?,'unknown',?,?,?)",
+            (user['id'], cleaned['storyline_id'], cleaned['contract_id'],
+             cleaned['title'], summary, cleaned['session_date'], now, now))
+        return cur.lastrowid
+
+    def recap_apply_timeline(self, conn, user, recap_id, cleaned, existing_timeline_id=None):
+        """Create or refresh the Storyline timeline entry linked to a recap."""
+        storyline_id = cleaned['storyline_id']
+        if not storyline_id:
+            return existing_timeline_id
+        now = time.time()
+        if existing_timeline_id:
+            conn.execute(
+                'UPDATE storyline_timeline SET event_at=?,public_text=?,private_text=? WHERE id=?',
+                (cleaned['session_date'], cleaned['public_summary'] or cleaned['title'],
+                 cleaned['gm_notes'], existing_timeline_id))
+            return existing_timeline_id
+        if not cleaned['public_summary'] and not cleaned['gm_notes']:
+            return None
+        cur = conn.execute(
+            'INSERT INTO storyline_timeline(storyline_id,event_at,public_text,private_text,'
+            'contract_id,created_by,created) VALUES(?,?,?,?,?,?,?)',
+            (storyline_id, cleaned['session_date'],
+             cleaned['public_summary'] or cleaned['title'], cleaned['gm_notes'],
+             cleaned['contract_id'], user['id'], now))
+        conn.execute('UPDATE storylines SET updated=? WHERE id=?', (now, storyline_id))
+        return cur.lastrowid
+
+    def api_recaps(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        full = user_is_gm(user)
+        if full:
+            rows = conn.execute(
+                'SELECT * FROM session_recaps ORDER BY session_date DESC,id DESC LIMIT 500').fetchall()
+            payload = [session_recap_payload(row, full=True) for row in rows]
+        else:
+            rows = conn.execute(
+                'SELECT * FROM session_recaps WHERE published=1 '
+                'ORDER BY session_date DESC,id DESC LIMIT 500').fetchall()
+            payload = [session_recap_payload(row) for row in rows]
+        self.send_json({'recaps': payload, 'full': full})
+
+    def api_recap_detail(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        row = conn.execute('SELECT * FROM session_recaps WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Recap не найден')
+        full = user_is_gm(user) or row['owner_user_id'] == user['id']
+        if not full and not row['published']:
+            raise ApiError(403, 'Recap не опубликован')
+        self.send_json(session_recap_payload(row, full=full))
+
+    @atomic_endpoint
+    def api_recap_create(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        cleaned = clean_session_recap_input(body or {})
+        session_id, contract_id, storyline_id = self.recap_links(conn, cleaned, user)
+        cleaned.update({'session_id': session_id, 'contract_id': contract_id,
+                        'storyline_id': storyline_id})
+        participants = cleaned['participants'] or \
+            recap_participants(conn, session_id=session_id, contract_id=contract_id)
+        now = time.time()
+        cur = conn.execute(
+            'INSERT INTO session_recaps(owner_user_id,session_id,contract_id,storyline_id,'
+            'session_date,title,public_summary,gm_notes,participants_json,choices_json,'
+            'npc_changes_json,locations_json,loot_json,injuries_json,quotes_json,published,'
+            'created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (user['id'], session_id, contract_id, storyline_id,
+             cleaned['session_date'], cleaned['title'], cleaned['public_summary'],
+             cleaned['gm_notes'], json.dumps(participants, ensure_ascii=False),
+             json.dumps(cleaned['choices'], ensure_ascii=False),
+             json.dumps(cleaned['npc_changes'], ensure_ascii=False),
+             json.dumps(cleaned['locations'], ensure_ascii=False),
+             json.dumps(cleaned['loot'], ensure_ascii=False),
+             json.dumps(cleaned['injuries'], ensure_ascii=False),
+             json.dumps(cleaned['quotes'], ensure_ascii=False),
+             1 if cleaned['published'] else 0, now, now))
+        recap_id = cur.lastrowid
+        feed_id = self.recap_apply_feed(conn, user, recap_id, cleaned)
+        timeline_id = self.recap_apply_timeline(conn, user, recap_id, cleaned)
+        conn.execute('UPDATE session_recaps SET feed_post_id=?,timeline_id=? WHERE id=?',
+                     (feed_id, timeline_id, recap_id))
+        conn.commit()
+        row = conn.execute('SELECT * FROM session_recaps WHERE id=?', (recap_id,)).fetchone()
+        self.send_json(session_recap_payload(row, full=True), status=201)
+
+    @atomic_endpoint
+    def api_recap_update(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM session_recaps WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Recap не найден')
+        if row['owner_user_id'] != user['id'] and not user_is_admin(user):
+            raise ApiError(403, 'Нет права редактировать Recap')
+        cleaned = clean_session_recap_input(body or {})
+        session_id, contract_id, storyline_id = self.recap_links(conn, cleaned, user)
+        cleaned.update({'session_id': session_id, 'contract_id': contract_id,
+                        'storyline_id': storyline_id})
+        participants = cleaned['participants'] or \
+            recap_participants(conn, session_id=session_id, contract_id=contract_id)
+        feed_id = self.recap_apply_feed(conn, user, row['id'], cleaned, row['feed_post_id'])
+        timeline_id = self.recap_apply_timeline(
+            conn, user, row['id'], cleaned, row['timeline_id'])
+        conn.execute(
+            'UPDATE session_recaps SET session_id=?,contract_id=?,storyline_id=?,session_date=?,'
+            'title=?,public_summary=?,gm_notes=?,participants_json=?,choices_json=?,'
+            'npc_changes_json=?,locations_json=?,loot_json=?,injuries_json=?,quotes_json=?,'
+            'feed_post_id=?,timeline_id=?,published=?,updated=? WHERE id=?',
+            (session_id, contract_id, storyline_id, cleaned['session_date'],
+             cleaned['title'], cleaned['public_summary'], cleaned['gm_notes'],
+             json.dumps(participants, ensure_ascii=False),
+             json.dumps(cleaned['choices'], ensure_ascii=False),
+             json.dumps(cleaned['npc_changes'], ensure_ascii=False),
+             json.dumps(cleaned['locations'], ensure_ascii=False),
+             json.dumps(cleaned['loot'], ensure_ascii=False),
+             json.dumps(cleaned['injuries'], ensure_ascii=False),
+             json.dumps(cleaned['quotes'], ensure_ascii=False),
+             feed_id, timeline_id, 1 if cleaned['published'] else 0,
+             time.time(), row['id']))
+        conn.commit()
+        fresh = conn.execute('SELECT * FROM session_recaps WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(session_recap_payload(fresh, full=True))
+
+    @atomic_endpoint
+    def api_recap_delete(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM session_recaps WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Recap не найден')
+        if row['owner_user_id'] != user['id'] and not user_is_admin(user):
+            raise ApiError(403, 'Нет права удалять Recap')
+        if row['feed_post_id']:
+            conn.execute("DELETE FROM feed_posts WHERE id=? AND status='draft' AND creator_user_id=?",
+                         (row['feed_post_id'], user['id']))
+        if row['timeline_id']:
+            conn.execute('DELETE FROM storyline_timeline WHERE id=?', (row['timeline_id'],))
+        conn.execute('DELETE FROM session_recaps WHERE id=?', (row['id'],))
+        conn.commit()
+        self.send_json({'ok': True, 'deleted': True})
+
+    # ------------------------------------------------------------ Map POIs / Key Locations
+
+    def api_locations(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        gm = user_is_gm(user)
+        query = ('SELECT * FROM locations WHERE (? OR archived=0) '
+                 'ORDER BY custom,name_en')
+        rows = conn.execute(query, (1 if gm else 0,)).fetchall()
+        q = (q1(qs.get('q')) or '').strip().lower()
+        district = q1(qs.get('district')) or ''
+        kind = q1(qs.get('kind')) or ''
+        out = []
+        for row in rows:
+            if district and row['district_id'] != district:
+                continue
+            if kind and row['kind'] != kind:
+                continue
+            if q:
+                hay = ' '.join(filter(None, [row['name_en'], row['name_ru'],
+                                             row['description_en'], row['description_ru']])).lower()
+                if q not in hay:
+                    continue
+            out.append(location_payload(row, user))
+        self.send_json({'locations': out, 'kinds': sorted(LOCATION_KINDS)})
+
+    def api_location_detail(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        row = conn.execute('SELECT * FROM locations WHERE id=?', (m.group(1),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Локация не найдена')
+        if row['archived'] and not user_is_gm(user):
+            raise ApiError(404, 'Локация не найдена')
+        self.send_json(location_payload(row, user))
+
+    @atomic_endpoint
+    def api_location_create(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        cleaned = clean_location_input(body or {})
+        location_id = str((body or {}).get('id') or '').strip().lower() or None
+        if location_id:
+            if not re.fullmatch(r'[a-z0-9-]{2,80}', location_id):
+                raise ApiError(400, 'Некорректный идентификатор локации')
+            if conn.execute('SELECT 1 FROM locations WHERE id=?', (location_id,)).fetchone():
+                raise ApiError(409, 'Локация с таким идентификатором уже существует')
+        else:
+            location_id = f'custom-{secrets.token_hex(8)}'
+        now = time.time()
+        conn.execute(
+            'INSERT INTO locations(id,name_en,name_ru,kind,district_id,x,y,'
+            'description_en,description_ru,source,custom,owner_user_id,archived,created,updated) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?,1,?,0,?,?)',
+            (location_id, cleaned['name_en'], cleaned['name_ru'], cleaned['kind'],
+             cleaned['district_id'], cleaned['x'], cleaned['y'],
+             cleaned['description_en'], cleaned['description_ru'], cleaned['source'] or 'Custom',
+             user['id'], now, now))
+        conn.commit()
+        row = conn.execute('SELECT * FROM locations WHERE id=?', (location_id,)).fetchone()
+        self.send_json(location_payload(row, user), status=201)
+
+    @atomic_endpoint
+    def api_location_update(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM locations WHERE id=?', (m.group(1),)).fetchone()
+        if not row or row['archived']:
+            raise ApiError(404, 'Локация не найдена')
+        if not row['custom']:
+            raise ApiError(403, 'Seed локации можно редактировать только через custom копию')
+        cleaned = clean_location_input(body or {}, row)
+        conn.execute(
+            'UPDATE locations SET name_en=?,name_ru=?,kind=?,district_id=?,x=?,y=?,'
+            'description_en=?,description_ru=?,source=?,updated=? WHERE id=?',
+            (cleaned['name_en'], cleaned['name_ru'], cleaned['kind'], cleaned['district_id'],
+             cleaned['x'], cleaned['y'], cleaned['description_en'], cleaned['description_ru'],
+             cleaned['source'] or row['source'], time.time(), row['id']))
+        conn.commit()
+        fresh = conn.execute('SELECT * FROM locations WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(location_payload(fresh, user))
+
+    @atomic_endpoint
+    def api_location_delete(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM locations WHERE id=?', (m.group(1),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Локация не найдена')
+        conn.execute('UPDATE locations SET archived=1,updated=? WHERE id=?',
+                     (time.time(), row['id']))
+        conn.commit()
+        self.send_json({'ok': True, 'archived': True})
+
+    # ------------------------------------------------------------ Memorial / Afterlife
+
+    @atomic_endpoint
+    def api_character_memorialize(self, conn, qs, m, body):
+        """Mark a Character as fallen (deceased/retired/missing)."""
+        user = self.require_gm(conn)
+        row = self.get_char(conn, m.group(1))
+        data = ensure_progression(json.loads(row['data']))
+        status = str((body or {}).get('status') or 'deceased').lower()
+        if status not in MEMORIAL_STATUSES:
+            raise ApiError(400, 'Неизвестный статус memorial')
+        if data.get('status') in MEMORIAL_STATUSES:
+            raise ApiError(409, 'Персонаж уже помечен memorial')
+        existing = conn.execute('SELECT * FROM memorials WHERE character_id=?',
+                                (row['id'],)).fetchone()
+        if existing:
+            raise ApiError(409, 'Memorial для персонажа уже существует')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину memorial')
+        collaborative = bool((body or {}).get('collaborative'))
+        # Identity fields are always taken from the Dossier for a memorial.
+        source = dict(body or {})
+        source.setdefault('handle', data.get('handle'))
+        source.setdefault('role', data.get('role'))
+        source.setdefault('role_rank', _num(data.get('role_rank')) or 0)
+        cleaned = clean_memorial_input(source)
+        now = time.time()
+        draft_state = 'pending_owner' if collaborative else 'published'
+        cur = conn.execute(
+            'INSERT INTO memorials(character_id,handle,role,role_rank,portrait_media_id,status,'
+            'death_date,location,cause,epitaph,last_words,obituary,gm_notes,visibility,'
+            'created_by,created,updated,draft_state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (row['id'], cleaned['handle'], cleaned['role'], cleaned['role_rank'],
+             str(data.get('portrait_media_id') or '')[:64] or None, cleaned['status'],
+             cleaned['death_date'], cleaned['location'], cleaned['cause'],
+             cleaned['epitaph'], cleaned['last_words'], cleaned['obituary'],
+             cleaned['gm_notes'], cleaned['visibility'], user['id'], now, now, draft_state))
+        memorial_id = cur.lastrowid
+        if collaborative:
+            # Owner fills the narrative; the Dossier is frozen only at publish.
+            if row['owner_id']:
+                add_notification(conn, row['owner_id'], 'memorial_draft',
+                                 'Memorial draft awaiting your input',
+                                 data.get('handle') or 'Edgerunner',
+                                 f'#/memorial/{memorial_id}')
+        else:
+            feed_post_id = None
+            if (body or {}).get('publish_obituary') and cleaned['obituary']:
+                cur_feed = conn.execute(
+                    'INSERT INTO feed_posts(format,status,creator_user_id,headline,body,'
+                    'truth_status,event_at,created,updated) '
+                    "VALUES('article','draft',?,?,?,'unknown',?,?,?)",
+                    (user['id'], f'In Memoriam: {cleaned["handle"]}', cleaned['obituary'],
+                     cleaned['death_date'] or now, now, now))
+                feed_post_id = cur_feed.lastrowid
+            conn.execute('UPDATE memorials SET feed_post_id=? WHERE id=?',
+                         (feed_post_id, memorial_id))
+            before = json.loads(row['data'])
+            after = copy.deepcopy(before)
+            after['status'] = status
+            after['archived'] = True
+            after['public'] = False
+            after['archive_reason'] = reason
+            conn.execute('UPDATE characters SET data=?,public=0,updated=?,revision=revision+1 WHERE id=?',
+                         (json.dumps(after, ensure_ascii=False), now, row['id']))
+            record_character_changes(conn, row['id'], user['id'], before, after,
+                                     f'Memorialized as {status}: {reason}')
+        conn.commit()
+        fresh = conn.execute('SELECT * FROM memorials WHERE id=?', (memorial_id,)).fetchone()
+        self.send_json(memorial_payload(fresh, user, full=True), status=201)
+
+    def api_memorial_list(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        gm = user_is_gm(user)
+        user_id = user['id'] if user else None
+        rows = conn.execute(
+            'SELECT * FROM memorials WHERE '
+            '(? OR visibility=\'public\' OR '
+            '(draft_state=\'pending_owner\' AND character_id IN '
+            '(SELECT id FROM characters WHERE owner_id=?))) '
+            'ORDER BY (status=\'deceased\') DESC,death_date DESC,id DESC',
+            (1 if gm else 0, user_id)).fetchall()
+        owner_ids = {}
+        char_ids = [row['character_id'] for row in rows if row['character_id']]
+        if char_ids:
+            marks = ','.join('?' for _ in char_ids)
+            for r in conn.execute(
+                    f'SELECT id,owner_id FROM characters WHERE id IN ({marks})', char_ids):
+                owner_ids[r['id']] = r['owner_id']
+        memorials = []
+        for row in rows:
+            payload = memorial_payload(row, user, full=gm)
+            draft = row['draft_state'] if 'draft_state' in row.keys() else 'published'
+            payload['can_publish'] = bool(gm and draft != 'published')
+            owns = bool(row['character_id'] and owner_ids.get(row['character_id']) == user_id)
+            payload['can_owner_draft'] = bool(owns and draft == 'pending_owner')
+            memorials.append(payload)
+        self.send_json({'memorials': memorials})
+
+    def api_memorial_detail(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        gm = user_is_gm(user)
+        user_id = user['id'] if user else None
+        row = conn.execute('SELECT * FROM memorials WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Memorial не найден')
+        draft = row['draft_state'] if 'draft_state' in row.keys() else 'published'
+        owner_match = False
+        if row['character_id']:
+            owner_match = conn.execute(
+                'SELECT owner_id FROM characters WHERE id=?',
+                (row['character_id'],)).fetchone()
+            owner_match = bool(owner_match and owner_match['owner_id'] == user_id)
+        if row['visibility'] != 'public' and not gm and not (
+                draft == 'pending_owner' and owner_match):
+            raise ApiError(404, 'Memorial не найден')
+        payload = memorial_payload(row, user, full=gm)
+        payload['can_publish'] = bool(gm and draft != 'published')
+        payload['can_owner_draft'] = bool(owner_match and draft == 'pending_owner')
+        self.send_json(payload)
+
+    @atomic_endpoint
+    def api_memorial_update(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM memorials WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Memorial не найден')
+        cleaned = clean_memorial_input(body or {}, row)
+        conn.execute(
+            'UPDATE memorials SET status=?,handle=?,role=?,role_rank=?,death_date=?,location=?,'
+            'cause=?,epitaph=?,last_words=?,obituary=?,gm_notes=?,visibility=?,updated=? WHERE id=?',
+            (cleaned['status'], cleaned['handle'], cleaned['role'], cleaned['role_rank'],
+             cleaned['death_date'], cleaned['location'], cleaned['cause'],
+             cleaned['epitaph'], cleaned['last_words'], cleaned['obituary'],
+             cleaned['gm_notes'], cleaned['visibility'], time.time(), row['id']))
+        if row['feed_post_id'] and cleaned['obituary']:
+            conn.execute(
+                "UPDATE feed_posts SET headline=?,body=?,event_at=?,updated=? "
+                "WHERE id=? AND status='draft'",
+                (f'In Memoriam: {cleaned["handle"]}', cleaned['obituary'],
+                 cleaned['death_date'] or row['death_date'] or time.time(),
+                 time.time(), row['feed_post_id']))
+        conn.commit()
+        fresh = conn.execute('SELECT * FROM memorials WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(memorial_payload(fresh, user, full=True))
+
+    @atomic_endpoint
+    def api_memorial_legacy(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM memorials WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Memorial не найден')
+        cleaned = clean_legacy_input(body or {})
+        conn.execute(
+            'UPDATE memorials SET legacy_drink_name=?,legacy_ingredients=?,legacy_preparation=?,'
+            'legacy_glass=?,legacy_garnish=?,legacy_quote=?,legacy_legend=?,'
+            'legacy_awarded_by=?,legacy_awarded_at=?,updated=? WHERE id=?',
+            (cleaned['drink_name'], cleaned['ingredients'], cleaned['preparation'],
+             cleaned['glass'], cleaned['garnish'], cleaned['quote'], cleaned['legend'],
+             user['id'], time.time(), time.time(), row['id']))
+        conn.commit()
+        fresh = conn.execute('SELECT * FROM memorials WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(memorial_payload(fresh, user, full=True))
+
+    @atomic_endpoint
+    def api_memorial_owner_draft(self, conn, qs, m, body):
+        """Owner fills the narrative fields of a pending collaborative memorial."""
+        user = self.require_user(conn)
+        row = conn.execute('SELECT * FROM memorials WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Memorial не найден')
+        if row['draft_state'] == 'published':
+            raise ApiError(409, 'Memorial уже опубликован')
+        owner_id = None
+        if row['character_id']:
+            character = conn.execute('SELECT owner_id FROM characters WHERE id=?',
+                                     (row['character_id'],)).fetchone()
+            owner_id = character['owner_id'] if character else None
+        if owner_id is None or owner_id != user['id']:
+            raise ApiError(403, 'Только владелец персонажа заполняет memorial')
+        payload = body or {}
+        visibility = str(payload.get('visibility') or row['visibility']).lower()
+        if visibility not in MEMORIAL_VISIBILITIES:
+            visibility = row['visibility']
+        death_date = row['death_date']
+        if payload.get('death_date') not in (None, ''):
+            death_date = optional_timestamp(payload.get('death_date'))
+        values = [
+            death_date,
+            str(payload.get('location') or '')[:240],
+            str(payload.get('cause') or '')[:2000],
+            str(payload.get('epitaph') or '')[:1000],
+            str(payload.get('last_words') or '')[:2000],
+            str(payload.get('obituary') or '')[:10000],
+            visibility,
+        ]
+        columns = ('death_date=?,location=?,cause=?,epitaph=?,last_words=?,'
+                   'obituary=?,visibility=?')
+        if len(str(payload.get('drink_name') or '').strip()) >= 2:
+            legacy = clean_legacy_input(payload)
+            columns = (columns + ',legacy_drink_name=?,legacy_ingredients=?,'
+                       'legacy_preparation=?,legacy_glass=?,legacy_garnish=?,'
+                       'legacy_quote=?,legacy_legend=?,legacy_awarded_by=?,'
+                       'legacy_awarded_at=?')
+            values.extend([legacy['drink_name'], legacy['ingredients'],
+                           legacy['preparation'], legacy['glass'], legacy['garnish'],
+                           legacy['quote'], legacy['legend'], user['id'], time.time()])
+        values.extend([time.time(), row['id']])
+        conn.execute(f'UPDATE memorials SET {columns},updated=? WHERE id=?', values)
+        conn.commit()
+        fresh = conn.execute('SELECT * FROM memorials WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(memorial_payload(fresh, user, full=True))
+
+    @atomic_endpoint
+    def api_memorial_publish(self, conn, qs, m, body):
+        """GM finalizes a collaborative memorial: freeze Dossier + obituary draft."""
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM memorials WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Memorial не найден')
+        if row['draft_state'] == 'published':
+            raise ApiError(409, 'Memorial уже опубликован')
+        now = time.time()
+        feed_post_id = row['feed_post_id']
+        if not feed_post_id and row['obituary']:
+            cur_feed = conn.execute(
+                'INSERT INTO feed_posts(format,status,creator_user_id,headline,body,'
+                'truth_status,event_at,created,updated) '
+                "VALUES('article','draft',?,?,?,'unknown',?,?,?)",
+                (user['id'], f'In Memoriam: {row["handle"]}', row['obituary'],
+                 row['death_date'] or now, now, now))
+            feed_post_id = cur_feed.lastrowid
+        if row['character_id']:
+            character = conn.execute('SELECT * FROM characters WHERE id=?',
+                                     (row['character_id'],)).fetchone()
+            if character:
+                before = json.loads(character['data'])
+                after = copy.deepcopy(before)
+                after['status'] = row['status']
+                after['archived'] = True
+                after['public'] = False
+                after['archive_reason'] = 'Memorial published'
+                conn.execute(
+                    'UPDATE characters SET data=?,public=0,updated=?,revision=revision+1 WHERE id=?',
+                    (json.dumps(after, ensure_ascii=False), now, row['character_id']))
+                record_character_changes(conn, row['character_id'], user['id'],
+                                         before, after, 'Memorial published')
+        conn.execute(
+            'UPDATE memorials SET draft_state=?,feed_post_id=?,updated=? WHERE id=?',
+            ('published', feed_post_id, now, row['id']))
+        conn.commit()
+        fresh = conn.execute('SELECT * FROM memorials WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(memorial_payload(fresh, user, full=True))
+
+    @atomic_endpoint
+    def api_memorial_restore(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM memorials WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Memorial не найден')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if row['character_id']:
+            character = conn.execute('SELECT * FROM characters WHERE id=?',
+                                     (row['character_id'],)).fetchone()
+            if character:
+                before = json.loads(character['data'])
+                after = copy.deepcopy(before)
+                after.pop('status', None)
+                after.pop('archive_reason', None)
+                after['archived'] = False
+                conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
+                             (json.dumps(after, ensure_ascii=False), time.time(),
+                              row['character_id']))
+                restore_note = f'Memorial restored: {reason}' if reason else 'Memorial restored'
+                record_character_changes(conn, row['character_id'], user['id'],
+                                         before, after, restore_note)
+        if row['feed_post_id']:
+            conn.execute("DELETE FROM feed_posts WHERE id=? AND status='draft'",
+                         (row['feed_post_id'],))
+        conn.execute('DELETE FROM memorials WHERE id=?', (row['id'],))
+        conn.commit()
+        self.send_json({'ok': True, 'restored': True})
+
+    def api_session_access(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or not self.can_manage_session_access(conn, user, session):
+            raise ApiError(403, 'Нет права управлять доступом сессии')
+        assignments = conn.execute(
+            'SELECT a.*,u.username,u.display_name,u.account_role FROM session_access a '
+            'JOIN users u ON u.id=a.user_id WHERE a.session_id=? ORDER BY a.role,u.display_name',
+            (session['id'],)).fetchall()
+        candidates = conn.execute(
+            "SELECT id,username,display_name,account_role FROM users "
+            "WHERE id>1 AND disabled_at IS NULL AND account_role!='admin' "
+            'ORDER BY display_name,username').fetchall()
+        self.send_json({
+            'owner_user_id': session['owner_user_id'],
+            'roles': sorted(SESSION_ACCESS_ROLES),
+            'assignments': [dict(row) for row in assignments],
+            'candidates': [dict(row) for row in candidates],
+        })
+
+    @atomic_endpoint
+    def api_session_access_grant(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or not self.can_manage_session_access(conn, user, session):
+            raise ApiError(403, 'Нет права управлять доступом сессии')
+        target_id = _num((body or {}).get('user_id'))
+        role = str((body or {}).get('role') or '').lower()
+        target = conn.execute('SELECT * FROM users WHERE id=? AND disabled_at IS NULL',
+                              (target_id,)).fetchone()
+        if not target or target['id'] == session['owner_user_id'] or role not in SESSION_ACCESS_ROLES:
+            raise ApiError(400, 'Некорректная роль участника сессии')
+        before = conn.execute('SELECT role FROM session_access WHERE session_id=? AND user_id=?',
+                              (session['id'], target['id'])).fetchone()
+        now = time.time()
+        conn.execute(
+            'INSERT INTO session_access(session_id,user_id,role,created_by,created,updated) '
+            'VALUES(?,?,?,?,?,?) ON CONFLICT(session_id,user_id) DO UPDATE SET '
+            'role=excluded.role,created_by=excluded.created_by,updated=excluded.updated',
+            (session['id'], target['id'], role, user['id'], now, now))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,after_json,note,created) '
+            'VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'access_grant',
+             json.dumps({'user_id': target['id'], 'role': before['role'] if before else None}),
+             json.dumps({'user_id': target['id'], 'role': role}), '', now))
+        add_notification(conn, target['id'], 'session_access', 'NC//NET Session access',
+                         f'{session["title"]}: {role}', f'#/session/{session["id"]}')
+        conn.commit()
+        self.send_json({'ok': True, 'user_id': target['id'], 'role': role})
+
+    @atomic_endpoint
+    def api_session_access_revoke(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or not self.can_manage_session_access(conn, user, session):
+            raise ApiError(403, 'Нет права управлять доступом сессии')
+        target_id = int(m.group(2))
+        before = conn.execute('SELECT * FROM session_access WHERE session_id=? AND user_id=?',
+                              (session['id'], target_id)).fetchone()
+        if not before:
+            raise ApiError(404, 'Назначение доступа не найдено')
+        conn.execute('DELETE FROM session_access WHERE session_id=? AND user_id=?',
+                     (session['id'], target_id))
+        now = time.time()
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,after_json,note,created) '
+            'VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'access_revoke', json.dumps(dict(before)),
+             json.dumps({'user_id': target_id, 'role': None}), '', now))
+        add_notification(conn, target_id, 'session_access_revoked', 'NC//NET Session access revoked',
+                         session['title'], None)
+        conn.commit()
+        self.send_json({'ok': True})
+
+    def safety_signal_payload(self, row):
+        return {
+            'id': row['id'], 'kind': row['kind'], 'message': row['message'],
+            'status': row['status'], 'created': row['created'],
+            'acknowledged_at': row['acknowledged_at'], 'resolved_at': row['resolved_at'],
+        }
+
+    def api_session_safety(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        role, capabilities = self.session_capabilities(conn, user, session)
+        if not session or not role:
+            raise ApiError(403, 'Нет доступа к экрану сессии')
+        if 'manage_safety' in capabilities:
+            rows = conn.execute(
+                'SELECT * FROM session_safety_signals WHERE session_id=? '
+                'ORDER BY CASE status WHEN \'open\' THEN 0 WHEN \'acknowledged\' THEN 1 ELSE 2 END,created DESC',
+                (session['id'],)).fetchall()
+        else:
+            rows = conn.execute(
+                'SELECT * FROM session_safety_signals WHERE session_id=? AND user_id=? ORDER BY created DESC',
+                (session['id'], user['id'])).fetchall()
+        self.send_json({'safety_config': session_safety_config(session['safety_config']),
+                        'can_manage': 'manage_safety' in capabilities,
+                        'signals': [self.safety_signal_payload(row) for row in rows]})
+
+    @atomic_endpoint
+    def api_session_safety_create(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        role, capabilities = self.session_capabilities(conn, user, session)
+        if not session or not role:
+            raise ApiError(403, 'Нет доступа к экрану сессии')
+        config = session_safety_config(session['safety_config'])
+        if not config['pause_enabled']:
+            raise ApiError(409, 'Safety signal отключён для этой сессии')
+        self.rate_limit('session-safety', 10, 3600, user['id'])
+        kind = str((body or {}).get('kind') or 'pause').lower()
+        if kind not in SAFETY_SIGNAL_KINDS:
+            raise ApiError(400, 'Некорректный тип Safety signal')
+        message = str((body or {}).get('message') or '').strip()[:500]
+        now = time.time()
+        cur = conn.execute(
+            'INSERT INTO session_safety_signals(session_id,user_id,kind,message,status,created) '
+            "VALUES(?,?,?,?,'open',?)", (session['id'], user['id'], kind, message, now))
+        recipients = {session['owner_user_id']}
+        recipients.update(row['user_id'] for row in conn.execute(
+            "SELECT user_id FROM session_access WHERE session_id=? AND role='co_gm'",
+            (session['id'],)).fetchall())
+        for recipient in recipients:
+            if recipient != user['id']:
+                add_notification(conn, recipient, 'session_safety', 'Anonymous Session safety signal',
+                                 session['title'], f'#/session/{session["id"]}')
+        conn.commit()
+        row = conn.execute('SELECT * FROM session_safety_signals WHERE id=?',
+                           (cur.lastrowid,)).fetchone()
+        self.send_json(self.safety_signal_payload(row), status=201)
+
+    @atomic_endpoint
+    def api_session_safety_update(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        role, capabilities = self.session_capabilities(conn, user, session)
+        if not session or 'manage_safety' not in capabilities:
+            raise ApiError(403, 'Нет права управлять Safety signal')
+        signal = conn.execute(
+            'SELECT * FROM session_safety_signals WHERE id=? AND session_id=?',
+            (int(m.group(2)), session['id'])).fetchone()
+        if not signal:
+            raise ApiError(404, 'Safety signal не найден')
+        status = str((body or {}).get('status') or '').lower()
+        if status not in ('acknowledged', 'resolved'):
+            raise ApiError(400, 'Некорректный статус Safety signal')
+        if signal['status'] == 'resolved' and status != 'resolved':
+            raise ApiError(409, 'Resolved Safety signal нельзя открыть повторно')
+        now = time.time()
+        if status == 'acknowledged':
+            conn.execute(
+                "UPDATE session_safety_signals SET status='acknowledged',acknowledged_by=?,"
+                'acknowledged_at=? WHERE id=?', (user['id'], now, signal['id']))
+        else:
+            conn.execute(
+                "UPDATE session_safety_signals SET status='resolved',resolved_by=?,resolved_at=?,"
+                'acknowledged_by=COALESCE(acknowledged_by,?),'
+                'acknowledged_at=COALESCE(acknowledged_at,?) WHERE id=?',
+                (user['id'], now, user['id'], now, signal['id']))
+        conn.commit()
+        updated = conn.execute('SELECT * FROM session_safety_signals WHERE id=?',
+                               (signal['id'],)).fetchone()
+        self.send_json(self.safety_signal_payload(updated))
+
+    def api_character_net_contexts(self, conn, qs, m, body):
+        user, character = self.require_character_editor(conn, m.group(1))
+        rows = conn.execute(
+            'SELECT DISTINCT s.* FROM nc_sessions s JOIN session_combatants c '
+            'ON c.session_id=s.id WHERE c.character_id=? '
+            "AND s.status IN ('preparing','active','paused') ORDER BY s.updated DESC",
+            (character['id'],)).fetchall()
+        contexts = []
+        for session in rows:
+            role, capabilities = self.session_capabilities(conn, user, session)
+            if not role:
+                continue
+            state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+            targets = conn.execute(
+                'SELECT id,kind,character_id,name FROM session_combatants '
+                'WHERE session_id=? AND (character_id IS NULL OR character_id!=?) '
+                'ORDER BY initiative DESC,sort_order,id',
+                (session['id'], character['id'])).fetchall()
+            contexts.append({
+                'session_id': session['id'], 'title': session['title'],
+                'status': session['status'], 'access_role': role,
+                'floors': state['floors'], 'nodes': state['nodes'],
+                'paths': state['paths'],
+                'targets': [dict(target) for target in targets],
+                'can_manage_net': 'edit_combatants' in capabilities,
+            })
+        self.send_json({'character_id': character['id'], 'sessions': contexts})
+
+    @atomic_endpoint
+    def api_session_net_floor_create(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_session' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права редактировать Session NET Floors')
+        label = str((body or {}).get('label') or '').strip()[:120]
+        note = str((body or {}).get('reason') or '').strip()[:500]
+        if not label:
+            raise ApiError(400, 'NET Floor требует label')
+        if len(note) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Floors')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        if len(state['floors']) >= 100 or any(
+                item['label'].lower() == label.lower() for item in state['floors']):
+            raise ApiError(409, 'NET Floor уже существует или достигнут лимит')
+        before = copy.deepcopy(state)
+        floor = {'floor_id': secrets.token_hex(16), 'label': label,
+                 'sort_order': len(state['floors'])}
+        state['floors'].append(floor)
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_floor_create',
+             json.dumps(before, ensure_ascii=False),
+             json.dumps(state, ensure_ascii=False), note, now))
+        conn.commit()
+        self.send_json(floor, status=201)
+
+    @atomic_endpoint
+    def api_session_net_floor_delete(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_session' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права редактировать Session NET Floors')
+        floor_id = str(m.group(2)).lower()
+        note = str((body or {}).get('reason') or '').strip()[:500]
+        if len(note) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Floors')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        floor = next((item for item in state['floors']
+                      if item['floor_id'] == floor_id), None)
+        if not floor:
+            raise ApiError(404, 'Session NET Floor не найден')
+        if any(item['floor_id'] == floor_id for item in state['nodes']):
+            raise ApiError(409, 'Сначала удалите NET nodes с этого Floor')
+        if any(item['active'] and item['floor_id'] == floor_id
+               for item in state['links']):
+            raise ApiError(409, 'NET Floor используется active entity')
+        before = copy.deepcopy(state)
+        state['floors'] = [item for item in state['floors']
+                           if item['floor_id'] != floor_id]
+        for index, item in enumerate(state['floors']):
+            item['sort_order'] = index
+        state['links'] = [item for item in state['links']
+                          if item['floor_id'] != floor_id]
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_floor_delete',
+             json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             note, now))
+        conn.commit()
+        self.send_json({'ok': True})
+
+    @atomic_endpoint
+    def api_session_net_node_create(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_session' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права редактировать NET Architecture')
+        allowed = {'floor_id', 'type', 'label', 'dv', 'defense',
+                   'visible', 'resolved', 'gm_note', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'NET node содержит неподдерживаемые поля')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        floor_id = str((body or {}).get('floor_id') or '').lower()
+        node_type = str((body or {}).get('type') or '').lower()
+        label = str((body or {}).get('label') or '').strip()[:120]
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if not any(item['floor_id'] == floor_id for item in state['floors']):
+            raise ApiError(400, 'NET node требует validated Floor')
+        if node_type not in SESSION_NET_NODE_TYPES or not label:
+            raise ApiError(400, 'Некорректный NET node type или label')
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Architecture')
+        if len(state['nodes']) >= 500:
+            raise ApiError(409, 'Достигнут лимит NET nodes')
+        before = copy.deepcopy(state)
+        node = {
+            'node_id': secrets.token_hex(16), 'floor_id': floor_id,
+            'type': node_type, 'label': label,
+            'dv': max(0, min(29, int(_num((body or {}).get('dv')) or 0))),
+            'defense': max(0, min(29, int(_num((body or {}).get('defense')) or 0))),
+            'visible': (body or {}).get('visible') is True,
+            'resolved': (body or {}).get('resolved') is True,
+            'gm_note': str((body or {}).get('gm_note') or '')[:2000],
+            'sort_order': len(state['nodes']),
+        }
+        state['nodes'].append(node)
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_node_create',
+             json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             reason, now))
+        conn.commit()
+        self.send_json(node, status=201)
+
+    @atomic_endpoint
+    def api_session_net_node_update(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_session' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права редактировать NET Architecture')
+        allowed = {'type', 'label', 'dv', 'defense', 'visible',
+                   'resolved', 'gm_note', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'NET node содержит неподдерживаемые поля')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        node_id = str(m.group(2)).lower()
+        node = next((item for item in state['nodes']
+                     if item['node_id'] == node_id), None)
+        if not node:
+            raise ApiError(404, 'NET node не найден')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Architecture')
+        before = copy.deepcopy(state)
+        node_type = str((body or {}).get('type', node['type'])).lower()
+        label = str((body or {}).get('label', node['label'])).strip()[:120]
+        if node_type not in SESSION_NET_NODE_TYPES or not label:
+            raise ApiError(400, 'Некорректный NET node type или label')
+        node.update({
+            'type': node_type, 'label': label,
+            'dv': max(0, min(29, int(_num((body or {}).get('dv', node['dv'])) or 0))),
+            'defense': max(0, min(29, int(_num(
+                (body or {}).get('defense', node['defense'])) or 0))),
+            'visible': (body or {}).get('visible', node['visible']) is True,
+            'resolved': (body or {}).get('resolved', node['resolved']) is True,
+            'gm_note': str((body or {}).get('gm_note', node['gm_note']) or '')[:2000],
+        })
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_node_update',
+             json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             reason, now))
+        conn.commit()
+        self.send_json(node)
+
+    @atomic_endpoint
+    def api_session_net_node_delete(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_session' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права редактировать NET Architecture')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        node_id = str(m.group(2)).lower()
+        node = next((item for item in state['nodes']
+                     if item['node_id'] == node_id), None)
+        if not node:
+            raise ApiError(404, 'NET node не найден')
+        if any(item['from_node_id'] == node_id or item['to_node_id'] == node_id
+               for item in state['paths']):
+            raise ApiError(409, 'Сначала удалите NET paths этого node')
+        if any(item['active'] and item.get('node_id') == node_id
+               for item in state['links']):
+            raise ApiError(409, 'NET node используется active entity')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Architecture')
+        before = copy.deepcopy(state)
+        state['nodes'] = [item for item in state['nodes'] if item['node_id'] != node_id]
+        for index, item in enumerate(state['nodes']):
+            item['sort_order'] = index
+        for link in state['links']:
+            if link.get('node_id') == node_id:
+                link['node_id'] = None
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_node_delete',
+             json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             reason, now))
+        conn.commit()
+        self.send_json({'ok': True})
+
+    @atomic_endpoint
+    def api_session_net_path_create(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_session' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права редактировать NET Architecture')
+        allowed = {'from_node_id', 'to_node_id', 'direction',
+                   'label', 'visible', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'NET path содержит неподдерживаемые поля')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        from_id = str((body or {}).get('from_node_id') or '').lower()
+        to_id = str((body or {}).get('to_node_id') or '').lower()
+        direction = str((body or {}).get('direction') or 'bidirectional').lower()
+        node_ids = {item['node_id'] for item in state['nodes']}
+        if (from_id not in node_ids or to_id not in node_ids or from_id == to_id or
+                direction not in SESSION_NET_PATH_DIRECTIONS):
+            raise ApiError(400, 'Некорректные NET path endpoints или direction')
+        if any(item['from_node_id'] == from_id and item['to_node_id'] == to_id and
+               item['direction'] == direction for item in state['paths']):
+            raise ApiError(409, 'NET path уже существует')
+        if direction == 'bidirectional' and any(
+                item['from_node_id'] == to_id and item['to_node_id'] == from_id and
+                item['direction'] == direction for item in state['paths']):
+            raise ApiError(409, 'NET path уже существует')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Architecture')
+        if len(state['paths']) >= 1000:
+            raise ApiError(409, 'Достигнут лимит NET paths')
+        before = copy.deepcopy(state)
+        path = {
+            'path_id': secrets.token_hex(16), 'from_node_id': from_id,
+            'to_node_id': to_id, 'direction': direction,
+            'label': str((body or {}).get('label') or '')[:120],
+            'visible': (body or {}).get('visible') is True,
+        }
+        state['paths'].append(path)
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_path_create',
+             json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             reason, now))
+        conn.commit()
+        self.send_json(path, status=201)
+
+    @atomic_endpoint
+    def api_session_net_path_update(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_session' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права редактировать NET Architecture')
+        if set(body or {}) - {'label', 'visible', 'reason'}:
+            raise ApiError(400, 'NET path содержит неподдерживаемые поля')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        path_id = str(m.group(2)).lower()
+        path = next((item for item in state['paths']
+                     if item['path_id'] == path_id), None)
+        if not path:
+            raise ApiError(404, 'NET path не найден')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Architecture')
+        before = copy.deepcopy(state)
+        path['label'] = str((body or {}).get('label', path['label']) or '')[:120]
+        path['visible'] = (body or {}).get('visible', path['visible']) is True
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_path_update',
+             json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             reason, now))
+        conn.commit()
+        self.send_json(path)
+
+    @atomic_endpoint
+    def api_session_net_path_delete(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_session' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права редактировать NET Architecture')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        path_id = str(m.group(2)).lower()
+        if not any(item['path_id'] == path_id for item in state['paths']):
+            raise ApiError(404, 'NET path не найден')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Architecture')
+        before = copy.deepcopy(state)
+        state['paths'] = [item for item in state['paths'] if item['path_id'] != path_id]
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_path_delete',
+             json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             reason, now))
+        conn.commit()
+        self.send_json({'ok': True})
+
+    @atomic_endpoint
+    def api_session_net_action(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or session['status'] not in ('preparing', 'active', 'paused'):
+            raise ApiError(404, 'Live NET Session не найдена')
+        allowed = {'action', 'actor_combatant_id', 'target_node_id',
+                   'program_instance_id', 'target_entity_id',
+                   'character_revision', 'target_character_revision', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'NET action содержит неподдерживаемые поля')
+        actor_id = _num((body or {}).get('actor_combatant_id'))
+        actor = conn.execute(
+            'SELECT * FROM session_combatants WHERE session_id=? AND id=?',
+            (session['id'], int(actor_id))).fetchone() \
+            if actor_id is not None and int(actor_id) == actor_id else None
+        if not actor or not actor['character_id']:
+            raise ApiError(400, 'NET action требует Character combatant')
+        character = conn.execute('SELECT * FROM characters WHERE id=?',
+                                 (actor['character_id'],)).fetchone()
+        if not character:
+            raise ApiError(404, 'Character для NET action не найден')
+        capabilities = self.session_capabilities(conn, user, session)[1]
+        if character['owner_id'] != user['id'] and 'edit_combatants' not in capabilities:
+            raise ApiError(403, 'Нет права выполнять NET action этим Character')
+        character_data = enrich_owned_item_interactions(
+            ensure_progression(json.loads(character['data'])))
+        interface_rank = character_interface_rank(character_data)
+        if interface_rank <= 0:
+            raise ApiError(409, 'NET action требует Netrunner Role')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину NET action')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        before_state = copy.deepcopy(state)
+        node_by_id = {item['node_id']: item for item in state['nodes']}
+        runner = next((item for item in state['runners']
+                       if item['combatant_id'] == actor['id']), None)
+        if not runner:
+            runner = {
+                'combatant_id': actor['id'], 'character_id': character['id'],
+                'node_id': None, 'previous_node_id': None, 'jacked_in': False,
+                'interface_rank': interface_rank, 'actions_recorded': 0,
+                'action_round': state['round'], 'actions_used': 0,
+                'action_penalty': 0, 'next_action_penalty': 0,
+                'last_action_at': None,
+            }
+            state['runners'].append(runner)
+        runner['interface_rank'] = interface_rank
+        action = str((body or {}).get('action') or '').lower()
+        if runner.get('action_round') != state['round']:
+            runner['action_round'] = state['round']
+            runner['actions_used'] = 0
+            runner['action_penalty'] = runner.get('next_action_penalty', 0)
+            runner['next_action_penalty'] = 0
+        consumes_net_action = action not in ('jack_in', 'jack_out')
+        actions_max = max(
+            2, net_actions_for_interface(interface_rank) - runner.get('action_penalty', 0))
+        if consumes_net_action and runner.get('actions_used', 0) >= actions_max:
+            raise ApiError(409, 'NET Action budget исчерпан для текущего NET Round')
+        target_node_id = str((body or {}).get('target_node_id') or '').lower()
+        target_node = node_by_id.get(target_node_id)
+        now = time.time()
+        result = {'action': action, 'actor_combatant_id': actor['id'],
+                  'interface_rank': interface_rank}
+        character_before = None
+        character_ledger_id = None
+        target_character = None
+        target_character_data = None
+        target_character_before = None
+        target_character_ledger_id = None
+        if action == 'jack_in':
+            if not target_node or target_node['type'] != 'access_point':
+                raise ApiError(400, 'Jack In требует Access Point node')
+            if not target_node['visible'] and 'edit_combatants' not in capabilities:
+                raise ApiError(403, 'Access Point node ещё не revealed')
+            runner.update({'jacked_in': True, 'node_id': target_node_id,
+                           'previous_node_id': None})
+            target_node['visible'] = True
+            result.update({'success': True, 'summary': f'Jack In at {target_node["label"]}'})
+        elif action == 'jack_out':
+            if not runner['jacked_in']:
+                raise ApiError(409, 'Netrunner не Jacked In')
+            runner.update({'jacked_in': False, 'node_id': None,
+                           'previous_node_id': None})
+            result.update({'success': True, 'summary': 'Safe Jack Out recorded'})
+        else:
+            if not runner['jacked_in'] or runner.get('node_id') not in node_by_id:
+                raise ApiError(409, 'NET action требует Jacked In Netrunner')
+            current_node = node_by_id[runner['node_id']]
+            if action == 'move':
+                if not target_node or not target_node['visible']:
+                    raise ApiError(409, 'Move требует revealed target node')
+                path = session_net_path_between(
+                    state, current_node['node_id'], target_node_id,
+                    require_visible=True)
+                if not path:
+                    raise ApiError(409, 'NET nodes не соединены revealed path')
+                if (current_node['type'] == 'password' and
+                        not current_node['resolved'] and
+                        target_node_id != runner.get('previous_node_id')):
+                    raise ApiError(409, 'Unresolved Password блокирует движение вперёд')
+                runner['previous_node_id'] = current_node['node_id']
+                runner['node_id'] = target_node_id
+                result.update({'success': True,
+                               'summary': f'Move to {target_node["label"]}'})
+            elif action == 'pathfinder':
+                if not target_node:
+                    target_node = next((node for node in state['nodes']
+                                        if not node['visible'] and
+                                        session_net_path_between(
+                                            state, current_node['node_id'],
+                                            node['node_id'], require_visible=False)), None)
+                    target_node_id = target_node['node_id'] if target_node else ''
+                if not target_node:
+                    raise ApiError(404, 'Pathfinder target node не найден')
+                path = session_net_path_between(
+                    state, current_node['node_id'], target_node_id,
+                    require_visible=False)
+                if not path:
+                    raise ApiError(409, 'Pathfinder target должен быть adjacent node')
+                dv = max(1, target_node['dv'] or 9)
+                die = secrets.randbelow(10) + 1
+                total = interface_rank + die
+                success = total >= dv
+                if success:
+                    target_node['visible'] = True
+                    path['visible'] = True
+                result.update({'success': success, 'actor_roll': die,
+                               'actor_total': total, 'defense_total': dv,
+                               'summary': f'Pathfinder {total} vs DV{dv}'})
+            elif action == 'backdoor':
+                node = target_node or current_node
+                if node['node_id'] != current_node['node_id'] or node['type'] != 'password':
+                    raise ApiError(409, 'Backdoor требует текущий Password node')
+                dv = max(1, node['dv'] or 9)
+                die = secrets.randbelow(10) + 1
+                total = interface_rank + die
+                success = total >= dv
+                if success:
+                    node['resolved'] = True
+                    node['visible'] = True
+                result.update({'success': success, 'actor_roll': die,
+                               'actor_total': total, 'defense_total': dv,
+                               'summary': f'Backdoor {total} vs DV{dv}'})
+            elif action == 'eye_dee':
+                node = target_node or current_node
+                if node['node_id'] != current_node['node_id']:
+                    raise ApiError(409, 'Eye-Dee доступен только для текущего node')
+                node['visible'] = True
+                result.update({'success': True,
+                               'summary': f'Eye-Dee identifies {node["label"]}'})
+            elif action == 'control':
+                node = target_node or current_node
+                if node['node_id'] != current_node['node_id'] or node['type'] != 'control':
+                    raise ApiError(409, 'Control action требует текущий Control node')
+                dv = max(1, node['dv'] or node['defense'] or 9)
+                die = secrets.randbelow(10) + 1
+                total = interface_rank + die
+                success = total >= dv
+                if success:
+                    node['resolved'] = True
+                    node['visible'] = True
+                    node['controlled_by_combatant_id'] = actor['id']
+                result.update({'success': success, 'actor_roll': die,
+                               'actor_total': total, 'defense_total': dv,
+                               'summary': f'Control {total} vs DV{dv}'})
+            elif action == 'program_attack':
+                program_id = str((body or {}).get('program_instance_id') or '').lower()
+                entity_id = str((body or {}).get('target_entity_id') or '').lower()
+                link = next((item for item in state['links']
+                             if item['net_entity_id'] == entity_id and item['active']), None)
+                if not link or link.get('node_id') != current_node['node_id']:
+                    raise ApiError(409, 'Program Attack требует Black ICE на текущем node')
+                target_character = conn.execute('SELECT * FROM characters WHERE id=?',
+                                                (link['character_id'],)).fetchone()
+                target_character_data = enrich_owned_item_interactions(
+                    ensure_progression(json.loads(target_character['data']))) \
+                    if target_character else None
+                if target_character and target_character['id'] == character['id']:
+                    target_character_data = character_data
+                target_entity = (target_character_data.get('net_entities') or {}).get(
+                    entity_id) if target_character_data else None
+                if not isinstance(target_entity, dict) or target_entity.get('status') not in (
+                        'lying_in_wait', 'hunting'):
+                    raise ApiError(409, 'Program Attack target entity недоступна')
+                owned = {item.get('instance_id'): item for item in character_data.get('inventory') or []
+                         if isinstance(item, dict) and item.get('instance_id')}
+                program = owned.get(program_id)
+                modifications = character_modifications(conn, character['id'])
+                program_modification = next((item for item in modifications
+                                             if item.get('upgrade_instance_id') == program_id and
+                                             item.get('host_type') == 'cyberdeck'), None)
+                if (not program or not program_modification or
+                        cyberdeck_program_category(program) != 'attacker'):
+                    raise ApiError(409, 'Program Attack требует installed Attacker Program')
+                expected_revision = _num((body or {}).get('character_revision'))
+                if expected_revision != (_row_value(character, 'revision', 0) or 0):
+                    raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+                attack_die = secrets.randbelow(10) + 1
+                defense_die = secrets.randbelow(10) + 1
+                attack = interface_rank + int(_num((program.get('mechanics') or {}).get('atk')) or 0) + attack_die
+                defense = int(_num(target_entity.get('def')) or 0) + defense_die
+                success = attack > defense
+                character_before = copy.deepcopy(character_data)
+                runtime = initial_program_runtime_state(
+                    program, program_modification['host_instance_id'],
+                    program_modification['modification_id'],
+                    (character_data.get('program_state') or {}).get(program_id))
+                runtime['run_count'] += 1
+                runtime['last_run_at'] = now
+                character_data.setdefault('program_state', {})[program_id] = runtime
+                catalog_program = item_by_id(catalog_item_id_for_entry(program)) or {}
+                result.update({
+                    'success': success, 'actor_roll': attack_die,
+                    'defense_roll': defense_die, 'actor_total': attack,
+                    'defense_total': defense,
+                    'manual_effect': str(catalog_program.get('desc') or '')[:2000],
+                    'summary': f'{program.get("name")} attack {attack} vs DEF {defense}',
+                })
+                damage_dice = ATTACKER_PROGRAM_BLACK_ICE_DAMAGE.get(
+                    str(program.get('name') or ''))
+                if success and damage_dice:
+                    expected_target_revision = _num(
+                        (body or {}).get('target_character_revision'))
+                    if expected_target_revision != (
+                            _row_value(target_character, 'revision', 0) or 0):
+                        raise ApiError(409, 'Target Dossier изменён в другой вкладке')
+                    damage = roll_dice(damage_dice, 6)
+                    if target_character['id'] != character['id']:
+                        target_character_before = copy.deepcopy(target_character_data)
+                    previous_target_rez = int(target_entity.get('rez_current') or 0)
+                    target_entity['rez_current'] = max(
+                        0, previous_target_rez - damage['total'])
+                    target_entity['updated_at'] = now
+                    source_program_id = str(
+                        target_entity.get('source_program_instance_id') or '')
+                    target_program_item = next(
+                        (item for item in target_character_data.get('inventory') or []
+                         if isinstance(item, dict) and
+                         item.get('instance_id') == source_program_id), None)
+                    target_modifications = character_modifications(
+                        conn, target_character['id'])
+                    target_program_modification = next(
+                        (item for item in target_modifications
+                         if item.get('upgrade_instance_id') == source_program_id), None)
+                    if target_program_item and target_program_modification:
+                        target_runtime = initial_program_runtime_state(
+                            target_program_item,
+                            target_program_modification['host_instance_id'],
+                            target_program_modification['modification_id'],
+                            (target_character_data.get('program_state') or {}).get(
+                                source_program_id))
+                        target_runtime['rez_current'] = target_entity['rez_current']
+                        if target_entity['rez_current'] == 0:
+                            target_entity['status'] = 'derezzed'
+                            target_runtime['status'] = 'derezzed'
+                            link['initiative'] = 0
+                        target_character_data.setdefault('program_state', {})[
+                            source_program_id] = target_runtime
+                    result.update({
+                        'damage_rolls': damage['rolls'],
+                        'damage_total': damage['total'],
+                        'damage_target': 'black_ice_rez',
+                        'damage_application': 'automated',
+                        'rez_before': previous_target_rez,
+                        'rez_after': target_entity['rez_current'],
+                        'target_derezzed': target_entity['rez_current'] == 0,
+                    })
+            else:
+                raise ApiError(400, 'NET action: jack_in/jack_out/move/pathfinder/backdoor/eye_dee/control/program_attack')
+            runner['actions_recorded'] += 1
+            runner['actions_used'] = runner.get('actions_used', 0) + 1
+        runner['last_action_at'] = now
+        action_entry = {
+            'action_id': secrets.token_hex(16), 'combatant_id': actor['id'],
+            'action': action, 'target_node_id': target_node_id or None,
+            'target_entity_id': str((body or {}).get('target_entity_id') or '') or None,
+            'success': result.get('success'),
+            'actor_total': result.get('actor_total'),
+            'defense_total': result.get('defense_total'),
+            'created': now, 'summary': result.get('summary') or action,
+        }
+        state.setdefault('action_log', []).append(action_entry)
+        state['action_log'] = state['action_log'][-100:]
+        if target_character_before is not None:
+            target_revision_before = _row_value(target_character, 'revision', 0) or 0
+            target_character_ledger_id = record_character_change_set(
+                conn, target_character['id'], user['id'],
+                target_character_before, target_character_data,
+                f'Live NET target damage from {result["summary"]}: {reason}',
+                target_revision_before, target_revision_before + 1,
+                category='item_action')
+            target_ledger_row = conn.execute(
+                'SELECT delta_json FROM character_ledger WHERE id=?',
+                (target_character_ledger_id,)).fetchone()
+            target_delta = parse_json_object(target_ledger_row['delta_json'])
+            target_delta.update({
+                'revertible': False, 'multi_character_operation': True,
+                'session_id': session['id'],
+            })
+            conn.execute('UPDATE character_ledger SET session_id=?,delta_json=? WHERE id=?',
+                         (session['id'], json.dumps(target_delta, ensure_ascii=False),
+                          target_character_ledger_id))
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                         (json.dumps(target_character_data, ensure_ascii=False), now,
+                          target_revision_before + 1, target_character['id']))
+            result['target_character_revision'] = target_revision_before + 1
+        if character_before is not None:
+            revision_before = _row_value(character, 'revision', 0) or 0
+            character_ledger_id = record_character_change_set(
+                conn, character['id'], user['id'], character_before, character_data,
+                f'Live NET {result["summary"]}: {reason}',
+                revision_before, revision_before + 1, category='item_action')
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (character_ledger_id,)).fetchone()
+            ledger_delta = parse_json_object(ledger_row['delta_json'])
+            ledger_delta['session_net_change'] = {
+                'session_id': session['id'], 'before': before_state,
+                'after': copy.deepcopy(state),
+            }
+            if target_character_ledger_id is not None:
+                ledger_delta.update({
+                    'revertible': False, 'multi_character_operation': True,
+                    'linked_target_ledger_id': target_character_ledger_id,
+                    'linked_target_character_id': target_character['id'],
+                })
+            conn.execute('UPDATE character_ledger SET session_id=?,delta_json=? WHERE id=?',
+                         (session['id'], json.dumps(ledger_delta, ensure_ascii=False),
+                          character_ledger_id))
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                         (json.dumps(character_data, ensure_ascii=False), now,
+                          revision_before + 1, character['id']))
+            result['character_revision'] = revision_before + 1
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_action',
+             json.dumps(before_state, ensure_ascii=False),
+             json.dumps(action_entry, ensure_ascii=False), reason, now))
+        conn.commit()
+        updated = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (session['id'],)).fetchone()
+        self.send_json({
+            'result': result,
+            'session': self.session_payload(
+                conn, updated, user,
+                player_view='view_gm' not in capabilities),
+        })
+
+    @atomic_endpoint
+    def api_session_black_ice_attack(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_combatants' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права выполнять Black ICE attack')
+        allowed = {'selection_mode', 'target_program_instance_id',
+                   'target_character_revision', 'reason'}
+        if set(body or {}) - allowed:
+            raise ApiError(400, 'Black ICE attack содержит неподдерживаемые поля')
+        entity_id = str(m.group(2)).lower()
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        state_before = copy.deepcopy(state)
+        link = next((item for item in state['links']
+                     if item['net_entity_id'] == entity_id and item['active']), None)
+        if not link or not link.get('target_combatant_id'):
+            raise ApiError(409, 'Black ICE attack требует active target link')
+        source_character = conn.execute('SELECT * FROM characters WHERE id=?',
+                                        (link['character_id'],)).fetchone()
+        if not source_character:
+            raise ApiError(409, 'Source Black ICE Character отсутствует')
+        source_data = enrich_owned_item_interactions(
+            ensure_progression(json.loads(source_character['data'])))
+        entity = (source_data.get('net_entities') or {}).get(entity_id)
+        if not isinstance(entity, dict) or entity.get('status') != 'hunting':
+            raise ApiError(409, 'Black ICE attack требует hunting entity')
+        source_program = next((item for item in source_data.get('inventory') or []
+                               if isinstance(item, dict) and
+                               item.get('instance_id') == entity.get('source_program_instance_id')), None)
+        if not source_program:
+            raise ApiError(409, 'Source Black ICE Program отсутствует')
+        target_combatant = conn.execute(
+            'SELECT * FROM session_combatants WHERE session_id=? AND id=?',
+            (session['id'], link['target_combatant_id'])).fetchone()
+        if not target_combatant or not target_combatant['character_id']:
+            raise ApiError(409, 'Black ICE target требует Netrunner Character')
+        target_runner = next((item for item in state['runners']
+                              if item['combatant_id'] == target_combatant['id']), None)
+        if (not target_runner or not target_runner['jacked_in'] or
+                target_runner.get('node_id') != link.get('node_id')):
+            raise ApiError(409, 'Black ICE target должен быть Jacked In на том же node')
+        target_character = conn.execute('SELECT * FROM characters WHERE id=?',
+                                        (target_combatant['character_id'],)).fetchone()
+        target_data = enrich_owned_item_interactions(
+            ensure_progression(json.loads(target_character['data'])))
+        target_interface = character_interface_rank(target_data)
+        if target_interface <= 0:
+            raise ApiError(409, 'Black ICE target не имеет Interface Rank')
+        reason = str((body or {}).get('reason') or '').strip()[:500]
+        if len(reason) < 3:
+            raise ApiError(400, 'Укажите причину Black ICE attack')
+        effect = black_ice_effect_profile(source_program)
+        attack_die = secrets.randbelow(10) + 1
+        attack_total = int(entity.get('atk') or 0) + attack_die
+        target_before = None
+        target_ledger_id = None
+        removed_modification_ids = []
+        created_effects = []
+        now = time.time()
+        result = {
+            'action': 'black_ice_attack', 'actor_entity_id': entity_id,
+            'name': entity.get('name'), 'attack_roll': attack_die,
+            'attack_total': attack_total, 'effect_profile': effect,
+        }
+        target_program_id = None
+        if entity.get('target_type') == 'enemy_program_source':
+            target_modifications = character_modifications(conn, target_character['id'])
+            target_decks = character_effective_cyberdecks(target_data, target_modifications)
+            valid_programs = [
+                program for deck in target_decks.values()
+                for program in deck.get('programs') or []
+                if (program.get('runtime') or {}).get('status') == 'rezzed']
+            if not valid_programs:
+                raise ApiError(409, 'Нет Rezzed Programs для Anti-Program Black ICE')
+            selection_mode = str((body or {}).get('selection_mode') or 'random').lower()
+            if selection_mode == 'random':
+                target_program = valid_programs[secrets.randbelow(len(valid_programs))]
+            elif selection_mode == 'override':
+                requested_id = str((body or {}).get('target_program_instance_id') or '').lower()
+                target_program = next((program for program in valid_programs
+                                       if program['instance_id'] == requested_id), None)
+                if not target_program:
+                    raise ApiError(400, 'Выбранная target Program не является Rezzed')
+            else:
+                raise ApiError(400, 'selection_mode: random/override')
+            expected_revision = _num((body or {}).get('target_character_revision'))
+            if expected_revision != (_row_value(target_character, 'revision', 0) or 0):
+                raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+            target_program_id = target_program['instance_id']
+            defense_die = secrets.randbelow(10) + 1
+            defense_total = int(_num((target_program.get('mechanics') or {}).get('def')) or 0) + defense_die
+            success = attack_total > defense_total
+            result.update({
+                'selection_mode': selection_mode,
+                'target_program_instance_id': target_program_id,
+                'target_program_name': target_program['name'],
+                'defense_roll': defense_die, 'defense_total': defense_total,
+                'success': success,
+            })
+            if success:
+                damage = roll_dice(effect.get('damage_dice') or 0, 6)
+                if not damage['rolls']:
+                    raise ApiError(409, 'Anti-Program Black ICE effect требует manual resolution')
+                target_before = copy.deepcopy(target_data)
+                program_item = next(item for item in target_data.get('inventory') or []
+                                    if isinstance(item, dict) and
+                                    item.get('instance_id') == target_program_id)
+                runtime = initial_program_runtime_state(
+                    program_item, (target_program.get('runtime') or {}).get('deck_instance_id'),
+                    (target_program.get('runtime') or {}).get('modification_id'),
+                    (target_data.get('program_state') or {}).get(target_program_id))
+                previous_rez = runtime['rez_current']
+                destroyed = damage['total'] >= previous_rez and effect['destroy_on_derez']
+                if destroyed:
+                    program_modification = next(
+                        item for item in target_modifications
+                        if item.get('upgrade_instance_id') == target_program_id)
+                    backup_modification = next((
+                        item for item in target_modifications
+                        if item.get('host_instance_id') == program_modification.get('host_instance_id') and
+                        (next((owned for owned in target_data.get('inventory') or []
+                               if isinstance(owned, dict) and
+                               owned.get('instance_id') == item.get('upgrade_instance_id')), {}) or {}).get('name') == 'Backup Drive'), None)
+                    if runtime['category'] != 'black_ice' and backup_modification:
+                        backup_state = target_data.setdefault('modification_state', {}).setdefault(
+                            backup_modification['modification_id'],
+                            {'resource_type': 'backup_drive', 'saved_programs': []})
+                        backup_state.setdefault('saved_programs', []).append({
+                            'program_instance_id': target_program_id,
+                            'modification_id': program_modification['modification_id'],
+                            'catalog_item_id': catalog_item_id_for_entry(program_item),
+                            'name': program_item.get('name'),
+                            'runtime_before': copy.deepcopy(runtime), 'saved_at': now,
+                        })
+                    runtime['status'] = 'destroyed'
+                    runtime['rez_current'] = 0
+                    if runtime['category'] == 'black_ice':
+                        target_ice = next((ice for ice in
+                                           (target_data.get('net_entities') or {}).values()
+                                           if isinstance(ice, dict) and
+                                           ice.get('source_program_instance_id') == target_program_id and
+                                           ice.get('status') in ('lying_in_wait', 'hunting', 'derezzed')), None)
+                        if target_ice:
+                            target_ice['status'] = 'destroyed'
+                            target_ice['rez_current'] = 0
+                            target_ice['archived_at'] = now
+                            target_ice['updated_at'] = now
+                            linked_target_ice = next((item for item in state['links']
+                                                      if item['net_entity_id'] ==
+                                                      target_ice.get('net_entity_id')), None)
+                            if linked_target_ice:
+                                linked_target_ice['active'] = False
+                    program_item['state'] = 'broken'
+                    program_item.pop('host_instance_id', None)
+                    conn.execute(
+                        'UPDATE item_modifications SET active=0,removed_by=?,removed_at=?,updated=? '
+                        'WHERE modification_id=?',
+                        (user['id'], now, now, program_modification['modification_id']))
+                    removed_modification_ids.append(program_modification['modification_id'])
+                else:
+                    runtime['rez_current'] = max(0, previous_rez - damage['total'])
+                    if runtime['rez_current'] == 0:
+                        runtime['status'] = 'derezzed'
+                target_data.setdefault('program_state', {})[target_program_id] = runtime
+                if runtime['status'] in ('derezzed', 'destroyed'):
+                    pending = queue_defense_sequencer_trigger(
+                        target_data, target_modifications,
+                        runtime.get('deck_instance_id'), target_program_id)
+                    if pending:
+                        result['defense_sequencer_pending'] = pending
+                result.update({
+                    'damage_rolls': damage['rolls'], 'damage_total': damage['total'],
+                    'rez_before': previous_rez, 'rez_after': runtime['rez_current'],
+                    'destroyed': destroyed,
+                })
+        else:
+            defense_die = secrets.randbelow(10) + 1
+            defense_total = target_interface + defense_die
+            result.update({
+                'target_combatant_id': target_combatant['id'],
+                'target_interface_rank': target_interface,
+                'defense_roll': defense_die, 'defense_total': defense_total,
+                'success': attack_total > defense_total,
+                'manual_effect': effect['manual_effect'],
+            })
+            if result['success'] and source_program.get('name') == 'Wisp':
+                target_runner['next_action_penalty'] = max(
+                    1, target_runner.get('next_action_penalty', 0))
+                result['next_action_penalty'] = 1
+                result['action_penalty_minimum'] = 2
+            if result['success'] and effect['resolution'] == 'automated_stat_penalty':
+                expected_revision = _num((body or {}).get('target_character_revision'))
+                if expected_revision != (_row_value(target_character, 'revision', 0) or 0):
+                    raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+                target_before = copy.deepcopy(target_data)
+                stat_effect = instantiate_black_ice_stat_effects(
+                    conn, target_character['id'], user['id'], source_program,
+                    session['id'], now=now)
+                created_effects = stat_effect['created']
+                result.update({
+                    'effect_application': 'automated',
+                    'stat_penalty_roll': stat_effect['penalty_roll'],
+                    'stat_penalty_targets': stat_effect['targets'],
+                    'created_effects': [{
+                        'effect_id': item['effect_id'], 'label': item['label'],
+                        'target': (item.get('definition') or {}).get('target'),
+                        'value': (item.get('definition') or {}).get('value'),
+                        'minimum_value': (item.get('definition') or {}).get(
+                            'minimum_value'),
+                        'duration_type': item.get('duration_type'),
+                    } for item in created_effects],
+                    'manual_expiry': True, 'campaign_minutes': 60,
+                })
+            if result['success'] and effect['resolution'] in (
+                    'automated_random_destroy', 'automated_random_derez_plus_manual'):
+                target_modifications = character_modifications(conn, target_character['id'])
+                target_decks = character_effective_cyberdecks(target_data, target_modifications)
+                eligible = [
+                    program for deck in target_decks.values()
+                    for program in deck.get('programs') or []
+                    if (effect['resolution'] == 'automated_random_destroy' or
+                        ((program.get('runtime') or {}).get('status') == 'rezzed' and
+                         (program.get('runtime') or {}).get('category') == 'defender'))]
+                if not eligible:
+                    raise ApiError(409, 'Нет допустимых Programs для curated Black ICE effect')
+                selection_mode = str((body or {}).get('selection_mode') or 'random').lower()
+                if selection_mode == 'random':
+                    target_program = eligible[secrets.randbelow(len(eligible))]
+                elif selection_mode == 'override':
+                    requested_id = str((body or {}).get('target_program_instance_id') or '').lower()
+                    target_program = next((program for program in eligible
+                                           if program['instance_id'] == requested_id), None)
+                    if not target_program:
+                        raise ApiError(400, 'Выбранная target Program недопустима')
+                else:
+                    raise ApiError(400, 'selection_mode: random/override')
+                expected_revision = _num((body or {}).get('target_character_revision'))
+                if expected_revision != (_row_value(target_character, 'revision', 0) or 0):
+                    raise ApiError(409, 'Dossier изменён в другой вкладке; обновите страницу')
+                target_program_id = target_program['instance_id']
+                target_before = copy.deepcopy(target_data)
+                program_item = next(item for item in target_data.get('inventory') or []
+                                    if isinstance(item, dict) and
+                                    item.get('instance_id') == target_program_id)
+                runtime = initial_program_runtime_state(
+                    program_item, (target_program.get('runtime') or {}).get('deck_instance_id'),
+                    (target_program.get('runtime') or {}).get('modification_id'),
+                    (target_data.get('program_state') or {}).get(target_program_id))
+                if effect['resolution'] == 'automated_random_destroy':
+                    program_modification = next(
+                        item for item in target_modifications
+                        if item.get('upgrade_instance_id') == target_program_id)
+                    backup_modification = next((
+                        item for item in target_modifications
+                        if item.get('host_instance_id') == program_modification.get('host_instance_id') and
+                        (next((owned for owned in target_data.get('inventory') or []
+                               if isinstance(owned, dict) and
+                               owned.get('instance_id') == item.get('upgrade_instance_id')), {}) or {}).get('name') == 'Backup Drive'), None)
+                    if runtime['category'] != 'black_ice' and backup_modification:
+                        backup_state = target_data.setdefault('modification_state', {}).setdefault(
+                            backup_modification['modification_id'],
+                            {'resource_type': 'backup_drive', 'saved_programs': []})
+                        backup_state.setdefault('saved_programs', []).append({
+                            'program_instance_id': target_program_id,
+                            'modification_id': program_modification['modification_id'],
+                            'catalog_item_id': catalog_item_id_for_entry(program_item),
+                            'name': program_item.get('name'),
+                            'runtime_before': copy.deepcopy(runtime), 'saved_at': now,
+                        })
+                    runtime['status'] = 'destroyed'
+                    runtime['rez_current'] = 0
+                    if runtime['category'] == 'black_ice':
+                        target_ice = next((ice for ice in
+                                           (target_data.get('net_entities') or {}).values()
+                                           if isinstance(ice, dict) and
+                                           ice.get('source_program_instance_id') == target_program_id and
+                                           ice.get('status') in ('lying_in_wait', 'hunting', 'derezzed')), None)
+                        if target_ice:
+                            target_ice['status'] = 'destroyed'
+                            target_ice['rez_current'] = 0
+                            target_ice['archived_at'] = now
+                            target_ice['updated_at'] = now
+                            linked_target_ice = next((item for item in state['links']
+                                                      if item['net_entity_id'] ==
+                                                      target_ice.get('net_entity_id')), None)
+                            if linked_target_ice:
+                                linked_target_ice['active'] = False
+                    program_item['state'] = 'broken'
+                    program_item.pop('host_instance_id', None)
+                    conn.execute(
+                        'UPDATE item_modifications SET active=0,removed_by=?,removed_at=?,updated=? '
+                        'WHERE modification_id=?',
+                        (user['id'], now, now, program_modification['modification_id']))
+                    removed_modification_ids.append(program_modification['modification_id'])
+                    result['destroyed'] = True
+                else:
+                    runtime['status'] = 'derezzed'
+                    runtime['rez_current'] = 0
+                    result['derezzed'] = True
+                target_data.setdefault('program_state', {})[target_program_id] = runtime
+                if runtime['status'] in ('derezzed', 'destroyed'):
+                    pending = queue_defense_sequencer_trigger(
+                        target_data, target_modifications,
+                        runtime.get('deck_instance_id'), target_program_id)
+                    if pending:
+                        result['defense_sequencer_pending'] = pending
+                result.update({
+                    'selection_mode': selection_mode,
+                    'target_program_instance_id': target_program_id,
+                    'target_program_name': target_program['name'],
+                    'rez_after': runtime['rez_current'],
+                })
+        summary = (f'{entity.get("name")} attack {attack_total} vs '
+                   f'{result.get("defense_total")} → '
+                   f'{"hit" if result.get("success") else "miss"}')
+        action_entry = {
+            'action_id': secrets.token_hex(16), 'combatant_id': target_combatant['id'],
+            'actor_entity_id': entity_id, 'action': 'black_ice_attack',
+            'target_node_id': link.get('node_id'),
+            'target_program_instance_id': target_program_id,
+            'success': result.get('success'), 'actor_total': attack_total,
+            'defense_total': result.get('defense_total'), 'created': now,
+            'summary': summary,
+        }
+        state.setdefault('action_log', []).append(action_entry)
+        state['action_log'] = state['action_log'][-100:]
+        queue_count = sum(1 for item in state['links']
+                          if item['active'] and (_num(item.get('initiative')) or 0) > 0)
+        state['active_turn'] = min(state['active_turn'], max(0, queue_count - 1))
+        if target_before is not None:
+            validate_active_modification_references(
+                conn, target_character['id'], target_data)
+            persist_character_item_instances(
+                conn, target_character['id'], target_data,
+                'black_ice_attack', source_ref=summary, prune=True)
+            revision_before = _row_value(target_character, 'revision', 0) or 0
+            target_ledger_id = record_character_change_set(
+                conn, target_character['id'], user['id'], target_before, target_data,
+                f'Live NET {summary}: {reason}', revision_before,
+                revision_before + 1,
+                category='modification' if removed_modification_ids else 'item_action')
+            ledger_row = conn.execute('SELECT delta_json FROM character_ledger WHERE id=?',
+                                      (target_ledger_id,)).fetchone()
+            delta = parse_json_object(ledger_row['delta_json'])
+            if removed_modification_ids:
+                delta['removed_modification_ids'] = removed_modification_ids
+            if created_effects:
+                delta['created_effect_ids'] = [
+                    item['effect_id'] for item in created_effects]
+                delta['automated_black_ice_effect'] = entity.get('name')
+                delta['manual_campaign_expiry'] = True
+                for created_effect in created_effects:
+                    definition = created_effect.get('definition') or {}
+                    delta.setdefault('changes', []).append({
+                        'path': f'effects.instances.{created_effect["effect_id"]}',
+                        'label': f'Effect: {created_effect["label"]}',
+                        'kind': 'added', 'before': '—',
+                        'after': readable_change_value({
+                            'status': created_effect.get('status'),
+                            'target': definition.get('target'),
+                            'operation': definition.get('operation'),
+                            'value': definition.get('value'),
+                            'minimum_value': definition.get('minimum_value'),
+                            'duration': created_effect.get('duration_type'),
+                        }),
+                    })
+                delta['change_count'] = len(delta.get('changes') or [])
+            delta['session_net_change'] = {
+                'session_id': session['id'], 'before': state_before,
+                'after': copy.deepcopy(state),
+            }
+            conn.execute('UPDATE character_ledger SET session_id=?,delta_json=? WHERE id=?',
+                         (session['id'], json.dumps(delta, ensure_ascii=False),
+                          target_ledger_id))
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=? WHERE id=?',
+                         (json.dumps(target_data, ensure_ascii=False), now,
+                          revision_before + 1, target_character['id']))
+            result['target_character_revision'] = revision_before + 1
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_action',
+             json.dumps(state_before, ensure_ascii=False),
+             json.dumps(action_entry, ensure_ascii=False), reason, now))
+        conn.commit()
+        updated = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (session['id'],)).fetchone()
+        self.send_json({'result': result,
+                        'session': self.session_payload(conn, updated, user)})
+
+    @atomic_endpoint
+    def api_session_net_state_update(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_combatants' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права управлять Session NET Queue')
+        state = session_net_state(_row_value(session, 'net_state_json', '{}'))
+        before = copy.deepcopy(state)
+        net_payload = self.session_net_payload(conn, session, player_view=False)
+        queue_count = sum(1 for item in net_payload['entities'] if item['in_queue'])
+        round_number = _num((body or {}).get('round', state['round']))
+        active_turn = _num((body or {}).get('active_turn', state['active_turn']))
+        if (round_number is None or int(round_number) != round_number or round_number < 0 or
+                active_turn is None or int(active_turn) != active_turn or active_turn < 0):
+            raise ApiError(400, 'Некорректный Session NET turn state')
+        state['round'] = int(round_number)
+        state['active_turn'] = min(int(active_turn), max(0, queue_count - 1))
+        note = str((body or {}).get('reason') or '').strip()[:500]
+        if len(note) < 3:
+            raise ApiError(400, 'Укажите причину изменения NET Queue')
+        now = time.time()
+        conn.execute('UPDATE nc_sessions SET net_state_json=?,updated=? WHERE id=?',
+                     (json.dumps(state, ensure_ascii=False), now, session['id']))
+        conn.execute(
+            'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,'
+            'after_json,note,created) VALUES(?,?,?,?,?,?,?)',
+            (session['id'], user['id'], 'net_turn_update',
+             json.dumps(before, ensure_ascii=False), json.dumps(state, ensure_ascii=False),
+             note, now))
+        conn.commit()
+        updated = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (session['id'],)).fetchone()
+        self.send_json(self.session_payload(conn, updated, user))
+
+    def api_sessions(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        rows = conn.execute('SELECT * FROM nc_sessions ORDER BY updated DESC').fetchall()
+        visible = []
+        for row in rows:
+            role, capabilities = self.session_capabilities(conn, user, row)
+            if not role:
+                continue
+            visible.append(self.session_payload(
+                conn, row, user, player_view='view_gm' not in capabilities))
+        self.send_json({'sessions': visible})
+
+    @atomic_endpoint
     def api_session_create(self, conn, qs, m, body):
         user = self.require_gm(conn)
         contract_id = _num((body or {}).get('contract_id'))
@@ -4528,11 +19428,12 @@ class Handler(BaseHTTPRequestHandler):
         if not title:
             title = contract['title'] if contract else 'NC//NET Session'
         config = session_view_config((body or {}).get('player_view_config'))
+        safety = session_safety_config((body or {}).get('safety_config'))
         now = time.time()
         cur = conn.execute(
-            'INSERT INTO nc_sessions(contract_id,owner_user_id,title,status,player_view_config,notes,created,updated) '
-            "VALUES(?,?,?,'preparing',?,?,?,?)",
-            (contract_id, user['id'], title, json.dumps(config),
+            'INSERT INTO nc_sessions(contract_id,owner_user_id,title,status,player_view_config,'
+            'safety_config,notes,created,updated) VALUES(?,?,?,\'preparing\',?,?,?,?,?)',
+            (contract_id, user['id'], title, json.dumps(config), json.dumps(safety),
              str((body or {}).get('notes') or '')[:20000], now, now))
         session_id = cur.lastrowid
         if contract:
@@ -4572,17 +19473,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(self.session_payload(conn, row, user), status=201)
 
     def api_session_detail(self, conn, qs, m, body):
-        user = self.require_gm(conn)
+        user = self.require_user(conn)
         row = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
-        if not row or not self.can_edit_nc_session(conn, user, row):
+        role, capabilities = self.session_capabilities(conn, user, row)
+        if not row or 'view_gm' not in capabilities:
             raise ApiError(404, 'Сессия не найдена')
         self.send_json(self.session_payload(conn, row, user))
 
+    @atomic_endpoint
     def api_session_update(self, conn, qs, m, body):
-        user = self.require_gm(conn)
+        user = self.require_user(conn)
         row = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
-        if not row or not self.can_edit_nc_session(conn, user, row):
+        role, capabilities = self.session_capabilities(conn, user, row)
+        if not row or not capabilities.intersection({'edit_session', 'edit_combatants'}):
             raise ApiError(403, 'Нет права редактировать сессию')
+        if 'edit_session' not in capabilities:
+            forbidden = set(body or {}) - {'round', 'active_turn', 'status', 'activity_note'}
+            if forbidden:
+                raise ApiError(403, 'Assistant может менять только ход и раунд')
         status = str((body or {}).get('status', row['status']))
         if status not in ('preparing', 'active', 'paused', 'completed', 'archived'):
             raise ApiError(400, 'Некорректный статус сессии')
@@ -4590,6 +19498,7 @@ class Handler(BaseHTTPRequestHandler):
             'title': row['title'], 'status': row['status'], 'round': row['round'],
             'active_turn': row['active_turn'],
             'player_view_config': session_view_config(row['player_view_config']),
+            'safety_config': session_safety_config(row['safety_config']),
             'notes': row['notes'],
         }
         title = str((body or {}).get('title', row['title'])).strip()[:180] or row['title']
@@ -4601,15 +19510,20 @@ class Handler(BaseHTTPRequestHandler):
         active_turn = min(active_turn, max(0, combatant_count - 1))
         config = session_view_config(
             (body or {}).get('player_view_config', row['player_view_config']))
+        safety = session_safety_config(
+            (body or {}).get('safety_config', row['safety_config']))
         notes = str((body or {}).get('notes', row['notes']))[:20000]
         now = time.time()
         after = {
             'title': title, 'status': status, 'round': round_number,
-            'active_turn': active_turn, 'player_view_config': config, 'notes': notes,
+            'active_turn': active_turn, 'player_view_config': config,
+            'safety_config': safety, 'notes': notes,
         }
         conn.execute(
-            'UPDATE nc_sessions SET title=?,status=?,round=?,active_turn=?,player_view_config=?,notes=?,updated=? WHERE id=?',
-            (title, status, round_number, active_turn, json.dumps(config), notes, now, row['id']))
+            'UPDATE nc_sessions SET title=?,status=?,round=?,active_turn=?,player_view_config=?,'
+            'safety_config=?,notes=?,updated=? WHERE id=?',
+            (title, status, round_number, active_turn, json.dumps(config), json.dumps(safety),
+             notes, now, row['id']))
         conn.execute(
             'INSERT INTO session_activity(session_id,actor_user_id,event_type,before_json,after_json,note,created) '
             'VALUES(?,?,?,?,?,?,?)',
@@ -4619,10 +19533,11 @@ class Handler(BaseHTTPRequestHandler):
         conn.commit(); updated = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (row['id'],)).fetchone()
         self.send_json(self.session_payload(conn, updated, user))
 
+    @atomic_endpoint
     def api_session_combatant_create(self, conn, qs, m, body):
-        user = self.require_gm(conn)
+        user = self.require_user(conn)
         session = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
-        if not session or not self.can_edit_nc_session(conn, user, session):
+        if not session or 'edit_combatants' not in self.session_capabilities(conn, user, session)[1]:
             raise ApiError(403, 'Нет права редактировать сессию')
         before_rows = self.ordered_session_combatants(conn, session['id'])
         old_index = min(max(0, session['active_turn']), max(0, len(before_rows) - 1))
@@ -4640,6 +19555,10 @@ class Handler(BaseHTTPRequestHandler):
         name = str((body or {}).get('name') or (template['name'] if template else '')).strip()[:120]
         if not name:
             raise ApiError(400, 'Участнику сессии нужно имя')
+        # Snapshot the full statblock (STATs/Skills/Weapons) when adding from a
+        # template, or accept an explicit statblock for a custom NPC.
+        statblock_source = (body or {}).get('statblock') if not template else source.get('statblock')
+        statblock = clean_npc_statblock(statblock_source)
         conditions = source.get('conditions') or []
         injuries = source.get('injuries') or []
         secret = source.get('secret') or {}
@@ -4667,8 +19586,9 @@ class Handler(BaseHTTPRequestHandler):
         cur = conn.execute(
             'INSERT INTO session_combatants(session_id,kind,template_id,name,initiative,hp_current,hp_max,'
             'sp_head,sp_head_max,sp_body,sp_body_max,shield_current,shield_max,ammo_current,ammo_max,'
-            'luck_current,luck_max,move,conditions_json,injuries_json,death_penalty,visible,secret_json,sort_order) '
-            'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            'luck_current,luck_max,move,conditions_json,injuries_json,death_penalty,visible,secret_json,'
+            'statblock_json,sort_order) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (session['id'], 'npc', template['id'] if template else None, name,
              max(-1000, min(1000, _num(source.get('initiative')) or 0)), current, maximum,
              sp_head, sp_head_max, sp_body, sp_body_max, shield_current, shield_max,
@@ -4676,7 +19596,8 @@ class Handler(BaseHTTPRequestHandler):
              max(0, _num(source.get('move')) or 0), json.dumps(conditions), json.dumps(injuries),
              max(0, _num(source.get('death_penalty')) or 0),
              0 if source.get('visible') is False else 1,
-             json.dumps(secret, ensure_ascii=False), order))
+             json.dumps(secret, ensure_ascii=False),
+             json.dumps(statblock, ensure_ascii=False), order))
         after_rows = self.ordered_session_combatants(conn, session['id'])
         active_turn = next((index for index, item in enumerate(after_rows) if item['id'] == active_id), 0)
         now = time.time()
@@ -4690,12 +19611,14 @@ class Handler(BaseHTTPRequestHandler):
              json.dumps(created, ensure_ascii=False), '', now))
         conn.commit(); self.send_json({'id': cur.lastrowid}, status=201)
 
+    @atomic_endpoint
     def api_session_combatant_update(self, conn, qs, m, body):
-        user = self.require_gm(conn)
+        user = self.require_user(conn)
         session = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
         combatant = conn.execute('SELECT * FROM session_combatants WHERE id=? AND session_id=?',
                                  (int(m.group(2)), int(m.group(1)))).fetchone()
-        if not session or not combatant or not self.can_edit_nc_session(conn, user, session):
+        if (not session or not combatant or
+                'edit_combatants' not in self.session_capabilities(conn, user, session)[1]):
             raise ApiError(403, 'Нет права редактировать участника')
         ordered_before = self.ordered_session_combatants(conn, session['id'])
         old_index = min(max(0, session['active_turn']), max(0, len(ordered_before) - 1))
@@ -4730,17 +19653,22 @@ class Handler(BaseHTTPRequestHandler):
         visible = (body or {}).get('visible', bool(combatant['visible']))
         visible = visible if isinstance(visible, bool) else bool(combatant['visible'])
         name = str((body or {}).get('name', combatant['name'])).strip()[:120] or combatant['name']
+        if 'statblock' in (body or {}):
+            statblock = clean_npc_statblock((body or {}).get('statblock'))
+        else:
+            statblock = parse_json_object(combatant['statblock_json'])
         conn.execute(
             'UPDATE session_combatants SET name=?,initiative=?,hp_current=?,hp_max=?,sp_head=?,sp_head_max=?,'
             'sp_body=?,sp_body_max=?,shield_current=?,shield_max=?,ammo_current=?,ammo_max=?,luck_current=?,'
             'luck_max=?,move=?,conditions_json=?,injuries_json=?,death_penalty=?,visible=?,secret_json=?,'
-            'sort_order=? WHERE id=?',
+            'statblock_json=?,sort_order=? WHERE id=?',
             (name, values['initiative'], values['hp_current'], values['hp_max'],
              values['sp_head'], values['sp_head_max'], values['sp_body'], values['sp_body_max'],
              values['shield_current'], values['shield_max'],
              values['ammo_current'], values['ammo_max'], values['luck_current'], values['luck_max'],
              values['move'], json.dumps(conditions), json.dumps(injuries), values['death_penalty'],
              1 if visible else 0, json.dumps(secret, ensure_ascii=False),
+             json.dumps(statblock, ensure_ascii=False),
              values['sort_order'], combatant['id']))
         ordered_after = self.ordered_session_combatants(conn, session['id'])
         active_turn = next((index for index, item in enumerate(ordered_after) if item['id'] == active_id), 0)
@@ -4756,10 +19684,11 @@ class Handler(BaseHTTPRequestHandler):
              str((body or {}).get('note') or '')[:500], now))
         conn.commit(); self.send_json({'ok': True})
 
+    @atomic_endpoint
     def api_session_combatant_delete(self, conn, qs, m, body):
-        user = self.require_gm(conn)
+        user = self.require_user(conn)
         session = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
-        if not session or not self.can_edit_nc_session(conn, user, session):
+        if not session or 'edit_combatants' not in self.session_capabilities(conn, user, session)[1]:
             raise ApiError(403, 'Нет права редактировать сессию')
         ordered_before = self.ordered_session_combatants(conn, session['id'])
         combatant_id = int(m.group(2))
@@ -4792,15 +19721,49 @@ class Handler(BaseHTTPRequestHandler):
         session = conn.execute('SELECT * FROM nc_sessions WHERE id=?', (int(m.group(1)),)).fetchone()
         if not session:
             raise ApiError(404, 'Сессия не найдена')
-        allowed = self.can_edit_nc_session(conn, user, session)
-        if not allowed and session['contract_id']:
-            allowed = bool(conn.execute(
-                "SELECT 1 FROM contract_signups WHERE contract_id=? AND user_id=? AND status='crew'",
-                (session['contract_id'], user['id'])).fetchone())
-        if not allowed:
+        role, capabilities = self.session_capabilities(conn, user, session)
+        if 'view_player' not in capabilities and 'view_gm' not in capabilities:
             raise ApiError(403, 'Нет доступа к экрану сессии')
         self.send_json(self.session_payload(conn, session, user, player_view=True))
 
+
+    @atomic_endpoint
+    def api_session_sync(self, conn, qs, m, body):
+        """Write Session combatant resources back to their Dossiers (P-Sync)."""
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_combatants' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права синхронизировать сессию')
+        combatants = conn.execute(
+            'SELECT * FROM session_combatants WHERE session_id=? AND character_id IS NOT NULL',
+            (session['id'],)).fetchall()
+        synced = []
+        for combatant in combatants:
+            char = conn.execute('SELECT * FROM characters WHERE id=?',
+                                (combatant['character_id'],)).fetchone()
+            if not char:
+                continue
+            before = json.loads(char['data'])
+            after = copy.deepcopy(before)
+            changed = False
+            if combatant['hp_current'] is not None:
+                after['hp_cur'] = max(0, combatant['hp_current'])
+                changed = True
+            if combatant['luck_current'] is not None:
+                after['luck_cur'] = max(0, combatant['luck_current'])
+                changed = True
+            if changed:
+                record_character_changes(conn, char['id'], user['id'], before, after,
+                                         f'Session sync: {session["title"]}',
+                                         session_id=session['id'])
+                conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
+                             (json.dumps(after, ensure_ascii=False), time.time(), char['id']))
+                synced.append(char['id'])
+        conn.commit()
+        self.send_json({'ok': True, 'synced': synced, 'count': len(synced)})
+
+    @atomic_endpoint
     def api_contract_aftermath(self, conn, qs, m, body):
         user = self.require_gm(conn)
         contract = conn.execute('SELECT * FROM contracts WHERE id=?', (int(m.group(1)),)).fetchone()
@@ -4828,6 +19791,45 @@ class Handler(BaseHTTPRequestHandler):
             event_at = now
         if not math.isfinite(event_at):
             event_at = now
+
+        crew_ids = {row['character_id'] for row in conn.execute(
+            "SELECT character_id FROM contract_signups WHERE contract_id=? AND status='crew'",
+            (contract['id'],)).fetchall() if row['character_id']}
+        rewards = (body or {}).get('rewards') or []
+        if not isinstance(rewards, list) or len(rewards) > 100:
+            raise ApiError(400, 'Награды должны быть списком до 100 записей')
+        validated_rewards = []
+        rewarded_characters = set()
+        for reward in rewards:
+            if not isinstance(reward, dict):
+                raise ApiError(400, 'Некорректная награда')
+            character_id = _num(reward.get('character_id'))
+            if character_id not in crew_ids:
+                raise ApiError(400, 'Награду может получить только персонаж из Crew')
+            if character_id in rewarded_characters:
+                raise ApiError(400, 'Награда персонажа указана дважды')
+            rewarded_characters.add(character_id)
+            try:
+                cash = float(reward.get('cash') or 0)
+                raw_ip = float(reward.get('ip') or 0)
+            except (TypeError, ValueError):
+                raise ApiError(400, 'Некорректная сумма награды')
+            if (not math.isfinite(cash) or not math.isfinite(raw_ip) or
+                    cash < 0 or raw_ip < 0 or not raw_ip.is_integer()):
+                raise ApiError(400, 'Награды Cash и IP должны быть неотрицательными числами, IP — целым')
+            ip = int(raw_ip)
+            if cash > 10_000_000 or ip > 1_000_000:
+                raise ApiError(400, 'Слишком большая сумма')
+            char_row = self.get_char(conn, character_id)
+            before = json.loads(char_row['data'])
+            data = ensure_progression(copy.deepcopy(before))
+            if data.get('archived'):
+                raise ApiError(409, 'Архивное досье не может получить награду')
+            current_cash = float(data.get('cash') or 0)
+            if not math.isfinite(current_cash) or current_cash + cash > 9_999_999:
+                raise ApiError(400, 'Слишком большая сумма')
+            validated_rewards.append((character_id, cash, ip, before, data))
+
         cur = conn.execute(
             "INSERT INTO feed_posts(format,status,creator_user_id,author_persona_id,storyline_id,contract_id,"
             "headline,body,truth_status,event_at,published_at,created,updated) "
@@ -4843,26 +19845,8 @@ class Handler(BaseHTTPRequestHandler):
                 (contract['storyline_id'], event_at,
                  headline, str((body or {}).get('private_note') or '')[:10000],
                  contract['id'], post_id, user['id'], now))
-        crew_ids = {row['character_id'] for row in conn.execute(
-            "SELECT character_id FROM contract_signups WHERE contract_id=? AND status='crew'",
-            (contract['id'],)).fetchall() if row['character_id']}
-        for reward in (body or {}).get('rewards') or []:
-            character_id = _num(reward.get('character_id'))
-            if character_id not in crew_ids:
-                continue
-            char_row = self.get_char(conn, character_id)
-            before = json.loads(char_row['data'])
-            data = ensure_progression(json.loads(char_row['data']))
-            if data.get('archived'):
-                continue
-            try:
-                cash = float(reward.get('cash') or 0)
-            except (TypeError, ValueError):
-                raise ApiError(400, 'Некорректная сумма')
-            ip = _num(reward.get('ip')) or 0
-            if not math.isfinite(cash) or abs(cash) > 10_000_000 or abs(ip) > 1_000_000:
-                raise ApiError(400, 'Слишком большая сумма')
-            data['cash'] = max(0, min(9_999_999, float(data.get('cash') or 0) + cash))
+        for character_id, cash, ip, before, data in validated_rewards:
+            data['cash'] = float(data.get('cash') or 0) + cash
             if ip:
                 ip_before = data['ip_available']; data['ip_available'] += ip
                 if ip > 0: data['ip_total_earned'] += ip
@@ -4870,7 +19854,7 @@ class Handler(BaseHTTPRequestHandler):
                                    data['ip_available'], 'contract', contract['title'], 'Contract Aftermath')
             record_character_changes(conn, character_id, user['id'], before, data,
                                      'Contract Aftermath', contract_id=contract['id'])
-            conn.execute('UPDATE characters SET data=?,updated=? WHERE id=?',
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
                          (json.dumps(data, ensure_ascii=False), now, character_id))
         queue_vk_event(conn, f'contract:{contract["id"]}:{result}', f'contract_{result}',
                        contract['id'], {'contract_id': contract['id'], 'title': contract['title'], 'result': result})
@@ -4880,57 +19864,66 @@ class Handler(BaseHTTPRequestHandler):
 
     NEWS_FIELDS = ('id', 'author_id', 'title', 'tag', 'body', 'created')
 
+    def api_calendar_ics(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        contracts = conn.execute(
+            'SELECT id,title,district_id,scheduled_at,crew_capacity FROM contracts '
+            "WHERE status IN ('open','crew_full','in_progress') AND scheduled_at IS NOT NULL "
+            'ORDER BY scheduled_at').fetchall()
+        lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//NC//NET//Cyberpunk RED//EN',
+                 'CALSCALE:GREGORIAN', 'X-WR-CALNAME:NC//NET Contracts']
+        for c in contracts:
+            if not c['scheduled_at']:
+                continue
+            dt = datetime.fromtimestamp(c['scheduled_at'], tz=MOSCOW)
+            dt_end = dt + timedelta(hours=3)
+            lines.extend([
+                'BEGIN:VEVENT',
+                f'UID:contract-{c["id"]}@ncnet',
+                f'DTSTAMP:{dt.strftime("%Y%m%dT%H%M%S")}',
+                f'DTSTART:{dt.strftime("%Y%m%dT%H%M%S")}',
+                f'DTEND:{dt_end.strftime("%Y%m%dT%H%M%S")}',
+                f'SUMMARY:{str(c["title"] or "Contract")[:100]}',
+                f'DESCRIPTION:NC//NET Contract #{c["id"]}',
+                'END:VEVENT',
+            ])
+        lines.append('END:VCALENDAR')
+        ics = '\r\n'.join(lines)
+        body_bytes = ics.encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/calendar; charset=utf-8')
+        self.send_header('Content-Disposition', 'attachment; filename="ncnet-contracts.ics"')
+        self.send_header('Content-Length', str(len(body_bytes)))
+        self.send_security_headers()
+        self.end_headers()
+        self.wfile.write(body_bytes)
+
     def api_news(self, conn, qs, m, body):
+        user = self.current_user(conn)
         rows = conn.execute(
-            'SELECT n.*, u.display_name author FROM news n '
+            'SELECT n.*,u.display_name author,u.show_display_name author_public FROM news n '
             'JOIN users u ON u.id=n.author_id ORDER BY n.created DESC LIMIT 100').fetchall()
         out = []
-        for r in rows:
-            o = dict((k, r[k]) for k in self.NEWS_FIELDS)
-            o['author'] = r['author']
-            o['mine'] = False
-            out.append(o)
-        u = self.current_user(conn)
-        if u:
-            for o in out:
-                o['mine'] = o['author_id'] == u['id']
+        for row in rows:
+            item = dict((key, row[key]) for key in self.NEWS_FIELDS)
+            item['mine'] = bool(user and row['author_id'] == user['id'])
+            item['author'] = row['author'] if (row['author_public'] or item['mine']) else None
+            out.append(item)
         self.send_json({'news': out})
 
     def api_news_create(self, conn, qs, m, body):
-        u = self.require_user(conn)
-        title = str(body.get('title') or '').strip()[:140]
-        tag = str(body.get('tag') or '').strip()[:40] or None
-        text = str(body.get('body') or '').strip()[:20000]
-        if not title or not text:
-            raise ApiError(400, 'Заголовок и текст обязательны')
-        cur = conn.execute(
-            'INSERT INTO news(author_id, title, tag, body, created) VALUES(?,?,?,?,?)',
-            (u['id'], title, tag, text, time.time()))
-        conn.commit()
-        r = conn.execute('SELECT * FROM news WHERE id=?', (cur.lastrowid,)).fetchone()
-        created = dict((k, r[k]) for k in self.NEWS_FIELDS)
-        created['author'] = u['display_name']
-        self.send_json(created, status=201)
+        raise ApiError(410, 'Legacy API доступен только для чтения; используйте NC//NET City Feed')
 
     def api_news_delete(self, conn, qs, m, body):
-        u = self.require_user(conn)
-        r = conn.execute('SELECT * FROM news WHERE id=?', (int(m.group(1)),)).fetchone()
-        if not r:
-            raise ApiError(404, 'Новость не найдена')
-        if r['author_id'] != u['id'] and not user_is_gm(u):
-            raise ApiError(403, 'Можно удалять только свои посты')
-        conn.execute('DELETE FROM news WHERE id=?', (r['id'],))
-        conn.commit()
-        self.send_json({'ok': True})
-
-    # ------------------------------------------------------------ доска заказов
+        raise ApiError(410, 'Legacy API доступен только для чтения; используйте NC//NET City Feed')
 
     def job_payload(self, r, conn, user):
         n = conn.execute('SELECT COUNT(*) n FROM job_signups WHERE job_id=?',
                          (r['id'],)).fetchone()['n']
         p = {k: r[k] for k in ('id', 'author_id', 'title', 'when_text', 'system',
                                'description', 'slots', 'status', 'created')}
-        p['author'] = r['author']
+        p['author'] = r['author'] if (r['author_public'] or
+                      (user and user['id'] == r['author_id'])) else None
         p['signups'] = n
         p['mine'] = bool(user and user['id'] == r['author_id'])
         p['joined'] = bool(user and conn.execute(
@@ -4941,104 +19934,49 @@ class Handler(BaseHTTPRequestHandler):
     def api_jobs(self, conn, qs, m, body):
         user = self.current_user(conn)
         rows = conn.execute(
-            'SELECT j.*, u.display_name author FROM jobs j '
+            'SELECT j.*,u.display_name author,u.show_display_name author_public FROM jobs j '
             'JOIN users u ON u.id=j.author_id ORDER BY j.created DESC LIMIT 100').fetchall()
         self.send_json({'jobs': [self.job_payload(r, conn, user) for r in rows]})
 
     def api_jobs_create(self, conn, qs, m, body):
-        u = self.require_gm(conn)
-        title = str(body.get('title') or '').strip()[:140]
-        when_text = str(body.get('when_text') or '').strip()[:80] or None
-        system = str(body.get('system') or 'Cyberpunk RED').strip()[:40]
-        desc = str(body.get('description') or '').strip()[:8000]
-        slots = max(0, min(20, int(body.get('slots') or 0)))
-        if not title or not desc:
-            raise ApiError(400, 'Название и описание обязательны')
-        cur = conn.execute(
-            'INSERT INTO jobs(author_id, title, when_text, system, description, slots, '
-            'status, created) VALUES(?,?,?,?,?,?,?,?)',
-            (u['id'], title, when_text, system, desc, slots, 'open', time.time()))
-        conn.commit()
-        r = conn.execute(
-            'SELECT j.*, u.display_name author FROM jobs j JOIN users u ON u.id=j.author_id '
-            'WHERE j.id=?', (cur.lastrowid,)).fetchone()
-        self.send_json(self.job_payload(r, conn, u), status=201)
+        raise ApiError(410, 'Legacy API доступен только для чтения; используйте NC//NET Contracts')
 
     def api_job_detail(self, conn, qs, m, body):
         user = self.current_user(conn)
         r = conn.execute(
-            'SELECT j.*, u.display_name author FROM jobs j JOIN users u ON u.id=j.author_id '
-            'WHERE j.id=?', (int(m.group(1)),)).fetchone()
+            'SELECT j.*,u.display_name author,u.show_display_name author_public FROM jobs j '
+            'JOIN users u ON u.id=j.author_id WHERE j.id=?', (int(m.group(1)),)).fetchone()
         if not r:
             raise ApiError(404, 'Заказ не найден')
         p = self.job_payload(r, conn, user)
         signups = conn.execute(
-            'SELECT s.*, u.display_name user FROM job_signups s '
+            'SELECT s.*,u.display_name user,u.show_display_name user_public FROM job_signups s '
             'JOIN users u ON u.id=s.user_id WHERE s.job_id=? ORDER BY s.created',
             (r['id'],)).fetchall()
-        p['signups_list'] = [
-            {'id': s['id'], 'user': s['user'], 'user_id': s['user_id'],
-             'char_name': s['char_name'], 'note': s['note'], 'created': s['created'],
-             'mine': bool(user and user['id'] == s['user_id'])}
-            for s in signups]
+        p['signups_list'] = []
+        for signup in signups:
+            mine = bool(user and user['id'] == signup['user_id'])
+            owner_view = bool(user and user['id'] == r['author_id'])
+            p['signups_list'].append({
+                'id': signup['id'],
+                'user': signup['user'] if (signup['user_public'] or mine or owner_view) else None,
+                'user_id': signup['user_id'] if (mine or owner_view) else None,
+                'char_name': signup['char_name'], 'note': signup['note'],
+                'created': signup['created'], 'mine': mine,
+            })
         self.send_json(p)
 
     def api_job_join(self, conn, qs, m, body):
-        u = self.require_user(conn)
-        r = conn.execute('SELECT * FROM jobs WHERE id=?', (int(m.group(1)),)).fetchone()
-        if not r:
-            raise ApiError(404, 'Заказ не найден')
-        if r['status'] != 'open':
-            raise ApiError(400, 'Заказ закрыт')
-        if r['author_id'] == u['id']:
-            raise ApiError(400, 'Нельзя записаться на свой заказ')
-        n = conn.execute('SELECT COUNT(*) n FROM job_signups WHERE job_id=?',
-                         (r['id'],)).fetchone()['n']
-        if r['slots'] and n >= r['slots']:
-            raise ApiError(400, 'Все слоты заняты')
-        char_name = str(body.get('char_name') or '').strip()[:60] or None
-        note = str(body.get('note') or '').strip()[:500] or None
-        try:
-            conn.execute(
-                'INSERT INTO job_signups(job_id, user_id, char_name, note, created) '
-                'VALUES(?,?,?,?,?)', (r['id'], u['id'], char_name, note, time.time()))
-            conn.commit()
-        except sqlite3.IntegrityError:
-            raise ApiError(409, 'Вы уже записаны')
-        self.send_json({'ok': True})
+        raise ApiError(410, 'Legacy API доступен только для чтения; используйте NC//NET Contracts')
 
     def api_job_leave(self, conn, qs, m, body):
-        u = self.require_user(conn)
-        conn.execute('DELETE FROM job_signups WHERE job_id=? AND user_id=?',
-                     (int(m.group(1)), u['id']))
-        conn.commit()
-        self.send_json({'ok': True})
+        raise ApiError(410, 'Legacy API доступен только для чтения; используйте NC//NET Contracts')
 
     def api_job_status(self, conn, qs, m, body):
-        u = self.require_user(conn)
-        r = conn.execute('SELECT * FROM jobs WHERE id=?', (int(m.group(1)),)).fetchone()
-        if not r:
-            raise ApiError(404, 'Заказ не найден')
-        if r['author_id'] != u['id'] and not user_is_gm(u):
-            raise ApiError(403, 'Только автор может менять статус')
-        status = body.get('status')
-        if status not in ('open', 'closed'):
-            raise ApiError(400, 'Статус: open/closed')
-        conn.execute('UPDATE jobs SET status=? WHERE id=?', (status, r['id']))
-        conn.commit()
-        self.send_json({'ok': True})
+        raise ApiError(410, 'Legacy API доступен только для чтения; используйте NC//NET Contracts')
 
     def api_job_delete(self, conn, qs, m, body):
-        u = self.require_user(conn)
-        r = conn.execute('SELECT * FROM jobs WHERE id=?', (int(m.group(1)),)).fetchone()
-        if not r:
-            raise ApiError(404, 'Заказ не найден')
-        if r['author_id'] != u['id'] and not user_is_gm(u):
-            raise ApiError(403, 'Только автор может удалить заказ')
-        conn.execute('DELETE FROM job_signups WHERE job_id=?', (r['id'],))
-        conn.execute('DELETE FROM jobs WHERE id=?', (r['id'],))
-        conn.commit()
-        self.send_json({'ok': True})
+        raise ApiError(410, 'Legacy API доступен только для чтения; используйте NC//NET Contracts')
 
 
 def rx(p):
@@ -5051,10 +19989,23 @@ ROUTES = [
     ('POST', rx(r'/api/logout'), Handler.api_logout),
     ('GET', rx(r'/api/me'), Handler.api_me),
     ('POST', rx(r'/api/profile'), Handler.api_profile),
+    ('GET', rx(r'/api/account/sessions'), Handler.api_account_sessions),
+    ('DELETE', rx(r'/api/account/sessions/(\d+)'), Handler.api_account_session_revoke),
+    ('POST', rx(r'/api/account/password'), Handler.api_account_password),
+    ('POST', rx(r'/api/account/logout-all'), Handler.api_account_logout_all),
     ('GET', rx(r'/api/gm/users'), Handler.api_gm_users),
     ('GET', rx(r'/api/admin/users'), Handler.api_admin_users),
     ('POST', rx(r'/api/admin/users/(\d+)/role'), Handler.api_admin_user_role),
+    ('POST', rx(r'/api/admin/users/(\d+)/status'), Handler.api_admin_user_status),
+    ('GET', rx(r'/api/admin/invites'), Handler.api_admin_invites),
+    ('POST', rx(r'/api/admin/invites'), Handler.api_admin_invite_create),
+    ('DELETE', rx(r'/api/admin/invites/(\d+)'), Handler.api_admin_invite_revoke),
+    ('GET', rx(r'/api/admin/backups'), Handler.api_admin_backups),
+    ('POST', rx(r'/api/admin/backups'), Handler.api_admin_backup_create),
+    ('POST', rx(r'/api/admin/backups/([A-Za-z0-9_.-]+)/verify'), Handler.api_admin_backup_verify),
+    ('GET', rx(r'/api/admin/backups/([A-Za-z0-9_.-]+)/download'), Handler.api_admin_backup_download),
     ('GET', rx(r'/api/notifications'), Handler.api_notifications),
+    ('GET', rx(r'/api/calendar.ics'), Handler.api_calendar_ics),
     ('POST', rx(r'/api/notifications/(\d+)/read'), Handler.api_notification_read),
     ('GET', rx(r'/api/admin/vk'), Handler.api_admin_vk_status),
     ('POST', rx(r'/api/admin/vk/flush'), Handler.api_admin_vk_flush),
@@ -5065,6 +20016,16 @@ ROUTES = [
     ('GET', rx(r'/api/personas/(\d+)'), Handler.api_persona_detail),
     ('PUT', rx(r'/api/personas/(\d+)'), Handler.api_persona_update),
     ('DELETE', rx(r'/api/personas/(\d+)'), Handler.api_persona_delete),
+    ('GET', rx(r'/api/personas/(\d+)/memberships'), Handler.api_memberships),
+    ('POST', rx(r'/api/personas/(\d+)/memberships'), Handler.api_membership_create),
+    ('PUT', rx(r'/api/personas/(\d+)/memberships/(\d+)'), Handler.api_membership_update),
+    ('DELETE', rx(r'/api/personas/(\d+)/memberships/(\d+)'), Handler.api_membership_delete),
+    ('GET', rx(r'/api/crew-reputation'), Handler.api_crew_reputation),
+    ('POST', rx(r'/api/crew-reputation'), Handler.api_crew_reputation_set),
+    ('DELETE', rx(r'/api/crew-reputation/(\d+)'), Handler.api_crew_reputation_delete),
+    ('GET', rx(r'/api/characters/(\d+)/reputation'), Handler.api_character_reputation),
+    ('POST', rx(r'/api/characters/(\d+)/reputation'), Handler.api_character_reputation_set),
+    ('DELETE', rx(r'/api/characters/(\d+)/reputation/(\d+)'), Handler.api_character_reputation_delete),
     ('GET', rx(r'/api/storylines'), Handler.api_storylines),
     ('POST', rx(r'/api/storylines'), Handler.api_storyline_create),
     ('GET', rx(r'/api/storylines/(\d+)'), Handler.api_storyline_detail),
@@ -5072,6 +20033,7 @@ ROUTES = [
     ('POST', rx(r'/api/storylines/(\d+)/timeline'), Handler.api_storyline_timeline_create),
     ('GET', rx(r'/api/contracts'), Handler.api_contracts),
     ('POST', rx(r'/api/contracts'), Handler.api_contract_create),
+    ('POST', rx(r'/api/contracts/preview'), Handler.api_contract_preview),
     ('GET', rx(r'/api/contracts/(\d+)'), Handler.api_contract_detail),
     ('PUT', rx(r'/api/contracts/(\d+)'), Handler.api_contract_update),
     ('DELETE', rx(r'/api/contracts/(\d+)'), Handler.api_contract_delete),
@@ -5080,6 +20042,7 @@ ROUTES = [
     ('POST', rx(r'/api/contracts/(\d+)/aftermath'), Handler.api_contract_aftermath),
     ('GET', rx(r'/api/feed'), Handler.api_feed),
     ('POST', rx(r'/api/feed'), Handler.api_feed_create),
+    ('POST', rx(r'/api/feed/preview'), Handler.api_feed_preview),
     ('GET', rx(r'/api/feed/(\d+)'), Handler.api_feed_detail),
     ('PUT', rx(r'/api/feed/(\d+)'), Handler.api_feed_update),
     ('POST', rx(r'/api/feed/(\d+)/truth'), Handler.api_feed_truth_update),
@@ -5091,11 +20054,45 @@ ROUTES = [
     ('PUT', rx(r'/api/npc-templates/(\d+)'), Handler.api_npc_template_update),
     ('POST', rx(r'/api/npc-templates/(\d+)/clone'), Handler.api_npc_template_clone),
     ('DELETE', rx(r'/api/npc-templates/(\d+)'), Handler.api_npc_template_delete),
+    ('GET', rx(r'/api/recaps'), Handler.api_recaps),
+    ('GET', rx(r'/api/locations'), Handler.api_locations),
+    ('GET', rx(r'/api/memorial'), Handler.api_memorial_list),
+    ('GET', rx(r'/api/memorial/(\d+)'), Handler.api_memorial_detail),
+    ('PUT', rx(r'/api/memorial/(\d+)'), Handler.api_memorial_update),
+    ('POST', rx(r'/api/memorial/(\d+)/legacy'), Handler.api_memorial_legacy),
+    ('PUT', rx(r'/api/memorial/(\d+)/owner-draft'), Handler.api_memorial_owner_draft),
+    ('POST', rx(r'/api/memorial/(\d+)/publish'), Handler.api_memorial_publish),
+    ('DELETE', rx(r'/api/memorial/(\d+)'), Handler.api_memorial_restore),
+    ('POST', rx(r'/api/locations'), Handler.api_location_create),
+    ('GET', rx(r'/api/locations/([a-z0-9-]+)'), Handler.api_location_detail),
+    ('PUT', rx(r'/api/locations/([a-z0-9-]+)'), Handler.api_location_update),
+    ('DELETE', rx(r'/api/locations/([a-z0-9-]+)'), Handler.api_location_delete),
+    ('POST', rx(r'/api/recaps'), Handler.api_recap_create),
+    ('GET', rx(r'/api/recaps/(\d+)'), Handler.api_recap_detail),
+    ('PUT', rx(r'/api/recaps/(\d+)'), Handler.api_recap_update),
+    ('DELETE', rx(r'/api/recaps/(\d+)'), Handler.api_recap_delete),
     ('GET', rx(r'/api/sessions'), Handler.api_sessions),
     ('POST', rx(r'/api/sessions'), Handler.api_session_create),
     ('GET', rx(r'/api/sessions/(\d+)'), Handler.api_session_detail),
     ('PUT', rx(r'/api/sessions/(\d+)'), Handler.api_session_update),
     ('GET', rx(r'/api/sessions/(\d+)/player-view'), Handler.api_session_player_view),
+    ('POST', rx(r'/api/sessions/(\d+)/net/floors'), Handler.api_session_net_floor_create),
+    ('DELETE', rx(r'/api/sessions/(\d+)/net/floors/([a-f0-9]{32})'), Handler.api_session_net_floor_delete),
+    ('POST', rx(r'/api/sessions/(\d+)/net/nodes'), Handler.api_session_net_node_create),
+    ('PUT', rx(r'/api/sessions/(\d+)/net/nodes/([a-f0-9]{32})'), Handler.api_session_net_node_update),
+    ('DELETE', rx(r'/api/sessions/(\d+)/net/nodes/([a-f0-9]{32})'), Handler.api_session_net_node_delete),
+    ('POST', rx(r'/api/sessions/(\d+)/net/paths'), Handler.api_session_net_path_create),
+    ('PUT', rx(r'/api/sessions/(\d+)/net/paths/([a-f0-9]{32})'), Handler.api_session_net_path_update),
+    ('DELETE', rx(r'/api/sessions/(\d+)/net/paths/([a-f0-9]{32})'), Handler.api_session_net_path_delete),
+    ('POST', rx(r'/api/sessions/(\d+)/net/actions'), Handler.api_session_net_action),
+    ('POST', rx(r'/api/sessions/(\d+)/net/entities/([a-f0-9]{32})/attack'), Handler.api_session_black_ice_attack),
+    ('PUT', rx(r'/api/sessions/(\d+)/net/state'), Handler.api_session_net_state_update),
+    ('GET', rx(r'/api/sessions/(\d+)/access'), Handler.api_session_access),
+    ('POST', rx(r'/api/sessions/(\d+)/access'), Handler.api_session_access_grant),
+    ('DELETE', rx(r'/api/sessions/(\d+)/access/(\d+)'), Handler.api_session_access_revoke),
+    ('GET', rx(r'/api/sessions/(\d+)/safety'), Handler.api_session_safety),
+    ('POST', rx(r'/api/sessions/(\d+)/safety'), Handler.api_session_safety_create),
+    ('POST', rx(r'/api/sessions/(\d+)/safety/(\d+)'), Handler.api_session_safety_update),
     ('POST', rx(r'/api/sessions/(\d+)/combatants'), Handler.api_session_combatant_create),
     ('PUT', rx(r'/api/sessions/(\d+)/combatants/(\d+)'), Handler.api_session_combatant_update),
     ('DELETE', rx(r'/api/sessions/(\d+)/combatants/(\d+)'), Handler.api_session_combatant_delete),
@@ -5104,20 +20101,65 @@ ROUTES = [
     ('DELETE', rx(r'/api/media/([a-f0-9]{32})'), Handler.api_media_delete),
     ('GET', rx(r'/api/meta'), Handler.api_meta),
     ('GET', rx(r'/api/stats'), Handler.api_stats),
+    ('GET', rx(r'/api/campaign-clock'), Handler.api_campaign_clock),
+    ('POST', rx(r'/api/campaign-clock'), Handler.api_campaign_clock_advance),
     ('GET', rx(r'/api/items'), Handler.api_items),
     ('GET', rx(r'/api/items/([\w-]+)'), Handler.api_item),
     ('GET', rx(r'/api/nightmarket'), Handler.api_nightmarket),
+    ('POST', rx(r'/api/nightmarket/reserve'), Handler.api_nightmarket_reserve),
+    ('GET', rx(r'/api/fixer-requests'), Handler.api_fixer_requests),
+    ('POST', rx(r'/api/fixer-requests'), Handler.api_fixer_request_create),
+    ('POST', rx(r'/api/fixer-requests/(\d+)/resolve'), Handler.api_fixer_request_resolve),
     ('GET', rx(r'/api/characters'), Handler.api_my_characters),
     ('POST', rx(r'/api/characters'), Handler.api_create_character),
+    ('POST', rx(r'/api/characters/pdf-import'), Handler.api_pdf_import),
+    ('POST', rx(r'/api/characters/import'), Handler.api_character_import),
     ('GET', rx(r'/api/characters/(\d+)'), Handler.api_get_character),
     ('PUT', rx(r'/api/characters/(\d+)'), Handler.api_save_character),
+    ('PUT', rx(r'/api/characters/(\d+)/sheet'), Handler.api_character_sheet_update),
     ('DELETE', rx(r'/api/characters/(\d+)'), Handler.api_delete_character),
+    ('POST', rx(r'/api/characters/(\d+)/memorial'), Handler.api_character_memorialize),
     ('POST', rx(r'/api/characters/(\d+)/ip'), Handler.api_character_ip),
     ('GET', rx(r'/api/characters/(\d+)/ip'), Handler.api_character_ip_history),
     ('GET', rx(r'/api/characters/(\d+)/ledger'), Handler.api_character_ledger),
+    ('POST', rx(r'/api/characters/(\d+)/ledger/(\d+)/revert'), Handler.api_character_ledger_revert),
+    ('GET', rx(r'/api/characters/(\d+)/items'), Handler.api_character_items),
+    ('POST', rx(r'/api/characters/(\d+)/items/([a-f0-9]{32})/action'), Handler.api_character_item_action),
+    ('POST', rx(r'/api/characters/(\d+)/items/([a-f0-9]{32})/transfer'), Handler.api_character_item_transfer),
+    ('GET', rx(r'/api/characters/(\d+)/personal-stash'), Handler.api_personal_stash),
+    ('POST', rx(r'/api/characters/(\d+)/personal-stash'), Handler.api_personal_stash_action),
+    ('GET', rx(r'/api/crew-stash'), Handler.api_crew_stash),
+    ('POST', rx(r'/api/crew-stash/take'), Handler.api_crew_stash_take),
+    ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/action'), Handler.api_character_cyberware_action),
+    ('POST', rx(r'/api/characters/(\d+)/therapy/action'), Handler.api_character_therapy_action),
+    ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/popup-shield/action'), Handler.api_character_popup_shield_action),
+    ('POST', rx(r'/api/characters/(\d+)/armor/([a-f0-9]{32})/repair'), Handler.api_character_armor_repair_action),
+    ('POST', rx(r'/api/characters/(\d+)/armor/([a-f0-9]{32})/tech-upgrade'), Handler.api_character_armor_tech_upgrade),
+    ('POST', rx(r'/api/characters/(\d+)/tech-maker/modifications'), Handler.api_character_tech_maker_create),
+    ('POST', rx(r'/api/characters/(\d+)/tech-maker/modifications/([a-f0-9]{32})/action'), Handler.api_character_tech_maker_action),
+    ('POST', rx(r'/api/characters/(\d+)/tech-maker/fabricate'), Handler.api_character_tech_maker_fabricate),
+    ('GET', rx(r'/api/downtime/activities'), Handler.api_downtime_activities),
+    ('GET', rx(r'/api/characters/(\d+)/downtime'), Handler.api_character_downtime),
+    ('POST', rx(r'/api/characters/(\d+)/downtime/start'), Handler.api_character_downtime_start),
+    ('POST', rx(r'/api/characters/(\d+)/downtime/action'), Handler.api_character_downtime_action),
+    ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/popup-weapon/bind'), Handler.api_character_popup_weapon_bind),
+    ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/weapon/action'), Handler.api_character_cyberware_weapon_action),
+    ('GET', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modifications),
+    ('POST', rx(r'/api/characters/(\d+)/modifications'), Handler.api_character_modification_install),
+    ('POST', rx(r'/api/characters/(\d+)/modifications/([a-f0-9]{32})/action'), Handler.api_character_modification_action),
+    ('POST', rx(r'/api/characters/(\d+)/cyberdecks/([a-f0-9]{32})/black-ice/([a-f0-9]{32})/deploy'), Handler.api_character_black_ice_deploy),
+    ('POST', rx(r'/api/characters/(\d+)/net-entities/([a-f0-9]{32})/action'), Handler.api_character_net_entity_action),
+    ('POST', rx(r'/api/characters/(\d+)/cyberdecks/([a-f0-9]{32})/programs/([a-f0-9]{32})/action'), Handler.api_character_program_action),
+    ('POST', rx(r'/api/characters/(\d+)/cyberdecks/([a-f0-9]{32})/hardware/([a-f0-9]{32})/restore'), Handler.api_character_backup_restore),
+    ('POST', rx(r'/api/characters/(\d+)/cyberdecks/([a-f0-9]{32})/hardware/([a-f0-9]{32})/defense-sequencer/resolve'), Handler.api_character_defense_sequencer_resolve),
+    ('GET', rx(r'/api/characters/(\d+)/net-contexts'), Handler.api_character_net_contexts),
+    ('GET', rx(r'/api/characters/(\d+)/effects'), Handler.api_character_effects),
+    ('POST', rx(r'/api/characters/(\d+)/effects'), Handler.api_character_effect_create),
+    ('POST', rx(r'/api/characters/(\d+)/effects/([a-f0-9]{32})/action'), Handler.api_character_effect_action),
     ('GET', rx(r'/api/characters/(\d+)/network'), Handler.api_character_network),
     ('POST', rx(r'/api/characters/(\d+)/improve'), Handler.api_character_improve),
     ('POST', rx(r'/api/characters/(\d+)/specialization'), Handler.api_character_specialization),
+    ('POST', rx(r'/api/characters/(\d+)/vehicles/([a-f0-9]{32})/repair'), Handler.api_character_vehicle_repair),
     ('POST', rx(r'/api/characters/(\d+)/resource'), Handler.api_character_resource),
     ('GET', rx(r'/api/roster'), Handler.api_roster),
     ('POST', rx(r'/api/buy'), Handler.api_buy),
@@ -5149,7 +20191,7 @@ def vk_outbox_worker(stop_event):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--host', default='0.0.0.0')
+    ap.add_argument('--host', default='127.0.0.1')
     ap.add_argument('--port', type=int, default=8000)
     args = ap.parse_args()
     load_catalog()

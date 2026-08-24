@@ -47,6 +47,212 @@ CATS = [
 ]
 
 DESC_KEYS = ['Description & Data', 'Description & Effect', 'Description', 'Description & Effect.', 'Effect']
+NUMERIC_MECHANICS = {
+    'rof', 'hands', 'magazine', 'sp', 'sdp', 'seats', 'nomad_access',
+    'per', 'spd', 'atk', 'def', 'rez',
+}
+
+ACTIVE_GEAR = {
+    'Flashlight': {
+        'equip_modes': ['held', 'ready'], 'equip_slots': ['hand', 'belt'],
+        'hands_required': 1, 'activation_required': True,
+        'active_actions': ['Activate light', 'Deactivate light'],
+    },
+    'Radio Communicator': {
+        'equip_modes': ['worn', 'ready'], 'equip_slots': ['ear', 'belt'],
+        'hands_required': 0, 'activation_required': True,
+        'active_actions': ['Activate radio', 'Deactivate radio', 'Communicate'],
+    },
+    'Agent (Standard)': {
+        'equip_modes': ['held', 'ready'], 'equip_slots': ['hand', 'belt'],
+        'hands_required': 1, 'activation_required': True,
+        'active_actions': ['Activate Agent', 'Use Agent', 'Deactivate Agent'],
+    },
+    'Airhypo': {
+        'equip_modes': ['held', 'ready'], 'equip_slots': ['hand', 'belt'],
+        'hands_required': 1, 'activation_required': False,
+        'active_actions': ['Administer dose'],
+    },
+    'Techtool': {
+        'equip_modes': ['held', 'ready', 'workspace'],
+        'equip_slots': ['hand', 'belt', 'workspace'], 'hands_required': 1,
+        'activation_required': False, 'active_actions': ['Use Techtool'],
+    },
+    'Medtech Bag': {
+        'equip_modes': ['held', 'ready', 'workspace'],
+        'equip_slots': ['hand', 'workspace'], 'hands_required': 1,
+        'activation_required': False, 'active_actions': ['Use medical toolkit'],
+    },
+}
+
+
+def item_interaction_metadata(cat, name, row, desc):
+    """Curated declarative Use/Equip metadata; no executable item effects."""
+    metadata = {}
+    if cat == 'gear' and name in ACTIVE_GEAR:
+        metadata.update({'equippable': True, **ACTIVE_GEAR[name]})
+    item_type = str(row.get('Type') or '').strip()
+    if cat == 'gear' and item_type in ('Pharma', 'Street Drugs'):
+        metadata.update({
+            'stackable': True,
+            'consumable': True,
+            'consume_amount': 1,
+            'use_context': 'medical' if item_type == 'Pharma' else 'general',
+            'use_effect': {
+                'kind': 'manual',
+                'text': str(desc or '').strip(),
+                'manual_resolution_required': True,
+            },
+        })
+    return metadata
+
+
+def item_modification_metadata(cat, name, row, desc):
+    """Normalize host/slot facts while leaving complex compatibility declarative."""
+    if cat != 'gun_upgrades':
+        return {}
+    text = str(desc or '').replace('’', "'")
+    low = text.lower()
+    slot_match = re.search(r'requires?\s+(\d+)\s+(?:attachment\s+)?slots?', low)
+    no_slot = bool(re.search(r"does(?:n't| not) require an attachment slot", low))
+    slots_used = 0 if no_slot else (int(slot_match.group(1)) if slot_match else 1)
+    compatibility = normalize_display_value(row.get('Available') or '')
+    complex_tokens = (
+        'individual eligibility', 'capable of firing', 'autofire',
+        'choose to replace', 'dv17', 'tech upgraded',
+    )
+    kind = 'rebuild' if 'rebuild.' in low else 'attachment'
+    slot_type = 'scope' if ('scope' in name.lower() or 'scope attachment' in low) else (
+        'underbarrel' if 'underbarrel' in name.lower() else 'attachment')
+    group = None
+    if 'magazine' in name.lower():
+        group = 'weapon_magazine'
+    elif kind == 'rebuild':
+        group = 'weapon_rebuild'
+    elif name in ('Smartgun Link',):
+        group = 'smart_weapon_link'
+    elif name == 'Compatibility Rail':
+        group = 'weapon_scope_rail'
+    grants_slots = {'scope': 1} if name == 'Compatibility Rail' else {}
+    return {
+        'host_type': 'weapon',
+        'modification_kind': kind,
+        'modification_group': group,
+        'slot_type': slot_type,
+        'grants_slots': grants_slots,
+        'slots_used': slots_used,
+        'compatibility_text': compatibility,
+        'permanent_installation': bool(re.search(r'can\s*not be uninstalled|cannot be uninstalled', low)),
+        'unique_per_host': bool(re.search(r'only one|cannot be attached.+with', low)),
+        'compatibility_manual': any(token in (compatibility + ' ' + low).lower()
+                                    for token in complex_tokens),
+        'installation_source': (row.get('Source') or '').strip() or None,
+    }
+
+
+def vehicle_modification_metadata(cat, name, row, desc):
+    if cat != 'vehicles_upgrades':
+        return {}
+    text = str(desc or '').replace('’', "'")
+    low = text.lower()
+    prerequisites = []
+    for candidate in ('Heavy Chassis', 'Enclosure', 'Reinforced Frame'):
+        if re.search(rf'requires? (?:(?:a|the) )?{re.escape(candidate.lower())}', low):
+            prerequisites.append(candidate)
+    conflicts = []
+    for candidate in ('Enclosure', 'Folding Frame', 'Reinforced Frame',
+                      'Smuggling Compartment'):
+        if re.search(rf'incompatible with[^.]*{re.escape(candidate.lower())}', low):
+            conflicts.append(candidate)
+    repeatable_max = 1
+    if name == 'Bulletproof Glass':
+        repeatable_max = 2
+    elif ('multiple upgrades' in low or 'additional upgrade' in low or
+          'multiple times' in low):
+        repeatable_max = 99
+    availability = normalize_display_value(row.get('Availability') or '')
+    nomad_access = row.get('Nomad Access')
+    try:
+        nomad_access = int(float(nomad_access)) if nomad_access not in (None, '') else None
+    except (TypeError, ValueError):
+        nomad_access = None
+    prerequisite_host_names = {}
+    if name == 'Housing Capacity' and 'Heavy Chassis' in prerequisites:
+        prerequisite_host_names['Heavy Chassis'] = [
+            'Compact Groundcar', 'High Performance Groundcar']
+    return {
+        'host_type': 'vehicle',
+        'modification_kind': 'vehicle_upgrade',
+        'modification_group': f'vehicle_upgrade:{name.lower().replace(" ", "_")}',
+        'slot_type': 'vehicle_upgrade',
+        'grants_slots': {},
+        'slots_used': 0,
+        'availability_text': availability,
+        'nomad_access_required': nomad_access,
+        'repeatable_max': repeatable_max,
+        'prerequisite_upgrades': prerequisites,
+        'prerequisite_host_names': prerequisite_host_names,
+        'conflicting_upgrades': sorted(set(conflicts)),
+        'permanent_installation': bool(re.search(r'cannot be removed|can not be removed', low)),
+        'unique_per_host': repeatable_max == 1,
+        'compatibility_manual': any(token in (availability + ' ' + low).lower() for token in (
+            'vehicles with rooms', 'individual eligibility', 'choose', 'mounted weapon',
+            'heavy weapon mount', 'hangar', 'complex room',
+        )),
+        'installation_source': (row.get('Source') or '').strip() or None,
+    }
+
+
+def cyberdeck_modification_metadata(cat, name, row, desc):
+    item_type = str(row.get('Type') or '').strip()
+    description = str(desc or '')
+    source = (row.get('Source') or '').strip() or None
+    if cat == 'net_stuff' and item_type == 'Cyberdeck Hardware':
+        slots = re.search(r'Takes?\s+(\d+)\s+Hardware Option Slots?',
+                          description, re.I)
+        return {
+            'host_type': 'cyberdeck', 'modification_kind': 'cyberdeck_hardware',
+            'modification_group': None, 'slot_type': 'hardware',
+            'grants_slots': {}, 'slots_used': int(slots.group(1)) if slots else 1,
+            'compatibility_text': 'Cyberdeck Hardware',
+            'permanent_installation': False,
+            'unique_per_host': bool(re.search(
+                r'Multiple installations do nothing', description, re.I)),
+            'compatibility_manual': False, 'installation_source': source,
+        }
+    if cat == 'programs':
+        program_class = str(row.get('Class') or '').strip()
+        return {
+            'host_type': 'cyberdeck', 'modification_kind': 'cyberdeck_program',
+            'modification_group': None, 'slot_type': 'program',
+            'grants_slots': {},
+            'slots_used': 2 if 'Black ICE' in program_class else 1,
+            'compatibility_text': program_class,
+            'permanent_installation': False, 'unique_per_host': False,
+            'compatibility_manual': False, 'installation_source': source,
+        }
+    return {}
+
+
+def normalize_display_value(value):
+    text = str(value).strip()
+    if re.fullmatch(r'-?\d+\.0', text):
+        return text[:-2]
+    return text
+
+
+def normalize_mechanic_value(key, value):
+    text = str(value).strip()
+    if key in NUMERIC_MECHANICS and re.fullmatch(r'-?\d+(?:\.\d+)?', text):
+        number = float(text)
+        return int(number) if number.is_integer() else number
+    # Magazine may use exotic notation ("20 / 2", "6 (Rubber Arrows)", "-");
+    # take the first integer so weapon_state magazine_max stays meaningful.
+    if key == 'magazine':
+        match = re.search(r'\d+', text)
+        if match:
+            return int(match.group(0))
+    return normalize_display_value(text)
 
 
 def load_workbook(path):
@@ -196,9 +402,9 @@ def structured_requirements(cat, row, desc):
     body = re.search(r'requires body\s+(\d+)', low)
     if body:
         requirements.append({'kind': 'stat', 'stat': 'BODY', 'minimum': int(body.group(1))})
-    slots = re.search(r'requires?\s+(\d+)\s+(?:cyberware\s+)?option slots?', low)
+    slots = re.search(r'requires?\s+(\d+)\s+(?:(?:cyberware|cyberarm|cybereye|cyberleg|cyberaudio)\s+)?option slots?', low)
     if not slots:
-        slots = re.search(r'(?:takes?|uses?)\s+(\d+)\s+(?:cyberware\s+)?option slots?', low)
+        slots = re.search(r'(?:takes?|uses?)\s+(?:up\s+)?(\d+)\s+(?:(?:cyberware|cyberarm|cybereye|cyberleg|cyberaudio)\s+)?option slots?', low)
     slot_count = int(slots.group(1)) if slots else 0
     ctype = str(row.get('Type') or '')
     name = str(row.get('Name') or '').lower()
@@ -208,7 +414,8 @@ def structured_requirements(cat, row, desc):
         'neo-soviet cyberarm', 'cyberleg', 'romanova cyberlegs',
     }
     host = None
-    if name not in foundations:
+    paired_foundation = 'paired cyberlegs' in low
+    if name not in foundations and not paired_foundation:
         for token, label in [('cyberarm option', 'Cyberarm'), ('cyberleg option', 'Cyberleg'),
                              ('cybereye option', 'Cybereye'), ('cyberaudio option', 'Cyberaudio Suite'),
                              ('neuralware option', 'Neural Link or Neuroport')]:
@@ -219,7 +426,9 @@ def structured_requirements(cat, row, desc):
         slot_count = 1
     total_match = re.search(r'has\s+(\d+)\s+option slots?', low)
     slots_total = int(total_match.group(1)) if total_match else 0
-    hosts_required = 2 if ('requires two cybereyes' in low or 'requires two cyberlegs' in low or 'must be paired' in low) else (1 if host else 0)
+    hosts_required = 0 if paired_foundation else (2 if (
+        'requires two cybereyes' in low or 'requires two cyberlegs' in low or
+        'must be paired' in low) else (1 if host else 0))
     unique = bool(re.search(r'only one|cannot be installed more than once|only be installed once|multiple installations.+no additional benefit', low))
     return requirements, {'host': host, 'hosts_required': hosts_required, 'slots_used': slot_count, 'slots_total': slots_total, 'unique': unique}
 
@@ -243,7 +452,7 @@ def item_mechanics(cat, row, desc):
     for source, target in labels.items():
         value = row.get(source)
         if value is not None and str(value).strip() not in ('', '—', 'N/A'):
-            mechanics[target] = str(value).strip()
+            mechanics[target] = normalize_mechanic_value(target, value)
     if cat == 'ammo':
         amount = re.search(r'(\d+)\s*(?:rounds?|arrows?|bolts?|rockets?|grenades?)', str(desc or ''), re.I)
         mechanics['quantity_per_purchase'] = int(amount.group(1)) if amount else 10
@@ -331,8 +540,12 @@ def main():
             for key, label in fields:
                 val = r.get(key)
                 if val is not None and str(val).strip() not in ('', '—', 'N/A'):
-                    it['fields'][key] = str(val).strip()
+                    it['fields'][key] = normalize_display_value(val)
             it['mechanics'] = item_mechanics(cat, r, desc)
+            it.update(item_interaction_metadata(cat, name, r, desc))
+            it.update(item_modification_metadata(cat, name, r, desc))
+            it.update(vehicle_modification_metadata(cat, name, r, desc))
+            it.update(cyberdeck_modification_metadata(cat, name, r, desc))
             requirements, capacity = structured_requirements(cat, r, desc)
             it['requirements'] = requirements
             if any(capacity.values()):
@@ -346,6 +559,16 @@ def main():
                 locations, bundled = armor_locations(name, desc, it['sp'])
                 it['armor_locations'] = locations
                 it['armor_bundled'] = bundled
+                it['mechanics']['sp'] = it['sp']
+                it['mechanics']['armor_locations'] = locations
+                it['mechanics']['armor_bundled'] = bundled
+                it['mechanics']['armor_penalties'] = it['penalties']
+            if cat == 'vehicles':
+                protection = str(r.get('SP') or '')
+                body_match = re.search(r'(\d+)\s*SP(?:\s*\(Body\))?', protection, re.I)
+                glass_match = re.search(r'(\d+)\s*HP\s*\(Glass\)', protection, re.I)
+                it['mechanics']['body_sp'] = int(body_match.group(1)) if body_match else 0
+                it['mechanics']['glass_hp'] = int(glass_match.group(1)) if glass_match else 0
             if cat in ('guns', 'melee', 'grenades') and r.get('Damage'):
                 dm = re.search(r'(\d+d\d+(?:\s*[/×x]\s*\d+)?)', str(r['Damage']))
                 it['damage'] = dm.group(1) if dm else str(r['Damage']).strip()

@@ -295,8 +295,10 @@ const routeAliases = {
 };
 const routes = {
   '': viewHome, database: viewCodex, guides: viewGuides, market: viewMarket,
-  'quick-reference': viewCalc, dossiers: viewCharacters, crew: viewRoster,
+  'quick-reference': viewCalc, 'gm-ref': viewGmRef, dossiers: viewCharacters, crew: viewRoster,
+  stash: viewCrewStash,
   feed: viewCityFeed, contracts: viewContracts, personas: viewPersonas,
+  chronicle: viewChronicle, map: viewMap, memorial: viewMemorial,
   gm: viewGMOperations, session: viewSessionPlayer, admin: viewAdmin,
   // Compatibility aliases keep old bookmarks and links working during migration.
   codex: viewCodex, calc: viewCalc, characters: viewCharacters,
@@ -316,7 +318,7 @@ async function route() {
     else anchor.removeAttribute('aria-current');
   });
   document.body.dataset.workspace = activeRoute === 'gm' ? 'gm' : 'network';
-  const moreButton=$('#mobile-more-toggle');if(moreButton)moreButton.classList.toggle('active',['database','market','quick-reference','crew','personas','guides','profile','gm','admin'].includes(activeRoute));
+  const moreButton=$('#mobile-more-toggle');if(moreButton)moreButton.classList.toggle('active',['database','market','quick-reference','crew','stash','chronicle','map','memorial','personas','guides','profile','gm','admin'].includes(activeRoute));
   $$('[data-workspace]').forEach(button=>button.classList.toggle('active',button.dataset.workspace===(activeRoute==='gm'?'gm':'network')));
   const mobileMore=$('#mobile-more-menu');if(mobileMore)mobileMore.hidden=true;
   window.scrollTo(0, 0);
@@ -327,15 +329,16 @@ async function route() {
     if (seg0 === 'feed' && seg1) { await viewFeedDetail(view, seg1); return; }
     if (seg0 === 'personas' && seg1) { await viewPersonaDetail(view, seg1); return; }
     if (seg0 === 'session' && seg1) { await viewSessionPlayer(view, seg1); return; }
+    if (seg0 === 'map' && seg1) { await viewLocationDetail(view, seg1); return; }
+    if (seg0 === 'actions' && seg1) { await viewActions(view, seg1); return; }
     if (seg0 === 'char') {
       const raw = seg1 || '';
       const charId = raw.split('?')[0];
-      const isEdit = raw.includes('?edit');
       if (!charId || charId === '' || charId === 'new') { await viewWizard(); return; }
-      if (isEdit) { await viewEditor(charId); return; }
+      if (raw.includes('?edit')) { await viewEditor(charId); return; }
       await viewSheet(charId); return;
     }
-    const fn = routes[seg0] || viewHome;
+    const fn = routes[activeRoute] || viewHome;
     await fn(view);
   } catch (e) {
     view.innerHTML = `<div class="empty">⚠️ ${esc(APP_I18N.translate(e.message))}</div>`;
@@ -366,11 +369,26 @@ function renderUserbox() {
       <span>${esc(state.me.display_name)}</span>
       ${state.me.is_admin ? '<span class="gm-badge">ADMIN</span>' : (state.me.is_gm ? `<span class="gm-badge">${T('GM','ГМ')}</span>` : '')}
     </button>
-    <button class="btn-sm" id="notifications-btn" title="${T('Notifications','Уведомления')}" aria-label="${T('Notifications','Уведомления')}">◉</button>
+    <button class="btn-sm" id="notifications-btn" style="position:relative" title="${T('Notifications','Уведомления')}" aria-label="${T('Notifications','Уведомления')}">◉<span id="notif-badge" style="display:none;position:absolute;top:-4px;right:-4px;background:var(--red);color:#fff;font-size:9px;font-weight:700;border-radius:50%;width:16px;height:16px;display:none;align-items:center;justify-content:center"></span></button>
     <button class="btn-sm" id="logout-btn">${T('Sign out','Выйти')}</button>`;
   $('#userchip').onclick = () => go('/profile');
   if ($('#notifications-btn') && typeof openNotifications === 'function') $('#notifications-btn').onclick = openNotifications;
   $('#logout-btn').onclick = performLogout;
+  // Poll notifications for badge
+  if (state.me) {
+    const pollNotifs = async () => {
+      try {
+        const nd = await api('/api/notifications');
+        const badge = $('#notif-badge');
+        if (badge) {
+          if (nd.unread > 0) { badge.textContent = nd.unread > 9 ? '9+' : nd.unread; badge.style.display = 'flex'; }
+          else { badge.style.display = 'none'; }
+        }
+      } catch (e) {}
+    };
+    pollNotifs();
+    if (!window._notifInterval) window._notifInterval = setInterval(pollNotifs, 30000);
+  }
 }
 
 function updateCityClock(){const clock=$('#city-clock');if(clock)clock.textContent=new Intl.DateTimeFormat(APP_I18N.current()==='ru'?'ru-RU':'en-GB',{timeZone:'Europe/Moscow',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date())+' NC';}
@@ -381,7 +399,7 @@ async function refreshShellDossiers(){
 }
 
 function openCommandPalette(){
-  const commands=[['','⌂',T('City Network','Городская сеть')],['contracts','◎',T('Contracts','Контракты')],['feed','≋',T('City Feed','Городская лента')],['dossiers','◇',T('Dossiers','Досье')],['database','▦',T('Database','База данных')],['market','◈',T('Night Market','Ночной рынок')],['quick-reference','◫',T('Quick Reference','Быстрые правила')],['crew','⌘',T('Crew Registry','Реестр команд')],['personas','◉','Personas'],['guides','▤',T('Archive','Архив')]];if(state.me?.is_gm)commands.push(['gm','⚙','GM OPS']);if(state.me?.is_admin)commands.push(['admin','⚿',T('Admin Console','Панель Admin')]);
+  const commands=[['','⌂',T('City Network','Городская сеть')],['contracts','◎',T('Contracts','Контракты')],['feed','≋',T('City Feed','Городская лента')],['dossiers','◇',T('Dossiers','Досье')],['database','▦',T('Database','База данных')],['market','◈',T('Night Market','Ночной рынок')],['quick-reference','◫',T('Quick Reference','Быстрые правила')],['crew','⌘',T('Crew Registry','Реестр команд')],['stash','🎒',T('Crew Stash','Общий склад')],['chronicle','📜',T('Chronicle','Хроника')],['map','🗺️',T('Map','Карта')],['memorial','🥃',T('Memorial','Мемориал')],['personas','◉','Personas'],['guides','▤',T('Archive','Архив')]];if(state.me?.is_gm)commands.push(['gm','⚙','GM OPS'],['gm-ref','⚔',T('GM Reference','Справка GM')]);if(state.me?.is_admin)commands.push(['admin','⚿',T('Admin Console','Панель Admin')]);
   const modal=openModal(`<h2>${T('Command Palette','Командная строка')}</h2><input id="command-search" type="search" autofocus placeholder="${T('Jump to a network module…','Перейти к модулю сети…')}" aria-label="${T('Search commands','Поиск команд')}"><div id="command-list" class="command-list mt">${commands.map(([route,icon,label])=>`<button data-command-route="${route}" data-command-search="${esc(label.toLowerCase())}"><span>${icon}</span><b>${esc(label)}</b><small>#/${route}</small></button>`).join('')}</div>`);const search=$('#command-search',modal);search.oninput=()=>{const query=search.value.trim().toLowerCase();$$('[data-command-route]',modal).forEach(button=>button.hidden=Boolean(query&&!button.dataset.commandSearch.includes(query)));};$$('[data-command-route]',modal).forEach(button=>button.onclick=()=>{closeModal();go('/'+button.dataset.commandRoute);});
 }
 
@@ -398,11 +416,15 @@ function initShellControls(){
 
 async function viewHome(view) {
   view.innerHTML = spinner();
-  const [stats, feed, contracts] = await Promise.all([api('/api/stats'),api('/api/feed'),api('/api/contracts')]);
+  const [stats, feed, contracts, locData, nmData] = await Promise.all([api('/api/stats'),api('/api/feed'),api('/api/contracts'),api('/api/locations'),api('/api/nightmarket')]);
   const transmissions=feed.posts.slice(0,5),activeContracts=contracts.contracts.filter(contract=>['open','crew_full','in_progress'].includes(contract.status)).slice(0,6);
-  view.innerHTML=`<div class="page-head city-network-head"><div><div class="small muted">NC//NET // CITY NETWORK // RELAY 07</div><h1>${T('Night City Live Grid','Живая сеть Найт-Сити')}</h1><div class="sub">${T('Contracts, transmissions and operator traffic in one encrypted city layer.','Контракты, передачи и трафик операторов в одном зашифрованном слое города.')}</div></div><div class="row"><a class="btn-sm" href="#/feed">${T('TRANSMIT','ПЕРЕДАТЬ')} ↗</a><a class="btn-primary" href="#/contracts">${T('OPEN CONTRACTS','ОТКРЫТЬ CONTRACTS')} →</a></div></div><div class="network-telemetry-strip"><span><b>${nf.format(stats.open_contracts??stats.open_jobs)}</b>${T('OPEN SIGNALS','ОТКРЫТЫХ СИГНАЛОВ')}</span><span><b>${nf.format(stats.feed_posts??stats.news)}</b>${T('TRANSMISSIONS','ПЕРЕДАЧ')}</span><span><b>${nf.format(stats.characters)}</b>${T('DOSSIERS','ДОСЬЕ')}</span><span><b>${nf.format(stats.users)}</b>${T('OPERATORS','ОПЕРАТОРОВ')}</span><span><b>${nf.format(stats.items)}</b>${T('DATABASE OBJECTS','ОБЪЕКТОВ БАЗЫ')}</span></div><div class="city-network-grid"><section class="city-map-console"><div class="console-head"><span>GEOSPATIAL RELAY</span><span class="green">● LIVE</span></div><div id="home-city-map">${typeof ncMapHtml==='function'?ncMapHtml(activeContracts):''}</div></section><aside class="city-signal-column"><section class="signal-module"><div class="console-head"><span>${T('ACTIVE SIGNALS','АКТИВНЫЕ СИГНАЛЫ')}</span><a href="#/contracts">ALL →</a></div><div class="signal-stack">${activeContracts.length?activeContracts.map((contract,index)=>`<button class="city-signal" data-home-contract="${contract.id}"><span class="signal-index">${String(index+1).padStart(2,'0')}</span><span><b class="user-content">${esc(contract.title)}</b><small>${esc(typeof ncDistrictName==='function'?ncDistrictName(contract.district_id):contract.district_id||T('Classified','Секретно'))} · ${esc(typeof ncLabel==='function'?ncLabel(contract.risk_level):contract.risk_level)}</small></span><span class="tag">${contract.crew_count}/${contract.crew_capacity||'∞'}</span></button>`).join(''):`<div class="empty">${T('No active signals.','Нет активных сигналов.')}</div>`}</div></section><section class="signal-module"><div class="console-head"><span>${T('CITY FEED','ГОРОДСКАЯ ЛЕНТА')}</span><a href="#/feed">ALL →</a></div><div class="signal-stack">${transmissions.length?transmissions.map(post=>`<button class="feed-signal" data-home-feed="${post.id}"><span class="tag">${esc(post.format.toUpperCase())}</span><span><b class="user-content">${esc(post.headline||post.body.slice(0,70))}</b><small class="user-content">${esc(post.author?.display_name||'NC//NET')} · ${timeAgo(post.published_at||post.created)}</small></span></button>`).join(''):`<div class="empty">${T('No transmissions.','Нет передач.')}</div>`}</div></section></aside></div><div class="data-layer-strip"><span>DATA LAYER</span><a href="#/market">NIGHT MARKET</a><a href="#/database">DATABASE</a><a href="#/quick-reference">QUICK REF</a><a href="#/crew">CREW REGISTRY</a><a href="#/personas">PERSONAS</a></div>`;
+  view.innerHTML=`<div class="page-head city-network-head"><div><div class="small muted">NC//NET // CITY NETWORK // RELAY 07</div><h1>${T('Night City Live Grid','Живая сеть Найт-Сити')}</h1><div class="sub">${T('Contracts, transmissions and operator traffic in one encrypted city layer.','Контракты, передачи и трафик операторов в одном зашифрованном слое города.')}</div></div><div class="row"><a class="btn-sm" href="#/feed">${T('TRANSMIT','ПЕРЕДАТЬ')} ↗</a><a class="btn-primary" href="#/contracts">${T('OPEN CONTRACTS','ОТКРЫТЬ CONTRACTS')} →</a></div></div><div class="network-telemetry-strip"><span><b>${nf.format(stats.open_contracts??stats.open_jobs)}</b>${T('OPEN SIGNALS','ОТКРЫТЫХ СИГНАЛОВ')}</span><span><b>${nf.format(stats.feed_posts??stats.news)}</b>${T('TRANSMISSIONS','ПЕРЕДАЧ')}</span><span><b>${nf.format(stats.characters)}</b>${T('DOSSIERS','ДОСЬЕ')}</span><span><b>${nf.format(stats.users)}</b>${T('OPERATORS','ОПЕРАТОРОВ')}</span><span><b>${nf.format(stats.items)}</b>${T('DATABASE OBJECTS','ОБЪЕКТОВ БАЗЫ')}</span></div><div class="city-network-grid"><section class="city-map-console"><div class="console-head"><span>GEOSPATIAL RELAY</span><span class="green">● LIVE</span></div><div id="home-city-map">${typeof ncLayeredMapHtml==='function'?ncLayeredMapHtml(activeContracts,(locData.locations||[]).filter(l=>!l.archived),(nmData.vendors||[])):''}</div></section><aside class="city-signal-column"><section class="signal-module"><div class="console-head"><span>${T('ACTIVE SIGNALS','АКТИВНЫЕ СИГНАЛЫ')}</span><a href="#/contracts">ALL →</a></div><div class="signal-stack">${activeContracts.length?activeContracts.map((contract,index)=>`<button class="city-signal" data-home-contract="${contract.id}"><span class="signal-index">${String(index+1).padStart(2,'0')}</span><span><b class="user-content">${esc(contract.title)}</b><small>${esc(typeof ncDistrictName==='function'?ncDistrictName(contract.district_id):contract.district_id||T('Classified','Секретно'))} · ${esc(typeof ncLabel==='function'?ncLabel(contract.risk_level):contract.risk_level)}</small></span><span class="tag">${contract.crew_count}/${contract.crew_capacity||'∞'}</span></button>`).join(''):`<div class="empty">${T('No active signals.','Нет активных сигналов.')}</div>`}</div></section><section class="signal-module"><div class="console-head"><span>${T('CITY FEED','ГОРОДСКАЯ ЛЕНТА')}</span><a href="#/feed">ALL →</a></div><div class="signal-stack">${transmissions.length?transmissions.map(post=>`<button class="feed-signal" data-home-feed="${post.id}"><span class="tag">${esc(post.format.toUpperCase())}</span><span><b class="user-content">${esc(post.headline||post.body.slice(0,70))}</b><small class="user-content">${esc(post.author?.display_name||'NC//NET')} · ${timeAgo(post.published_at||post.created)}</small></span></button>`).join(''):`<div class="empty">${T('No transmissions.','Нет передач.')}</div>`}</div></section></aside></div><div class="data-layer-strip"><span>DATA LAYER</span><a href="#/market">NIGHT MARKET</a><a href="#/database">DATABASE</a><a href="#/quick-reference">QUICK REF</a><a href="#/crew">CREW REGISTRY</a><a href="#/personas">PERSONAS</a></div>`;
   if(typeof ncBindActivation==='function')ncBindActivation('[data-contract-open]',view,element=>go(`/contracts/${element.dataset.contractOpen}`));
   if(typeof ncBindMapControls==='function')ncBindMapControls(view);
+  if(typeof ncBindLayerToggles==='function')ncBindLayerToggles(view);
+  if(typeof ncBindActivation==='function')ncBindActivation('[data-poi-open]',view,element=>go('/map/'+element.dataset.poiOpen));
+  if(typeof ncBindActivation==='function')ncBindActivation('[data-vendor-open]',view,element=>go('/market'));
+  ncBindActivation('[data-poi-open]',view,element=>go('/map/'+element.dataset.poiOpen));
   $$('[data-home-contract]',view).forEach(button=>button.onclick=()=>go(`/contracts/${button.dataset.homeContract}`));
   $$('[data-home-feed]',view).forEach(button=>button.onclick=()=>go(`/feed/${button.dataset.homeFeed}`));
 }
@@ -528,12 +550,10 @@ async function loadCodexItems() {
       ${data.items.map(it => `
         <div class="card item-card">
           <div class="head">
-            <span class="name" data-id="${it.id}">${esc(it.name)}</span>
+            <span class="item-thumb-placeholder">${{'guns':'🔫','ammo':'📦','melee':'⚔️','armor':'🛡️','grenades':'💣','gear':'🔧','fashion':'👕','services':'💼','cyberware':'🦾','net_stuff':'💻','programs':'💾','vehicles':'🏍️','vehicles_upgrades':'⚙️','gun_upgrades':'🔧'}[it.cat]||'📦'}</span><span class="name" data-id="${it.id}">${esc(it.name)}</span>
             <span class="price">${it.price != null ? money(it.price) : '<span class="muted">—</span>'}</span>
           </div>
-          <div class="chips"><span class="chip">${catName(it.cat)}</span>
-            ${Object.entries(it.fields || {}).slice(0, 6).map(([k, v]) => `<span class="chip">${esc(shortField(k, v))}</span>`).join('')}
-          </div>
+          <div class="chips"><span class="chip">${catName(it.cat)}</span>${itemMechanicChips(it)}</div>
           ${it.source ? `<div class="small muted">📖 ${esc(it.source)}</div>` : ''}
           ${it.desc ? `<details class="desc-wrap"><summary>${T('Description','Описание')}</summary><div class="desc">${esc(itemDescription(it))}</div></details>` : ''}
         </div>`).join('')}
@@ -544,12 +564,8 @@ async function loadCodexItems() {
     () => { codexState.offset = Math.max(0, codexState.offset - data.limit); loadCodexItems(); });
 }
 
-function shortField(k, v) {
-  const labels = { Type: '', Skill: '', Damage: '', Mag: 'маг ', ROF: 'СКО ', Conceal: 'скрыт ', Quality: '', Install: '', HL: 'HL ', 'Suitable ammo / weapon': '', SP: 'SP ', Seats: 'мест ', Class: '' };
-  v = String(v);
-  if (v.length > 42) v = v.slice(0, 40) + '…';
-  return labels[k] !== undefined ? labels[k] + v : v;
-}
+const ITEM_FIELD_LABELS={Type:['Type','Тип'],Skill:['Skill','Навык'],Damage:['Damage','Урон'],Mag:['Magazine','Магазин'],ROF:['ROF','Скорострельность'],Hands:['Hands','Руки'],Conceal:['Concealable','Скрываемое'],Quality:['Quality','Качество'],Install:['Install','Установка'],HL:['HL','HL'],'Suitable ammo / weapon':['Compatibility','Совместимость'],SP:['SP','SP'],SDP:['SDP','SDP'],Seats:['Seats','Места'],Class:['Class','Класс'],Penalty:['Penalty','Штраф'],Available:['Compatibility','Совместимость'],Availability:['Availability','Доступность'],'Nomad Access':['Nomad Access','Доступ Nomad'],PER:['PER','PER'],SPD:['SPD','SPD'],ATK:['ATK','ATK'],DEF:['DEF','DEF'],REZ:['REZ','REZ']};
+function itemFieldLabel(key){const labels=ITEM_FIELD_LABELS[key];return labels?(APP_I18N.current()==='ru'?labels[1]:labels[0]):key;}
 
 function pagerHtml(total, offset, limit) {
   if (total <= limit) return '';
@@ -576,8 +592,9 @@ async function showItemModal(id) {
       ${it.source ? `<span class="chip">📖 ${esc(it.source)}</span>` : ''}
       ${it.hl ? `<span class="chip hl-badge">HL ${it.hl}</span>` : ''}
     </div>
+    <div class="mechanic-chips mb">${itemMechanicChips(it)}</div>
     <div class="kv mb">
-      ${Object.entries(it.fields || {}).map(([k, v]) => `<b>${esc(k)}</b><span>${esc(v)}</span>`).join('')}
+      ${Object.entries(it.fields || {}).map(([k, v]) => `<b>${esc(itemFieldLabel(k))}</b><span>${esc(String(v).replace(/\.0(?=\b)/g,''))}</span>`).join('')}
     </div>
     ${it.desc ? `<div class="desc">${esc(itemDescription(it))}</div>` : `<div class="muted">${T('No description available.','Описание отсутствует.')}</div>`}
   `);
@@ -586,23 +603,23 @@ async function showItemModal(id) {
 
 /* ============================== чёрный рынок ============================== */
 
-const marketState = { tab: 'nm', q: '', cat: '', offset: 0, limit: 30 };
+const marketState = { tab: 'nm', vendor: '', q: '', cat: '', sort: 'discount', affordable: false, sellChar: null };
 
 async function viewMarket(view) {
   view.innerHTML = `
   <div class="page-head">
     <div><h1>🕶️ ${T('Night Market','Чёрный рынок')}</h1>
-    <div class="sub">${T('The Night Market refreshes every day at 00:00 Moscow time. Street prices vary by ±50%.','Ночная витрина обновляется каждый день в 00:00 МСК. Уличные цены гуляют ±50%.')}</div></div>
-    ${state.me && state.me.is_gm ? `<button id="payroll-btn">💰 ${T('Payout (GM)','Выплата (ГМ)')}</button>` : ''}
+    <div class="sub">${T('Independent vendors refresh their stock every day at 00:00 Moscow time.','Независимые продавцы обновляют ассортимент каждый день в 00:00 МСК.')}</div></div>
+    <div class="row"><a class="btn-sm" href="#/database">📚 ${T('Open Item Database','Открыть базу предметов')}</a>${state.me && state.me.is_gm ? `<button id="payroll-btn">💰 ${T('Payout (GM)','Выплата (ГМ)')}</button>` : ''}</div>
   </div>
   <div class="tabs">
-    <button data-tab="nm" class="${marketState.tab === 'nm' ? 'active' : ''}">🌙 ${T('Night Market Showcase','Ночная витрина')}</button>
-    <button data-tab="catalog" class="${marketState.tab === 'catalog' ? 'active' : ''}">📦 ${T('Full Catalog','Полный каталог')}</button>
+    <button data-tab="nm" class="${marketState.tab === 'nm' ? 'active' : ''}">🌙 ${T('Night Market Vendors','Продавцы Night Market')}</button>
     <button data-tab="sell" class="${marketState.tab === 'sell' ? 'active' : ''}">♻️ ${T('Sell Used Gear','Скупка хлама')}</button>
+    <button data-tab="fixer" class="${marketState.tab === 'fixer' ? 'active' : ''}">🕵️ ${T('Fixer Requests','Запросы Fixer')}</button>
   </div>
   <div id="market-body">${spinner()}</div>
   <div id="cart-slot"></div>`;
-  $$('.tabs button', view).forEach(b => b.onclick = () => { marketState.tab = b.dataset.tab; marketState.offset = 0; viewMarket(view); });
+  $$('.tabs button', view).forEach(b => b.onclick = () => { marketState.tab = b.dataset.tab; viewMarket(view); });
   const pb = $('#payroll-btn');
   if (pb) pb.onclick = payrollModal;
   await loadMarketBody();
@@ -611,93 +628,49 @@ async function viewMarket(view) {
 async function loadMarketBody() {
   const box = $('#market-body');
   if (!box) return;
-  if (marketState.tab === 'nm') return loadNightMarket(box);
   if (marketState.tab === 'sell') return loadSellTab(box);
-  return loadMarketCatalog(box);
+  if (marketState.tab === 'fixer') return loadFixerTab(box);
+  return loadNightMarket(box);
 }
 
 async function loadNightMarket(box) {
   box.innerHTML = spinner();
   const data = await api('/api/nightmarket');
-  box.innerHTML = `
-    <div class="muted small mb">Витрина на ${data.date}. Товаров: ${data.items.length}. Цены уличные — на них и покупай.</div>
-    <div class="item-grid">
-      ${data.items.map(it => `
-        <div class="card item-card">
-          <div class="head">
-            <span class="name">${esc(it.name)}</span>
-            <span>
-              ${it.discount ? `<span class="market-price-old">${money(it.price)}</span>` : ''}
-              <span class="price">${money(it.street_price)}</span>
-            </span>
-          </div>
-          <div class="chips">
-            ${it.discount ? '<span class="tag disc">ВЫГОДНО</span>' : '<span class="tag">переплата</span>'}
-            ${Object.entries(it.fields || {}).slice(0, 4).map(([k, v]) => `<span class="chip">${esc(shortField(k, v))}</span>`).join('')}
-          </div>
-          <div class="row">
-            <button class="btn-sm btn-primary" data-buy-nm="${it.id}" data-price="${it.street_price}">В корзину · ${money(it.street_price)}</button>
-          </div>
-        </div>`).join('')}
-    </div>`;
-  $$('[data-buy-nm]', box).forEach(b => b.onclick = () => {
-    const card = b.closest('.item-card');
-    addToCart(b.dataset.buyNm, Number(b.dataset.price), 'nm', $('.name', card).textContent);
-  });
-  renderCart();
-}
-
-async function loadMarketCatalog(box) {
-  box.innerHTML = `
-    <div class="searchbar">
-      <input id="mk-q" placeholder="Поиск по каталогу…" value="${esc(marketState.q)}">
-      <select id="mk-cat">
-        <option value="">Все категории</option>
-        ${state.meta.cats.map(c => `<option value="${c.id}" ${marketState.cat === c.id ? 'selected' : ''}>${c.emoji} ${esc(catalogCategoryName(c))}</option>`).join('')}
-      </select>
-      <button id="mk-search">Найти</button>
-    </div>
-    <div id="mk-results">${spinner()}</div>`;
-  const doSearch = () => {
-    marketState.q = $('#mk-q').value;
-    marketState.cat = $('#mk-cat').value;
-    marketState.offset = 0;
-    loadMarketCatalogItems();
+  let characters=[];
+  if(state.me)try{characters=(await api('/api/characters')).characters.filter(character=>!character.data.archived);}catch(e){}
+  const selectedBuyer=characters.find(character=>character.id===Number(marketState.buyerChar))||characters.find(character=>character.id===Number(localStorage.getItem('ncnet:active-dossier')))||characters[0]||null;
+  if(selectedBuyer)marketState.buyerChar=selectedBuyer.id;
+  const allCategories=[...new Set(data.vendors.flatMap(vendor=>vendor.categories))];
+  const vendorName=vendor=>APP_I18N.current()==='ru'?vendor.name_ru:vendor.name_en;
+  const vendorTagline=vendor=>APP_I18N.current()==='ru'?vendor.tagline_ru:vendor.tagline_en;
+  const categoryName=id=>{const category=state.meta.cats.find(item=>item.id===id);return category?`${category.emoji} ${catalogCategoryName(category)}`:id;};
+  const itemCard=item=>{const reservedForOther=item.reserved&&selectedBuyer&&item.reserved_character_id!==selectedBuyer.id;const canBuy=!item.sold_out&&!reservedForOther;const stockLabel=item.sold_out?T('SOLD OUT','РАСПРОДАНО'):`${T('In stock','В наличии')}: ${item.stock_remaining}`;const buyLabel=item.sold_out?T('SOLD OUT','РАСПРОДАНО'):(reservedForOther?T('RESERVED','ЗАРЕЗЕРВИРОВАНО'):`${T('Add to Cart','В корзину')} · ${money(item.street_price)}`);return `<article class="card item-card ${canBuy?'':'unavailable'}"><div class="head">${itemThumb(item.cat)}<button class="item-name-button name" data-market-info="${item.id}">${esc(item.name)}</button><span>${item.discount?`<span class="market-price-old">${money(item.price)}</span>`:''}<span class="price">${money(item.street_price)}</span></span></div><div class="chips"><span class="chip">${esc(categoryName(item.cat))}</span>${itemMechanicChips(item)}${item.new_today?`<span class="tag">${T('NEW TODAY','НОВИНКА')}</span>`:''}<span class="chip">${stockLabel}</span>${item.reserved?`<span class="tag warn-tag">${T('RESERVED','РЕЗЕРВ')}${item.reserved_handle?` · ${esc(item.reserved_handle)}`:''}</span>`:''}</div>${item.desc?`<details class="desc-wrap"><summary>${T('Description','Описание')}</summary><div class="desc preserve-lines">${esc(itemDescription(item))}</div></details>`:''}<div class="small muted">${item.source?`📖 ${esc(item.source)} · `:''}${item.discount?`<span class="green-text">${Math.round((1-item.multiplier)*100)}% ${T('below list','ниже каталога')}</span>`:`${Math.round((item.multiplier-1)*100)}% ${T('markup','наценка')}`}</div><div class="row"><button class="info-btn" data-market-info="${item.id}" aria-label="${T('Item details','Описание предмета')}">i</button><button class="btn-sm btn-primary" data-buy-nm="${item.id}" data-price="${item.street_price}" ${canBuy?'':'disabled'}>${buyLabel}</button>${state.me?`<button class="btn-sm" data-fixer-request="${item.id}">${T('Ask Fixer','Через Fixer')}</button>`:''}${state.me&&state.me.is_gm?`<button class="btn-sm" data-market-reserve="${item.id}">${item.reserved?T('Release','Снять резерв'):T('Reserve','Резерв')}</button>`:''}</div></article>`;};
+  const itemThumb=cat=>{const icons={'guns':'🔫','ammo':'📦','melee':'⚔️','armor':'🛡️','grenades':'💣','gear':'🔧','fashion':'👕','services':'📋','cyberware':'🦾','net_stuff':'💻','programs':'💾','vehicles':'🏍️','vehicles_upgrades':'⚙️','gun_upgrades':'🔧'};return `<div class="item-thumb" data-cat="${esc(cat)}">${icons[cat]||'📦'}</div>`;};
+  const permanentItemCard=item=>`<article class="card item-card permanent"><div class="head">${itemThumb(item.cat)}<button class="item-name-button name" data-market-info="${item.id}">${esc(item.name)}</button><span><span class="price">${money(item.street_price)}</span></span></div><div class="chips"><span class="chip">${esc(categoryName(item.cat))}</span>${itemMechanicChips(item)}<span class="tag">📦 ${T('STOCK','СКЛАД')}</span></div>${item.desc?`<details class="desc-wrap"><summary>${T('Description','Описание')}</summary><div class="desc preserve-lines">${esc(itemDescription(item))}</div></details>`:''}<div class="row"><button class="info-btn" data-market-info="${item.id}">i</button><button class="btn-sm btn-primary" data-buy-nm="${item.id}" data-price="${item.street_price}" data-permanent="true">${T('Buy','Купить')} · ${money(item.street_price)}</button></div></article>`;
+  const filterItems=vendor=>{
+    const query=marketState.q.trim().toLowerCase();
+    let items=vendor.items.filter(item=>(!marketState.cat||item.cat===marketState.cat)&&(!query||`${item.name} ${item.desc||''} ${item.source||''}`.toLowerCase().includes(query))&&(!marketState.affordable||!selectedBuyer||Number(item.street_price)<=Number(selectedBuyer.data.cash||0)));
+    const compare={name:(a,b)=>a.name.localeCompare(b.name,APP_I18N.current()==='ru'?'ru':'en'),price_asc:(a,b)=>a.street_price-b.street_price,price_desc:(a,b)=>b.street_price-a.street_price,discount:(a,b)=>a.multiplier-b.multiplier||a.street_price-b.street_price,category:(a,b)=>categoryName(a.cat).localeCompare(categoryName(b.cat))||a.name.localeCompare(b.name)}[marketState.sort]||(()=>0);
+    return [...items].sort(compare);
   };
-  $('#mk-search').onclick = doSearch;
-  $('#mk-cat').onchange = doSearch;
-  $('#mk-q').onkeydown = (e) => { if (e.key === 'Enter') doSearch(); };
-  await loadMarketCatalogItems();
-}
-
-async function loadMarketCatalogItems() {
-  const box = $('#mk-results');
-  if (!box) return;
-  box.innerHTML = spinner();
-  const p = new URLSearchParams({ q: marketState.q, cat: marketState.cat, offset: marketState.offset, limit: marketState.limit });
-  const data = await api('/api/items?' + p);
-  const catName = (id) => { const c = state.meta.cats.find(x => x.id === id); return c ? c.emoji + ' ' + catalogCategoryName(c) : id; };
-  box.innerHTML = `
-    <div class="muted small mb">Найдено: ${nf.format(data.total)} · цены каталожные</div>
-    <div class="item-grid">
-      ${data.items.filter(i => i.price != null).map(it => `
-        <div class="card item-card">
-          <div class="head"><span class="name">${esc(it.name)}</span><span class="price">${money(it.price)}</span></div>
-          <div class="chips"><span class="chip">${catName(it.cat)}</span>
-            ${Object.entries(it.fields || {}).slice(0, 4).map(([k, v]) => `<span class="chip">${esc(shortField(k, v))}</span>`).join('')}</div>
-          ${it.source ? `<div class="small muted">📖 ${esc(it.source)}</div>` : ''}
-          <div class="row"><button class="btn-sm btn-primary" data-buy="${it.id}" data-price="${it.price}">В корзину</button></div>
-        </div>`).join('') || '<div class="empty">Нет товаров с ценой по этому запросу.</div>'}
-    </div>
-    ${pagerHtml(data.total, data.offset, data.limit)}`;
-  $$('[data-buy]', box).forEach(b => b.onclick = () => {
-    const card = b.closest('.item-card');
-    addToCart(b.dataset.buy, Number(b.dataset.price), 'list', $('.name', card).textContent);
-  });
-  bindPager(box, () => { marketState.offset += data.limit; loadMarketCatalogItems(); },
-    () => { marketState.offset = Math.max(0, marketState.offset - data.limit); loadMarketCatalogItems(); });
+  const visibleVendors=data.vendors.filter(vendor=>!marketState.vendor||vendor.id===marketState.vendor);
+  box.innerHTML=`<div class="market-toolbar panel mb"><div class="grid cols-4"><label class="f"><span>${T('Vendor','Продавец')}</span><select id="nm-vendor"><option value="">${T('All Vendors','Все продавцы')}</option>${data.vendors.map(vendor=>`<option value="${vendor.id}" ${marketState.vendor===vendor.id?'selected':''}>${vendor.icon} ${esc(vendorName(vendor))}</option>`).join('')}</select></label><label class="f"><span>${T('Category','Категория')}</span><select id="nm-cat"><option value="">${T('All Categories','Все категории')}</option>${allCategories.map(id=>`<option value="${id}" ${marketState.cat===id?'selected':''}>${esc(categoryName(id))}</option>`).join('')}</select></label><label class="f"><span>${T('Sort','Сортировка')}</span><select id="nm-sort"><option value="discount" ${marketState.sort==='discount'?'selected':''}>${T('Best Deal','Лучшая цена')}</option><option value="price_asc" ${marketState.sort==='price_asc'?'selected':''}>${T('Price: Low to High','Цена: по возрастанию')}</option><option value="price_desc" ${marketState.sort==='price_desc'?'selected':''}>${T('Price: High to Low','Цена: по убыванию')}</option><option value="name" ${marketState.sort==='name'?'selected':''}>${T('Name','Название')}</option><option value="category" ${marketState.sort==='category'?'selected':''}>${T('Category','Категория')}</option></select></label>${characters.length?`<label class="f"><span>${T('Buyer','Покупатель')}</span><select id="nm-buyer">${characters.map(character=>`<option value="${character.id}" ${selectedBuyer?.id===character.id?'selected':''}>${esc(character.data.handle)} · ${money(character.data.cash)}</option>`).join('')}</select></label>`:'<div></div>'}</div><div class="searchbar"><input id="nm-q" value="${esc(marketState.q)}" placeholder="${T('Search current stock…','Поиск по текущему ассортименту…')}"><button id="nm-search">${T('Search','Найти')}</button><label class="checkbox"><input id="nm-affordable" type="checkbox" ${marketState.affordable?'checked':''}> ${T('Affordable only','Только доступное по цене')}</label><span class="small muted">${T('Stock date','Дата ассортимента')}: ${esc(data.date)}</span></div></div>${visibleVendors.map(vendor=>{const items=filterItems(vendor);return `<section class="market-vendor panel mb" style="--vendor:${esc(vendor.accent_color||'#00e5ff')}"><header class="market-vendor-head"><div><h2>${vendor.icon} ${esc(vendorName(vendor))}</h2><p class="muted user-content">${esc(vendorTagline(vendor))}</p></div><div class="row">${vendor.persona_id?`<a class="btn-sm" href="#/personas/${vendor.persona_id}">${T('Vendor Profile','Профиль продавца')}</a>`:''}${vendor.location?`<span class="chip">📍 ${esc(vendor.location)}</span>`:''}<span class="tag">${items.length} ${T('offers','предложений')}</span></div></header>${items.length?`<div class="item-grid">${items.map(itemCard).join('')}</div>`:`<div class="empty">${T('No stock matches these filters.','Нет товаров по выбранным фильтрам.')}</div>`}${vendor.permanent&&vendor.permanent.length?`<h3 class="mt">📦 ${T('Always in stock','Всегда в наличии')}</h3><div class="item-grid">${vendor.permanent.map(permanentItemCard).join('')}</div>`:''}</section>`;}).join('')}`;
+  const reload=()=>loadNightMarket(box);
+  $('#nm-vendor').onchange=event=>{marketState.vendor=event.target.value;reload();};
+  $('#nm-cat').onchange=event=>{marketState.cat=event.target.value;reload();};
+  $('#nm-sort').onchange=event=>{marketState.sort=event.target.value;reload();};
+  if($('#nm-buyer'))$('#nm-buyer').onchange=event=>{marketState.buyerChar=Number(event.target.value);localStorage.setItem('ncnet:active-dossier',event.target.value);reload();};
+  $('#nm-affordable').onchange=event=>{marketState.affordable=event.target.checked;reload();};
+  const runSearch=()=>{marketState.q=$('#nm-q').value;reload();};
+  $('#nm-search').onclick=runSearch;
+  $('#nm-q').onkeydown=event=>{if(event.key==='Enter')runSearch();};
+  $$('[data-market-info]',box).forEach(button=>button.onclick=()=>showItemModal(button.dataset.marketInfo));
+  $$('[data-buy-nm]', box).forEach(button=>button.onclick=()=>{const card=button.closest('.item-card');addToCart(button.dataset.buyNm,Number(button.dataset.price),'nm',$('.name',card).textContent,button.dataset.permanent==='true');});
+  $$('[data-fixer-request]', box).forEach(button=>button.onclick=()=>openFixerRequestModal(button.dataset.fixerRequest));
+  $$('[data-market-reserve]', box).forEach(button=>button.onclick=()=>openMarketReserveModal(button.dataset.marketReserve, data));
   renderCart();
 }
+
 
 async function loadSellTab(box) {
   if (!state.me) { box.innerHTML = `<div class="empty">Войдите, чтобы продавать хлам со склада своих персонажей. <a href="#/login">${T('Sign in','Войти')}</a></div>`; return; }
@@ -715,16 +688,17 @@ async function loadSellTab(box) {
   const renderList = (chars2) => {
     const ch = chars2.find(c => c.id === (marketState.sellChar || chars2[0].id)) || chars2[0];
     marketState.sellChar = ch.id;
-    const inv = (ch.data.inventory || []);
-    $('#sell-list').innerHTML = inv.length ? inv.map(i => `
+    const inv = [...(ch.data.inventory || []),...(ch.data.cyberware || []).filter(item=>item.state!=='installed')];
+    $('#sell-list').innerHTML = inv.length ? inv.map(i => {const locked=['equipped','installed'].includes(i.state);return `
       <div class="inv-row">
-        <span class="iname">${esc(i.name)} ×${i.qty || 1}</span>
-        <span class="muted small">куплено за ${money(i.price)}</span>
-        <button class="btn-sm" data-sell="${esc(i.key)}">Продать 1 → ${money((i.price || 0) * 0.5)}</button>
-      </div>`).join('') : '<div class="empty">Инвентарь пуст.</div>';
-    $$('[data-sell]', $('#sell-list')).forEach(b => b.onclick = async () => {
+        <span class="iname">${esc(i.custom_name||i.name)} ×${i.qty || 1}</span>
+        <span class="chip">${esc(i.state||'carried')}</span>
+        <span class="muted small">${T('bought for','куплено за')} ${money(i.price)}</span>
+        <button class="btn-sm" data-sell-instance="${esc(i.instance_id||'')}" data-sell-key="${esc(i.key)}" ${locked?'disabled':''}>${locked?T('Unequip first','Сначала снять'):T('Sell 1','Продать 1')+' → '+money((i.price||0)*0.5)}</button>
+      </div>`;}).join('') : `<div class="empty">${T('Inventory is empty.','Инвентарь пуст.')}</div>`;
+    $$('[data-sell-instance]', $('#sell-list')).forEach(b => b.onclick = async () => {
       try {
-        const r = await api('/api/sell', { method: 'POST', body: { char_id: ch.id, key: b.dataset.sell, qty: 1 } });
+        const r = await api('/api/sell', { method: 'POST', body: { char_id: ch.id, instance_id: b.dataset.sellInstance, key: b.dataset.sellKey, qty: 1 } });
         toast(`Продано ${r.name} ×${r.qty} за ${money(r.got)}. Кэш: ${money(r.cash)}`);
         loadSellTab(box);
       } catch (e) { toast(e.message, true); }
@@ -733,10 +707,134 @@ async function loadSellTab(box) {
   renderList(chars);
 }
 
-function addToCart(id, price, mode, name) {
+async function marketCharacters() {
+  if (!state.me) return [];
+  if (state.me.is_gm) {
+    const data = await api('/api/roster');
+    return (data.characters || []).filter(c => !c.data.archived);
+  }
+  const data = await api('/api/characters');
+  return (data.characters || []).filter(c => !c.data.archived);
+}
+
+async function openFixerRequestModal(itemId) {
+  const chars = await marketCharacters();
+  if (!chars.length) { toast(T('Create a Character first.','Сначала создайте персонажа.'), true); go('/char/new'); return; }
+  const modal = openModal(`<h2>🕵️ ${T('Ask Fixer','Запрос через Fixer')}</h2>
+    <p class="muted small">${T('Ask a Fixer to source this item. The GM reviews and fulfils the request.','Попросите Fixer достать этот предмет. ГМ рассматривает и выполняет запрос.')}</p>
+    <label class="f"><span>${T('Character','Персонаж')}</span><select id="fxr-char">${chars.map(c=>`<option value="${c.id}">${esc(c.data.handle)}</option>`).join('')}</select></label>
+    <label class="f"><span>${T('Note','Заметка')}</span><textarea id="fxr-note" maxlength="1000" rows="2"></textarea></label>
+    <div class="row"><button id="fxr-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="fxr-send">${T('Send Request','Отправить')}</button></div>`, true);
+  $('#fxr-cancel', modal).onclick = closeModal;
+  $('#fxr-send', modal).onclick = async () => {
+    try {
+      await api('/api/fixer-requests', { method: 'POST', body: { char_id: Number($('#fxr-char', modal).value), item_id: itemId, note: $('#fxr-note', modal).value.trim() } });
+      closeModal();
+      toast(T('Request sent.','Запрос отправлен.'));
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+async function openMarketReserveModal(itemId, marketData) {
+  const item = (marketData.items || []).find(i => i.id === itemId);
+  if (!item) return;
+  const chars = await marketCharacters();
+  const modal = openModal(`<h2>${T('Reserve Item','Зарезервировать предмет')}</h2>
+    <p class="muted small">${esc(item.name)} · ${money(item.street_price)}</p>
+    ${item.reserved ? `<p class="small warn-text">${T('Currently reserved','Сейчас зарезервировано')}${item.reserved_handle ? ': ' + esc(item.reserved_handle) : ''}</p>` : ''}
+    <label class="f"><span>${T('For character','Для персонажа')}</span><select id="rs-char"><option value="">— ${T('Release','Снять резерв')} —</option>${chars.map(c=>`<option value="${c.id}" ${item.reserved_character_id===c.id?'selected':''}>${esc(c.data.handle)}</option>`).join('')}</select></label>
+    <label class="f"><span>${T('Note','Заметка')}</span><input id="rs-note" maxlength="200"></label>
+    <div class="row"><button id="rs-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="rs-save">${T('Save','Сохранить')}</button></div>`, true);
+  $('#rs-cancel', modal).onclick = closeModal;
+  $('#rs-save', modal).onclick = async () => {
+    const cid = $('#rs-char', modal).value;
+    try {
+      await api('/api/nightmarket/reserve', { method: 'POST', body: { item_id: itemId, character_id: cid ? Number(cid) : null, note: $('#rs-note', modal).value.trim() } });
+      closeModal();
+      toast(T('Reservation updated.','Резерв обновлён.'));
+      const box = $('#market-body'); if (box) loadNightMarket(box);
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+function fixerRequestRow(r) {
+  const statusLabel = { pending: T('PENDING','ОЖИДАЕТ'), fulfilled: T('FULFILLED','ВЫПОЛНЕНО'), declined: T('DECLINED','ОТКЛОНЕНО') }[r.status] || r.status;
+  const isGm = state.me && state.me.is_gm;
+  return `<div class="inv-row"><span class="iname">${esc(r.item_name || 'Item')}</span><span class="small muted">${esc(r.character_name || '')}</span><span class="tag">${esc(statusLabel)}</span>${r.note ? `<span class="small muted">${esc(r.note)}</span>` : ''}${isGm && r.status === 'pending' ? `<button class="btn-sm" data-fixer-resolve="${r.id}">${T('Resolve','Решить')}</button>` : ''}</div>`;
+}
+
+async function loadFixerTab(box) {
+  if (!state.me) { box.innerHTML = `<div class="empty">${T('Sign in to work with Fixer requests.','Войдите, чтобы работать с запросами Fixer.')} <a href="#/login">${T('Sign in','Войти')}</a></div>`; return; }
+  box.innerHTML = spinner();
+  const data = await api('/api/fixer-requests');
+  const chars = await marketCharacters();
+  const requests = data.requests || [];
+  box.innerHTML = `
+    <div class="panel mb">
+      <h2>🕵️ ${T('Request via Fixer','Запрос через Fixer')}</h2>
+      <p class="muted small">${T('Ask a Fixer to source an item that is not in the current Night Market. The GM reviews and fulfils requests.','Попросите Fixer достать предмет, которого нет в текущем Night Market. ГМ рассматривает и выполняет запросы.')}</p>
+      ${chars.length ? `<div class="row"><label class="f"><span>${T('Character','Персонаж')}</span><select id="fixer-char">${chars.map(c=>`<option value="${c.id}">${esc(c.data.handle)}</option>`).join('')}</select></label><label class="f"><span>${T('What do you need?','Что нужно?')}</span><input id="fixer-item" maxlength="160" placeholder="${T('Item name or description','Название или описание предмета')}"></label></div><label class="f"><span>${T('Note','Заметка')}</span><textarea id="fixer-note" maxlength="1000" rows="2"></textarea></label><div class="row"><button class="btn-primary" id="fixer-send">${T('Send Request','Отправить запрос')}</button></div>` : `<div class="empty">${T('Create a Character to request items.','Создайте персонажа, чтобы отправлять запросы.')}</div>`}
+    </div>
+    <div class="panel">
+      <h3>${T('Requests','Запросы')} (${requests.length})</h3>
+      ${requests.length ? requests.map(fixerRequestRow).join('') : `<div class="empty">${T('No requests yet.','Запросов пока нет.')}</div>`}
+    </div>`;
+  const send = $('#fixer-send', box);
+  if (send) send.onclick = async () => {
+    const itemName = $('#fixer-item', box).value.trim();
+    if (itemName.length < 2) { toast(T('Describe the item.','Опишите предмет.'), true); return; }
+    try {
+      await api('/api/fixer-requests', { method: 'POST', body: { char_id: Number($('#fixer-char', box).value), item_name: itemName, note: $('#fixer-note', box).value.trim() } });
+      toast(T('Request sent to the Fixer.','Запрос отправлен Fixer.'));
+      loadFixerTab(box);
+    } catch (e) { toast(e.message, true); }
+  };
+  $$('[data-fixer-resolve]', box).forEach(b => b.onclick = () => openFixerResolveModal(Number(b.dataset.fixerResolve), () => loadFixerTab(box)));
+}
+
+async function openFixerResolveModal(id, refresh) {
+  const modal = openModal(`<h2>${T('Resolve Fixer Request','Обработать запрос Fixer')}</h2>
+    <label class="f"><span>${T('Price (€$)','Цена (€$)')}</span><input id="fx-price" type="number" min="0" max="9999999" value="0"></label>
+    <label class="f"><span>${T('Quantity','Количество')}</span><input id="fx-qty" type="number" min="1" max="99" value="1"></label>
+    <label class="f"><span>${T('Grant Database item (optional)','Выдать предмет из Database (необязательно)')}</span><input id="fx-grant" maxlength="120" placeholder="${T('Search item name…','Поиск названия…')}"><div id="fx-results"></div></label>
+    <label class="f"><span>${T('Note','Заметка')}</span><textarea id="fx-note" maxlength="1000" rows="2"></textarea></label>
+    <div class="row"><button class="btn-danger" id="fx-decline">${T('Decline','Отклонить')}</button><button class="btn-primary" id="fx-fulfill">${T('Fulfill','Выполнить')}</button></div>`, true);
+  let grantItemId = '';
+  const grantInput = $('#fx-grant', modal);
+  const search = async () => {
+    const q = grantInput.value.trim();
+    if (q.length < 2) { $('#fx-results', modal).innerHTML = ''; return; }
+    try {
+      const data = await api('/api/items?q=' + encodeURIComponent(q) + '&limit=8');
+      $('#fx-results', modal).innerHTML = (data.items || []).map(it => `<button class="btn-sm" data-grant-pick="${esc(it.id)}" data-grant-name="${esc(it.name)}">${esc(it.name)} · ${money(it.price || 0)}</button>`).join('');
+      $$('[data-grant-pick]', modal).forEach(b => b.onclick = () => { grantItemId = b.dataset.grantPick; grantInput.value = b.dataset.grantName; $('#fx-results', modal).innerHTML = `<span class="tag">${T('Granting','Выдаём')}: ${esc(b.dataset.grantName)}</span>`; });
+    } catch (e) { /* пусто */ }
+  };
+  grantInput.oninput = () => { clearTimeout(grantInput._t); grantInput._t = setTimeout(search, 300); };
+  $('#fx-fulfill', modal).onclick = async () => {
+    try {
+      const body = { action: 'fulfill', price: Number($('#fx-price', modal).value) || 0, qty: Number($('#fx-qty', modal).value) || 1, note: $('#fx-note', modal).value.trim() };
+      if (grantItemId) body.grant_item_id = grantItemId;
+      await api(`/api/fixer-requests/${id}/resolve`, { method: 'POST', body });
+      closeModal();
+      toast(T('Request fulfilled.','Запрос выполнен.'));
+      refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+  $('#fx-decline', modal).onclick = async () => {
+    try {
+      await api(`/api/fixer-requests/${id}/resolve`, { method: 'POST', body: { action: 'decline', note: $('#fx-note', modal).value.trim() } });
+      closeModal();
+      toast(T('Request declined.','Запрос отклонён.'));
+      refresh();
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+function addToCart(id, price, mode, name, permanent=false) {
   const ex = state.cart.find(c => c.id === id && c.mode === mode);
   if (ex) ex.qty++;
-  else state.cart.push({ id, price, qty: 1, mode, name: name.replace(/ ·.*/, '') });
+  else state.cart.push({ id, price, qty: 1, mode, name: name.replace(/ ·.*/, ''), permanent });
   renderCart();
   toast('Добавлено в корзину: ' + state.cart[state.cart.length - 1].name);
 }
@@ -1367,7 +1465,7 @@ function wizChar() {
     key: c.id, name: c.name, hl: c.hl || 0, price: c.price, type: c.type || '',
     desc: c.desc || '', source: c.source || '', fields: c.fields || {},
     mechanics: c.mechanics || {}, requirements: c.requirements || [], capacity: c.capacity || {},
-    instance_id: c.instance_id || c.id, host_instance: c.host_instance || '', host_instances: c.host_instances || (c.host_instance ? [c.host_instance] : []),
+    instance_id: c.instance_id || c.id, installation_side: c.installation_side || '', host_instance: c.host_instance || '', host_instances: c.host_instances || (c.host_instance ? [c.host_instance] : []),
   }));
   const hasPaidNeuroport = purchasedChrome.some(c => String(c.name).toLowerCase() === 'neuroport');
   const cyberware = w.freeNeuroport && !hasPaidNeuroport
@@ -1913,7 +2011,7 @@ function showCreationItemInfo(item) {
     .map(([key, value]) => `<b>${esc(key.replace(/_/g, ' '))}</b><span>${esc(value && typeof value === 'object' ? (value.notation || JSON.stringify(value)) : value)}</span>`).join('');
   const requirements = (item.requirements || []).map(req => req.kind === 'stat' ? `${req.stat} ${req.minimum}+` : req.value);
   openModal(`<h2>${esc(item.variant_name || item.display_name || item.name)}</h2>
-    <div class="chips mb"><span class="chip">${esc(itemVisibleType(item, T('Item','Предмет')))}</span>${item.source ? `<span class="tag source">${esc(item.source)}</span>` : ''}${item.price != null ? `<span class="price">${money(item.price)}</span>` : ''}</div>
+    <div class="chips mb"><span class="chip">${esc(itemVisibleType(item, T('Item','Предмет')))}</span>${item.is_custom?'<span class="tag">CUSTOM · MANUAL</span>':''}${item.source ? `<span class="tag source">${esc(item.source)}</span>` : ''}${item.acquisition_source?`<span class="chip">${esc(acquisitionSourceLabel(item.acquisition_source))}</span>`:''}${item.price != null ? `<span class="price">${money(item.price)}</span>` : ''}</div>
     <div class="mechanic-chips mb">${itemMechanicChips(item)}</div>
     ${requirements.length ? `<div class="panel accent mb"><b>${T('Requirements','Требования')}</b><p>${requirements.map(esc).join(' · ')}</p></div>` : ''}
     ${item.desc ? `<p class="preserve-lines">${esc(item.desc)}</p>` : `<p class="muted">${T('No description is available in Data Pool.','Описание в Data Pool не указано.')}</p>`}
@@ -2060,12 +2158,19 @@ function isForbiddenDuplicate(wiz, item) {
 }
 
 function itemMechanicChips(item) {
-  const m=item.mechanics||{}, chips=[];
-  if(m.damage)chips.push(`<span class="weap-dmg">${esc(m.damage.notation)} · ${m.damage.dice} dice · ${m.damage.average} avg</span>`);
-  const labels={rof:'ROF',hands:'Hands',magazine:'Mag',skill:'Skill',quality:'Quality',concealable:'Conceal',sp:'SP',sdp:'SDP',seats:'Seats',combat_speed:'Combat',narrative_speed:'Narrative',installation:'Install',slots_used:'Slots',program_class:'Class',per:'PER',spd:'SPD',atk:'ATK',def:'DEF',rez:'REZ'};
-  for(const [key,label] of Object.entries(labels))if(m[key]!=null)chips.push(`<span class="chip"><b>${label}</b> ${esc(String(m[key]).replace(/\.0$/,''))}</span>`);
-  if(item.sp!=null&&!m.sp)chips.push(`<span class="chip"><b>SP</b> ${item.sp}</span>`);
+  const m=item.mechanics||{},chips=[];
+  const clean=value=>String(value).replace(/\.0(?=\b)/g,'');
+  if(m.damage){const average=Number(m.damage.average),avg=Number.isInteger(average)?average:String(average);chips.push(`<span class="weap-dmg">${esc(m.damage.notation)} · ${m.damage.dice}d${m.damage.sides} · ${avg} ${T('avg','сред.')}</span>`);}
+  const labels={rof:['ROF','Скорострельность'],hands:['Hands','Руки'],magazine:['Mag','Магазин'],skill:['Skill','Навык'],quality:['Quality','Качество'],concealable:['Conceal','Скрываемое'],sp:['SP','SP'],sdp:['SDP','SDP'],seats:['Seats','Места'],combat_speed:['Combat','Боевая скорость'],narrative_speed:['Narrative','Скорость в мире'],installation:['Install','Установка'],slots_used:['Slots','Слоты'],program_class:['Class','Класс'],per:['PER','PER'],spd:['SPD','SPD'],atk:['ATK','ATK'],def:['DEF','DEF'],rez:['REZ','REZ'],nomad_access:['Nomad','Доступ Nomad']};
+  for(const [key,pair] of Object.entries(labels))if(m[key]!=null&&key!=='sp')chips.push(`<span class="chip"><b>${T(pair[0],pair[1])}</b> ${esc(clean(m[key]))}</span>`);
+  if(m.sp!=null||item.sp!=null)chips.push(`<span class="chip"><b>SP</b> ${esc(clean(m.sp??item.sp))}</span>`);
+  const locations=item.armor_locations||m.armor_locations||[];
+  if(locations.length){const locationLabel=locations.includes('shield')?T('SHIELD','ЩИТ'):(item.armor_bundled||m.armor_bundled?T('HEAD + BODY SET','КОМПЛЕКТ ГОЛОВА + ТЕЛО'):locations.map(location=>T(location.toUpperCase(),location==='head'?'ГОЛОВА':'ТЕЛО')).join(' / '));chips.push(`<span class="chip armor-location"><b>${esc(locationLabel)}</b></span>`);if(locations.length>1&&!item.armor_bundled&&!m.armor_bundled)chips.push(`<span class="chip">${T('purchased separately','покупается раздельно')}</span>`);}
   if(item.hl)chips.push(`<span class="hl-badge">HL ${item.hl}</span>`);
+  if(item.consumable)chips.push(`<span class="chip"><b>${T('Consumable','Расходник')}</b></span>`);
+  if(item.equippable)chips.push(`<span class="chip"><b>${T('Equippable','Экипируемый')}</b></span>`);
+  if(item.effect_coverage?.automated)chips.push(`<span class="chip effect-auto"><b>${T('AUTOMATED EFFECT','АВТОМАТИЧЕСКИЙ ЭФФЕКТ')}</b></span>`);
+  if(item.effect_coverage?.manual||item.use_effect?.manual_resolution_required)chips.push(`<span class="chip effect-manual"><b>${T('MANUAL RULE','РУЧНОЕ ПРАВИЛО')}</b></span>`);
   if(m.quantity_per_purchase)chips.push(`<span class="chip">${m.quantity_per_purchase} ${T('per purchase','за покупку')}</span>`);
   return chips.join('');
 }
@@ -2081,30 +2186,37 @@ function ammoCompatibility(item,wiz) {
   });
 }
 function cyberFoundationNames(host) {
-  const map={Cyberarm:['cyberarm','neo-soviet cyberarm'],Cyberleg:['cyberleg','romanova cyberlegs'],Cybereye:['cybereye','sponsored cybereye'],'Cyberaudio Suite':['cyberaudio suite','discount cyberaudio suite'],'Neural Link or Neuroport':['neural link','neuroport']};
+  const map={Cyberarm:['cyberarm','neo-soviet cyberarm'],Cyberleg:['cyberleg','romanova cyberlegs','rocklin augmentics skydrivers'],Cybereye:['cybereye','sponsored cybereye'],'Cyberaudio Suite':['cyberaudio suite','discount cyberaudio suite'],'Neural Link or Neuroport':['neural link','neuroport']};
   return map[host]||[];
 }
+function clientInstanceId(){if(globalThis.crypto?.randomUUID)return crypto.randomUUID().replaceAll('-','').toLowerCase();return Array.from({length:32},()=>Math.floor(Math.random()*16).toString(16)).join('');}
+function pairedCyberlegFoundation(item){return String(item?.desc||'').toLowerCase().includes('paired cyberlegs');}
+function cyberFoundationKind(item){const name=String(item?.name||'').toLowerCase();if(['cyberarm','neo-soviet cyberarm'].includes(name))return 'Cyberarm';if(['cyberleg'].includes(name)||pairedCyberlegFoundation(item))return 'Cyberleg';if(['cybereye','sponsored cybereye'].includes(name))return 'Cybereye';return '';}
+function cyberSideRequired(item){return !!cyberFoundationKind(item)&&!pairedCyberlegFoundation(item);}
+function chooseCyberSide(wiz,item){if(pairedCyberlegFoundation(item))return 'paired';if(!cyberSideRequired(item))return '';const kind=cyberFoundationKind(item),occupied=new Set(wiz.cyberware.filter(other=>cyberFoundationKind(other)===kind).map(other=>other.installation_side).filter(Boolean)),available=['left','right'].filter(side=>!occupied.has(side));if(!available.length){toast(T(`Both ${kind} sides are occupied.`,`Обе стороны ${kind} заняты.`),true);return null;}const answer=available.length===1?available[0]:(prompt(`${T('Choose installation side','Выберите сторону установки')}: ${available.join(' / ')}`,available[0])||'').toLowerCase();return available.includes(answer)?answer:null;}
+function pairedCyberHostId(instanceId){const value=String(instanceId||'').toLowerCase();if(/^[a-f0-9]{32}$/.test(value))return value.slice(0,-1)+((parseInt(value.at(-1),16)+1)%16).toString(16);return `${value}:paired-2`;}
 function cyberHostIds(item){return item.host_instances&&item.host_instances.length?item.host_instances:(item.host_instance?[item.host_instance]:[]);}
+function cyberOptionSlots(item){const parsed=String(item?.desc||'').match(/(?:takes?|uses?|requires?)\s+(?:up\s+)?(\d+)\s+(?:cyberware\s+)?option slots?/i);return Number(parsed?.[1])||Number(item?.capacity?.slots_used)||0;}
+function cyberPhysicalHosts(wiz){const all=[...wiz.cyberware];if(wiz.freeNeuroport)all.unshift({id:'creation-neuroport',instance_id:'creation-neuroport',name:'Neuroport',capacity:{slots_total:5}});return all.flatMap(candidate=>{if(!pairedCyberlegFoundation(candidate))return [candidate];const parent=candidate.instance_id||candidate.id,total=Number(String(candidate.desc||'').match(/each cyberleg has\s+(\d+)\s+option slots?/i)?.[1])||Number(candidate.capacity?.slots_total)||1;return [{...candidate,instance_id:parent,name:`${candidate.name} · Left`,capacity:{...(candidate.capacity||{}),host:null,slots_total:total}},{...candidate,instance_id:pairedCyberHostId(parent),name:`${candidate.name} · Right`,capacity:{...(candidate.capacity||{}),host:null,slots_total:total}}];});}
 function availableCyberHosts(wiz,item) {
   const host=item.capacity&&item.capacity.host;if(!host)return [];
-  const accepted=cyberFoundationNames(host), all=[...wiz.cyberware];
-  if(wiz.freeNeuroport)all.unshift({id:'creation-neuroport',instance_id:'creation-neuroport',name:'Neuroport',capacity:{slots_total:5}});
-  return all.filter(candidate=>accepted.includes(String(candidate.name||'').toLowerCase())).filter(candidate=>{
+  const accepted=cyberFoundationNames(host),all=cyberPhysicalHosts(wiz);
+  return all.filter(candidate=>accepted.some(name=>String(candidate.name||'').toLowerCase().startsWith(name))).filter(candidate=>{
     const total=num(candidate.capacity&&candidate.capacity.slots_total)||4;
-    const used=wiz.cyberware.filter(option=>cyberHostIds(option).includes(candidate.instance_id||candidate.id)).reduce((sum,option)=>sum+(num(option.capacity&&option.capacity.slots_used)||0),0);
-    return total-used>=(num(item.capacity&&item.capacity.slots_used)||0);
+    const used=wiz.cyberware.filter(option=>cyberHostIds(option).includes(candidate.instance_id||candidate.id)).reduce((sum,option)=>sum+cyberOptionSlots(option),0);
+    return total-used>=cyberOptionSlots(item);
   });
 }
 async function chooseCyberHost(hosts, item) {
   const required=item.capacity?.hosts_required||1;
   if (hosts.length < required) return null;
   if (hosts.length === required) return required===1?hosts[0]:hosts.slice(0,required);
-  return new Promise(resolve=>{const selected=new Set(),modal=openModal(`<h2>${T('Choose host','Выберите host')} · ${esc(item.name)}</h2><p>${T(`Select ${required} different foundations.`,`Выберите разные foundations: ${required}.`)}</p><div class="choice-card-grid">${hosts.map((host,index)=>{const id=host.instance_id||host.id,total=num(host.capacity?.slots_total)||4,used=state.wizard.cyberware.filter(option=>(option.host_instances||[option.host_instance]).includes(id)).reduce((sum,option)=>sum+(num(option.capacity?.slots_used)||0),0),after=used+(num(item.capacity?.slots_used)||0);return `<button class="choice-card" data-host-index="${index}"><b>${esc(host.custom_name||host.name)} #${index+1}</b><span>Slots ${used}/${total} → ${after}/${total}</span></button>`;}).join('')}</div><div class="row mt"><button id="host-cancel">${T('Cancel','Отмена')}</button><button id="host-confirm" class="btn-primary" disabled>${T('Install','Установить')}</button></div>`,true);$$('[data-host-index]',modal).forEach(button=>button.onclick=()=>{const index=Number(button.dataset.hostIndex);if(selected.has(index))selected.delete(index);else if(selected.size<required)selected.add(index);button.classList.toggle('selected',selected.has(index));$('#host-confirm',modal).disabled=selected.size!==required;});$('#host-confirm',modal).onclick=()=>{const result=[...selected].map(index=>hosts[index]);closeModal();resolve(required===1?result[0]:result);};$('#host-cancel',modal).onclick=()=>{closeModal();resolve(null);};});
+  return new Promise(resolve=>{const selected=new Set(),modal=openModal(`<h2>${T('Choose host','Выберите host')} · ${esc(item.name)}</h2><p>${T(`Select ${required} different foundations.`,`Выберите разные foundations: ${required}.`)}</p><div class="choice-card-grid">${hosts.map((host,index)=>{const id=host.instance_id||host.id,total=num(host.capacity?.slots_total)||4,used=state.wizard.cyberware.filter(option=>(option.host_instances||[option.host_instance]).includes(id)).reduce((sum,option)=>sum+cyberOptionSlots(option),0),after=used+cyberOptionSlots(item);return `<button class="choice-card" data-host-index="${index}"><b>${esc(host.custom_name||host.name)} #${index+1}</b><span>Slots ${used}/${total} → ${after}/${total}</span></button>`;}).join('')}</div><div class="row mt"><button id="host-cancel">${T('Cancel','Отмена')}</button><button id="host-confirm" class="btn-primary" disabled>${T('Install','Установить')}</button></div>`,true);$$('[data-host-index]',modal).forEach(button=>button.onclick=()=>{const index=Number(button.dataset.hostIndex);if(selected.has(index))selected.delete(index);else if(selected.size<required)selected.add(index);button.classList.toggle('selected',selected.has(index));$('#host-confirm',modal).disabled=selected.size!==required;});$('#host-confirm',modal).onclick=()=>{const result=[...selected].map(index=>hosts[index]);closeModal();resolve(required===1?result[0]:result);};$('#host-cancel',modal).onclick=()=>{closeModal();resolve(null);};});
 }
 
 function catalogRequirementStatus(wiz,item) {
   const failures=[];
-  if(item.capacity&&item.capacity.host&&availableCyberHosts(wiz,item).length<(item.capacity.hosts_required||1))failures.push(`${T('Requires available','Требуется доступный')} ${(item.capacity.hosts_required||1)}× ${item.capacity.host}`);
+  if(item.capacity&&item.capacity.host&&!pairedCyberlegFoundation(item)&&availableCyberHosts(wiz,item).length<(item.capacity.hosts_required||1))failures.push(`${T('Requires available','Требуется доступный')} ${(item.capacity.hosts_required||1)}× ${item.capacity.host}`);
   const names=[...wiz.cyberware.map(x=>x.name.toLowerCase()),...(wiz.freeNeuroport?['neuroport']:[])];
   for(const req of item.requirements||[]){if(req.kind==='stat'&&(num(wiz.stats[req.stat])||0)<req.minimum)failures.push(`${req.stat} ${req.minimum}`);if(req.kind==='item'){const wanted=req.value.toLowerCase().replace(/^2×\s*/,'');if(!names.some(name=>wanted.includes(name)||name.includes(wanted)))failures.push(req.value);}}
   return failures;
@@ -2145,7 +2257,7 @@ async function wizLoadShopList() {
   const typeSelect=$('#wiz-shop-type');if(typeSelect&&typeSelect.options.length<=1){typeSelect.insertAdjacentHTML('beforeend',selectedTypes.map(type=>`<option value="${esc(type)}" ${filters.type===type?'selected':''}>${esc(type)}</option>`).join(''));}
   const sources=[...new Set(items.flatMap(item=>String(item.source||'').split(/\n/).map(source=>source.split(/\s+\d/)[0]).filter(Boolean)))].sort();
   const sourceSelect=$('#wiz-shop-source');if(sourceSelect&&sourceSelect.options.length<=1)sourceSelect.insertAdjacentHTML('beforeend',sources.map(source=>`<option value="${esc(source)}" ${filters.source===source?'selected':''}>${esc(source)}</option>`).join(''));
-  const rowHtml=item=>{const duplicate=isForbiddenDuplicate(wiz,item),affordable=canAffordShopItem(wiz,item,tab),requirements=tab[0]==='chrome'?catalogRequirementStatus(wiz,item):[],disabled=duplicate||!affordable||requirements.length>0,suggested=tab[0]==='fashion'&&String(wiz.lifepath.clothing||'')&&[item.name,item.mechanics?.fashion_style].some(value=>String(value||'').toLowerCase().includes(String(wiz.lifepath.clothing).toLowerCase()));const compatible=(tab[0]==='ammo'||item.cat==='gun_upgrades')?ammoCompatibility(item,wiz):(item.cat==='vehicles_upgrades'&&wiz.gear.some(selected=>selected.cat==='vehicles')?[T('selected vehicle','выбранный транспорт')]:(item.cat==='programs'&&wiz.gear.some(selected=>selected.cat==='net_stuff'&&String(selected.name).toLowerCase().includes('cyberdeck'))?[T('selected Cyberdeck','выбранный Cyberdeck')]:[]));const compared=(wiz.compareItems||[]).includes(item.id);return `<article class="catalog-card ${disabled?'unaffordable':''} ${compatible.length?'compatible':''} ${suggested?'recommended':''}"><div class="catalog-card-main"><label class="compare-check"><input type="checkbox" data-compare-id="${esc(item.id)}" ${compared?'checked':''}> ${T('Compare','Сравнить')}</label><h4>${esc(item.variant_name||item.name)}${suggested?` <span class="tag recommended-tag">${T('Lifepath Style','Стиль Lifepath')}</span>`:''}</h4><div class="mechanic-chips">${itemMechanicChips(item)}${item.mechanics?.skill?(()=>{const meta=state.meta.skills.find(row=>row[1]===item.mechanics.skill),stat=meta&&meta[2],statValue=stat==='EMP'?(wizDerived().emp_cur??wiz.stats.EMP):wiz.stats[stat];return `<span class="chip character-aware"><b>${esc(item.mechanics.skill)} BASE</b> ${(num(statValue)||0)+(num(wiz.skills[item.mechanics.skill])||0)}</span>`;})():''}</div>${compatible.length?`<div class="compatibility-ok">✓ ${T('Compatible with selected loadout','Совместимо с выбранным снаряжением')}: ${compatible.map(esc).join(', ')}</div>`:''}${requirements.length?`<div class="requirement-fail">⛔ ${requirements.map(esc).join(' · ')}${item.capacity?.host?` <button class="btn-sm" data-show-foundation="${esc(item.capacity.host)}">${T('View Foundations','Показать Foundations')}</button>`:''}</div>`:''}<div class="small muted">${esc(item.source||'')}</div></div><div class="catalog-card-actions"><span class="price">${money(item.price)}</span><button class="info-btn" data-shop-info="${esc(item.variant_id||item.id)}">i</button><button class="btn-sm" data-shop-add="${esc(item.variant_id||item.id)}" ${disabled?'disabled':''}>＋</button></div></article>`;};
+  const rowHtml=item=>{const duplicate=isForbiddenDuplicate(wiz,item),affordable=canAffordShopItem(wiz,item,tab),requirements=tab[0]==='chrome'?catalogRequirementStatus(wiz,item):[],disabled=duplicate||!affordable||requirements.length>0,suggested=tab[0]==='fashion'&&String(wiz.lifepath.clothing||'')&&[item.name,item.mechanics?.fashion_style].some(value=>String(value||'').toLowerCase().includes(String(wiz.lifepath.clothing).toLowerCase()));const compatible=(tab[0]==='ammo'||item.cat==='gun_upgrades')?ammoCompatibility(item,wiz):(item.cat==='vehicles_upgrades'&&wiz.gear.some(selected=>selected.cat==='vehicles')?[T('selected vehicle','выбранный транспорт')]:(item.cat==='programs'&&wiz.gear.some(selected=>selected.cat==='net_stuff'&&String(selected.name).toLowerCase().includes('cyberdeck'))?[T('selected Cyberdeck','выбранный Cyberdeck')]:[]));const compared=(wiz.compareItems||[]).includes(item.id);return `<article class="catalog-card ${disabled?'unaffordable':''}"><div style="display:flex;gap:8px">${itemThumb(item.cat)} ${compatible.length?'compatible':''} ${suggested?'recommended':''}"><div class="catalog-card-main"><label class="compare-check"><input type="checkbox" data-compare-id="${esc(item.id)}" ${compared?'checked':''}> ${T('Compare','Сравнить')}</label><h4>${esc(item.variant_name||item.name)}${suggested?` <span class="tag recommended-tag">${T('Lifepath Style','Стиль Lifepath')}</span>`:''}</h4><div class="mechanic-chips">${itemMechanicChips(item)}${item.mechanics?.skill?(()=>{const meta=state.meta.skills.find(row=>row[1]===item.mechanics.skill),stat=meta&&meta[2],statValue=stat==='EMP'?(wizDerived().emp_cur??wiz.stats.EMP):wiz.stats[stat];return `<span class="chip character-aware"><b>${esc(item.mechanics.skill)} BASE</b> ${(num(statValue)||0)+(num(wiz.skills[item.mechanics.skill])||0)}</span>`;})():''}</div>${compatible.length?`<div class="compatibility-ok">✓ ${T('Compatible with selected loadout','Совместимо с выбранным снаряжением')}: ${compatible.map(esc).join(', ')}</div>`:''}${requirements.length?`<div class="requirement-fail">⛔ ${requirements.map(esc).join(' · ')}${item.capacity?.host?` <button class="btn-sm" data-show-foundation="${esc(item.capacity.host)}">${T('View Foundations','Показать Foundations')}</button>`:''}</div>`:''}<div class="small muted">${esc(item.source||'')}</div></div></div><div class="catalog-card-actions"><span class="price">${money(item.price)}</span><button class="info-btn" data-shop-info="${esc(item.variant_id||item.id)}">i</button><button class="btn-sm" data-shop-add="${esc(item.variant_id||item.id)}" ${disabled?'disabled':''}>＋</button></div></article>`;};
   box.innerHTML=items.length?groupedItemsHtml(items,rowHtml,shopCategoryLabel(tab)):`<div class="empty">${T('Nothing matches these filters.','Ничего не найдено.')}</div>`;
   requestAnimationFrame(()=>box.scrollTop=(wiz.scrolls||{})[scrollKey]||0);box.onscroll=()=>{wiz.scrolls[scrollKey]=box.scrollTop;};
   $$('[data-compare-id]',box).forEach(input=>input.onchange=()=>{wiz.compareItems=wiz.compareItems||[];if(input.checked&&!wiz.compareItems.includes(input.dataset.compareId)){if(wiz.compareItems.length>=3){input.checked=false;toast(T('Compare supports up to three items.','Можно сравнить не более трёх предметов.'),true);return;}wiz.compareItems.push(input.dataset.compareId);}if(!input.checked)wiz.compareItems=wiz.compareItems.filter(id=>id!==input.dataset.compareId);saveWizardDraft();const count=$('#compare-count');if(count)count.textContent=wiz.compareItems.length;});
@@ -2155,7 +2267,7 @@ async function wizLoadShopList() {
     const shared={desc:item.desc||'',fields:item.fields||{},source:item.source||'',mechanics:item.mechanics||{},requirements:item.requirements||[],capacity:item.capacity||{}};
     if(tab[0]==='fashion'){const existing=wiz.fashion.find(x=>x.key===item.id);if(existing)existing.qty=(existing.qty||1)+1;else wiz.fashion.push({key:item.id,cat:item.cat,name:item.name,price,qty:1,type:itemVisibleType(item,'Fashion'),...shared});wiz.fashionCost+=price;}
     else if(tab[0]==='fashionware'){const existing=wiz.fashionware.find(x=>x.id===item.id);if(existing)existing.qty=(existing.qty||1)+1;else wiz.fashionware.push({id:item.id,name:item.name,hl:item.hl||0,price,qty:1,type:String(item.fields?.Type||'Fashionware'),...shared});wiz.fashionCost+=price;}
-    else if(item.cat==='cyberware'){const hosts=availableCyberHosts(wiz,item),host=await chooseCyberHost(hosts,item);if((item.capacity||{}).host&&!host)return;const instance=`${item.id}:${Date.now()}:${Math.random().toString(16).slice(2)}`;wiz.cyberware.push({id:item.id,instance_id:instance,name:item.name,hl:item.hl||0,price,type:String(item.fields?.Type||'Cyberware'),host_instance:host?(Array.isArray(host)?(host[0].instance_id||host[0].id):(host.instance_id||host.id)):'',host_instances:host?(Array.isArray(host)?host.map(value=>value.instance_id||value.id):[host.instance_id||host.id]):[],...shared});wiz.chromeCost+=price;}
+    else if(item.cat==='cyberware'){const needsHost=(item.capacity||{}).host&&!pairedCyberlegFoundation(item),hosts=needsHost?availableCyberHosts(wiz,item):[],host=needsHost?await chooseCyberHost(hosts,item):null;if(needsHost&&!host)return;const side=chooseCyberSide(wiz,item);if(cyberSideRequired(item)&&!side)return;const instance=clientInstanceId();wiz.cyberware.push({id:item.id,instance_id:instance,name:item.name,hl:item.hl||0,price,type:String(item.fields?.Type||'Cyberware'),installation_side:side||'',host_instance:host?(Array.isArray(host)?(host[0].instance_id||host[0].id):(host.instance_id||host.id)):'',host_instances:host?(Array.isArray(host)?host.map(value=>value.instance_id||value.id):[host.instance_id||host.id]):[],...shared});wiz.chromeCost+=price;}
     else if(item.cat==='armor'){wiz.gear.push({key:item.variant_id,source_key:item.id,cat:'armor',name:item.name,display_name:item.variant_name,location:item.purchase_location,price,qty:1,sp:item.sp,penalties:{...(item.penalties||{})},armor_bundled:!!item.armor_bundled,type:itemVisibleType(item,'Armor'),...shared});wiz.gearCost+=price;}
     else{const existing=wiz.gear.find(x=>x.key===item.id);if(existing)existing.qty=(existing.qty||1)+1;else wiz.gear.push({key:item.id,cat:item.cat,name:item.name,price,qty:1,damage:item.damage||null,sp:item.sp,type:itemVisibleType(item,shopCategoryLabel(tab)),...shared});wiz.gearCost+=price;}
     renderWizard();toast(`${T('Added','Добавлено')}: ${item.variant_name||item.name}`);});
@@ -2166,7 +2278,7 @@ function equipmentWarnings(wiz){const warnings=[];const weapons=wiz.gear.filter(
 async function generateRandomOutfit(){const wiz=state.wizard;wiz._shopCache=wiz._shopCache||{};if(!wiz._shopCache.fashion){const response=await api('/api/items?'+new URLSearchParams({cat:'fashion',limit:500}));wiz._shopCache.fashion=response.items;}const preferred=String(wiz.outfitStyle||wiz.lifepath.clothing||'').toLowerCase();let pool=wiz._shopCache.fashion.filter(item=>item.price!=null);const matching=pool.filter(item=>item.name.toLowerCase().includes(preferred)||String(item.mechanics?.fashion_style||'').toLowerCase()===preferred);if(matching.length)pool=matching;pool=[...pool].sort(()=>Math.random()-.5);const picked=[];let spent=0;for(const item of pool){if(picked.length>=6)break;if(spent+(item.price||0)<=FASHION_BUDGET){picked.push(item);spent+=item.price||0;}}if(!picked.length){toast(T('No affordable outfit found.','Не удалось подобрать комплект.'),true);return;}if(!confirm(`${T('Replace current Fashion selection with','Заменить выбранную одежду на')} ${picked.map(x=>x.name).join(', ')}?`))return;wiz.fashion=picked.map(item=>({key:item.id,cat:'fashion',name:item.name,price:item.price,qty:1,type:itemVisibleType(item,'Fashion'),desc:item.desc||'',fields:item.fields||{},source:item.source||'',mechanics:item.mechanics||{}}));wiz.fashionCost=spent+wiz.fashionware.reduce((sum,item)=>sum+(item.price||0)*(item.qty||1),0);renderWizard();}
 function cartSectionHtml(title,items){return items.length?`<section class="catalog-group"><h4 class="catalog-type">${esc(title)} <span>${items.length}</span></h4>${items.join('')}</section>`:'';}
 function combinedCartHtml(wiz){const rows=[];for(const item of roleBenefitItems(wiz))rows.push({type:item.type,html:`<div class="inv-row role-benefit"><span class="iname">🎁 ${esc(item.name)}</span><span class="tag">Role Benefit</span><span class="price">${money(0)}</span></div>`});
-  const seen=new Set();wiz.cyberware.forEach((item,index)=>{if(seen.has(item.id))return;seen.add(item.id);const qty=wiz.cyberware.filter(x=>x.id===item.id).length;rows.push({type:itemVisibleType(item,'Cyberware'),html:`<div class="inv-row"><span class="iname">🦾 ${esc(item.name)}</span>${quantityControl('chrome',index,qty,String(item.name).toLowerCase()!=='neuroport'&&!(item.capacity||{}).unique&&(!(item.capacity||{}).host||availableCyberHosts(wiz,item).length>0))}<span class="hl-badge">HL ${(item.hl||0)*qty}</span><span class="price">${money((item.price||0)*qty)}</span><button class="info-btn" data-cart-info="chrome|${index}">i</button></div>`});});
+  const seen=new Set();wiz.cyberware.forEach((item,index)=>{if(seen.has(item.id))return;seen.add(item.id);const qty=wiz.cyberware.filter(x=>x.id===item.id).length;rows.push({type:itemVisibleType(item,'Cyberware'),html:`<div class="inv-row"><span class="iname">🦾 ${esc(item.name)}</span>${quantityControl('chrome',index,qty,String(item.name).toLowerCase()!=='neuroport'&&!(item.capacity||{}).unique&&(!(item.capacity||{}).host||pairedCyberlegFoundation(item)||availableCyberHosts(wiz,item).length>0))}<span class="hl-badge">HL ${(item.hl||0)*qty}</span><span class="price">${money((item.price||0)*qty)}</span><button class="info-btn" data-cart-info="chrome|${index}">i</button></div>`});});
   wiz.fashionware.forEach((item,index)=>rows.push({type:'Fashionware',html:`<div class="inv-row"><span class="iname">💠 ${esc(item.name)}</span>${quantityControl('fashionware',index,item.qty||1,true)}<span class="price">${money((item.price||0)*(item.qty||1))}</span><button class="info-btn" data-cart-info="fashionware|${index}">i</button></div>`}));
   wiz.fashion.forEach((item,index)=>rows.push({type:itemVisibleType(item,'Fashion'),html:`<div class="inv-row"><span class="iname">🧥 ${esc(item.name)}</span>${quantityControl('style',index,item.qty||1,true)}<span class="price">${money((item.price||0)*(item.qty||1))}</span><button class="info-btn" data-cart-info="style|${index}">i</button></div>`}));
   wiz.gear.forEach((item,index)=>{const equip=item.cat==='armor'?`<button class="btn-sm" data-equip-armor="${index}">${T('Equip','Надеть')}</button>`:'';rows.push({type:itemVisibleType(item,'Gear'),html:`<div class="inv-row"><span class="iname">${esc(item.display_name||item.name)}</span>${quantityControl('gear',index,item.qty||1,item.cat!=='armor')}${itemMechanicChips(item)}<span class="price">${money((item.price||0)*(item.qty||1))}</span>${equip}<button class="info-btn" data-cart-info="gear|${index}">i</button></div>`});});
@@ -2188,11 +2300,11 @@ function cyberwareRequirementErrors(w) {
   const foundationNames = {
     cybereye: new Set(['cybereye', 'sponsored cybereye']),
     cyberarm: new Set(['cyberarm', 'neo-soviet cyberarm']),
-    cyberleg: new Set(['cyberleg', 'romanova cyberlegs']),
+    cyberleg: new Set(['cyberleg', 'romanova cyberlegs', 'rocklin augmentics skydrivers']),
     audio: new Set(['cyberaudio suite', 'discount cyberaudio suite']),
     socket: new Set(['chipware socket', 'budget chipware socket']),
   };
-  const count = key => names.filter(name => foundationNames[key].has(name)).length;
+  const count = key => names.filter(name => foundationNames[key].has(name)).reduce((total,name)=>total+(key==='cyberleg'&&['romanova cyberlegs','rocklin augmentics skydrivers'].includes(name)?2:1),0);
   const errors = [], body = num(w.stats.BODY) || 0;
   for (const item of chrome) {
     const d = String(item.desc || '').toLowerCase().replace(/\n/g, ' ');
@@ -2231,9 +2343,9 @@ function cyberwareRequirementErrors(w) {
 
 function cyberSlotErrors(wiz) {
   const errors=[];
-  for(const item of wiz.cyberware){if(item.capacity&&item.capacity.host&&!item.host_instance)errors.push(`${item.name}: ${T('no compatible cyberware host','нет совместимого host')}`);}
-  const hosts=[...wiz.cyberware];if(wiz.freeNeuroport)hosts.push({instance_id:'creation-neuroport',name:'Neuroport',capacity:{slots_total:5}});
-  for(const host of hosts){const id=host.instance_id||host.id,total=num(host.capacity&&host.capacity.slots_total)||0;if(!total)continue;const used=wiz.cyberware.filter(item=>cyberHostIds(item).includes(id)).reduce((sum,item)=>sum+(num(item.capacity&&item.capacity.slots_used)||0),0);if(used>total)errors.push(`${host.name}: Option Slots ${used}/${total}`);}
+  for(const item of wiz.cyberware){if(item.capacity&&item.capacity.host&&!pairedCyberlegFoundation(item)&&!item.host_instance)errors.push(`${item.name}: ${T('no compatible cyberware host','нет совместимого host')}`);}
+  const hosts=cyberPhysicalHosts(wiz);
+  for(const host of hosts){const id=host.instance_id||host.id,total=num(host.capacity&&host.capacity.slots_total)||0;if(!total)continue;const used=wiz.cyberware.filter(item=>cyberHostIds(item).includes(id)).reduce((sum,item)=>sum+cyberOptionSlots(item),0);if(used>total)errors.push(`${host.name}: Option Slots ${used}/${total}`);}
   return errors;
 }
 function wizValidationErrors() {
@@ -2297,17 +2409,20 @@ function fullSkillsTableHtml(char, derived, interactive) {
   for (const [cat, name, stat, is2] of state.meta.skills) {
     if (cat !== lastCat) { rows.push(`<div class="skill-cat">${esc(skillCategoryLabel(cat))}</div>`); lastCat = cat; }
     const lvl = specialized.has(name) ? characterSkillPool(char, name) : characterSkillLevel(char, name);
-    const statValue = stat === 'EMP' ? (derived.emp_cur ?? (char.stats || {}).EMP) : (char.stats || {})[stat];
-    rows.push(`<div class="skill-row ${specialized.has(name) ? 'skill-parent' : ''} ${lvl === 0 ? 'zero-level' : ''}">
+    const statBase=(char.stats||{})[stat],statBreakdown=derived.effects?.stats?.[stat];
+    const statValue=statBreakdown?.effective??(stat==='EMP'?(derived.emp_cur??statBase):statBase);
+    const skillEffect=derived.effects?.skills?.[name],checkModifier=num(skillEffect?.check_modifier)||0,checkBase=(num(statValue)||0)+lvl+checkModifier;
+    const statDisplay=statBreakdown&&statBreakdown.base!==statBreakdown.effective?`${statBreakdown.base}→${statBreakdown.effective}`:`${num(statValue)??0}`;
+    rows.push(`<div class="skill-row ${specialized.has(name) ? 'skill-parent' : ''} ${lvl === 0 ? 'zero-level' : ''} ${checkModifier?'modified':''}">
       <button class="skill-name-btn sname" data-skill-info="${esc(name)}">${esc(name)} ${is2 ? '<span class="muted small">(×2)</span>' : '<span class="muted small">(×1)</span>'}</button>
-      <span class="sstat">${esc(stat)} <b>${num(statValue) ?? 0}</b></span><span class="slvl"><b>${lvl}</b></span>${specialized.has(name)?`<span class="sbase"><small>Allocated ${specializedChildren(char,name).reduce((sum,child)=>sum+paidSpecializationLevel(char,name,child),0)} · Free ${Math.max(0,lvl-specializedChildren(char,name).reduce((sum,child)=>sum+paidSpecializationLevel(char,name,child),0))}</small></span><span></span>`:`<span class="sbase"><b>${(num(statValue)||0)+lvl}</b></span>${interactive?`<button class="mini-step" data-roll-check="${esc(name)}|${(num(statValue)||0)+lvl}">🎲</button>`:'<span></span>'}`}</div>`);
+      <span class="sstat">${esc(stat)} <b>${esc(statDisplay)}</b></span><span class="slvl"><b>${lvl}</b></span>${specialized.has(name)?`<span class="sbase"><small>Allocated ${specializedChildren(char,name).reduce((sum,child)=>sum+paidSpecializationLevel(char,name,child),0)} · Free ${Math.max(0,lvl-specializedChildren(char,name).reduce((sum,child)=>sum+paidSpecializationLevel(char,name,child),0))}</small></span><span></span>`:`<span class="sbase"><b>${checkBase}</b>${checkModifier?` <span class="chip effect-bonus">${checkModifier>0?'+':''}${checkModifier}</span>`:''}</span>${interactive?`<button class="mini-step" data-roll-check="${esc(name)}|${checkBase}">🎲</button>`:'<span></span>'}`}</div>`);
     if (specialized.has(name)) {
       for (const child of specializedChildren(char, name)) {
         rows.push(`<div class="skill-row subskill-row ${child.lvl === 0 ? 'zero-level' : ''}"><span class="sname subskill-name">↳ ${esc(child.name)}${name === 'Language' && child.name === char.native_language && child.lvl === 4 ? ' <span class="chip">культурный</span>' : ''}</span><span class="sstat">${esc(stat)} <b>${num(statValue) ?? 0}</b></span><span class="slvl"><b>${child.lvl}</b></span><span class="sbase"><b>${(num(statValue) || 0) + child.lvl}</b></span>${interactive?`<button class="mini-step" data-roll-check="${esc(name+' ('+child.name+')')}|${(num(statValue)||0)+child.lvl}">🎲</button>`:'<span></span>'}</div>`);
       }
     }
   }
-  return `<div class="skill-table-head"><span>${T('Skill','Навык')}</span><span>STAT</span><span>LVL</span><span>BASE</span><span></span></div><div class="skill-list full-skill-list">${rows.join('')}</div>`;
+  return `<div class="skill-table-head"><span>${T('Skill','Навык')}</span><span>STAT</span><span>${T('BASE LVL','БАЗ. УР.')}</span><span>${T('CHECK BASE','БАЗА ПРОВЕРКИ')}</span><span></span></div><div class="skill-list full-skill-list">${rows.join('')}</div>`;
 }
 
 function chromeGroupedHtml(items, withInfo) {
@@ -2323,11 +2438,194 @@ function summaryInventoryHtml(items) {
 }
 function cyberwareTreeHtml(items) {
   if (!items.length) return `<div class="empty">${T('No Cyberware','Нет Cyberware')}</div>`;
+  const physicalParent=new Map();items.forEach(item=>{if(pairedCyberlegFoundation(item)){const id=item.instance_id||item.id;physicalParent.set(pairedCyberHostId(id),id);}});
   const children = new Map();
-  items.forEach((item,index) => { if (item.host_instance) { if (!children.has(item.host_instance)) children.set(item.host_instance,[]); children.get(item.host_instance).push([item,index]); } });
+  items.forEach((item,index) => { const host=cyberHostIds(item)[0],parent=physicalParent.get(host)||host;if(parent){if(!children.has(parent))children.set(parent,[]);children.get(parent).push([item,index]);} });
   const roots = items.map((item,index)=>[item,index]).filter(([item])=>!item.host_instance);
-  const row = (item,index,nested) => { const id=item.instance_id||item.key||item.id,total=num(item.capacity?.slots_total)||0,used=(children.get(id)||[]).reduce((sum,[child])=>sum+(num(child.capacity?.slots_used)||0),0);return `<div class="cyber-tree-row ${nested?'nested':''}"><span class="iname">${nested?'↳ ':''}${esc(item.name)}</span>${total?`<span class="chip">Slots ${used}/${total}</span>`:''}${item.capacity?.slots_used?`<span class="chip">Uses ${item.capacity.slots_used}</span>`:''}<span class="hl-badge">HL ${item.hl||0}</span><button class="info-btn" data-owned-chrome="${index}">i</button></div>${(children.get(id)||[]).map(([child,childIndex])=>row(child,childIndex,true)).join('')}`; };
+  const row = (item,index,nested) => { const id=item.instance_id||item.key||item.id,total=num(item.capacity?.slots_total)||0,used=(children.get(id)||[]).reduce((sum,[child])=>sum+cyberOptionSlots(child),0),uses=cyberOptionSlots(item);return `<div class="cyber-tree-row ${nested?'nested':''}"><span class="iname">${nested?'↳ ':''}${esc(item.name)}</span>${total?`<span class="chip">Slots ${used}/${total}</span>`:''}${uses?`<span class="chip">Uses ${uses}</span>`:''}<span class="hl-badge">HL ${item.hl||0}</span><button class="info-btn" data-owned-chrome="${index}">i</button></div>${(children.get(id)||[]).map(([child,childIndex])=>row(child,childIndex,true)).join('')}`; };
   return roots.map(([item,index])=>row(item,index,false)).join('');
+}
+
+function cyberwareLifecycleHtml(items,loadout,mine) {
+  if(!items.length)return `<div class="empty">${T('No Cyberware','Нет Cyberware')}</div>`;
+  if(!loadout)return cyberwareTreeHtml(items);
+  const byId=Object.fromEntries(items.map((item,index)=>[item.instance_id,{item,index}]));
+  const info=id=>{const row=byId[id];return row?`<button class="info-btn" data-owned-chrome="${row.index}">i</button>`:'';};
+  const installTag=profile=>`<span class="chip">${T('Install','Установка')}: ${esc(profile?.source_installation||'Manual')}</span>`;
+  const payloadTag=payload=>payload?`<span class="chip ${payload.kind==='numeric_modifier'||payload.kind==='host_slot_grant'?'effect-auto':'effect-manual'}">${esc(payload.label||payload.id)} · ${payload.kind==='numeric_modifier'||payload.kind==='host_slot_grant'?T('AUTOMATED','АВТОМАТИЧЕСКИ'):T('MANUAL CONTEXT','КОНТЕКСТ ВРУЧНУЮ')}</span>`:'';
+  const action=(id,hasOptions=false)=>!mine?'':`<div class="row">${hasOptions?'':`<button class="btn-sm" data-cyberware-action="${id}|uninstall">${T('Uninstall','Извлечь')}</button>`}${info(id)}</div>`;
+  const hosts=(loadout.hosts||[]).map(host=>{
+    const foundationId=host.foundation_instance_id||host.instance_id;
+    const siblingHosts=(loadout.hosts||[]).filter(other=>(other.foundation_instance_id||other.instance_id)===foundationId);
+    const foundationOccupied=siblingHosts.some(other=>other.options?.length);
+    const side=`<span class="chip ${host.side_status==='conflict'?'warn-text':''}">${T('Side','Сторона')}: ${esc(host.physical_side||T('UNASSIGNED','НЕ НАЗНАЧЕНА'))}</span>`;
+    const controls=host.paired_foundation&&host.physical_side==='right'?'':(mine?`<div class="row">${host.side_required?`<button class="btn-sm" data-cyberware-action="${foundationId}|configure">${T('Set Side','Назначить сторону')}</button>`:''}${host.quick_change_mount?`<button class="btn-sm btn-primary" data-cyberware-action="${foundationId}|quick_detach">${T('Quick Detach','Быстро отсоединить')}</button>`:''}${action(foundationId,foundationOccupied)}</div>`:info(foundationId));
+    return `<article class="cyber-host-card ${host.overloaded||host.side_status==='conflict'?'invalid':''}"><header><div><b>${esc(host.name)}</b><span class="small muted">${esc(host.host_kind)}</span></div><span class="chip">Slots ${host.slots_used}/${host.slots_total}${host.slots_granted?` · +${host.slots_granted}`:''}</span></header><div class="mechanic-chips">${side}${installTag(host.installation_profile)}${host.quick_change_mount?'<span class="tag">QUICK CHANGE</span>':''}</div><div class="cyber-host-options">${host.options.length?host.options.map(option=>`<div class="program-runtime-row"><span>↳ ${esc(option.name)} · ${option.slots_used} ${T('slots','слотов')}${option.paired?` · ${T('PAIRED','ПАРНЫЙ')}`:''}</span>${payloadTag(option.curated_payload)}${mine?`<div class="row">${option.popup_binding_kind&&!option.bound_weapon_instance_id?`<button class="btn-sm btn-primary" data-popup-weapon-bind="${option.instance_id}|${option.popup_binding_kind}">${T('Bind Weapon','Привязать оружие')}</button>`:''}<button class="btn-sm" data-cyberware-action="${option.instance_id}|rebind">${T('Rebind','Сменить host')}</button><button class="btn-sm" data-cyberware-action="${option.instance_id}|uninstall">${T('Uninstall','Извлечь')}</button>${info(option.instance_id)}</div>`:info(option.instance_id)}</div>`).join(''):`<span class="small muted">${T('No installed options.','Нет установленных опций.')}</span>`}</div>${controls}</article>`;
+  }).join('');
+  const issues=(loadout.options||[]).filter(option=>['unbound','invalid'].includes(option.status)).map(option=>`<div class="inv-row cyberware-invalid"><span class="iname">⚠ ${esc(option.name)}</span><span class="tag">${esc(option.status.toUpperCase())}</span><span class="small warn-text">${esc((option.reasons||[]).join(' · '))}</span>${mine?`<button class="btn-sm btn-primary" data-cyberware-action="${option.instance_id}|rebind">${T('Bind Hosts','Привязать hosts')}</button><button class="btn-sm" data-cyberware-action="${option.instance_id}|uninstall">${T('Uninstall','Извлечь')}</button>`:''}${info(option.instance_id)}</div>`).join('');
+  const standalone=(loadout.standalone||[]).map(item=>`<div class="inv-row"><span class="iname">${esc(item.name)}</span><span class="chip">${T('INSTALLED','УСТАНОВЛЕНО')}</span>${installTag(item.installation_profile)}<span class="hl-badge">HL ${item.hl||0}</span>${action(item.instance_id)}</div>`).join('');
+  const payloads=(loadout.active_payloads||[]).length?`<div class="panel accent mb"><b>${T('Curated Cyberware Payloads','Курируемые payloads Cyberware')}</b><div class="mechanic-chips">${(loadout.active_payloads||[]).map(payloadTag).join('')}</div>${loadout.initiative_modifier?`<div class="small green-text">${T('Effective Initiative modifier','Effective модификатор Initiative')}: +${loadout.initiative_modifier}</div>`:''}</div>`:'';
+  const cyberweapons=(loadout.weapon_profiles||[]).length?`<div class="panel mt mb"><h3>⚔ ${T('Integrated Cyberweapons','Интегрированные Cyberweapons')}</h3>${(loadout.weapon_profiles||[]).map(profile=>{const ws=profile.state||{},ranged=['ranged','ranged_dual'].includes(profile.kind);return `<div class="inv-row"><span class="iname"><b>${esc(profile.name)}</b><span class="small muted">${esc(profile.weapon_type)} · ${esc(profile.skill)} · ${esc(profile.effective_damage||profile.damage)} · ROF ${profile.rof}${profile.quality?` · ${esc(profile.quality)}`:''}</span></span>${profile.reach_m?`<span class="chip">Reach ${profile.reach_m}m</span>`:''}${ranged?`<span class="chip">Mag ${ws.magazine||0}/${ws.magazine_max||0}${profile.special_ammo?(ws.loaded_payload?` · ${esc(ws.loaded_payload)}`:' · SPECIAL'):` · Ammo ${profile.shared_ammo_available||0}`}</span>`:''}<span class="tag">${ws.deployed?T('DEPLOYED','РАЗВЁРНУТО'):T('STOWED','УБРАНО')}</span>${ws.revved?'<span class="tag">REVVed</span>':''}${profile.manual_effect?`<span class="small warn-text">${esc(profile.manual_effect)} · ${T('MANUAL EFFECT','ЭФФЕКТ ВРУЧНУЮ')}</span>`:''}${mine?`<div class="row">${profile.deployable?`<button class="btn-sm" data-cyberweapon-action="${profile.instance_id}|${ws.deployed?'stow':'deploy'}">${ws.deployed?T('Stow','Убрать'):T('Deploy','Развернуть')}</button>`:''}${profile.rev_action&&ws.deployed?`<button class="btn-sm" data-cyberweapon-action="${profile.instance_id}|${ws.revved?'rev_down':'rev'}">${ws.revved?'Rev Down':'Rev Up'}</button>`:''}${ranged?`<button class="btn-sm" data-cyberweapon-action="${profile.instance_id}|reload">Reload</button><button class="btn-sm btn-primary" data-cyberweapon-action="${profile.instance_id}|fire">Fire</button>`:''}</div>`:''}</div>`;}).join('')}</div>`:'';
+  const popupShields=(loadout.popup_shields||[]).length?`<div class="panel mt mb"><h3>🛡 Popup Shield</h3>${(loadout.popup_shields||[]).map(profile=>`<div class="inv-row"><span class="iname">${profile.installed?esc(profile.shield_name):T('No concrete Bulletproof Shield installed','Concrete Bulletproof Shield не установлен')}</span>${profile.installed?`<span class="chip">HP ${profile.hp_current}/${profile.hp_max}</span><span class="tag">${profile.destroyed?T('DESTROYED','УНИЧТОЖЕН'):(profile.deployed?T('DEPLOYED','РАЗВЁРНУТ'):T('STOWED','УБРАН'))}</span>`:''}${mine?`<div class="row">${profile.installed?`<button data-popup-shield-action="${profile.option_instance_id}|${profile.deployed?'stow':'deploy'}">${profile.deployed?T('Stow','Убрать'):T('Deploy','Развернуть')}</button><button data-popup-shield-action="${profile.option_instance_id}|damage">Damage</button><button data-popup-shield-action="${profile.option_instance_id}|remove">${T('Remove / Replace','Извлечь / заменить')}</button>`:`<button data-popup-shield-action="${profile.option_instance_id}|install">${T('Install Bulletproof Shield','Установить Bulletproof Shield')}</button>`}</div>`:''}</div>`).join('')}</div>`:'';
+  const staged=(loadout.staged||[]).map(item=>`<div class="inv-row"><span class="iname">${esc(item.name)}</span><span class="tag">${item.quick_change_detached?T('QUICK CHANGE DETACHED','QUICK CHANGE ОТСОЕДИНЁН'):T('STAGED · NOT INSTALLED','ПОДГОТОВЛЕНО · НЕ УСТАНОВЛЕНО')}</span>${installTag(item.installation_profile)}${item.installation_side?`<span class="chip">${T('Side','Сторона')}: ${esc(item.installation_side)}</span>`:''}<span class="hl-badge">HL ${item.hl||0}</span>${mine?`<button class="btn-sm btn-primary" data-cyberware-action="${item.instance_id}|${item.quick_change_detached?'quick_attach':'install'}">${item.quick_change_detached?T('Quick Attach','Быстро присоединить'):(item.expected_host?T('Install into Host','Установить в host'):T('Install','Установить'))}</button>`:''}${info(item.instance_id)}</div>`).join('');
+  return `${payloads}${issues?`<div class="cyberware-issues mb"><b>${T('Host binding requires attention','Требуется исправить привязку host')}</b>${issues}</div>`:''}${hosts?`<div class="cyber-host-grid">${hosts}</div>`:''}${cyberweapons}${popupShields}${standalone?`<h3 class="mt">${T('Installed Standalone Cyberware','Установленная самостоятельная Cyberware')}</h3>${standalone}`:''}${staged?`<h3 class="mt">${T('Staged Cyberware','Подготовленная Cyberware')}</h3>${staged}`:''}`;
+}
+
+function armorHostLifecycleHtml(loadout,mine){
+  const hosts=loadout?.hosts||[];if(!hosts.length)return '';
+  return `<h3 class="mt">🛡️ ${T('Concrete Armor / Shield Hosts','Concrete hosts брони / щитов')}</h3><div class="cyber-host-grid">${hosts.map(host=>`<article class="cyber-host-card"><header><div><b>${esc(host.name)}</b><span class="small muted">${esc(host.host_kind.toUpperCase())} · ${host.equipped_locations.length?host.equipped_locations.join(' / '):T('not equipped','не экипировано')}</span></div>${host.host_kind==='shield'?`<span class="chip">HP ${host.base_sdp||0}</span>`:`<span class="chip">SP ${host.base_sp??'—'}${host.effective_sp!==host.base_sp?`→${host.effective_sp}`:''}</span>`}</header>${Object.keys(host.current_by_location||{}).length?`<div class="mechanic-chips">${Object.entries(host.current_by_location).map(([location,current])=>`<span class="chip">${esc(location)} ${current}/${host.host_kind==='shield'?(host.effective_sdp||0):(host.effective_sp||0)}</span>`).join('')}</div>`:''}${host.tech_upgrade?`<div class="small ${host.tech_upgrade.manual_resolution_required?'warn-text':'green-text'}">${host.tech_upgrade.manual_resolution_required?T('MANUAL SHIELD TECH UPGRADE','SHIELD TECH UPGRADE ВРУЧНУЮ'):T('AUTOMATED SP +1','АВТОМАТИЧЕСКИ SP +1')} · ${esc(host.tech_upgrade.tech_name||'Tech')} · ${esc(host.tech_upgrade.source||'')}</div>`:(mine&&host.tech_upgrade_available?`<button class="btn-sm" data-armor-tech-upgrade="${host.instance_id}">${host.automated_upgrade_available?T('Tech Upgrade · SP +1','Tech Upgrade · SP +1'):T('Record Manual Shield Upgrade','Записать Shield Upgrade вручную')}</button>`:'')}${host.host_kind==='shield'?`<div class="small warn-text">${T('DESTROYED AT 0 HP · NOT REPAIRABLE','УНИЧТОЖЕН ПРИ 0 HP · НЕ РЕМОНТИРУЕТСЯ')}</div>`:''}${host.repair_state?.active?`<div class="panel accent"><b>${T('REPAIR ACTIVE','РЕМОНТ АКТИВЕН')}</b><div class="small">${esc(host.repair_state.active.method)} · ${esc(host.repair_state.active.duration_label)}</div>${mine?`<div class="row"><button data-armor-repair="${host.instance_id}|resolve">${T('Complete Repair','Завершить ремонт')}</button><button data-armor-repair="${host.instance_id}|cancel">${T('Cancel','Отменить')}</button></div>`:''}</div>`:(mine&&host.damaged&&host.repairable?`<button data-armor-repair="${host.instance_id}|start">${T('Start Armor Repair','Начать ремонт брони')}</button>`:'')}${mine&&host.damaged&&host.self_repair?`<button data-armor-repair="${host.instance_id}|self_repair_tick">${T('Daily Self-Repair +1','Ежедневный саморемонт +1')}</button>`:''}</article>`).join('')}</div>`;
+}
+
+function therapyLifecycleHtml(character,derived,mine){
+  const state=character.therapy_state||{},active=state.active,history=state.history||[];
+  if(active)return `<div class="panel accent mt"><div class="row" style="justify-content:space-between"><div><b>🧠 ${esc(active.label)}</b><div class="small muted">${esc(active.therapist||'—')} · ${active.duration_days} ${T('days','дней')} · ${money(active.cost)} · ${esc(active.source||'')}</div></div><span class="tag">${T('ACTIVE · MANUAL WEEK','АКТИВНО · НЕДЕЛЯ ВРУЧНУЮ')}</span></div>${mine?`<div class="row mt"><button class="btn-primary" data-therapy-action="resolve">${T('Complete Therapy','Завершить Therapy')}</button><button class="btn-danger" data-therapy-action="cancel">${T('Cancel · no refund','Отменить · без возврата')}</button></div>`:''}</div>`;
+  const latest=history.at(-1),latestHtml=latest?`<div class="small muted mt">${T('Latest Therapy','Последняя Therapy')}: ${esc(latest.label)} · ${esc(latest.status)}${latest.humanity_restored!=null?` · Humanity +${latest.humanity_restored} (${latest.humanity_before}→${latest.humanity_after}/${latest.humanity_maximum})`:''}</div>`:'';
+  return `<div class="therapy-panel mt"><div class="row" style="justify-content:space-between"><div><b>🧠 Therapy</b><div class="small muted">${T('One campaign week · server Humanity roll · capped by Maximum Humanity','Одна игровая неделя · серверный бросок Humanity · не выше Maximum Humanity')}</div></div>${mine?`<button data-therapy-action="start">${T('Start Therapy','Начать Therapy')}</button>`:''}</div>${latestHtml}</div>`;
+}
+
+function campaignServicesHtml(d){
+  const services=(d.campaign_services||[]).filter(service=>service.ready!==null);
+  if(!services.length)return '';
+  const nowLabel=d.campaign_time?` · ${T('clock','часы')} ${new Date(d.campaign_time*1000).toLocaleString(APP_I18N.current()==='ru'?'ru-RU':'en-US',{dateStyle:'medium',timeStyle:'short'})}`:'';
+  return `<div class="panel mb" id="sheet-campaign-services"><h2>⏳ ${T('Campaign Clock','Campaign Clock')}</h2><div class="small muted mb">${T('Active services are tracked against campaign time. Completion checks are still resolved at the table.','Активные сервисы отслеживаются по игровому времени. Проверки завершения по-прежнему выполняются за столом.')}${esc(nowLabel)}</div>${services.map(service=>`<div class="inv-row"><span class="iname"><b>${esc(service.label)}</b></span>${service.ready===true?`<span class="tag">${T('DUE','ГОТОВО')}</span>`:service.ready===false?`<span class="tag">${T('IN PROGRESS','ИДЁТ')} · ${esc(service.status)}</span>`:`<span class="tag">${T('MANUAL','ВРУЧНУЮ')}</span>`}${service.due_label?`<span class="small muted">${esc(service.due_label)}</span>`:''}</div>`).join('')}</div>`;
+}
+
+function downtimeActivityLabel(activity){
+  const name=APP_I18N.current()==='ru'?(activity.label_ru||activity.label_en):(activity.label_en||activity.id);
+  return name;
+}
+
+function downtimeSheetHtml(c,d,canManage){
+  const dt=d.downtime||{};
+  const active=dt.active||null;
+  const history=dt.history||[];
+  const activeRow=active?`<div class="inv-row"><span class="iname"><b>${T('Downtime','Downtime')}</b><span class="small muted">${active.duration_label?esc(active.duration_label):T('Manual','Вручную')} · ${active.status==='MANUAL TIME'?T('MANUAL TIME','ВРУЧНУЮ'):esc(active.status)}</span>${active.note?`<div class="small muted">${esc(active.note)}</div>`:''}</span>${active.ready===true?`<span class="tag">${T('DUE','ГОТОВО')}</span>`:''}<div class="row">${active.activities.map(activity=>`<div class="inv-row" style="margin:0"><span class="iname">${activity.resolved?'✓ ':''}${esc(downtimeActivityLabel(activity))}</span>${activity.resolution_note?`<span class="small muted">${esc(activity.resolution_note)}</span>`:''}${canManage&&!activity.resolved&&['hustle','recover_hp','other'].includes(activity.kind)?`<button class="btn-sm" data-downtime-resolve="${esc(activity.id)}|${esc(activity.kind)}">${T('Resolve','Решить')}</button>`:''}</div>`).join('')}</div>${canManage?`<div class="row mt"><button class="btn-sm btn-primary" data-downtime-complete>${T('Complete Downtime','Завершить Downtime')}</button><button class="btn-sm" data-downtime-abandon>${T('Abandon','Отменить')}</button></div>`:''}</div>`:'';
+  const startRow=canManage&&!active?`<div class="row"><button class="btn-primary" data-downtime-start>＋ ${T('Start Downtime','Начать Downtime')}</button></div>`:'';
+  const historyHtml=history.length?`<details class="mt"><summary>${T('Downtime history','История downtime')} · ${history.length}</summary>${history.map(item=>`<div class="inv-row"><span class="iname"><b>${item.duration_label?esc(item.duration_label):T('Manual','Вручную')}</b><div class="small muted">${item.campaign_started_at?new Date(item.campaign_started_at*1000).toLocaleDateString():''}${item.summary?` · ${esc(item.summary)}`:''}</div></span>${item.activities.map(activity=>`<span class="chip">${activity.resolved?'✓ ':''}${esc(downtimeActivityLabel(activity))}</span>`).join('')}</div>`).join('')}</details>`:'';
+  if(!active&&!history.length&&!canManage)return '';
+  return `<div class="panel mb" id="sheet-downtime"><h2>🛌 ${T('Downtime Planner','Downtime Planner')}</h2><div class="small muted mb">${T('Record what the character does between sessions. Rolls resolve at the table; only the outcome is recorded.','Запишите, чем персонаж занят между сессиями. Броски выполняются за столом — записывается только результат.')}</div>${activeRow}${startRow}${historyHtml}</div>`;
+}
+
+async function openDowntimeStartModal(c){
+  let catalog=[];
+  try{catalog=(await api('/api/downtime/activities')).activities||[];}catch(e){/* empty */}
+  const modal=openModal(`<h2>🛌 ${T('Start Downtime','Начать Downtime')}</h2><p class="muted small">${T('Choose a duration and the activities for this downtime period.','Выберите длительность и занятия на этот период downtime.')}</p><label class="f"><span>${T('Duration','Длительность')}</span><select id="dt-duration"><option value="">${T('Manual (no due)','Вручную (без срока)')}</option>${Object.entries({ '1_day':'1 Day','1_week':'1 Week','2_weeks':'2 Weeks' }).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label><div class="mt">${catalog.map(item=>`<label class="checkbox"><input type="checkbox" data-dt-activity="${esc(item.id)}"> <b>${esc(downtimeActivityLabel(item))}</b> <span class="small muted">${esc(APP_I18N.current()==='ru'?item.desc_ru:item.desc_en)}</span></label>`).join('')}</div><label class="f"><span>${T('Note','Заметка')}</span><input id="dt-note" maxlength="1000" placeholder="${T('Week off, side hustle…','Неделя отдыха, подработка…')}"></label><div class="row"><button id="dt-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="dt-save">${T('Start','Начать')}</button></div>`,true);
+  $('#dt-cancel',modal).onclick=closeModal;
+  $('#dt-save',modal).onclick=async()=>{
+    const activities=$$('[data-dt-activity]',modal).filter(input=>input.checked).map(input=>({id:input.dataset.dtActivity}));
+    const body={revision:c.revision,duration_key:$('#dt-duration',modal).value||null,activities,note:$('#dt-note',modal).value.trim()};
+    try{await api(`/api/characters/${c.id}/downtime/start`,{method:'POST',body});closeModal();toast(T('Downtime started.','Downtime начат.'));viewSheet(c.id);}catch(e){toast(e.message,true);}
+  };
+}
+
+async function performDowntimeAction(c,action,extra){
+  const body={revision:c.revision,action,...extra};
+  try{await api(`/api/characters/${c.id}/downtime/action`,{method:'POST',body});toast(T('Downtime updated.','Downtime обновлён.'));viewSheet(c.id);}catch(e){toast(e.message,true);}
+}
+
+function makerRanks(ch){
+  const roles=ch.roles||[];
+  const active=ch.active_role||ch.role;
+  let role=roles.find(r=>r.name===active);
+  if(!role||role.name!=='Tech')role=roles.find(r=>r.name==='Tech');
+  if(!role||role.name!=='Tech')return null;
+  const setup=role.setup||{};
+  const ranks={field:num(setup.field)||0,upgrade:num(setup.upgrade)||0,fabrication:num(setup.fabrication)||0,invention:num(setup.invention)||0};
+  if(!ranks.field&&!ranks.upgrade&&!ranks.fabrication&&!ranks.invention)return null;
+  return ranks;
+}
+
+function techMakerEffectLabel(effect){
+  if(!effect)return '';
+  const target=String(effect.target||'');
+  const labels={
+    'weapon.attack_check':['Attack Check','Бросок атаки'],
+    'weapon.magazine':['Magazine','Магазин'],
+    'weapon.concealable':['Concealable','Скрываемость'],
+    'armor.sp':['Stopping Power','Stopping Power'],
+    'vehicle.sdp_max':['Max SDP','Макс. SDP'],
+  };
+  const pair=labels[target]||[target,target];
+  const label=APP_I18N.current()==='ru'?pair[1]:pair[0];
+  const value=effect.operation==='set'?effect.value:`${effect.value>0?'+':''}${effect.value}`;
+  return `${label} ${effect.operation} ${value}`;
+}
+
+function techMakerSheetHtml(ch,d,mine){
+  const tm=d.tech_maker||{};
+  const mods=tm.modifications||[];
+  const fabrications=tm.fabrications||[];
+  const ranks=makerRanks(ch);
+  if(!mods.length&&!fabrications.length&&!mine)return '';
+  const manualTag=T('MANUAL','ВРУЧНУЮ'),autoTag=T('AUTOMATED','АВТОМАТИЧЕСКИ');
+  const rows=mods.map(mod=>{
+    const tag=mod.manual_resolution_required?`<span class="tag">${esc(manualTag)}</span>`:`<span class="tag">${esc(autoTag)}</span>`;
+    return `<div class="inv-row"><span class="iname"><b>${esc(mod.name)}</b><span class="small muted">${esc(mod.host_name||'')} · ${esc(mod.maker_specialty||'')}${mod.maker_rank?` rank ${mod.maker_rank}`:''}${mod.tech_name?' · '+esc(mod.tech_name):''}</span></span>${mod.effect?`<span class="chip">${esc(techMakerEffectLabel(mod.effect))}</span>`:''}${tag}${mod.manual_rule?`<span class="small warn-text">${esc(mod.manual_rule)}</span>`:''}${mod.source?`<span class="chip">📖 ${esc(mod.source)}</span>`:''}${mod.reason?`<span class="small user-content">${esc(mod.reason)}</span>`:''}${mine&&mod.active?`<button class="btn-sm btn-danger" data-tech-maker-action="${mod.modification_id}|remove">${T('Remove','Снять')}</button>`:''}</div>`;
+  }).join('');
+  const fabRows=fabrications.map(fab=>{
+    const costLabel=fab.material_cost!=null?` · ${money(fab.material_cost)}`:'';
+    return `<div class="inv-row"><span class="iname"><b>${esc(fab.name)}</b><span class="small muted">×${fab.qty||1} · ${esc(fab.maker_specialty||'')}${fab.maker_rank?` rank ${fab.maker_rank}`:''}${fab.tech_name?' · '+esc(fab.tech_name):''}${fab.blueprint_catalog_id?' · blueprint':' · custom'}${costLabel}</span></span>${fab.source?`<span class="chip">📖 ${esc(fab.source)}</span>`:''}${fab.reason?`<span class="small user-content">${esc(fab.reason)}</span>`:''}</div>`;
+  }).join('');
+  const emptyRow=`<div class="muted small">${T('No Tech Maker modifications recorded.','Tech Maker modifications не записаны.')}</div>`;
+  const createBtn=mine&&ranks?`<button class="btn-sm mt" data-tech-maker-create>＋ ${T('Create Tech Maker Modification','Создать Tech Maker Modification')}</button>`:'';
+  const fabricateBtn=mine&&ranks?`<button class="btn-sm mt" data-tech-maker-fabricate>＋ ${T('Fabricate / Invent Item','Изготовить / изобрести предмет')}</button>`:'';
+  const fabSection=fabrications.length?`<h3 class="mt">${T('Fabricated / Invented Items','Изготовленные / изобретённые предметы')}</h3>${fabRows}`:'';
+  return `<div class="panel mt" id="sheet-tech-maker">
+    <h2>🔧 ${T('Tech Maker','Tech Maker')}</h2>
+    <div class="small muted mb">${T('Custom Upgrade/Invention/Fabrication Expertise work. Automated effects are allowlisted and bounded; ambiguous results stay manual.','Работа Upgrade/Invention/Fabrication Expertise. Автоматические эффекты ограничены allowlist; неоднозначные результаты остаются ручными.')}</div>
+    ${mods.length?rows:emptyRow}
+    ${fabSection}
+    <div class="row">${createBtn}${fabricateBtn}</div>
+  </div>`;
+}
+
+const TECH_MAKER_HOST_TYPES={guns:'weapon',armor:'armor',vehicles:'vehicle',cyberware:'cyberware'};
+const TECH_MAKER_EFFECTS=[
+  {target:'weapon.attack_check',host:'weapon',kind:'number',min:-3,max:3,labelEn:'Attack Check',labelRu:'Бросок атаки'},
+  {target:'weapon.magazine',host:'weapon',kind:'number',min:1,max:20,labelEn:'Magazine capacity',labelRu:'Ёмкость магазина'},
+  {target:'weapon.concealable',host:'weapon',kind:'choice',choices:['YES','NO'],labelEn:'Concealability',labelRu:'Скрываемость'},
+  {target:'armor.sp',host:'armor',kind:'number',min:1,max:1,labelEn:'Stopping Power',labelRu:'Stopping Power'},
+  {target:'vehicle.sdp_max',host:'vehicle',kind:'number',min:1,max:50,labelEn:'Maximum SDP',labelRu:'Максимальный SDP'},
+];
+function openTechMakerCreateModal(c){
+  const ch=c.data||{};
+  const ranks=makerRanks(ch);
+  const inv=(ch.inventory||[]).filter(item=>TECH_MAKER_HOST_TYPES[item.cat]&&item.state!=='stored'&&item.state!=='broken');
+  const cw=(ch.cyberware||[]).filter(item=>item.state==='installed');
+  const hosts=[...inv,...cw.map(item=>({...item,cat:'cyberware'}))];
+  const modal=openModal(`<h2>🔧 ${T('Create Tech Maker Modification','Создать Tech Maker Modification')}</h2><div class="panel accent mb"><p class="small">${T('Maker specialties for the active Tech role:','Специализации Maker активной роли Tech:')} ${Object.entries(ranks||{}).map(([k,v])=>`${esc(k)} ${v}`).join(' · ')||'—'}</p><p class="small muted">${T('Automated effects are allowlisted and bounded. Ambiguous results stay MANUAL.','Автоматические эффекты ограничены allowlist. Неоднозначные результаты остаются MANUAL.')}</p></div><div class="grid cols-2"><label class="f"><span>${T('Modification name *','Название modification *')}</span><input id="tm-name" maxlength="120" placeholder="Custom Smart Weapon Calibration"></label><label class="f"><span>${T('Tech performing the work *','Tech, выполняющий работу *')}</span><input id="tm-tech" maxlength="120" value="${esc(ch.handle||'')}"></label></div><div class="grid cols-2"><label class="f"><span>${T('Host instance *','Host instance *')}</span><select id="tm-host">${hosts.map((item,index)=>`<option value="${esc(item.instance_id)}" data-host-type="${TECH_MAKER_HOST_TYPES[item.cat]}">${esc(item.custom_name||item.name)} · ${esc(TECH_MAKER_HOST_TYPES[item.cat])}</option>`).join('')}</select></label><label class="f"><span>${T('Maker specialty *','Специализация Maker *')}</span><select id="tm-specialty"><option value="upgrade">${T('Upgrade Expertise','Upgrade Expertise')}${ranks?` (${ranks.upgrade||0})`:''}</option><option value="invention">${T('Invention Expertise','Invention Expertise')}${ranks?` (${ranks.invention||0})`:''}</option></select></label></div><label class="f"><span>${T('Effect (optional)','Эффект (необязательно)')}</span><select id="tm-effect"><option value="">— ${T('Manual only','Только вручную')} —</option></select></label><div class="grid cols-2" id="tm-effect-value-wrap" hidden><label class="f"><span id="tm-effect-value-label">Value</span><input id="tm-effect-value" type="number" step="1"></label><label class="f"><span>${T('Description','Описание')}</span><input id="tm-description" maxlength="2000"></label></div><label class="f"><span>${T('Manual rule (required if no effect)','Ручное правило (обязательно без эффекта)')}</span><textarea id="tm-manual-rule" maxlength="1000" rows="2" placeholder="${T('e.g. +2 only while stabilized on a bipod','например: +2 только с сошек')}"></textarea></label><label class="checkbox"><input id="tm-confirm" type="checkbox"> ${T('Confirm the successful Maker Check was resolved at the table.','Подтвердите успешный Maker Check за столом.')}</label><label class="f"><span>${T('Reason *','Причина *')}</span><textarea id="tm-reason" maxlength="500" rows="2" placeholder="${T('Upgrade Expertise result during downtime…','Результат Upgrade Expertise во время downtime…')}"></textarea></label><div class="row"><button id="tm-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="tm-submit">${T('Create','Создать')}</button></div>`,true);
+  const hostSelect=$('#tm-host',modal),effectSelect=$('#tm-effect',modal),valueWrap=$('#tm-effect-value-wrap',modal),valueInput=$('#tm-effect-value',modal),valueLabel=$('#tm-effect-value-label',modal);
+  const refreshEffects=()=>{const hostType=hostSelect.selectedOptions[0]?.dataset.hostType||'weapon';const options=TECH_MAKER_EFFECTS.filter(effect=>effect.host===hostType);effectSelect.innerHTML=`<option value="">— ${T('Manual only','Только вручную')} —</option>`+options.map((effect,index)=>`<option value="${index}">${esc(APP_I18N.current()==='ru'?effect.labelRu:effect.labelEn)}</option>`).join('');refreshValue();};
+  const refreshValue=()=>{const index=Number(effectSelect.value);if(Number.isNaN(index)||effectSelect.value===''){valueWrap.hidden=true;return;}const effect=TECH_MAKER_EFFECTS[index];valueWrap.hidden=false;if(effect.kind==='choice'){valueInput.outerHTML=`<select id="tm-effect-value">${effect.choices.map(choice=>`<option value="${choice}">${choice}</option>`).join('')}</select>`;valueLabel.textContent=effect.labelRu||effect.labelEn;}else{valueLabel.textContent=`${effect.labelEn} (${effect.min}…${effect.max})`;}};
+  hostSelect.onchange=refreshEffects;effectSelect.onchange=refreshValue;refreshEffects();
+  $('#tm-cancel',modal).onclick=closeModal;
+  $('#tm-submit',modal).onclick=async()=>{
+    const name=$('#tm-name',modal).value.trim(),tech=$('#tm-tech',modal).value.trim(),host=$('#tm-host',modal).value,specialty=$('#tm-specialty',modal).value,reason=$('#tm-reason',modal).value.trim(),manualRule=$('#tm-manual-rule',modal).value.trim(),description=$('#tm-description',modal).value.trim();
+    if(name.length<2||tech.length<2||reason.length<3){toast(T('Fill name, Tech and reason.','Заполните название, Tech и причину.'),true);return;}
+    const index=Number(effectSelect.value),effectDef=Number.isInteger(index)&&effectSelect.value!==''?TECH_MAKER_EFFECTS[index]:null;
+    let effect=null;
+    if(effectDef){const valueEl=$('#tm-effect-value',modal);const value=effectDef.kind==='choice'?valueEl.value:Number(valueEl.value);if(effectDef.kind==='number'&&(!Number.isInteger(value)||value<effectDef.min||value>effectDef.max)){toast(T('Effect value is out of the allowed range.','Значение эффекта вне допустимого диапазона.'),true);return;}if(!$('#tm-confirm',modal).checked){toast(T('Confirm the successful Maker Check.','Подтвердите успешный Maker Check.'),true);return;}effect={target:effectDef.target,operation:effectDef.kind==='choice'?'set':'add',value};}
+    if(!effect&&manualRule.length<3){toast(T('Provide a manual rule when there is no automated effect.','Укажите ручное правило, если нет автоматического эффекта.'),true);return;}
+    const body={revision:c.revision,name,tech_name:tech,host_instance_id:host,maker_specialty:specialty,effect,manual_rule:manualRule,description,manual_confirm:!!effect,reason};
+    const submit=$('#tm-submit',modal);submit.disabled=true;
+    try{await api(`/api/characters/${c.id}/tech-maker/modifications`,{method:'POST',body});closeModal();toast(T('Tech Maker modification created.','Tech Maker modification создана.'));viewSheet(c.id);}catch(error){submit.disabled=false;toast(error.message,true);}
+  };
+}
+
+function openTechMakerFabricateModal(c){
+  const ch=c.data||{};
+  const ranks=makerRanks(ch)||{};
+  const modal=openModal(`<h2>🔩 ${T('Fabricate / Invent Item','Изготовить / изобрести предмет')}</h2><div class="panel accent mb"><p class="small">${T('Maker specialties for the active Tech role:','Специализации Maker активной роли Tech:')} ${Object.entries(ranks).map(([k,v])=>`${esc(k)} ${v}`).join(' · ')||'—'}</p><p class="small muted">${T('Fabrication reproduces a Database blueprint. Invention creates a new custom item. Both are recorded in the Dossier Ledger.','Fabrication воспроизводит blueprint из Database. Invention создаёт новый custom item. Оба действия записываются в журнал Dossier.')}</p></div><div class="grid cols-2"><label class="f"><span>${T('Item name *','Название предмета *')}</span><input id="tf-name" maxlength="120" placeholder="Custom Smart Ammo"></label><label class="f"><span>${T('Tech performing the work *','Tech, выполняющий работу *')}</span><input id="tf-tech" maxlength="120" value="${esc(ch.handle||'')}"></label></div><div class="grid cols-2"><label class="f"><span>${T('Maker specialty *','Специализация Maker *')}</span><select id="tf-specialty"><option value="fabrication">${T('Fabrication Expertise','Fabrication Expertise')}${ranks?` (${ranks.fabrication||0})`:''}</option><option value="invention">${T('Invention Expertise','Invention Expertise')}${ranks?` (${ranks.invention||0})`:''}</option></select></label><label class="f"><span>${T('Quantity','Количество')}</span><input id="tf-qty" type="number" min="1" max="99" value="1"></label></div><label class="f"><span>${T('Blueprint from Database (fabrication only)','Blueprint из Database (только fabrication)')}</span><input id="tf-blueprint" maxlength="120" placeholder="guns-0 · Medium Pistol"></label><label class="f"><span>${T('Description (custom item)','Описание (custom item)')}</span><textarea id="tf-description" maxlength="4000" rows="2"></textarea></label><div class="grid cols-2"><label class="f"><span>${T('Reference value (custom item)','Оценочная стоимость (custom item)')}</span><input id="tf-price" type="number" min="0" max="9999999" value="0"></label><label class="f"><span>${T('Material cost (€$)','Стоимость материалов (€$)')}</span><input id="tf-cost" type="number" min="0" max="9999999" value="0"></label></div><label class="checkbox"><input id="tf-confirm" type="checkbox"> ${T('Confirm the successful Maker Check was resolved at the table.','Подтвердите успешный Maker Check за столом.')}</label><label class="f"><span>${T('Reason *','Причина *')}</span><textarea id="tf-reason" maxlength="500" rows="2" placeholder="${T('Fabrication Expertise result during downtime…','Результат Fabrication Expertise во время downtime…')}"></textarea></label><div class="row"><button id="tf-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="tf-submit">${T('Fabricate','Изготовить')}</button></div>`,true);
+  $('#tf-cancel',modal).onclick=closeModal;
+  $('#tf-submit',modal).onclick=async()=>{
+    const name=$('#tf-name',modal).value.trim(),tech=$('#tf-tech',modal).value.trim(),specialty=$('#tf-specialty',modal).value,reason=$('#tf-reason',modal).value.trim(),blueprint=$('#tf-blueprint',modal).value.trim(),description=$('#tf-description',modal).value.trim();
+    if(name.length<2||tech.length<2||reason.length<3){toast(T('Fill name, Tech and reason.','Заполните название, Tech и причину.'),true);return;}
+    if(!$('#tf-confirm',modal).checked){toast(T('Confirm the successful Maker Check.','Подтвердите успешный Maker Check.'),true);return;}
+    const body={revision:c.revision,name,tech_name:tech,maker_specialty:specialty,qty:Math.max(1,Math.min(99,Number($('#tf-qty',modal).value)||1)),description,material_cost:Math.max(0,Math.min(9999999,Number($('#tf-cost',modal).value)||0)),manual_confirm:true,reason};
+    if(blueprint){body.blueprint_catalog_id=blueprint;}else{body.category='custom';body.price=Math.max(0,Math.min(9999999,Number($('#tf-price',modal).value)||0));}
+    const submit=$('#tf-submit',modal);submit.disabled=true;
+    try{await api(`/api/characters/${c.id}/tech-maker/fabricate`,{method:'POST',body});closeModal();toast(T('Item fabricated and recorded.','Предмет изготовлен и записан.'));viewSheet(c.id);}catch(error){submit.disabled=false;toast(error.message,true);}
+  };
 }
 
 function wizStepSummaryHtml() {
@@ -2335,7 +2633,7 @@ function wizStepSummaryHtml() {
   if(d.emp_cur!=null&&d.emp_cur<=2)warnings.push(T('EMP is 2 or lower','EMP не выше 2'));
   if(wiz.fashionCost < FASHION_BUDGET) warnings.push(`${T('Unused Style Budget will be lost','Неиспользованный Style Budget сгорит')}: ${money(FASHION_BUDGET-wiz.fashionCost)}`);
   for(const [base] of SUB_SKILL_BASES){const free=wizSubFree(base);if(free)warnings.push(`${base}: ${free} ${T('parent levels remain unallocated','уровней parent-pool не распределено')}`);}
-  const slotHosts=[...wiz.cyberware];if(wiz.freeNeuroport)slotHosts.push({instance_id:'creation-neuroport',name:'Neuroport',capacity:{slots_total:5}});for(const host of slotHosts){const total=num(host.capacity?.slots_total)||0;if(!total)continue;const used=wiz.cyberware.filter(item=>cyberHostIds(item).includes(host.instance_id||host.id)).reduce((sum,item)=>sum+(num(item.capacity?.slots_used)||0),0);if(total>used)warnings.push(`${host.name}: ${total-used} Option Slots ${T('unused','свободно')}`);}
+  const slotHosts=cyberPhysicalHosts(wiz);for(const host of slotHosts){const total=num(host.capacity?.slots_total)||0;if(!total)continue;const used=wiz.cyberware.filter(item=>cyberHostIds(item).includes(host.instance_id||host.id)).reduce((sum,item)=>sum+cyberOptionSlots(item),0);if(total>used)warnings.push(`${host.name}: ${total-used} Option Slots ${T('unused','свободно')}`);}
   const lpRows=lifepathNarrative(wiz.lifepath,wiz.role,wiz.roleLifepath),roleSource=ROLE_COREBOOK_V3[wiz.role];
   const statBlock=state.meta.stats.map(stat=>`<button class="chip skill-name-btn" data-stat-info="${stat}"><b>${stat}</b> ${wiz.stats[stat]}</button>`).join('');
   const weaponRows=wiz.gear.filter(item=>['guns','melee'].includes(item.cat)).map(item=>`<div class="inv-row"><span class="iname">${esc(item.name)}</span>${itemMechanicChips(item)}${item.mechanics?.skill?`<span class="chip">${esc(item.mechanics.skill)} BASE ${characterSkillLevel(c,item.mechanics.skill)+(num(c.stats[state.meta.skills.find(row=>row[1]===item.mechanics.skill)?.[2]])||0)}</span>`:''}</div>`).join('');
@@ -2359,6 +2657,10 @@ function hasRoleSpecificProgress(wiz) {
   const currentSetup = JSON.stringify(wiz.roleSetup || {});
   const defaultSetup = JSON.stringify(defaultRoleSetup(wiz.role));
   return hasLifepath || currentSetup !== defaultSetup;
+}
+
+function charHasRole(ch, roleName) {
+  return Boolean((ch && ch.roles || []).some(role => role.name === roleName));
 }
 
 function changeWizardRole(nextRole) {
@@ -2398,20 +2700,20 @@ async function adjustShopCart(kind, index, delta) {
     if (!sample) return;
     if (delta > 0) {
       if (String(sample.name).toLowerCase() === 'neuroport' || (sample.capacity || {}).unique) { toast(T('A second installation is not allowed.','Вторая установка запрещена.'), true); return; }
-      const hosts = availableCyberHosts(wiz, sample);
-      if ((sample.capacity || {}).host && !hosts.length) { toast(T('No compatible host has enough Option Slots.','У совместимых hosts нет свободных Option Slots.'), true); return; }
+      const needsHost=(sample.capacity||{}).host&&!pairedCyberlegFoundation(sample),hosts=needsHost?availableCyberHosts(wiz,sample):[];
+      if (needsHost && !hosts.length) { toast(T('No compatible host has enough Option Slots.','У совместимых hosts нет свободных Option Slots.'), true); return; }
       if (!canAffordCreationItem(wiz, { cat: 'cyberware' }, sample.price || 0)) { toast(T('Not enough Main Budget.','Недостаточно основного бюджета.'), true); return; }
-      const host = await chooseCyberHost(hosts, sample); if ((sample.capacity || {}).host && !host) return;
-      wiz.cyberware.push({ ...sample, instance_id: `${sample.id}:${Date.now()}:${Math.random().toString(16).slice(2)}`, host_instance: host ? (Array.isArray(host) ? (host[0].instance_id || host[0].id) : (host.instance_id || host.id)) : '', host_instances: host ? (Array.isArray(host) ? host.map(value => value.instance_id || value.id) : [host.instance_id || host.id]) : [] }); wiz.chromeCost += sample.price || 0;
+      const host = needsHost?await chooseCyberHost(hosts,sample):null;if(needsHost&&!host)return;
+      const side=chooseCyberSide(wiz,sample);if(cyberSideRequired(sample)&&!side)return;
+      wiz.cyberware.push({ ...sample, instance_id: clientInstanceId(), installation_side:side||'', host_instance: host ? (Array.isArray(host) ? (host[0].instance_id || host[0].id) : (host.instance_id || host.id)) : '', host_instances: host ? (Array.isArray(host) ? host.map(value => value.instance_id || value.id) : [host.instance_id || host.id]) : [] }); wiz.chromeCost += sample.price || 0;
     } else {
       const removeIndex = wiz.cyberware.findIndex(x => x.id === sample.id);
       const removed = wiz.cyberware[removeIndex];
       if (removed) {
-        const hostId = removed.instance_id || removed.id;
-        const dependents = wiz.cyberware.filter(item => cyberHostIds(item).includes(hostId));
+        const hostId = removed.instance_id || removed.id,removedIds=new Set([hostId]);if(pairedCyberlegFoundation(removed))removedIds.add(pairedCyberHostId(hostId));
+        const dependents = wiz.cyberware.filter(item => cyberHostIds(item).some(id=>removedIds.has(id)));
         if (dependents.length && !window.confirm(T(`Remove ${removed.name} and ${dependents.length} installed options?`,`Удалить ${removed.name} и установленные опции (${dependents.length})?`))) return;
-        const removedIds = new Set([hostId]);
-        wiz.cyberware = wiz.cyberware.filter(item => item !== removed && !removedIds.has(item.host_instance));
+        wiz.cyberware = wiz.cyberware.filter(item => item !== removed && !cyberHostIds(item).some(id=>removedIds.has(id)));
         wiz.chromeCost = Math.max(0, wiz.chromeCost - (removed.price || 0) - dependents.reduce((sum,item)=>sum+(item.price||0),0));
       }
     }
@@ -2585,14 +2887,274 @@ async function openImprovementModal(characterPayload){
   $('#ip-history',modal).onclick=async()=>{try{const data=await api(`/api/characters/${id}/ip`);openModal(`<h2>IP History</h2>${data.entries.length?data.entries.map(entry=>`<div class="ledger-row"><b class="${entry.amount>=0?'green':'warn-text'}">${entry.amount>=0?'+':''}${entry.amount} IP</b><span>${esc(entry.reason)}</span><small>${esc(entry.actor)} · ${new Date(entry.created*1000).toLocaleString()}</small></div>`).join(''):'<div class="empty">No entries.</div>'}`,true);}catch(e){toast(e.message,true);}};
 }
 
+function ammoRoundsForItem(item){const pack=Math.max(1,Number(item.mechanics?.quantity_per_purchase)||1),maximum=Math.max(1,Number(item.qty)||1)*pack,current=Number(item.ammo_rounds);return Math.max(0,Math.min(maximum,Number.isFinite(current)?current:maximum));}
+function ammoMatchesRequirement(item,ammoKind,weapon){if(item?.cat!=='ammo'||!['carried','stored'].includes(item.state||'carried')||ammoRoundsForItem(item)<=0)return false;const compatible=String(item.mechanics?.compatible_weapons||'').toLowerCase(),ammoName=String(item.name||'').toLowerCase();if(ammoKind==='grenade')return compatible.includes('grenade')&&!compatible.includes('except grenades');if(ammoKind==='shotgun')return compatible.includes('shotgun')||compatible.includes('slug')||compatible.includes('shell')||compatible.includes('all except grenades & rockets');if(ammoKind==='incendiary_shotgun')return ammoName.includes('incendiary')&&(compatible.includes('shotgun')||compatible.includes('slug')||compatible.includes('shell'));if(ammoKind==='rifle')return compatible.includes('bullet')||compatible.includes('all except grenades & rockets')||compatible.includes('all except shotgun shells');if(ammoKind==='rocket')return compatible.includes('rocket')&&!compatible.includes('except grenades & rockets');const weaponName=String(weapon?.name||'').toLowerCase(),type=String(weapon?.mechanics?.type||'').toLowerCase();if(weaponName&&compatible.includes(weaponName))return true;if(type.includes('grenade launcher'))return compatible.includes('grenade')&&!compatible.includes('except grenades');if(type.includes('rocket launcher')||type.includes('missile launcher'))return compatible.includes('rocket')&&!compatible.includes('except grenades & rockets');if(type.includes('shotgun'))return compatible.includes('shotgun')||compatible.includes('slug')||compatible.includes('shell')||compatible.includes('all except grenades & rockets');if(type.includes('bow'))return compatible.includes('arrow')||compatible.includes('bolt')||compatible.includes('all except grenades & rockets');return compatible.includes('bullet')||compatible.includes('all except grenades & rockets')||compatible.includes('all except shotgun shells');}
+function chooseAmmoStack(characterData,ammoKind,weapon){const options=(characterData.inventory||[]).filter(item=>ammoMatchesRequirement(item,ammoKind,weapon));if(!options.length){toast(T('No compatible ammunition in Inventory.','В Inventory нет совместимых боеприпасов.'),true);return null;}const answer=prompt(`${T('Choose ammunition stack','Выберите stack боеприпасов')}:\n${options.map((item,index)=>`${index+1}. ${item.name} · ${ammoRoundsForItem(item)} rounds`).join('\n')}`,'1');if(answer===null)return null;const index=Number(answer)-1;if(!Number.isInteger(index)||!options[index]){toast(T('Invalid ammunition choice.','Некорректный выбор боеприпасов.'),true);return null;}return options[index].instance_id;}
+function modificationAmmoRequirement(derived,characterData,modificationId){for(const vehicle of Object.values(derived.effective_vehicles||{})){const onboard=(vehicle.mounted_weapons||[]).find(profile=>profile.modification_id===modificationId);if(onboard)return {ammoKind:onboard.ammo_kind,weapon:null};const mount=(vehicle.weapon_mounts||[]).find(item=>item.modification_id===modificationId);if(mount?.bound_weapon){const weapon=(characterData.inventory||[]).find(item=>item.instance_id===mount.bound_weapon.weapon_instance_id);return {ammoKind:null,weapon};}}for(const weapon of Object.values(derived.effective_weapons||{})){const alternate=(weapon.alternate_attacks||[]).find(profile=>profile.modification_id===modificationId);if(alternate)return {ammoKind:alternate.ammo_kind,weapon:null};}return {ammoKind:null,weapon:null};}
+
 function combatSheetHtml(ch, derived, mine) {
-  const weapons=(ch.inventory||[]).filter(item=>['guns','melee'].includes(item.cat)),states=ch.weapon_state||{};
-  const weaponRows=weapons.map(item=>{const key=String(item.key||item.source_key||item.name),state=states[key]||{},skill=item.mechanics?.skill||'',meta=stateMetaSkill(skill),stat=meta&&meta[2],statValue=stat==='EMP'?(derived.emp_cur??ch.stats.EMP):(ch.stats||{})[stat],base=(num(statValue)||0)+(num((ch.skills||{})[skill])||0),damage=item.mechanics?.damage;return `<article class="weapon-sheet-card"><div><h3>${esc(item.name)}</h3><div class="mechanic-chips">${itemMechanicChips(item)}${skill?`<span class="chip">${esc(skill)} BASE ${base}</span>`:''}</div></div><div class="weapon-controls">${state.magazine_max?`<b>Mag ${state.magazine}/${state.magazine_max}</b><span>Reserve ${state.reserve||0}</span>${mine?`<button data-weapon-action="${esc(key)}|fire">Fire</button><button data-weapon-action="${esc(key)}|reload">Reload</button>`:''}`:''}${mine&&skill?`<button data-attack-roll="${esc(item.name)}|${base}">Attack 🎲</button>`:''}${damage?`<button data-damage-roll="${esc(item.name)}|${damage.dice}|${damage.sides}|${damage.multiplier||1}">Damage 🎲</button>`:''}</div></article>`;}).join('');
+  const weapons=(ch.inventory||[]).filter(item=>['guns','melee'].includes(item.cat)),states=ch.weapon_state||{},modifications=derived.modifications||[];
+  const weaponRows=weapons.map(item=>{const key=String(item.instance_id||item.key||item.source_key||item.name),state=states[key]||{},mounted=!!item.mounted_modification_id,skill=item.mechanics?.skill||'',meta=stateMetaSkill(skill),stat=meta&&meta[2],statValue=stat==='EMP'?(derived.emp_cur??ch.stats.EMP):(ch.stats||{})[stat],rawBase=(num(statValue)||0)+(num((ch.skills||{})[skill])||0),skillBase=derived.effects?.skills?.[skill]?.effective_check_base??rawBase,weaponEffective=derived.effective_weapons?.[item.instance_id]||{base:item.mechanics||{},effective:item.mechanics||{},attack_modifier:0,sources:[]},base=skillBase+(num(weaponEffective.attack_modifier)||0),damage=weaponEffective.effective?.damage||item.mechanics?.damage,installed=modifications.filter(mod=>mod.host_instance_id===item.instance_id),slotsUsed=weaponEffective.slots_used??installed.reduce((sum,mod)=>sum+(num(mod.slots_used)||0),0),slotsTotal=weaponEffective.slots_total??3,magBase=num(weaponEffective.base?.magazine)||0,magEffective=num(weaponEffective.effective?.magazine)||0,concealBase=weaponEffective.base?.concealable,concealEffective=weaponEffective.effective?.concealable,rangeBase=weaponEffective.base?.range_table,rangeEffective=weaponEffective.effective?.range_table,alternateHtml=(weaponEffective.alternate_attacks||[]).map(profile=>{const match=String(profile.damage||'').match(/(\d+)d(\d+)/),profileBase=derived.effects?.skills?.[profile.skill]?.effective_check_base??((num((ch.stats||{})[stateMetaSkill(profile.skill)?.[2]])||0)+(num((ch.skills||{})[profile.skill])||0)),resource=profile.state||{};return `<div class="alternate-weapon-profile"><div><b>${esc(APP_I18N.current()==='ru'?profile.label_ru:profile.label_en)}</b><span>${esc(profile.skill)} BASE ${profileBase} · ${esc(profile.damage)} · ROF ${profile.rof} · Hands ${profile.hands_required}</span></div><div class="weapon-controls"><b>Mag ${resource.magazine||0}/${resource.magazine_max||profile.magazine}</b><span>Shared ${profile.shared_ammo_available||0}${resource.loaded_ammo_name?` · Loaded ${esc(resource.loaded_ammo_name)}`:''}</span>${mine?`<button data-mod-weapon-action="${profile.modification_id}|fire" ${(resource.magazine||0)<=0?'disabled':''}>Fire</button><button data-mod-weapon-action="${profile.modification_id}|reload" ${(resource.magazine||0)>=(resource.magazine_max||profile.magazine)||(profile.shared_ammo_available||0)<=0?'disabled':''}>Reload</button><button data-attack-roll="${esc(profile.label_en)}|${profileBase}">Attack 🎲</button>`:''}${match?`<button data-damage-roll="${esc(profile.label_en)}|${match[1]}|${match[2]}|1">Damage 🎲</button>`:''}</div></div>`;}).join(''),autofireHtml=(weaponEffective.autofire_profiles||[]).map(profile=>{const autofireBase=derived.effects?.skills?.Autofire?.effective_check_base??((num((ch.stats||{}).REF)||0)+(num((ch.skills||{}).Autofire)||0));return `<div class="alternate-weapon-profile"><div><b>${esc(APP_I18N.current()==='ru'?profile.label_ru:profile.label_en)}</b><span>Autofire BASE ${autofireBase} · ${esc(profile.table)} · Max ×${profile.multiplier} · Ammo ${profile.ammo_cost}${profile.suppressive_fire?' · Suppressive Fire':''}</span></div>${mine?`<div class="weapon-controls"><button data-attack-roll="${esc(profile.label_en)}|${autofireBase}">Autofire Check 🎲</button></div>`:''}</div>`;}).join('');return `<article class="weapon-sheet-card"><div><h3>${esc(item.custom_name||item.name)}</h3><div class="mechanic-chips">${itemMechanicChips(item)}${skill?`<span class="chip">${esc(skill)} BASE ${rawBase!==base?`${rawBase}→${base}`:base}</span>`:''}${weaponEffective.attack_modifier?`<span class="chip effect-auto">Attack ${weaponEffective.attack_modifier>0?'+':''}${weaponEffective.attack_modifier}</span>`:''}${(weaponEffective.tags||[]).map(tag=>`<span class="tag effect-auto">${esc(tag)}</span>`).join('')}${magBase&&magEffective!==magBase?`<span class="chip effect-auto">Mag ${magBase}→${magEffective}</span>`:''}${concealEffective&&concealEffective!==concealBase?`<span class="chip effect-auto">Conceal ${esc(concealBase)}→${esc(concealEffective)}</span>`:''}${rangeEffective&&rangeEffective!==rangeBase?`<span class="chip effect-auto">Range ${esc(rangeBase)}→${esc(rangeEffective)}</span>`:''}${item.cat==='guns'?`<span class="chip">Slots ${slotsUsed}/${slotsTotal}</span>`:''}${installed.map(mod=>`<span class="chip">🔧 ${esc(mod.configuration?.upgrade_name||'Upgrade')}</span>`).join('')}${mounted?`<span class="tag effect-auto">${T('MOUNTED TO VEHICLE','УСТАНОВЛЕНО НА ТРАНСПОРТ')}</span>`:''}</div>${(weaponEffective.sources||[]).map(source=>`<div class="small ${source.active?'green-text':'warn-text'}">${source.automated?T('AUTOMATED','АВТОМАТИЧЕСКИ'):T('MANUAL','ВРУЧНУЮ')} · ${esc(APP_I18N.current()==='ru'?source.label_ru:source.label_en)}${source.requirements_met===false?` · ${esc(APP_I18N.current()==='ru'?source.requirement_label_ru:source.requirement_label_en)}`:''}</div>${(source.manual_rules||[]).map(rule=>`<div class="small effect-manual-text">${esc(APP_I18N.current()==='ru'?rule.text_ru:rule.text_en)} · ${esc(rule.source||'')}</div>`).join('')}`).join('')}</div><div class="weapon-controls">${!mounted&&state.magazine_max?`<b>Mag ${state.magazine}/${magEffective||state.magazine_max}</b><span>Shared ${weaponEffective.shared_ammo_available||0}${state.loaded_ammo_name?` · Loaded ${esc(state.loaded_ammo_name)}`:''}</span>${mine?`<button data-weapon-action="${esc(key)}|fire">Fire</button><button data-weapon-action="${esc(key)}|reload" ${(state.magazine||0)>=(magEffective||state.magazine_max)||(weaponEffective.shared_ammo_available||0)<=0?'disabled':''}>Reload</button>`:''}`:''}${mine&&!mounted&&skill?`<button data-attack-roll="${esc(item.custom_name||item.name)}|${base}">Attack 🎲</button>`:''}${damage?`<button data-damage-roll="${esc(item.custom_name||item.name)}|${damage.dice}|${damage.sides}|${damage.multiplier||1}">Damage 🎲</button>`:''}${mine&&item.cat==='guns'?`<button data-manage-upgrades="${item.instance_id}">${T('Manage Upgrades','Управление апгрейдами')}</button>`:''}</div>${alternateHtml}${autofireHtml}</article>`;}).join('');
   const armor=['head','body','shield'].map(location=>{const piece=(ch.armor||{})[location];if(!piece)return '';return `<div class="armor-resource"><b>${location[0].toUpperCase()+location.slice(1)} · ${esc(piece.name)}</b><span>${piece.current??piece.sp??piece.sdp} / ${piece.maximum??piece.sp??piece.sdp} ${location==='shield'?'SDP':'SP'}</span>${mine?`<div><button data-armor-action="${location}|-1">Ablate</button><button data-armor-action="${location}|1">Repair 1</button><button data-armor-action="${location}|reset">Reset</button></div>`:''}</div>`;}).join('');
   return `<div class="combat-sheet-grid"><section><h2>Weapons</h2>${weaponRows||'<div class="empty">No weapons.</div>'}</section><section><h2>Armor</h2>${armor||'<div class="empty">No equipped armor.</div>'}</section></div>`;
 }
 function stateMetaSkill(name){return (state.meta.skills||[]).find(row=>row[1]===name);}
 function rollDamage(name,dice,sides,multiplier){const rolls=Array.from({length:dice},()=>1+Math.floor(Math.random()*sides)),total=rolls.reduce((a,b)=>a+b,0)*multiplier;openModal(`<h2>💥 ${esc(name)}</h2><div class="roll-result"><b>${total}</b><span>${rolls.join(' + ')}${multiplier>1?' × '+multiplier:''}</span></div>`);}
+function equipModeLabel(mode){return ({held:T('Held','В руках'),worn:T('Worn','Надето'),ready:T('Ready','Наготове'),workspace:T('Workspace','Рабочее место'),mounted:T('Mounted','Закреплено')})[mode]||mode;}
+async function performSheetItemAction(character,item,action,extra={}){
+  try{
+    const result=await api(`/api/characters/${character.id}/items/${item.instance_id}/action`,{method:'POST',body:{revision:character.revision,action,...extra}});
+    await viewSheet(character.id);toast(T('Item state updated.','Состояние предмета обновлено.'));
+    if((result.created_effects||[]).length||(result.manual_rules||[]).length){openModal(`<h2>${T('Use Resolution','Результат использования')}</h2><div class="panel accent mb"><b>${esc(item.custom_name||item.name)}</b>${(result.created_effects||[]).map(effect=>`<div class="inv-row"><span class="tag effect-auto">${T('AUTOMATED EFFECT','АВТОМАТИЧЕСКИЙ ЭФФЕКТ')}</span><span class="iname">${esc(effect.label)}</span><span>${esc(effectTargetLabel(effect.definition?.target))} ${effect.definition?.value>0?'+':''}${esc(effect.definition?.value??'')} · ${esc(effectDurationLabel(effect))}</span></div>`).join('')||''}</div>${(result.manual_rules||[]).map(rule=>`<div class="panel mb"><span class="tag effect-manual">${T('MANUAL RULE','РУЧНОЕ ПРАВИЛО')}</span><p>${esc(APP_I18N.current()==='ru'?rule.text_ru:rule.text_en)}</p><small>${esc(rule.source||'')}</small></div>`).join('')}${result.effect?.text?`<details><summary>${T('Full item description','Полное описание предмета')}</summary><p class="preserve-lines">${esc(result.effect.text)}</p></details>`:''}`,true);}else if(result.effect){openModal(`<h2>${T('Manual Use Effect','Ручной эффект использования')}</h2><div class="panel accent"><b>${esc(item.custom_name||item.name)}</b><p class="preserve-lines">${esc(result.effect.text||T('Resolve using the item description.','Примените эффект по описанию предмета.'))}</p>${result.effect.manual_resolution_required?`<span class="tag">${T('MANUAL RESOLUTION','РУЧНОЕ ПРИМЕНЕНИЕ')}</span>`:''}</div>`);}
+  }catch(error){toast(error.message,true);}
+}
+function chooseEquipMode(character,item){const modes=item.equip_modes||['ready'];if(modes.length===1){performSheetItemAction(character,item,'equip',{mode:modes[0]});return;}const modal=openModal(`<h2>${T('Equip','Экипировать')} · ${esc(item.custom_name||item.name)}</h2><p class="small muted">${T('Choose how this item is prepared. Held gear may occupy a hand.','Выберите способ подготовки. Режим Held может занимать руку.')}</p><div class="choice-card-grid">${modes.map(mode=>`<button class="choice-card" data-equip-mode="${esc(mode)}"><b>${esc(equipModeLabel(mode))}</b><span>${mode==='held'?T('Uses a hand','Занимает руку'):T('No hand required','Не занимает руку')}</span></button>`).join('')}</div><button id="equip-cancel" class="mt">${T('Cancel','Отмена')}</button>`);$$('[data-equip-mode]',modal).forEach(button=>button.onclick=()=>{const mode=button.dataset.equipMode;closeModal();performSheetItemAction(character,item,'equip',{mode});});$('#equip-cancel',modal).onclick=closeModal;}
+async function openWeaponUpgradeManager(character,hostInstanceId){try{const data=await api(`/api/characters/${character.id}/modifications`),host=data.hosts.find(item=>item.instance_id===hostInstanceId);if(!host){toast(T('Weapon host not found.','Оружие-host не найдено.'),true);return;}const installed=data.modifications.filter(item=>item.host_instance_id===hostInstanceId),available=data.upgrades.filter(item=>item.state==='carried'),modal=openModal(`<h2>${T('Manage Upgrades','Управление апгрейдами')} · ${esc(host.name)}</h2><div class="panel accent mb"><b>${T('Attachment Slots','Слоты модификаций')}: ${host.slots_used}/${host.slots_total}</b><div class="chips mt">${Object.entries(host.slot_pools||{}).map(([name,pool])=>`<span class="chip">${esc(name)} ${pool.used}/${pool.total}</span>`).join('')}</div><p class="small muted">${esc(host.weapon_type||'Weapon')} · ${esc(host.skill||'—')}${host.exotic?' · EXOTIC':''}</p></div><h3>${T('Installed','Установлено')}</h3>${installed.length?installed.map(mod=>`<div class="inv-row"><span class="iname">${esc(mod.upgrade_name||'Upgrade')}</span><span class="chip">Slots ${mod.slots_used}</span>${mod.permanent?`<span class="tag">${T('PERMANENT','НЕСЪЁМНЫЙ')}</span>`:`<button class="btn-sm" data-remove-mod="${mod.modification_id}">${T('Remove','Снять')}</button>`}</div>`).join(''):`<div class="empty small">${T('No installed upgrades.','Нет установленных апгрейдов.')}</div>`}<h3 class="mt">${T('Available in Inventory','Доступно в Inventory')}</h3>${available.length?available.map(upgrade=>{const compatibility=upgrade.compatibility[hostInstanceId]||{},blocked=!compatibility.allowed;return `<article class="panel mb ${blocked?'unaffordable':''}"><div class="row" style="justify-content:space-between"><b>${esc(upgrade.name)}</b><span class="chip">${T('Slots','Слоты')} ${upgrade.slots_used}</span></div><p class="small muted">${esc(upgrade.compatibility_text||'')}</p>${compatibility.reasons?.length?`<div class="warn-text small">${compatibility.reasons.map(esc).join(' · ')}</div>`:''}${compatibility.manual_resolution_required?`<div class="small warn-text">${T('MANUAL COMPATIBILITY CHECK REQUIRED','ТРЕБУЕТСЯ РУЧНАЯ ПРОВЕРКА СОВМЕСТИМОСТИ')}</div>`:''}${(upgrade.configuration_by_host?.[hostInstanceId]||upgrade.configuration_schemas||[]).map(schema=>`<label class="f mt"><span>${esc(APP_I18N.current()==='ru'?schema.label_ru:schema.label_en)}</span><select data-upgrade-config="${upgrade.instance_id}|${schema.key}"><option value="">${T('Choose…','Выберите…')}</option>${schema.choices.map(choice=>`<option value="${choice.value}">${esc(APP_I18N.current()==='ru'?choice.label_ru:choice.label_en)}</option>`).join('')}</select></label>`).join('')}<button class="btn-sm mt" data-install-upgrade="${upgrade.instance_id}" ${blocked?'disabled':''}>${T('Install','Установить')} · ${compatibility.slot_pool?esc(compatibility.slot_pool)+' '+compatibility.slot_pool_after+'/'+compatibility.slot_pool_total:compatibility.slots_after+'/'+compatibility.slots_total}</button></article>`;}).join(''):`<div class="empty small">${T('No weapon upgrades in Inventory.','В Inventory нет апгрейдов оружия.')}</div>`}<button id="upgrade-close" class="mt">${T('Close','Закрыть')}</button>`,true);$('#upgrade-close',modal).onclick=closeModal;$$('[data-install-upgrade]',modal).forEach(button=>button.onclick=async()=>{const upgrade=data.upgrades.find(item=>item.instance_id===button.dataset.installUpgrade),compatibility=upgrade.compatibility[hostInstanceId],reason=prompt(T('Installation reason / source','Причина / источник установки'),T('Installed from Character Inventory','Установлено из Inventory персонажа'))||'';if(reason.trim().length<3)return;let manualConfirm=false;if(compatibility.manual_resolution_required){manualConfirm=confirm(T('This compatibility rule needs manual resolution. Confirm installation under Trust + Audit?','Это сложное правило совместимости требует ручной проверки. Подтвердить установку через Trust + Audit?'));if(!manualConfirm)return;}const configuration={};for(const schema of upgrade.configuration_by_host?.[hostInstanceId]||upgrade.configuration_schemas||[]){const input=$(`[data-upgrade-config="${upgrade.instance_id}|${schema.key}"]`,modal),value=input?.value||'';if(schema.required&&!value){toast(T('Choose the required upgrade configuration.','Выберите обязательную конфигурацию upgrade.'),true);return;}if(value)configuration[schema.key]=value;}button.disabled=true;try{await api(`/api/characters/${character.id}/modifications`,{method:'POST',body:{revision:data.revision,host_instance_id:hostInstanceId,upgrade_instance_id:upgrade.instance_id,manual_confirm:manualConfirm,configuration,reason}});closeModal();toast(T('Upgrade installed.','Апгрейд установлен.'));viewSheet(character.id);}catch(error){button.disabled=false;toast(error.message,true);}});$$('[data-remove-mod]',modal).forEach(button=>button.onclick=async()=>{const reason=prompt(T('Removal reason','Причина снятия'),T('Removed from host','Снято с host'))||'';if(reason.trim().length<3)return;button.disabled=true;try{await api(`/api/characters/${character.id}/modifications/${button.dataset.removeMod}/action`,{method:'POST',body:{revision:data.revision,action:'remove',reason}});closeModal();toast(T('Upgrade removed.','Апгрейд снят.'));viewSheet(character.id);}catch(error){button.disabled=false;toast(error.message,true);}});}catch(error){toast(error.message,true);}}
+async function openVehicleUpgradeManager(character,hostInstanceId){try{const data=await api(`/api/characters/${character.id}/modifications`),host=data.vehicle_hosts.find(item=>item.instance_id===hostInstanceId);if(!host){toast(T('Vehicle host not found.','Vehicle-host не найден.'),true);return;}const installed=data.modifications.filter(item=>item.host_instance_id===hostInstanceId),available=data.vehicle_upgrades.filter(item=>item.state==='carried'),modal=openModal(`<h2>${T('Vehicle Upgrades','Улучшения транспорта')} · ${esc(host.name)}</h2><div class="panel accent mb"><div class="mechanic-chips"><span class="chip">SDP ${esc(host.vehicle_state?.sdp_current??host.effective?.sdp??host.sdp??'—')} / ${esc(host.vehicle_state?.sdp_max??host.effective?.sdp??host.sdp??'—')}</span>${host.effective?.body_sp?`<span class="chip">Body SP ${esc(host.effective.body_sp)}</span>`:''}${host.effective?.glass_hp?`<span class="chip">Glass ${esc(host.effective.glass_hp)} HP/window</span>`:''}<span class="chip">Seats ${esc(host.effective?.seats??host.seats??'—')}</span><span class="chip">${esc(host.combat_speed||'—')}</span>${host.nomad_access?`<span class="chip">Nomad Access ${host.nomad_access}</span>`:''}</div><p class="small muted">${host.classes.map(esc).join(' · ')}</p></div><h3>${T('Installed','Установлено')}</h3>${installed.length?installed.map(mod=>`<div class="inv-row"><span class="iname">${esc(mod.upgrade_name||'Upgrade')}${mod.configuration?.choices?.orientation?` · ${T('Facing','Направление')}: ${esc(mod.configuration.choices.orientation)}`:''}</span>${mod.permanent?`<span class="tag">${T('PERMANENT','НЕСЪЁМНЫЙ')}</span>`:`<button class="btn-sm" data-remove-vehicle-mod="${mod.modification_id}">${T('Remove','Снять')}</button>`}</div>`).join(''):`<div class="empty small">${T('No installed vehicle upgrades.','Нет установленных улучшений.')}</div>`}<h3 class="mt">${T('Available in Inventory','Доступно в Inventory')}</h3>${available.length?available.map(upgrade=>{const compatibility=upgrade.compatibility[hostInstanceId]||{},blocked=!compatibility.allowed;return `<article class="panel mb ${blocked?'unaffordable':''}"><div class="row" style="justify-content:space-between"><b>${esc(upgrade.name)}</b>${upgrade.nomad_access_required?`<span class="chip">Nomad Access ${upgrade.nomad_access_required}</span>`:''}</div><p class="small muted">${esc(upgrade.availability_text||'')}</p>${compatibility.role_access_item?`<div class="small ${compatibility.nomad_access_met?'green-text':'warn-text'}">${T('Role Access','Доступ роли')}: Nomad ${compatibility.nomad_rank}/${compatibility.nomad_access_required||0}</div>`:`<div class="small muted">${T('Physical upgrade from Inventory; Nomad Access is reference metadata.','Физический upgrade из Inventory; Nomad Access остаётся справочной метаданной.')}</div>`}${compatibility.reasons?.length?`<div class="warn-text small">${compatibility.reasons.map(esc).join(' · ')}</div>`:''}${compatibility.manual_resolution_required?`<div class="small warn-text">${T('MANUAL COMPATIBILITY CHECK REQUIRED','ТРЕБУЕТСЯ РУЧНАЯ ПРОВЕРКА СОВМЕСТИМОСТИ')}</div>`:''}${(upgrade.configuration_schemas||[]).map(schema=>`<label class="f mt"><span>${esc(APP_I18N.current()==='ru'?schema.label_ru:schema.label_en)}</span><select data-vehicle-config="${upgrade.instance_id}|${schema.key}"><option value="">${T('Choose…','Выберите…')}</option>${schema.choices.map(choice=>`<option value="${esc(choice.value)}">${esc(APP_I18N.current()==='ru'?choice.label_ru:choice.label_en)}</option>`).join('')}</select></label>`).join('')}<button class="btn-sm mt" data-install-vehicle-upgrade="${upgrade.instance_id}" ${blocked?'disabled':''}>${T('Install','Установить')} · ${compatibility.installed_count}/${compatibility.repeatable_max}</button></article>`;}).join(''):`<div class="empty small">${T('No vehicle upgrades in Inventory.','В Inventory нет улучшений транспорта.')}</div>`}<button id="vehicle-upgrade-close" class="mt">${T('Close','Закрыть')}</button>`,true);$('#vehicle-upgrade-close',modal).onclick=closeModal;$$('[data-install-vehicle-upgrade]',modal).forEach(button=>button.onclick=async()=>{const upgrade=data.vehicle_upgrades.find(item=>item.instance_id===button.dataset.installVehicleUpgrade),compatibility=upgrade.compatibility[hostInstanceId],configuration={};for(const schema of upgrade.configuration_schemas||[]){const field=$(`[data-vehicle-config="${upgrade.instance_id}|${schema.key}"]`,modal),value=field?.value||'';if(schema.required&&!value){toast(T('Choose the required vehicle configuration.','Выберите обязательную конфигурацию транспорта.'),true);return;}if(value)configuration[schema.key]=value;}const reason=prompt(T('Installation reason / source','Причина / источник установки'),T('Installed in Vehicle Garage','Установлено в гараже'))||'';if(reason.trim().length<3)return;let manualConfirm=false;if(compatibility.manual_resolution_required){manualConfirm=confirm(T('This rule needs manual resolution. Confirm under Trust + Audit?','Это правило требует ручной проверки. Подтвердить через Trust + Audit?'));if(!manualConfirm)return;}button.disabled=true;try{await api(`/api/characters/${character.id}/modifications`,{method:'POST',body:{revision:data.revision,host_instance_id:hostInstanceId,upgrade_instance_id:upgrade.instance_id,manual_confirm:manualConfirm,configuration,reason}});closeModal();toast(T('Vehicle upgrade installed.','Улучшение транспорта установлено.'));viewSheet(character.id);}catch(error){button.disabled=false;toast(error.message,true);}});$$('[data-remove-vehicle-mod]',modal).forEach(button=>button.onclick=async()=>{const reason=prompt(T('Removal reason','Причина снятия'),T('Removed in Vehicle Garage','Снято в гараже'))||'';if(reason.trim().length<3)return;button.disabled=true;try{await api(`/api/characters/${character.id}/modifications/${button.dataset.removeVehicleMod}/action`,{method:'POST',body:{revision:data.revision,action:'remove',reason}});closeModal();toast(T('Vehicle upgrade removed.','Улучшение транспорта снято.'));viewSheet(character.id);}catch(error){button.disabled=false;toast(error.message,true);}});}catch(error){toast(error.message,true);}}
+async function openCyberdeckManager(character,hostInstanceId){
+  try{
+    const data=await api(`/api/characters/${character.id}/modifications`),host=data.cyberdeck_hosts.find(item=>item.instance_id===hostInstanceId);
+    if(!host){toast(T('Cyberdeck host not found.','Cyberdeck-host не найден.'),true);return;}
+    const installed=data.modifications.filter(item=>item.host_instance_id===hostInstanceId),available=data.cyberdeck_items.filter(item=>item.state==='carried');
+    const modal=openModal(`<h2>${T('Cyberdeck Loadout','Загрузка Cyberdeck')} · ${esc(host.name)}</h2><div class="panel accent mb"><div class="mechanic-chips">${Object.entries(host.slot_pools||{}).map(([name,pool])=>`<span class="chip">${esc(name)} ${pool.used}/${pool.total}</span>`).join('')}<span class="chip">Total ${host.slots_used}/${host.slots_total}</span></div></div><h3>${T('Installed Hardware & Programs','Установленные Hardware и Programs')}</h3>${installed.length?installed.map(mod=>`<div class="inv-row"><span class="iname">${esc(mod.upgrade_name||'Item')}</span><span class="chip">${esc(mod.slot_type)} · ${mod.slots_used} slots</span><button class="btn-sm" data-remove-deck-item="${mod.modification_id}">${T('Uninstall','Удалить из деки')}</button></div>`).join(''):`<div class="empty small">${T('Cyberdeck loadout is empty.','Cyberdeck пуст.')}</div>`}<h3 class="mt">${T('Available in Inventory','Доступно в Inventory')}</h3>${available.length?available.map(item=>{const compatibility=item.compatibility[hostInstanceId]||{},blocked=!compatibility.allowed;return `<article class="panel mb ${blocked?'unaffordable':''}"><div class="row" style="justify-content:space-between"><b>${esc(item.name)}</b><span class="chip">${item.item_kind==='cyberdeck_program'?'Program':'Hardware'} · ${item.slots_used} slots</span></div>${item.program_class?`<div class="small muted">${esc(item.program_class)}</div>`:''}${compatibility.reasons?.length?`<div class="warn-text small">${compatibility.reasons.map(esc).join(' · ')}</div>`:''}<button class="btn-sm mt" data-install-deck-item="${item.instance_id}" ${blocked?'disabled':''}>${T('Install','Установить')}</button></article>`;}).join(''):`<div class="empty small">${T('No carried Hardware or Programs.','Нет carried Hardware или Programs.')}</div>`}<button id="deck-manager-close">${T('Close','Закрыть')}</button>`,true);
+    $('#deck-manager-close',modal).onclick=closeModal;
+    $$('[data-install-deck-item]',modal).forEach(button=>button.onclick=async()=>{const reason=prompt(T('Installation reason','Причина установки'),T('Installed in Cyberdeck loadout','Установлено в Cyberdeck'))||'';if(reason.trim().length<3)return;button.disabled=true;try{await api(`/api/characters/${character.id}/modifications`,{method:'POST',body:{revision:data.revision,host_instance_id:hostInstanceId,upgrade_instance_id:button.dataset.installDeckItem,manual_confirm:false,reason}});closeModal();toast(T('Cyberdeck item installed.','Элемент Cyberdeck установлен.'));viewSheet(character.id);}catch(error){button.disabled=false;toast(error.message,true);}});
+    $$('[data-remove-deck-item]',modal).forEach(button=>button.onclick=async()=>{const reason=prompt(T('Uninstall reason','Причина удаления'),T('Removed from Cyberdeck loadout','Удалено из Cyberdeck'))||'';if(reason.trim().length<3)return;button.disabled=true;try{await api(`/api/characters/${character.id}/modifications/${button.dataset.removeDeckItem}/action`,{method:'POST',body:{revision:data.revision,action:'remove',reason}});closeModal();toast(T('Cyberdeck item uninstalled.','Элемент Cyberdeck удалён.'));viewSheet(character.id);}catch(error){button.disabled=false;toast(error.message,true);}});
+  }catch(error){toast(error.message,true);}
+}
+async function chooseBlackIceDeploymentContext(character,mode){let contexts={sessions:[]};try{contexts=await api(`/api/characters/${character.id}/net-contexts`);}catch(error){}let session=null;if(contexts.sessions?.length){const answer=prompt(`${T('Choose Live NET Session, or 0 for manual context','Выберите Live NET Session или 0 для ручного контекста')}:\n0. MANUAL\n${contexts.sessions.map((item,index)=>`${index+1}. ${item.title} · ${item.status}`).join('\n')}`,'1');if(answer===null)return null;const index=Number(answer);if(index>0)session=contexts.sessions[index-1];else if(index!==0)return null;}if(!session){const floorLabel=prompt(T('NET Floor label','Название NET Floor'),'Floor 1')||'';if(!floorLabel.trim())return null;const targetLabel=mode==='deploy_combat'?(prompt(T('Target label','Название цели'),'Enemy Netrunner')||''):'';if(mode==='deploy_combat'&&targetLabel.trim().length<2)return null;return {floor_label:floorLabel.trim(),target_label:targetLabel.trim()};}if(!session.floors?.length){toast(T('This Session has no validated NET Floors. Ask the GM to create one.','В Session нет validated NET Floors. Попросите GM создать Floor.'),true);return null;}const floorAnswer=prompt(`${T('Choose NET Floor','Выберите NET Floor')}:\n${session.floors.map((item,index)=>`${index+1}. ${item.label}`).join('\n')}`,'1');if(floorAnswer===null)return null;const floor=session.floors[Number(floorAnswer)-1];if(!floor)return null;const result={session_id:session.session_id,session_floor_id:floor.floor_id},floorNodes=(session.nodes||[]).filter(item=>item.floor_id===floor.floor_id);if(floorNodes.length){const nodeAnswer=prompt(`${T('Choose Architecture node','Выберите Architecture node')}:\n${floorNodes.map((item,index)=>`${index+1}. ${item.label} · ${item.type}`).join('\n')}`,'1'),node=floorNodes[Number(nodeAnswer)-1];if(!node)return null;result.session_node_id=node.node_id;}if(mode==='deploy_combat'){if(!session.targets?.length){toast(T('This Session has no valid target combatants.','В Session нет допустимых target combatants.'),true);return null;}const targetAnswer=prompt(`${T('Choose Session target','Выберите цель Session')}:\n${session.targets.map((item,index)=>`${index+1}. ${item.name} · ${item.kind}`).join('\n')}`,'1');if(targetAnswer===null)return null;const target=session.targets[Number(targetAnswer)-1];if(!target)return null;result.target_combatant_id=target.id;}return result;}
+function findBlackIceEntity(derived,entityId){for(const deck of Object.values(derived.effective_cyberdecks||{})){for(const program of deck.programs||[]){if(program.net_entity?.net_entity_id===entityId)return program.net_entity;}}return null;}
+async function chooseBlackIceEngageContext(character,derived,entityId){const entity=findBlackIceEntity(derived,entityId);if(!entity?.session_id){const target=prompt(T('New target label','Новая цель'),'Enemy Netrunner')||'',floor=prompt(T('NET Floor label','Название NET Floor'),entity?.floor_label||'')||'';if(target.trim().length<2||!floor.trim())return null;return {target_label:target.trim(),floor_label:floor.trim()};}const contexts=await api(`/api/characters/${character.id}/net-contexts`),session=(contexts.sessions||[]).find(item=>item.session_id===entity.session_id);if(!session)return null;const floorAnswer=prompt(`${T('Choose NET Floor','Выберите NET Floor')}:\n${session.floors.map((item,index)=>`${index+1}. ${item.label}`).join('\n')}`,'1'),floor=session.floors[Number(floorAnswer)-1];if(!floor||!session.targets.length)return null;const targetAnswer=prompt(`${T('Choose Session target','Выберите цель Session')}:\n${session.targets.map((item,index)=>`${index+1}. ${item.name}`).join('\n')}`,'1'),target=session.targets[Number(targetAnswer)-1];if(!target)return null;const result={session_floor_id:floor.floor_id,target_combatant_id:target.id},floorNodes=(session.nodes||[]).filter(item=>item.floor_id===floor.floor_id);if(floorNodes.length){const nodeAnswer=prompt(`${T('Choose Architecture node','Выберите Architecture node')}:\n${floorNodes.map((item,index)=>`${index+1}. ${item.label}`).join('\n')}`,'1'),node=floorNodes[Number(nodeAnswer)-1];if(!node)return null;result.session_node_id=node.node_id;}return result;}
+function blackIceRuntimeHtml(deck,item,mine){const runtime=item.runtime||{},entity=item.net_entity;if(!entity)return `<span class="small warn-text">${T('READY FOR NET ENTITY DEPLOYMENT','ГОТОВО К РАЗВЁРТЫВАНИЮ NET ENTITY')}</span>${mine?`<div class="row"><button class="btn-sm" data-black-ice-deploy="${deck.instance_id}|${item.instance_id}|lie_in_wait">${T('Lie in Wait','Затаиться')}</button><button class="btn-sm" data-black-ice-deploy="${deck.instance_id}|${item.instance_id}|deploy_combat">${T('Deploy in Combat','Развернуть в бою')}</button><button class="btn-sm btn-danger" data-program-action="${deck.instance_id}|${item.instance_id}|destroy">${T('Destroy Copy','Уничтожить копию')}</button></div>`:''}`;const active=['lying_in_wait','hunting'].includes(entity.status),target=entity.target_label?` · ${T('Target','Цель')}: ${esc(entity.target_label)}`:'',initiative=entity.initiative!=null?` · Initiative ${entity.initiative}`:'';return `<div class="black-ice-entity"><div class="mechanic-chips"><span class="tag">${esc(String(entity.status||'').toUpperCase())}</span><span class="chip">REZ ${entity.rez_current}/${entity.rez_max}</span><span class="chip">PER ${entity.per}</span><span class="chip">SPD ${entity.spd}</span><span class="chip">ATK ${entity.atk}</span><span class="chip">DEF ${entity.def}</span></div><div class="small muted">Floor: ${esc(entity.floor_label||'MANUAL')}${entity.session_node_label?` · Node: ${esc(entity.session_node_label)}`:''}${target}${initiative} · ${esc(entity.target_type||'')}</div>${mine?`<div class="row">${active?`<button class="btn-sm" data-net-entity-action="${entity.net_entity_id}|damage">REZ −</button>`:''}${entity.status==='hunting'?`<button class="btn-sm" data-net-entity-action="${entity.net_entity_id}|slide">Slide</button>`:''}${entity.status==='lying_in_wait'?`<button class="btn-sm" data-net-entity-action="${entity.net_entity_id}|engage">Engage</button>`:''}<button class="btn-sm" data-net-entity-action="${entity.net_entity_id}|deactivate">Deactivate</button><button class="btn-sm btn-danger" data-net-entity-action="${entity.net_entity_id}|destroy">${T('Destroy Entity & Copy','Уничтожить Entity и копию')}</button></div>`:''}</div>`;}
+function cyberdeckSheetHtml(characterData,derived,mine){
+  const decks=(characterData.inventory||[]).filter(item=>item.cat==='net_stuff'&&item.mechanics?.type==='Cyberdeck');
+  if(!decks.length)return `<div class="empty small">${T('No Cyberdeck instances in this Dossier.','В Dossier нет Cyberdeck instances.')}</div>`;
+  return decks.map(deck=>{const effective=derived.effective_cyberdecks?.[deck.instance_id]||{},pools=effective.pools||{};return `<article class="panel mb cyberdeck-card"><div class="row" style="justify-content:space-between"><div><h3>${esc(deck.custom_name||deck.name)}</h3><div class="mechanic-chips">${Object.entries(pools).map(([name,pool])=>`<span class="chip">${esc(name)} ${pool.used}/${pool.total}</span>`).join('')}<span class="chip">Total ${effective.slots_used||0}/${effective.slots_total||0}</span></div></div>${mine?`<button class="btn-sm" data-manage-cyberdeck="${deck.instance_id}">${T('Manage Loadout','Управление загрузкой')}</button>`:''}</div><div class="grid cols-2 mt"><div><b>Hardware</b>${(effective.hardware||[]).map(item=>{const saved=item.backup_state?.saved_programs?.length||0,pending=item.runtime_state?.pending_armor_rez,eligible=item.eligible_armor_programs||[];return `<div class="program-runtime-row"><span>▣ ${esc(item.name)} · ${item.slots} slots${saved?` · Saved ${saved}`:''}${pending?` · ${T('PENDING ARMOR REZ · MANUAL ELIGIBILITY','ОЖИДАЕТ ARMOR REZ · ELIGIBILITY ВРУЧНУЮ')}`:''}</span>${mine&&saved?`<button class="btn-sm" data-backup-restore="${deck.instance_id}|${item.instance_id}">${T('Restore Backup','Восстановить Backup')}</button>`:''}${mine&&pending&&eligible.length?`<button class="btn-sm btn-primary" data-defense-sequencer="${deck.instance_id}|${item.instance_id}">${T('Confirm & Rez Armor','Подтвердить и Rez Armor')}</button>`:''}</div>`;}).join('')||'<div class="small muted">—</div>'}</div><div><b>Programs</b>${(effective.programs||[]).map(item=>{const runtime=item.runtime||{},status=runtime.status||'inactive',rez=runtime.rez_max?` · REZ ${runtime.rez_current}/${runtime.rez_max}`:'',attacker=runtime.category==='attacker',blackIce=runtime.category==='black_ice';return `<div class="program-runtime-row"><div><b>◆ ${esc(item.name)}</b><span class="small muted">${esc(item.program_class||'')} · ${item.slots} slots${rez}</span></div><span class="tag">${esc(status.toUpperCase())}</span>${blackIce?blackIceRuntimeHtml(deck,item,mine):(mine?`<div class="row">${attacker?`<button class="btn-sm" data-program-action="${deck.instance_id}|${item.instance_id}|run">${T('Run · Manual Effect','Запустить · эффект вручную')}</button>`:''}${!attacker&&status==='inactive'?`<button class="btn-sm" data-program-action="${deck.instance_id}|${item.instance_id}|rez">Rez</button>`:''}${status==='rezzed'?`<button class="btn-sm" data-program-action="${deck.instance_id}|${item.instance_id}|damage">REZ −</button><button class="btn-sm" data-program-action="${deck.instance_id}|${item.instance_id}|derez">Derez</button><button class="btn-sm" data-program-action="${deck.instance_id}|${item.instance_id}|deactivate">Deactivate</button>`:''}${status==='derezzed'?`<button class="btn-sm" data-program-action="${deck.instance_id}|${item.instance_id}|deactivate">Deactivate</button>`:''}<button class="btn-sm btn-danger" data-program-action="${deck.instance_id}|${item.instance_id}|destroy">${T('Destroy Copy','Уничтожить копию')}</button></div>`:'')}</div>`;}).join('')||'<div class="small muted">—</div>'}</div></div><div class="small warn-text mt">${T('CURATED NET EFFECTS AUTOMATED · OTHER EFFECTS MANUAL · Session Floor/Target validated','КУРИРУЕМЫЕ NET EFFECTS АВТОМАТИЗИРОВАНЫ · ОСТАЛЬНЫЕ ВРУЧНУЮ · Session Floor/Target проверены')}</div></article>`;}).join('');
+}
+
+function vehicleGarageActionsHtml(vehicleEffective,characterData,derived,mine){
+  const nosTanks=vehicleEffective.nos_tanks||[],mountedWeapons=vehicleEffective.mounted_weapons||[],weaponMounts=vehicleEffective.weapon_mounts||[],interior=vehicleEffective.interior||{},cargoModules=vehicleEffective.cargo_modules||[];
+  if(!nosTanks.length&&!mountedWeapons.length&&!weaponMounts.length&&!interior.rooms_total&&!cargoModules.length)return '';
+  const skillBase=skill=>{const meta=stateMetaSkill(skill),stat=meta&&meta[2],statValue=stat==='EMP'?(derived.emp_cur??characterData.stats?.EMP):characterData.stats?.[stat];return (derived.effects?.skills?.[skill]?.effective_check_base??((num(statValue)||0)+(num(characterData.skills?.[skill])||0)));};
+  const nosHtml=nosTanks.map(resource=>{const current=Number(resource.state?.uses_remaining??resource.uses??1),maximum=Number(resource.state?.uses_max??resource.uses??1),label=APP_I18N.current()==='ru'?resource.label_ru:resource.label_en;return `<div class="alternate-weapon-profile vehicle-action-profile"><div><b>${esc(label)}</b><span>${T('AUTOMATED RESOURCE','АВТОМАТИЧЕСКИЙ РЕСУРС')} · ${T('uses today','использований сегодня')} ${current}/${maximum}</span></div>${mine?`<div class="weapon-controls"><button data-vehicle-mod-action="${resource.modification_id}|use_nos" ${current<=0?'disabled':''}>${T('Use NOS','Использовать NOS')}</button><button data-vehicle-mod-action="${resource.modification_id}|reset_nos" ${current>=maximum?'disabled':''}>${T('Reset Campaign Day','Сброс игрового дня')}</button></div>`:''}</div>`;}).join('');
+  const weaponHtml=mountedWeapons.map(profile=>{const resource=profile.state||{},base=skillBase(profile.skill),current=Number(resource.magazine??0),maximum=Number(resource.magazine_max??profile.magazine??0),shared=Number(profile.shared_ammo_available??0),ammoCost=Number(resource.ammo_cost??profile.ammo_cost??1),label=APP_I18N.current()==='ru'?profile.label_ru:profile.label_en,damage=String(profile.damage||'').match(/(\d+)d(\d+)/),mode=profile.kind==='autofire'?`Autofire ×${profile.autofire_multiplier}${profile.suppressive_fire?' · Suppressive Fire':''}`:`${profile.damage} · ROF ${profile.rof}`;return `<div class="alternate-weapon-profile vehicle-action-profile"><div><b>${esc(label)}</b><span>${esc(profile.skill)} BASE ${base} · ${esc(profile.weapon_type)} · ${esc(mode)}</span><span>${T('Facing','Направление')}: ${esc(profile.orientation||resource.orientation||'—')} · ${T('Operator','Оператор')}: ${esc(profile.operator||'driver')} · Range ${esc(profile.range_table||'—')}</span></div><div class="weapon-controls"><b>Mag ${current}/${maximum}</b><span>Shared ${shared}${resource.loaded_ammo_name?` · Loaded ${esc(resource.loaded_ammo_name)}`:''}</span>${mine?`<button data-vehicle-mod-action="${profile.modification_id}|fire" ${current<ammoCost?'disabled':''}>${T('Fire','Огонь')} ×${ammoCost}</button><button data-vehicle-mod-action="${profile.modification_id}|reload" ${current>=maximum||shared<=0?'disabled':''}>${T('Reload','Перезарядить')}</button><button data-attack-roll="${esc(profile.label_en)}|${base}">${profile.kind==='autofire'?'Autofire':'Attack'} 🎲</button>`:''}${damage?`<button data-damage-roll="${esc(profile.label_en)}|${damage[1]}|${damage[2]}|1">Damage 🎲</button>`:''}</div></div>`;}).join('');
+  const mountableWeapons=(characterData.inventory||[]).filter(item=>item.cat==='guns'&&Number(item.mechanics?.hands)===2&&item.state==='carried');
+  const mountHtml=weaponMounts.map(mount=>{const profile=mount.bound_weapon,state=profile?.state||{},label=APP_I18N.current()==='ru'?mount.label_ru:mount.label_en;if(!profile)return `<div class="alternate-weapon-profile vehicle-action-profile"><div><b>${esc(label)}</b><span>${T('EMPTY MOUNT · bind one carried two-handed ranged weapon','ПУСТОЕ КРЕПЛЕНИЕ · выберите carried двуручное дальнобойное оружие')}</span></div>${mine?`<div class="weapon-controls"><select data-heavy-mount-select="${mount.modification_id}"><option value="">${T('Choose weapon…','Выберите оружие…')}</option>${mountableWeapons.map(weapon=>`<option value="${weapon.instance_id}">${esc(weapon.custom_name||weapon.name)}</option>`).join('')}</select><button data-vehicle-mod-action="${mount.modification_id}|mount_weapon" ${mountableWeapons.length?'':'disabled'}>${T('Mount · Action','Установить · Action')}</button></div>`:''}</div>`;const base=skillBase(profile.skill)+(num(profile.attack_modifier)||0),current=Number(state.magazine??0),maximum=Number(state.magazine_max??profile.magazine??0),shared=Number(profile.shared_ammo_available??0),ammoCost=Number(profile.ammo_cost??1),damage=String(profile.damage||'').match(/(\d+)d(\d+)/),mode=profile.kind==='autofire'?`Autofire ×${profile.autofire_multiplier}`:`${profile.damage||'MANUAL'} · ROF ${profile.rof??'—'}`;return `<div class="alternate-weapon-profile vehicle-action-profile"><div><b>${esc(profile.label_en)}</b><span>${esc(profile.skill)} BASE ${base} · ${esc(profile.weapon_type||'Weapon')} · ${esc(mode)}</span><span>${T('Passenger-operated swivel mount','Поворотное крепление для пассажира')} · Range ${esc(profile.range_table||'—')}</span></div><div class="weapon-controls">${maximum?`<b>Mag ${current}/${maximum}</b><span>Shared ${shared}${state.loaded_ammo_name?` · Loaded ${esc(state.loaded_ammo_name)}`:''}</span>`:''}${mine&&maximum?`<button data-vehicle-mod-action="${mount.modification_id}|fire" ${current<ammoCost?'disabled':''}>${T('Fire','Огонь')} ×${ammoCost}</button><button data-vehicle-mod-action="${mount.modification_id}|reload" ${current>=maximum||shared<=0?'disabled':''}>${T('Reload','Перезарядить')}${profile.reload_actions>1?` · ${profile.reload_actions} Actions`:''}</button>`:''}${mine?`<button data-attack-roll="${esc(profile.label_en)}|${base}">${profile.kind==='autofire'?'Autofire':'Attack'} 🎲</button><button data-vehicle-mod-action="${mount.modification_id}|unmount_weapon">${T('Unmount · Action','Снять · Action')}</button>`:''}${damage?`<button data-damage-roll="${esc(profile.label_en)}|${damage[1]}|${damage[2]}|1">Damage 🎲</button>`:''}</div></div>`;}).join('');
+  const roomPurpose=value=>String(value||'').split('_').map(word=>word[0]?.toUpperCase()+word.slice(1)).join(' ');
+  const interiorHtml=(interior.rooms_total||cargoModules.length)?`<div class="vehicle-interior-summary mt"><h4>${T('Interior, Rooms & Cargo','Интерьер, комнаты и груз')}</h4><div class="mechanic-chips">${interior.rooms_total?`<span class="chip">${T('Rooms','Комнаты')} ${interior.rooms_total}</span><span class="chip">${T('Normal','Обычные')} ${interior.normal_rooms||0}</span><span class="chip">Luxury ${interior.luxury_rooms||0}</span><span class="chip">Complex ${interior.complex_rooms||0}</span>`:''}${interior.kombi?`<span class="chip">Kombi · ${T('Beds','Кровати')} ${interior.beds||0}</span>`:''}${interior.cargo_bays?`<span class="chip">Cargo Bays ${interior.cargo_bays}</span>`:''}${interior.hidden_cargo_spaces?`<span class="chip">${T('Hidden Cargo','Скрытый груз')} ${interior.hidden_cargo_spaces}</span>`:''}</div>${(interior.amenities||[]).length?`<div class="small muted">${T('Amenities','Удобства')}: ${interior.amenities.map(roomPurpose).map(esc).join(' · ')}</div>`:''}${(interior.complex_purposes||[]).length?`<div class="small muted">Complex: ${interior.complex_purposes.map(roomPurpose).map(esc).join(' · ')}</div>`:''}${cargoModules.map(module=>`<div class="small warn-text">${T('MANUAL CARGO','ГРУЗ ВРУЧНУЮ')} · ${esc(roomPurpose(module.kind))}${module.discovery_dv?` · Conceal/Reveal DV${module.discovery_dv}`:''}${module.hidden_holsters?` · Hidden Holsters ${module.hidden_holsters}`:''}</div>`).join('')}</div>`:'';
+  return `<div class="vehicle-actions mt">${interiorHtml}${nosHtml||weaponHtml||mountHtml?`<h4>${T('Vehicle Actions & Mounted Weapons','Действия транспорта и бортовое оружие')}</h4>${nosHtml}${weaponHtml}${mountHtml}`:''}</div>`;
+}
+function vehicleRepairHtml(vehicle,vehicleState,mine){const current=Number(vehicleState.sdp_current??0),maximum=Number(vehicleState.sdp_max??0),repair=vehicleState.repair,history=vehicleState.repair_history||[],latest=history[history.length-1];if(!repair&&current>=maximum&&!latest)return '';const statusLabel=value=>({success:T('SUCCESS','УСПЕХ'),failed:T('FAILED · restart required','ПРОВАЛ · требуется начать заново'),canceled:T('CANCELED','ОТМЕНЕНО')})[value]||value;return `<div class="vehicle-repair mt"><h4>${T('Vehicle Repair Workflow','Ремонт транспорта')}</h4>${repair?`<div class="panel accent"><div class="mechanic-chips"><span class="chip">${esc(String(repair.severity||'').toUpperCase())}</span><span class="chip">${esc(repair.skill)} · DV${repair.dv}</span><span class="chip">${esc(APP_I18N.current()==='ru'?repair.duration_ru:repair.duration_en)}</span><span class="chip">SDP ${repair.sdp_before}→${repair.sdp_target}</span></div><div class="small muted">${T('Technician','Техник')}: ${esc(repair.technician)} · ${esc(repair.source||'CP:R 140')} · ${T('MANUAL CHECK RESOLUTION','РУЧНОЕ РАЗРЕШЕНИЕ ПРОВЕРКИ')}</div>${mine?`<div class="row mt"><button data-vehicle-repair="${vehicle.instance_id}|resolve">${T('Resolve Repair Check','Разрешить Repair Check')}</button><button data-vehicle-repair="${vehicle.instance_id}|cancel">${T('Cancel Repair','Отменить ремонт')}</button></div>`:''}</div>`:(current<maximum&&mine?`<button data-vehicle-repair="${vehicle.instance_id}|start">${T('Start Repair Workflow','Начать ремонт')}</button>`:'')}${latest?`<div class="small muted mt">${T('Latest repair','Последний ремонт')}: ${esc(statusLabel(latest.status))}${latest.check_total!=null?` · ${latest.check_total} vs DV${latest.dv}`:''} · SDP ${latest.sdp_before}→${latest.sdp_after}</div>`:''}</div>`;}
+function effectTargetLabel(target){return String(target||'').replace(/^character\.stat\./,'STAT ').replace(/^skill\./,'').replace(/\.check$/,' Check');}
+function effectDurationLabel(effect){if(effect.duration_type==='real_time')return effect.status==='expired'?T('Expired','Истёк'):`${Math.ceil((effect.remaining_seconds||0)/60)} min`;if(effect.duration_type==='campaign_time'){const minutes=Number(effect.context?.campaign_minutes)||0,label=minutes%60===0?`${minutes/60} h`:`${minutes} min`;return `${label} ${T('campaign time','игрового времени')} · ${T('manual clock','ручной отсчёт')}`;}if(effect.duration_type==='rounds')return `${effect.remaining_rounds||0} ${T('rounds','раундов')} · ${T('manual tick','ручной отсчёт')}`;return T('Until manually disabled','До ручного отключения');}
+async function performEffectAction(character,effect,action){if(action==='archive'&&!confirm(T('Archive this effect instance?','Архивировать этот эффект?')))return;try{await api(`/api/characters/${character.id}/effects/${effect.effect_id}/action`,{method:'POST',body:{revision:character.revision,action}});toast(T('Effect updated.','Эффект обновлён.'));viewSheet(character.id);}catch(error){toast(error.message,true);}}
+function openCustomEffectModal(character){const statOptions=(state.meta.stats||[]).map(stat=>`<option value="character.stat.${stat}">STAT ${stat}</option>`).join(''),skillOptions=(state.meta.skills||[]).map(row=>`<option value="skill.${esc(row[1])}.check">${esc(row[1])} Check</option>`).join('');const modal=openModal(`<h2>${T('Add Custom Effect','Добавить Custom Effect')}</h2><div class="panel accent mb"><b>TRUST + AUDIT</b><p class="small">${T('Only allowlisted numeric modifiers are accepted. No JavaScript or executable expressions.','Разрешены только числовые модификаторы из allowlist. JavaScript и исполняемые выражения запрещены.')}</p></div><div class="grid cols-2"><label class="f"><span>${T('Effect name *','Название эффекта *')}</span><input id="effect-label" maxlength="120" placeholder="Tech optics calibration"></label><label class="f"><span>Target</span><select id="effect-target"><optgroup label="STATs">${statOptions}</optgroup><optgroup label="Skill Checks">${skillOptions}</optgroup></select></label><label class="f"><span>Operation</span><select id="effect-operation">${['add','set','minimum','maximum','multiply'].map(value=>`<option value="${value}">${value}</option>`).join('')}</select></label><label class="f"><span>Value</span><input id="effect-value" type="number" min="-100" max="100" step="0.1" value="1"></label><label class="f"><span>Stacking</span><select id="effect-stack-policy">${['stack','highest','lowest','unique','replace'].map(value=>`<option value="${value}">${value}</option>`).join('')}</select></label><label class="f"><span>${T('Stack group (optional)','Stack group (необязательно)')}</span><input id="effect-stack-group" maxlength="80" placeholder="night_vision_bonus"></label><label class="f"><span>${T('Duration','Длительность')}</span><select id="effect-duration"><option value="manual">${T('Manual','Ручная')}</option><option value="real_time">${T('Real time, minutes','Реальное время, минуты')}</option><option value="rounds">${T('Rounds, manual tick','Раунды, ручной отсчёт')}</option></select></label><label class="f" id="effect-duration-value-wrap" hidden><span id="effect-duration-value-label">Value</span><input id="effect-duration-value" type="number" min="1" max="10080" value="1"></label></div><label class="f"><span>${T('Reason *','Причина *')}</span><textarea id="effect-reason" maxlength="500" rows="3" placeholder="Session effect, Tech upgrade, GM ruling…"></textarea></label><div class="row"><button id="effect-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="effect-create">${T('Create Effect','Создать эффект')}</button></div>`,true);const duration=$('#effect-duration',modal),wrap=$('#effect-duration-value-wrap',modal),durationValue=$('#effect-duration-value',modal),durationLabel=$('#effect-duration-value-label',modal);duration.onchange=()=>{wrap.hidden=duration.value==='manual';durationValue.max=duration.value==='real_time'?'10080':'100';durationLabel.textContent=duration.value==='real_time'?T('Minutes','Минуты'):T('Rounds','Раунды');};$('#effect-cancel',modal).onclick=closeModal;$('#effect-create',modal).onclick=async()=>{const body={revision:character.revision,label:$('#effect-label',modal).value.trim(),target:$('#effect-target',modal).value,operation:$('#effect-operation',modal).value,value:Number($('#effect-value',modal).value),stack_policy:$('#effect-stack-policy',modal).value,stack_group:$('#effect-stack-group',modal).value.trim(),duration_type:duration.value,duration_value:duration.value==='manual'?null:Number(durationValue.value),reason:$('#effect-reason',modal).value.trim()};const button=$('#effect-create',modal);button.disabled=true;try{await api(`/api/characters/${character.id}/effects`,{method:'POST',body});closeModal();toast(T('Effect created.','Эффект создан.'));viewSheet(character.id);}catch(error){button.disabled=false;toast(error.message,true);}};}
+
+function isStackableItem(item) {
+  return item.stackable === true || item.cat === 'ammo';
+}
+
+function loanStatusFor(loans, charId, instanceId) {
+  const loan = (loans || []).find(l => l.instance_id === instanceId);
+  if (!loan) return null;
+  if (loan.borrower_character_id === charId) return 'borrower';
+  if (loan.owner_character_id === charId) return 'owner';
+  return null;
+}
+
+async function performItemTransfer(c, instanceId, body) {
+  try {
+    const res = await api(`/api/characters/${c.id}/items/${instanceId}/transfer`, { method: 'POST', body });
+    closeModal(true);
+    toast(res.message || T('Item transferred.','Предмет передан.'));
+    viewSheet(c.id);
+  } catch (error) { toast(error.message, true); }
+}
+
+async function performLoanAction(c, loan, action) {
+  const verb = action === 'return' ? T('Return','Вернуть') : T('Recall','Забрать');
+  if (!confirm(`${verb} ${loan.item_name || 'item'}?`)) return;
+  try {
+    const res = await api(`/api/characters/${c.id}/items/${loan.instance_id}/transfer`, {
+      method: 'POST',
+      body: { revision: c.revision, action, notes: verb + ' loan' },
+    });
+    toast(res.message || `${verb} ${T('ok','готово')}`);
+    viewSheet(c.id);
+  } catch (error) { toast(error.message, true); }
+}
+
+function loansSheetHtml(c, d, canManage) {
+  const loans = d.loans || [];
+  if (!loans.length) return '';
+  const owed = loans.filter(l => l.borrower_character_id === c.id);
+  const given = loans.filter(l => l.owner_character_id === c.id);
+  const row = (l, side) => {
+    const action = side === 'borrower' ? 'return' : 'recall';
+    const other = side === 'borrower' ? l.owner_handle : l.borrower_handle;
+    const tag = side === 'borrower' ? T('BORROWED','ВЗЯТО') : T('LOANED OUT','ВЫДАНО');
+    const label = side === 'borrower' ? T('Return to','Вернуть') : T('Recall from','Забрать у');
+    return `<div class="inv-row"><span class="iname">🔁 ${esc(l.item_name || 'Item')} ×${l.quantity || 1}</span>
+      <span class="tag">${esc(tag)}</span><span class="small muted user-content">${esc(other || '—')}</span>
+      ${canManage ? `<button class="btn-sm" data-loan-action="${esc(l.instance_id)}|${action}">${label} ${esc(other || '')}</button>` : ''}
+    </div>`;
+  };
+  return `<div class="mt mb"><h3>🔁 ${T('Loans','Долги')}</h3>
+    ${owed.length ? `<div class="small muted">${T('Borrowed items','Взято в долг')}</div>${owed.map(l => row(l, 'borrower')).join('')}` : ''}
+    ${given.length ? `<div class="small muted mt">${T('Items loaned out','Выдано в долг')}</div>${given.map(l => row(l, 'owner')).join('')}` : ''}
+  </div>`;
+}
+
+async function openItemTransferModal(c, item) {
+  const d = c.derived || {};
+  const loans = d.loans || [];
+  const stackable = isStackableItem(item);
+  const fullQty = Math.max(1, Number(item.qty) || 1);
+  const loanStatus = loanStatusFor(loans, c.id, item.instance_id);
+  let chars = [];
+  try {
+    const stashData = await api('/api/crew-stash');
+    chars = (stashData.characters || []).filter(x => !x.archived && x.id !== c.id);
+  } catch (e) { /* пусто */ }
+  const charOptions = chars.map(x => `<option value="${x.id}">${esc(x.handle || '?')}${x.owner_name ? ' · ' + esc(x.owner_name) : ''}</option>`).join('');
+  const modal = openModal(`
+    <h2>⇄ ${T('Transfer Item','Передача предмета')}</h2>
+    <div class="panel mb"><b>${esc(item.custom_name || item.name)}</b> ×${fullQty}
+      ${loanStatus === 'borrower' ? `<span class="tag">${T('BORROWED','ВЗЯТО')}</span>` : ''}</div>
+    <div class="grid cols-1">
+      <div class="transfer-action">
+        <label class="f"><span>${T('Give to character','Отдать персонажу')}</span><select id="tr-give-target">${charOptions}</select></label>
+        ${stackable && fullQty > 1 ? `<label class="f"><span>${T('Quantity','Количество')}</span><input id="tr-give-qty" type="number" min="1" max="${fullQty}" value="${fullQty}"></label>` : ''}
+        <button class="btn-sm" id="tr-give" ${chars.length ? '' : 'disabled'}>${T('Give','Отдать')}</button>
+      </div>
+      <div class="transfer-action">
+        <label class="f"><span>${T('Loan to character','Дать в долг персонажу')}</span><select id="tr-loan-target">${charOptions}</select></label>
+        <button class="btn-sm" id="tr-loan" ${chars.length ? '' : 'disabled'}>${T('Loan','В долг')}</button>
+      </div>
+      <div class="transfer-action">
+        <span class="f">${T('Move to Crew Stash','Переместить в Crew Stash')}</span>
+        ${stackable && fullQty > 1 ? `<label class="f"><span>${T('Quantity','Количество')}</span><input id="tr-stash-qty" type="number" min="1" max="${fullQty}" value="${fullQty}"></label>` : ''}
+        <button class="btn-sm" id="tr-personal">📥 Personal</button><button class="btn-sm" id="tr-stash">${T('Stash','В общак')}</button>
+      </div>
+      ${stackable && fullQty > 1 ? `<div class="transfer-action">
+        <span class="f">${T('Split stack','Разделить стек')}</span>
+        <button class="btn-sm" id="tr-split">${T('Split','Разделить')}</button>
+      </div>` : ''}
+      <div class="transfer-action">
+        <label class="f"><span>${T('Trade with character','Обмен с персонажем')}</span><select id="tr-trade-target">${charOptions}</select></label>
+        <button class="btn-sm" id="tr-trade" ${chars.length ? '' : 'disabled'}>${T('Trade','Обменять')}</button>
+      </div>
+    </div>
+    ${loanStatus === 'borrower' ? `<button class="btn-primary mt" id="tr-return">↩ ${T('Return to owner','Вернуть владельцу')}</button>` : ''}
+    <label class="f mt"><span>${T('Note (optional)','Заметка (необязательно)')}</span><input id="tr-notes" maxlength="500" placeholder="${T('Why is it moving?','Почему предмет перемещается?')}"></label>
+  `, true);
+  const notes = () => { const el = $('#tr-notes', modal); return el ? el.value.trim() : ''; };
+  const qty = (id) => { const el = $(id, modal); return el ? Math.max(1, Math.min(fullQty, Number(el.value) || fullQty)) : fullQty; };
+  $('#tr-give', modal).onclick = () => {
+    const sel = $('#tr-give-target', modal);
+    if (!sel || !sel.value) return;
+    performItemTransfer(c, item.instance_id, { revision: c.revision, action: 'give', to_char_id: Number(sel.value), quantity: qty('#tr-give-qty'), notes: notes() });
+  };
+  $('#tr-loan', modal).onclick = () => {
+    const sel = $('#tr-loan-target', modal);
+    if (!sel || !sel.value) return;
+    performItemTransfer(c, item.instance_id, { revision: c.revision, action: 'loan', to_char_id: Number(sel.value), notes: notes() });
+  };
+  $('#tr-stash', modal).onclick = () => {
+    performItemTransfer(c, item.instance_id, { revision: c.revision, action: 'stash', quantity: qty('#tr-stash-qty'), notes: notes() });
+  };
+  const personalBtn = $('#tr-personal', modal);
+  if (personalBtn) personalBtn.onclick = async () => {
+    try {
+      await api('/api/characters/' + c.id + '/personal-stash', { method: 'POST', body: { action: 'store', instance_id: item.instance_id } });
+      closeModal(); toast(T('Item stored in personal stash.', '\u041f\u0440\u0435\u0434\u043c\u0435\u0442 \u0432 \u043b\u0438\u0447\u043d\u043e\u043c \u0442\u0430\u0439\u043d\u0438\u043a\u0435.')); viewSheet(c.id);
+    } catch (e) { toast(e.message, true); }
+  };
+  const splitButton = $('#tr-split', modal);
+  if (splitButton) splitButton.onclick = () => {
+    const amount = Number(prompt(T(`Split amount (1–${fullQty - 1})`,`Количество для разделения (1–${fullQty - 1})`), '1'));
+    if (!Number.isInteger(amount) || amount < 1 || amount >= fullQty) return;
+    performItemTransfer(c, item.instance_id, { revision: c.revision, action: 'split', quantity: amount, notes: notes() || 'Split stack' });
+  };
+  $('#tr-trade', modal).onclick = async () => {
+    const sel = $('#tr-trade-target', modal);
+    if (!sel || !sel.value) return;
+    const partnerId = Number(sel.value);
+    let partner;
+    try { partner = await api('/api/characters/' + partnerId); }
+    catch (e) { toast(e.message, true); return; }
+    const theirItems = (partner.data.inventory || []).filter(i => i.state === 'carried' && i.instance_id && i.instance_id !== item.instance_id);
+    if (!theirItems.length) { toast(T('Partner has no carried items to trade.','У партнёра нет carried предметов для обмена.'), true); return; }
+    const pick = await new Promise(resolve => {
+      const m2 = openModal(`<h2>${T('Choose their item','Выберите их предмет')}</h2><div class="choice-card-grid">${theirItems.map(i => `<button class="choice-card" data-tr-partner-item="${esc(i.instance_id)}"><b>${esc(i.custom_name || i.name)}</b><span>${esc(i.cat || '')} ×${i.qty || 1}</span></button>`).join('')}</div>`, true);
+      $$('[data-tr-partner-item]', m2).forEach(b => b.onclick = () => { resolve(b.dataset.trPartnerItem); closeModal(); });
+      const close = $('.close', m2); if (close) close.onclick = () => { resolve(null); };
+    });
+    if (!pick) return;
+    performItemTransfer(c, item.instance_id, { revision: c.revision, action: 'trade', to_char_id: partnerId, to_instance_id: pick, to_revision: partner.revision, notes: notes() || 'Trade' });
+  };
+  const returnButton = $('#tr-return', modal);
+  if (returnButton) returnButton.onclick = () => {
+    performItemTransfer(c, item.instance_id, { revision: c.revision, action: 'return', notes: notes() || 'Return loan' });
+  };
+}
+
+function stashRowHtml(item, hasTargets) {
+  const stackable = isStackableItem(item);
+  const fullQty = Math.max(1, Number(item._stashQty) || Number(item.qty) || 1);
+  const last = (item._stashTransfers || [])[0];
+  return `<div class="inv-row"><span class="iname">${esc(item.custom_name || item.name)} ×${fullQty}</span>
+    ${item.cat === 'ammo' ? `<span class="chip">${ammoRoundsForItem(item)} ${T('rounds','патронов')}</span>` : ''}
+    <span class="chip">${T('STASH','СКЛАД')}</span>
+    ${last ? `<span class="small muted">${esc(last.actor || '')} · ${timeAgo(last.created)}</span>` : ''}
+    <span class="muted small">${money((item.price || 0) * fullQty)}</span>
+    ${hasTargets ? `<button class="btn-sm" data-stash-take="${fullQty}" data-stash-instance="${esc(item.instance_id)}">${T('Take','Взять')}</button>` : ''}
+    ${hasTargets && stackable && fullQty > 1 ? `<button class="btn-sm" data-stash-take="1" data-stash-instance="${esc(item.instance_id)}">${T('Take 1','Взять 1')}</button>` : ''}
+    ${(item._stashTransfers || []).length ? `<button class="info-btn" data-stash-history="${esc(item.instance_id)}">i</button>` : ''}
+  </div>`;
+}
+
+async function viewCrewStash(view) {
+  if (!state.me) {
+    view.innerHTML = `<div class="empty">${T('Sign in to use the Crew Stash.','Войдите, чтобы пользоваться Crew Stash.')} <a href="#/login">${T('Sign in','Войти')}</a></div>`;
+    return;
+  }
+  view.innerHTML = spinner();
+  let data;
+  try { data = await api('/api/crew-stash'); }
+  catch (e) { view.innerHTML = `<div class="empty">⚠️ ${esc(e.message)}</div>`; return; }
+  const targets = (data.characters || []).filter(x => !x.archived);
+  const takeTargets = state.me.is_gm ? targets : targets.filter(x => x.owner_id === state.me.id);
+  const opts = takeTargets.map(x => `<option value="${x.id}">${esc(x.handle)}${state.me.is_gm && x.owner_name ? ' · ' + esc(x.owner_name) : ''}</option>`).join('');
+  const stash = data.stash || [];
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h1>🎒 ${T('Crew Stash','Общий склад')}</h1><div class="sub">${T('Shared gear pool for the crew. Every move is written to the audit log.','Общий склад снаряжения команды. Каждое перемещение записывается в журнал.')}</div></div>
+      <button onclick="location.hash='#/dossiers'">← ${T('Characters','Персонажи')}</button>
+    </div>
+    <div class="panel mb">
+      <div class="row">
+        <label class="f"><span>${T('Take as','Взять как')}</span><select id="stash-take-char">${opts}</select></label>
+        <span class="muted small">${T('Items are placed into the selected character inventory.','Предметы попадают в инвентарь выбранного персонажа.')}</span>
+      </div>
+    </div>
+    ${stash.length ? groupedItemsHtml(stash.map(s => ({ ...s.item, instance_id: s.instance_id, _stashQty: s.quantity, _stashTransfers: s.transfers })), item => stashRowHtml(item, takeTargets.length > 0), T('Stash','Склад')) : `<div class="empty">${T('The Crew Stash is empty.','Crew Stash пуст.')}</div>`}
+  `;
+  $$('[data-stash-take]', view).forEach(btn => btn.onclick = async () => {
+    const charId = Number($('#stash-take-char', view).value);
+    if (!charId) { toast(T('Choose a character first.','Сначала выберите персонажа.'), true); return; }
+    try {
+      const res = await api('/api/crew-stash/take', { method: 'POST', body: { char_id: charId, instance_id: btn.dataset.stashInstance, quantity: Number(btn.dataset.stashTake) || 1, notes: T('Crew Stash take','Взято из Crew Stash') } });
+      toast(res.message || T('Item taken.','Предмет взят.'));
+      viewCrewStash(view);
+    } catch (e) { toast(e.message, true); }
+  });
+  $$('[data-stash-history]', view).forEach(btn => btn.onclick = () => {
+    const item = stash.find(s => s.instance_id === btn.dataset.stashHistory);
+    const transfers = item ? item.transfers : [];
+    openModal(`<h2>${T('Transfer history','История передач')}</h2><div class="kv">${transfers.map(t => `<b>${esc(String(t.kind || '').toUpperCase())} · ${timeAgo(t.created)}</b><span class="user-content">${esc(t.actor || '')}${t.notes ? ' · ' + esc(t.notes) : ''}</span>`).join('') || `<span class="muted small">${T('No recorded transfers.','Передач не записано.')}</span>`}</div>`, true);
+  });
+}
 
 async function viewSheet(id) {
   const view = $('#view');
@@ -2607,10 +3169,16 @@ async function viewSheet(id) {
   const ch = c.data, d = c.derived;
   const owner = state.me && state.me.id === c.owner_id;
   const mine = owner && !ch.archived;
+  const canTransfer = !!(state.me && !ch.archived && (owner || state.me.is_gm));
   const ab = ROLE_ABILITIES[ch.role] || { name: state.meta.roles[ch.role] || '', desc: '' };
   const hpCur = ch.hp_cur == null ? d.hp_max : ch.hp_cur;
   const cw = ch.cyberware || [];
   const inv = ch.inventory || [];
+  const loanByInstance = new Map((d.loans || []).map(l => [l.instance_id, l]));
+  const activeGear=inv.filter(item=>item.state==='equipped'&&item.equippable);
+  const vehicles=inv.filter(item=>item.cat==='vehicles');
+  const synergies=d.effects?.synergies||[],itemEffectSources=d.effects?.item_sources||[],effectInstances=d.effects?.instances||[];
+  const canManageEffects=!!(state.me&&!ch.archived&&(owner||state.me.is_gm));
   const lpRows = ch.lifepath ? lifepathNarrative(ch.lifepath, ch.role, ch.role_lifepath, ch.lifepath_mode) : [];
   const armor = ch.armor || {};
   const armorSlots = [
@@ -2625,13 +3193,13 @@ async function viewSheet(id) {
       <div class="sub">Character Sheet · ${(ch.roles||[]).map(role=>`${esc(role.name)} ${role.rank}${role.name===ch.active_role?' ★':''}`).join(' · ')||`${esc(ch.role||'—')} ${ch.role_rank||4}`} · ${T('owner','владелец')}: <span class="user-content">${esc(c.owner_name||'—')}</span>${ch.player?' · '+T('player','игрок')+': <span class="user-content">'+esc(ch.player)+'</span>':''}</div></div>
     <div class="row">
       <button id="sheet-back">← ${T('Characters','Персонажи')}</button>
-      <button class="btn-sm" id="sheet-print">🖨️ Print</button><button class="btn-sm" id="sheet-json">⬇ JSON</button><button class="btn-sm" id="sheet-network">◎ ${T('Network','Сеть')}</button>${owner||state.me?.is_gm?`<button class="btn-sm" id="sheet-ledger">◫ ${T('Ledger','Журнал')}</button>`:''}
-      ${mine ? `<label class="btn-sm">🖼️ Portrait<input id="sheet-portrait-file" type="file" accept="image/jpeg,image/png,image/webp" hidden></label><button class="btn-primary" id="sheet-edit">✏️ ${T('Edit','Редактировать')}</button>
+      <button class="btn-sm" id="sheet-print">🖨️ Print</button><button class="btn-sm" id="sheet-json">⬇ JSON</button><button class="btn-sm" id="sheet-network">◎ ${T('Network','Сеть')}</button><a class="btn-sm" href="#/actions/${c.id}">🎮 ${T('Actions','Действия')}</a>${owner||state.me?.is_gm?`<button class="btn-sm" id="sheet-ledger">◫ ${T('Ledger','Журнал')}</button>`:''}
+      ${mine ? `<button class="btn-primary" id="sheet-edit">✏️ ${T('Edit Sheet','Редактировать лист')}</button><label class="btn-sm">🖼️ Portrait<input id="sheet-portrait-file" type="file" accept="image/jpeg,image/png,image/webp" hidden></label><button class="btn-sm" id="sheet-privacy">◉ ${T('Dossier Privacy','Приватность Dossier')}</button>
                 <button class="btn-danger" id="sheet-del">🗑️ ${T('Delete','Удалить')}</button>` : ''}
     </div>
   </div>
 
-  <nav class="sheet-tabs"><button data-sheet-jump="sheet-overview">Overview</button><button data-sheet-jump="sheet-skills">Skills</button><button data-sheet-jump="sheet-combat">Combat</button><button data-sheet-jump="sheet-gear">Gear</button><button data-sheet-jump="sheet-cyberware">Cyberware</button><button data-sheet-jump="sheet-lifepath">Lifepath</button></nav>
+  <nav class="sheet-tabs"><button data-sheet-jump="sheet-overview">Overview</button><button data-sheet-jump="sheet-skills">Skills</button><button data-sheet-jump="sheet-combat">Combat</button><button data-sheet-jump="sheet-gear">Gear</button>${charHasRole(ch,'Netrunner')?`<button data-sheet-jump="sheet-cyberdecks">Netrunning</button>`:''}<button data-sheet-jump="sheet-garage">Garage</button><button data-sheet-jump="sheet-cyberware">Cyberware</button>${charHasRole(ch,'Tech')?`<button data-sheet-jump="sheet-tech-maker">Tech Maker</button>`:''}<button data-sheet-jump="sheet-lifepath">Lifepath</button></nav>
   <div class="panel accent mb">
     <div class="derived">
       <span class="dstat resource-stat"><span class="v">${d.hp_max != null ? hpCur + ' / ' + d.hp_max : '—'}</span><span class="k">HP</span>${mine?`<span class="resource-actions"><button data-resource="hp|-5">−5</button><button data-resource="hp|-1">−1</button><button data-resource="hp|1">+1</button><button data-resource="hp|5">+5</button></span>`:''}</span>
@@ -2642,13 +3210,14 @@ async function viewSheet(id) {
       <span class="dstat"><span class="v">${d.sp_body != null ? d.sp_body : '—'}</span><span class="k">${T('Body Armor SP','Броня SP тело')}</span></span>
       <span class="dstat"><span class="v">${d.sp_head != null ? d.sp_head : '—'}</span><span class="k">${T('Head Armor SP','Броня SP голова')}</span></span>
       <span class="dstat"><span class="v">${d.death_save != null ? d.death_save : '—'}</span><span class="k">Death Save</span></span>
-      <span class="dstat resource-stat"><span class="v">${money(ch.cash || 0)}</span><span class="k">Cash</span>${mine?`<span class="resource-actions"><button data-resource="cash|-100">−100</button><button data-resource="cash|-10">−10</button><button data-resource="cash|10">+10</button><button data-resource="cash|100">+100</button></span>`:''}</span>
+      <span class="dstat"><span class="v">${money(ch.cash || 0)}</span><span class="k">Cash</span></span>
       <span class="dstat"><span class="v">${ch.ip_available||0}</span><span class="k">Improvement Points</span>${mine?`<button class="btn-sm" id="sheet-improve">Improve</button>`:(state.me&&state.me.is_gm&&!ch.archived?`<button class="btn-sm" id="sheet-ip-gm">Adjust IP</button>`:'')}</span>
       <span class="dstat resource-stat"><span class="v">${ch.reputation||0}</span><span class="k">Reputation</span>${mine?`<span class="resource-actions"><button data-resource="reputation|-1">−1</button><button data-resource="reputation|1">+1</button></span>`:''}</span>
     </div>
   </div>
 
   <div class="panel mb" id="sheet-combat">${combatSheetHtml(ch,d,mine)}</div>
+  ${campaignServicesHtml(d)}
   <div class="grid cols-2 sheet-layout" style="gap:18px">
     <div>
       <div class="panel mb" id="sheet-overview">
@@ -2656,34 +3225,52 @@ async function viewSheet(id) {
       </div>
       <div class="panel mb">
         <h2>📊 ${T('Characteristics','Характеристики')}</h2>
-        <div class="statgrid">${state.meta.stats.map(s => `
-          <div class="stat"><div class="v">${(ch.stats || {})[s] != null ? ch.stats[s] : '—'}</div><div class="k">${s}</div></div>`).join('')}</div>
+        <div class="statgrid">${state.meta.stats.map(s => {const effect=d.effects?.stats?.[s],base=(ch.stats||{})[s],effective=effect?.effective??base,modified=base!=null&&effective!==base;return `<div class="stat ${modified?'modified':''}"><div class="v">${modified?`${base}→${effective}`:(base??'—')}</div><div class="k">${s}</div>${modified?`<small>${esc((effect.modifiers||[]).filter(item=>item.applied).map(item=>`${item.value>0?'+':''}${item.value} ${item.source||item.id}`).join(' · '))}</small>`:''}</div>`;}).join('')}</div>
       </div>
+      ${(synergies.length||itemEffectSources.length||effectInstances.length||mine)?`<div class="panel mb effect-panel"><div class="row" style="justify-content:space-between"><h2>✨ ${T('Structured Effects & Synergies','Структурированные эффекты и синергии')}</h2>${mine?`<button class="btn-sm" id="add-custom-effect">＋ ${T('Custom Effect','Custom Effect')}</button>`:''}</div><div class="small muted mb">${T('Base values are never overwritten. Active modifiers are applied only to effective checks.','Базовые значения не перезаписываются. Активные модификаторы применяются только к effective checks.')} · ${esc(d.effects.rules_version||'')}</div>${synergies.map(rule=>{const label=APP_I18N.current()==='ru'?rule.label_ru:rule.label_en,progress=rule.requirements.map(req=>`${req.label} ${req.current}/${req.required}`).join(' · '),effects=rule.effects.map(effect=>`${effect.target.replace(/^skill\.|\.check$/g,'')} ${effect.value>0?'+':''}${effect.value}`).join(' · ');return `<article class="synergy-row ${rule.active?'active':'inactive'}"><div><b>${esc(label)}</b><span>${esc(progress)}</span></div><span class="tag">${rule.active?T('ACTIVE','АКТИВНО'):T('INACTIVE','НЕАКТИВНО')}</span>${rule.active?`<strong>${esc(effects)}</strong>`:''}</article>`;}).join('')}${itemEffectSources.length?`<h3 class="mt">${T('Curated Item Effects','Курируемые эффекты предметов')}</h3>${itemEffectSources.map(source=>{const label=APP_I18N.current()==='ru'?source.label_ru:source.label_en,effects=(source.effects||[]).map(effect=>`${effectTargetLabel(effect.target)} ${effect.value>0?'+':''}${effect.value}`).join(' · ');return `<article class="synergy-row ${source.active?'active':'inactive'}"><div><b>${esc(label)}</b><span>${source.active?esc(effects):T('Equip and activate the required item.','Экипируйте и включите нужный предмет.')}</span>${(source.manual_rules||[]).map(rule=>`<small class="effect-manual-text"><b>${T('MANUAL RULE','РУЧНОЕ ПРАВИЛО')}:</b> ${esc(APP_I18N.current()==='ru'?rule.text_ru:rule.text_en)} · ${esc(rule.source||'')}</small>`).join('')}</div><span class="tag">${source.active?T('AUTOMATED','АВТОМАТИЧЕСКИ'):T('INACTIVE','НЕАКТИВНО')}</span></article>`;}).join('')}`:''}${effectInstances.length?`<h3 class="mt">${T('Active Effect Instances','Экземпляры активных эффектов')}</h3>${effectInstances.map(effect=>{const definition=effect.definition||{},amount=`${definition.operation||''} ${definition.value>0?'+':''}${definition.value??''}`;return `<article class="effect-instance ${effect.effective_active?'active':'inactive'}"><div><b>${esc(effect.label||'Effect')}</b><span>${esc(effectTargetLabel(definition.target))} · ${esc(amount)} · ${esc(effectDurationLabel(effect))}</span>${effect.context?.automated_effect?`<small class="effect-manual-text"><b>${T('AUTOMATED EFFECT','АВТОМАТИЧЕСКИЙ ЭФФЕКТ')}</b>${definition.minimum_value!=null?` · ${T('minimum','минимум')} ${esc(definition.minimum_value)}`:''}</small>`:''}${effect.reason?`<small class="user-content">${esc(effect.reason)}${effect.actor?' · '+esc(effect.actor):''}</small>`:''}${(effect.context?.manual_rules||[]).map(rule=>`<small class="effect-manual-text"><b>${T('MANUAL RULE','РУЧНОЕ ПРАВИЛО')}:</b> ${esc(APP_I18N.current()==='ru'?rule.text_ru:rule.text_en)} · ${esc(rule.source||'')}</small>`).join('')}</div><span class="tag">${esc(String(effect.status||'').toUpperCase())}</span>${canManageEffects?`<div class="row">${effect.status==='active'?`<button class="btn-sm" data-effect-action="${effect.effect_id}|disable">${T('Disable','Отключить')}</button>`:''}${effect.status==='disabled'?`<button class="btn-sm" data-effect-action="${effect.effect_id}|enable">${T('Enable','Включить')}</button>`:''}${effect.status==='active'&&effect.duration_type==='rounds'?`<button class="btn-sm" data-effect-action="${effect.effect_id}|tick">${T('Advance 1 round','Минус 1 раунд')}</button>`:''}<button class="btn-sm btn-danger" data-effect-action="${effect.effect_id}|archive">${T('Archive','Архивировать')}</button></div>`:''}</article>`;}).join('')}`:''}</div>`:''}
       <div class="panel mb" id="sheet-skills">
         <h2>🎯 Skills</h2>
         <div class="small muted mb">${T('STAT · LVL · BASE = current STAT + LVL; EMP reflects Humanity Loss.','STAT · LVL · BASE = текущий STAT + LVL; EMP учитывает Humanity Loss.')}</div>
         ${fullSkillsTableHtml(ch, d, true)}
       </div>
       <div class="panel mb" id="sheet-cyberware">
-        <h2>🦾 Cyberware (HL ${cw.reduce((a, x) => a + (num(x.hl) || 0), 0)})</h2>
-        ${cyberwareTreeHtml(cw)}
+        <h2>🦾 Cyberware (${T('Installed HL','Установленный HL')} ${d.hl_total||0})</h2>
+        <div class="small muted mb">${T('Concrete foundations, paired bindings, Option Slots, and Humanity-safe audited installation.','Concrete foundations, парные привязки, Option Slots и Humanity-safe audited installation.')}</div>
+        ${cyberwareLifecycleHtml(cw,d.effective_cyberware,mine)}
+        ${therapyLifecycleHtml(ch,d,mine)}
       </div>
       <div class="panel mb" id="sheet-gear">
+        <h2>⚡ ${T('Active Gear / Loadout','Активное снаряжение')}</h2>
+        ${activeGear.length?`<div class="active-gear-grid mb">${activeGear.map(item=>`<article class="active-gear-card ${item.active?'online':''}"><div><b>${esc(item.custom_name||item.name)}</b><span>${esc(equipModeLabel(item.equipped_mode||'ready'))} · ${esc(item.equipped_slot||'—')}</span></div><span class="tag">${item.activation_required?(item.active?T('ACTIVE','ВКЛЮЧЕНО'):T('OFF','ВЫКЛЮЧЕНО')):T('READY','ГОТОВО')}</span>${(item.active_actions||[]).length?`<div class="small muted">${item.active_actions.map(esc).join(' · ')}</div>`:''}${mine?`<div class="row">${item.activation_required?`<button class="btn-sm" data-item-action="${item.instance_id}|${item.active?'deactivate':'activate'}">${item.active?T('Deactivate','Выключить'):T('Activate','Включить')}</button>`:''}<button class="btn-sm" data-item-action="${item.instance_id}|unequip">${T('Unequip','Убрать')}</button></div>`:''}</article>`).join('')}</div>`:`<div class="muted small mb">${T('No gear is equipped. Carried items do not provide equipment-only actions.','Нет экипированного снаряжения. Предметы в состоянии carried не дают equipment-only actions.')}</div>`}
         <h2>🎒 Inventory (${inv.length})</h2>
         ${inv.length ? groupedItemsHtml(inv.map((item, index) => ({ ...item, _sheetIndex: index })), i => `
-          <div class="inv-row"><span class="iname">${esc(i.display_name || i.name)} ×${i.qty || 1}</span>
-            ${itemMechanicChips(i)}
+          <div class="inv-row"><span class="iname">${esc(i.custom_name || i.display_name || i.name)} ×${i.qty || 1}</span>${i.cat==='ammo'?`<span class="chip">${ammoRoundsForItem(i)} rounds</span>`:''}${i.is_custom?'<span class="tag">CUSTOM · MANUAL</span>':''}
+            ${itemMechanicChips(i)}<span class="chip">${esc(i.state||'carried')}</span>${i.consumable?`<span class="tag">${T('CONSUMABLE','РАСХОДНИК')}</span>`:''}${i.equippable?`<span class="tag">${T('EQUIPPABLE','ЭКИПИРУЕТСЯ')}</span>`:''}${i.acquisition_source?`<span class="chip">${esc(acquisitionSourceLabel(i.acquisition_source))}</span>`:''}
             ${i.sp != null && !(i.mechanics || {}).sp ? `<span class="chip">SP ${i.sp}</span>` : ''}
-            <span class="muted small">${money((i.price || 0) * (i.qty || 1))}</span><button class="info-btn" data-owned-item="${i._sheetIndex}">i</button>
+            ${i.is_custom&&i.desc?`<span class="small muted user-content">${esc(i.desc)}</span>`:''}${loanByInstance.has(i.instance_id)&&loanByInstance.get(i.instance_id).borrower_character_id===c.id?`<span class="tag warn-tag">${T('BORROWED','ВЗЯТО')}</span>`:''}<span class="muted small">${money((i.price || 0) * (i.qty || 1))}</span><button class="info-btn" data-owned-item="${i._sheetIndex}">i</button>${mine&&i.consumable&&i.state!=='stored'?`<button class="btn-sm" data-item-use="${i.instance_id}">${T('Use','Использовать')}</button>`:''}${mine&&i.equippable&&i.state==='carried'?`<button class="btn-sm" data-item-equip="${i.instance_id}">${T('Equip','Экипировать')}</button>`:''}${canTransfer?`<button class="btn-sm" data-item-transfer="${i.instance_id}">⇄ ${T('Transfer','Передать')}</button>`:''}
           </div>`, T('Gear','Снаряжение')) : `<div class="muted small">${T('Empty.','Пусто. Совсем.')}</div>`}
         ${armorSlots.length ? `<h3 class="mt">🛡️ ${T('Equipped Armor','Надетая броня')}</h3>${armorSlots.map(([piece, ru]) => `
           <div class="inv-row"><span class="iname">${ru}: ${esc(piece.name)}</span>
             <span class="chip">SP ${piece.sp}</span>
             ${Object.values(armorPenalties(piece)).some(v => v) ? `<span class="chip">${Object.entries(armorPenalties(piece)).map(([k,v]) => k + ' ' + v).join(' · ')}</span>` : ''}
           </div>`).join('')}` : ''}
+        ${armorHostLifecycleHtml(d.effective_armor_hosts,mine)}
+        ${charHasRole(ch,'Tech')?techMakerSheetHtml(ch,d,mine):''}
+        ${downtimeSheetHtml(c,d,canTransfer)}
+        ${loansSheetHtml(c,d,canTransfer)}
+        ${canTransfer?`<div class="row mt"><button class="btn-sm" onclick="location.hash='#/stash'">🎒 ${T('Crew Stash','Общий склад')}</button><button class="btn-sm" id="sheet-personal-stash">📦 ${T('Personal Stash','Личный тайник')}</button></div>`:''}
+      </div>
+      ${charHasRole(ch,'Netrunner')?`<div class="panel mb" id="sheet-cyberdecks">
+        <h2>💻 ${T('Cyberdeck Loadout','Загрузка Cyberdeck')}</h2>
+        ${cyberdeckSheetHtml(ch,d,mine)}
+      </div>`:''}
+      <div class="panel mb" id="sheet-garage">
+        <h2>🏍️ ${T('Vehicle Garage','Гараж транспорта')}</h2>
+        ${vehicles.length?vehicles.map(vehicle=>{const mechanics=vehicle.mechanics||{},vehicleEffective=d.effective_vehicles?.[vehicle.instance_id]||{base:mechanics,effective:mechanics,state:{}},baseVehicle=vehicleEffective.base||mechanics,effectiveVehicle=vehicleEffective.effective||mechanics,vehicleState=vehicleEffective.state||{},installed=(d.modifications||[]).filter(mod=>mod.host_instance_id===vehicle.instance_id);return `<article class="panel mb vehicle-garage-card"><div class="row" style="justify-content:space-between"><div><h3>${esc(vehicle.custom_name||vehicle.name)}</h3><div class="mechanic-chips"><span class="chip">SDP ${esc(vehicleState.sdp_current??effectiveVehicle.sdp??'—')} / ${esc(vehicleState.sdp_max??effectiveVehicle.sdp??'—')}${baseVehicle.sdp!==effectiveVehicle.sdp?` · ${baseVehicle.sdp}→${effectiveVehicle.sdp}`:''}</span>${effectiveVehicle.body_sp?`<span class="chip">Body SP ${baseVehicle.body_sp!==effectiveVehicle.body_sp?`${baseVehicle.body_sp||0}→`:''}${effectiveVehicle.body_sp}</span>`:''}${effectiveVehicle.glass_hp?`<span class="chip">Glass ${baseVehicle.glass_hp!==effectiveVehicle.glass_hp?`${baseVehicle.glass_hp||0}→`:''}${effectiveVehicle.glass_hp} HP/window</span>`:''}<span class="chip">Seats ${baseVehicle.seats!==effectiveVehicle.seats?`${esc(baseVehicle.seats)}→`:''}${esc(effectiveVehicle.seats??'—')}</span><span class="chip">${esc(mechanics.combat_speed||'—')}</span>${mechanics.nomad_access?`<span class="chip">Nomad Access ${mechanics.nomad_access}</span>`:''}</div></div>${mine?`<button class="btn-sm" data-manage-vehicle="${vehicle.instance_id}">${T('Manage Vehicle Upgrades','Управление апгрейдами транспорта')}</button>`:''}</div>${installed.length?`<div class="chips mt">${installed.map(mod=>`<span class="chip">⚙ ${esc(mod.configuration?.upgrade_name||'Upgrade')}</span>`).join('')}</div>`:`<div class="small muted mt">${T('No installed vehicle upgrades.','Нет установленных улучшений транспорта.')}</div>`}${(vehicleEffective.sources||[]).map(source=>`<div class="small ${source.automated?'green-text':'warn-text'}">${source.automated?T('AUTOMATED','АВТОМАТИЧЕСКИ'):T('MANUAL','ВРУЧНУЮ')} · ${esc(APP_I18N.current()==='ru'?source.label_ru:source.label_en)}${(source.manual_rules||[]).map(rule=>`<div class="effect-manual-text">${esc(APP_I18N.current()==='ru'?rule.text_ru:rule.text_en)} · ${esc(rule.source||'')}</div>`).join('')}</div>`).join('')}${vehicleGarageActionsHtml(vehicleEffective,ch,d,mine)}${vehicleRepairHtml(vehicle,vehicleState,mine)}${mine?`<div class="row mt"><button data-vehicle-sdp="${vehicle.instance_id}|-5">${T('Damage','Урон')} −5</button><button data-vehicle-sdp="${vehicle.instance_id}|-1">−1</button></div>`:''}</article>`;}).join(''):`<div class="empty small">${T('No vehicles in this Dossier.','В этом Dossier нет транспорта.')}</div>`}
       </div>
     </div>
     <div>
+      ${(c.reputation||[]).length?`<div class="panel mb"><div class="row" style="justify-content:space-between"><h2>\ud83c\udfdb\ufe0f ${T('Reputation','\u0420\u0435\u043f\u0443\u0442\u0430\u0446\u0438\u044f')}</h2>${state.me?.is_gm?'<button class="btn-sm" id="rep-edit">＋</button>':''}</div><div class="kv">${(c.reputation||[]).map(r=>'<div><b>'+esc(r.org_name||r.org_handle||'—')+'</b><span class="small muted">'+esc(r.standing)+' · REP '+r.reputation+' · FAVOR '+r.favor+' · HEAT '+r.heat+'</span></div>').join('')}</div></div>`:''}
       <div class="panel mb" id="sheet-lifepath">
         <h2>🧬 Lifepath</h2>
         ${lpRows.length ? `<div class="kv">${lpRows.map(([k, v]) => `<b>${esc(k)}</b><span>${esc(displayKnownValue(v))}</span>`).join('')}</div>`
@@ -2697,16 +3284,73 @@ async function viewSheet(id) {
     </div>
   </div>`;
 
+  const addEffectButton=$('#add-custom-effect');if(addEffectButton)addEffectButton.onclick=()=>openCustomEffectModal(c);
+  $$('[data-effect-action]',view).forEach(button=>button.onclick=()=>{const [effectId,action]=button.dataset.effectAction.split('|'),effect=effectInstances.find(item=>item.effect_id===effectId);if(effect)performEffectAction(c,effect,action);});
   $$('[data-skill-info]', view).forEach(btn => btn.onclick = () => showSkillInfo(btn.dataset.skillInfo));
   $$('[data-owned-chrome]', view).forEach(btn => btn.onclick = () => showCreationItemInfo(cw[Number(btn.dataset.ownedChrome)]));
+  $$('[data-cyberware-action]',view).forEach(button=>button.onclick=async()=>{
+    const [instanceId,action]=button.dataset.cyberwareAction.split('|'),item=cw.find(entry=>entry.instance_id===instanceId),loadout=d.effective_cyberware||{},option=(loadout.options||[]).find(entry=>entry.instance_id===instanceId),staged=(loadout.staged||[]).find(entry=>entry.instance_id===instanceId),standalone=(loadout.standalone||[]).find(entry=>entry.instance_id===instanceId),foundationHosts=(loadout.hosts||[]).filter(host=>(host.foundation_instance_id||host.instance_id)===instanceId),body={revision:c.revision,action,host_instance_ids:[]};
+    if(!item)return;
+    if(action==='install'||action==='rebind'){
+      if(option?.expected_host){const hosts=(loadout.hosts||[]).filter(host=>(option.compatible_host_ids||[]).includes(host.instance_id)),required=Number(option.hosts_required)||1;if(hosts.length<required){toast(T('Not enough compatible foundations with free Option Slots.','Недостаточно совместимых foundations со свободными Option Slots.'),true);return;}const current=(option.host_instance_ids||[]).map(id=>hosts.findIndex(host=>host.instance_id===id)+1).filter(value=>value>0),answer=prompt(`${T(`Choose ${required} different concrete hosts`,`Выберите concrete hosts: ${required}`)}\n${hosts.map((host,index)=>`${index+1}. ${host.name} · ${host.slots_used}/${host.slots_total} slots`).join('\n')}\n${T('Enter numbers separated by commas','Введите номера через запятую')}`,current.join(',')||hosts.slice(0,required).map((_,index)=>index+1).join(',')),indexes=[...new Set(String(answer||'').split(',').map(value=>Number(value.trim())-1))],selected=indexes.map(index=>hosts[index]).filter(Boolean);if(selected.length!==required)return;body.host_instance_ids=selected.map(host=>host.instance_id);}
+    }
+    const sideRequired=!!(staged?.side_required||foundationHosts.some(host=>host.side_required));
+    if(sideRequired&&['install','configure','quick_attach'].includes(action)){const current=staged?.installation_side||foundationHosts[0]?.physical_side||'left',side=prompt(T('Installation side: left or right','Сторона установки: left или right'),current)||'';if(!['left','right'].includes(side.toLowerCase()))return;body.installation_side=side.toLowerCase();}
+    if(action==='uninstall'&&!confirm(T('Uninstall this Cyberware? Current Humanity will NOT be restored; only Maximum Humanity capacity returns.','Извлечь Cyberware? Текущая Humanity НЕ восстановится; вернётся только ёмкость Maximum Humanity.')))return;
+    if(action==='quick_detach'&&!confirm(T('Detach this complete Quick Change Cyberarm bundle with an Action?','Отсоединить весь Quick Change Cyberarm bundle за Action?')))return;
+    if(['install','uninstall'].includes(action)){const profile=option?.installation_profile||staged?.installation_profile||standalone?.installation_profile||foundationHosts[0]?.installation_profile||{required_site:'Manual',source_installation:'Manual'},site=prompt(`${T('Required installation site','Требуемое место установки')}: ${profile.source_installation||profile.required_site}`,profile.required_site||'Manual')||'',technician=prompt(T('Clinic / surgeon / technician','Клиника / хирург / техник'),ch.handle||'')||'';if(!site.trim()||technician.trim().length<2)return;if(!confirm(T('Confirm MANUAL SURGERY / SERVICE resolution at the table.','Подтвердите РУЧНОЕ РАЗРЕШЕНИЕ ХИРУРГИИ / УСЛУГИ за столом.')))return;body.installation_site=site.trim();body.technician=technician.trim();body.manual_resolution_confirmed=true;if(profile.biosystem_required){if(!confirm(T('Confirm the required Biosystem is available.','Подтвердите наличие требуемого Biosystem.')))return;body.biosystem_confirmed=true;}}
+    const defaults={uninstall:T('Surgical removal; Humanity is not restored','Хирургическое извлечение; Humanity не восстанавливается'),install:T('Clinic installation into concrete host','Установка в клинике в concrete host'),configure:T('Assign physical side to legacy foundation','Назначить физическую сторону legacy foundation'),quick_detach:T('Quick Change Mount Action detach','Отсоединение Quick Change Mount за Action'),quick_attach:T('Quick Change Mount Action attach without new HL','Присоединение Quick Change Mount без нового HL'),rebind:T('Move option to concrete host','Перенести option в concrete host')},reason=prompt(T('Cyberware lifecycle reason','Причина Cyberware lifecycle'),defaults[action]||'Cyberware lifecycle')||'';
+    if(reason.trim().length<3)return;body.reason=reason.trim();button.disabled=true;
+    try{const response=await api(`/api/characters/${c.id}/cyberware/${instanceId}/action`,{method:'POST',body}),humanity=response.humanity||{};toast(`${T('Cyberware lifecycle recorded.','Cyberware lifecycle записан.')} Humanity ${humanity.humanity_current_before??'—'}→${humanity.humanity_current_after??'—'}`);viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}
+  });
+  $$('[data-therapy-action]',view).forEach(button=>button.onclick=async()=>{const action=button.dataset.therapyAction,body={revision:c.revision,action};if(action==='start'){const choices=[['standard_hl','Therapy (Standard HL) · 500eb · 2d6'],['extreme_hl','Therapy (Extreme HL) · 1,000eb · 4d6'],['addiction','Therapy (Addiction) · 1,000eb · MANUAL']],answer=Number(prompt(`${T('Choose Therapy','Выберите Therapy')}:\n${choices.map((row,index)=>`${index+1}. ${row[1]}`).join('\n')}`,'1')),choice=choices[answer-1];if(!choice)return;body.therapy_type=choice[0];body.therapist=(prompt(T('Therapist / clinic','Терапевт / клиника'),ch.handle||'')||'').trim();if(body.therapy_type==='addiction')body.addiction_label=(prompt(T('Addiction being treated','Лечимая зависимость'),'')||'').trim();if(body.therapist.length<2||body.therapy_type==='addiction'&&body.addiction_label.length<2)return;}else if(action==='resolve'){if(!confirm(T('Confirm one campaign week of Therapy is complete.','Подтвердите завершение одной игровой недели Therapy.')))return;body.manual_time_confirmed=true;}else if(!confirm(T('Cancel Therapy without a refund?','Отменить Therapy без возврата средств?')))return;body.reason=(prompt(T('Therapy lifecycle reason','Причина Therapy lifecycle'),action==='start'?T('Begin one-week Therapy course','Начать недельный курс Therapy'):action==='resolve'?T('One campaign week completed','Одна игровая неделя завершена'):T('Therapy interrupted; no refund','Therapy прервана; без возврата'))||'').trim();if(body.reason.length<3)return;button.disabled=true;try{const response=await api(`/api/characters/${c.id}/therapy/action`,{method:'POST',body}),humanity=response.result?.humanity;toast(humanity?`Therapy: Humanity ${humanity.before}→${humanity.after}/${humanity.maximum} · ${humanity.rolls.join('+')}`:T('Therapy lifecycle recorded.','Therapy lifecycle записан.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
+  $$('[data-popup-shield-action]',view).forEach(button=>button.onclick=async()=>{const [optionId,action]=button.dataset.popupShieldAction.split('|'),body={revision:c.revision,action};if(action==='install'){const shields=inv.filter(item=>(item.catalog_item_id==='armor-0'||String(item.key||'').split('@')[0]==='armor-0')&&item.state==='carried'),answer=prompt(`${T('Choose concrete Bulletproof Shield','Выберите concrete Bulletproof Shield')}:\n${shields.map((item,index)=>`${index+1}. ${item.custom_name||item.name}`).join('\n')}`,'1'),shield=shields[Number(answer)-1];if(!shield)return;body.shield_instance_id=shield.instance_id;}if(action==='damage'){const amount=Number(prompt(T('Shield damage','Урон щиту'),'1'));if(!Number.isInteger(amount)||amount<1||amount>100)return;body.amount=amount;}if(action==='remove'&&!confirm(T('Remove the concrete Shield from Popup Shield? Destroyed shields remain broken.','Извлечь concrete Shield из Popup Shield? Уничтоженный щит останется сломанным.')))return;body.reason=(prompt(T('Popup Shield action reason','Причина Popup Shield action'),T('Resolved on Character Sheet','Применено в Character Sheet'))||'').trim();if(body.reason.length<3)return;button.disabled=true;try{await api(`/api/characters/${c.id}/cyberware/${optionId}/popup-shield/action`,{method:'POST',body});toast(T('Popup Shield state updated.','Состояние Popup Shield обновлено.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
+  $$('[data-popup-weapon-bind]',view).forEach(button=>button.onclick=async()=>{const [optionId,kind]=button.dataset.popupWeaponBind.split('|'),candidates=inv.filter(item=>item.state==='carried'&&(kind==='ranged'?(item.cat==='guns'&&Number(item.mechanics?.hands)===1):(item.cat==='melee'&&!String(item.mechanics?.type||'').includes('Very Heavy'))) );if(!candidates.length){toast(T('No compatible free one-handed weapon instances.','Нет совместимых свободных одноручных экземпляров оружия.'),true);return;}const answer=prompt(`${T('Choose permanent bound weapon','Выберите permanently bound weapon')}:\n${candidates.map((item,index)=>`${index+1}. ${item.custom_name||item.name} · ${item.mechanics?.type||''}`).join('\n')}`,'1'),weapon=candidates[Number(answer)-1];if(!weapon)return;if(!confirm(T('This concrete weapon and its attachments will be permanently bound to the Popup option. Continue?','Это конкретное оружие и его attachments будут permanently привязаны к Popup option. Продолжить?')))return;const reason=(prompt(T('Popup Weapon binding reason','Причина привязки Popup Weapon'),T('Permanent clinic installation into Cyberarm','Permanent установка в Cyberarm в клинике'))||'').trim();if(reason.length<3)return;button.disabled=true;try{await api(`/api/characters/${c.id}/cyberware/${optionId}/popup-weapon/bind`,{method:'POST',body:{revision:c.revision,weapon_instance_id:weapon.instance_id,permanent_confirmed:true,reason}});toast(T('Concrete weapon permanently bound.','Concrete weapon permanently привязано.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
+  $$('[data-cyberweapon-action]',view).forEach(button=>button.onclick=async()=>{const [instanceId,action]=button.dataset.cyberweaponAction.split('|'),body={revision:c.revision,action};if(action==='reload'){const profile=(d.effective_cyberware?.weapon_profiles||[]).find(p=>p.instance_id===instanceId);if(profile?.special_ammo){if(profile.id==='gas-jet'){const choice=prompt(`${T('Choose Gas Jet payload','Выберите payload Gas Jet')}:\n1. Street Drug\n2. Poison\n3. Biotoxin`,'1'),map={'1':'street_drug','2':'poison','3':'biotoxin'};const payload=map[String(choice||'').trim()];if(!payload)return;body.payload_type=payload;} } else {const ammo=inv.filter(item=>item.cat==='ammo'&&ammoRoundsForItem(item)>0),answer=prompt(`${T('Choose ammo stack','Выберите ammo stack')}:\n${ammo.map((item,index)=>`${index+1}. ${item.name} · ${ammoRoundsForItem(item)} rounds`).join('\n')}`,'1'),selected=ammo[Number(answer)-1];if(!selected)return;body.ammo_instance_id=selected.instance_id;}}if(action==='fire'&&!confirm(T('Spend one loaded round and record Cyberweapon fire?','Потратить один заряженный боеприпас и записать выстрел Cyberweapon?')))return;body.reason=(prompt(T('Cyberweapon action reason','Причина Cyberweapon action'),T('Resolved on Character Sheet','Применено в Character Sheet'))||'').trim();if(body.reason.length<3)return;button.disabled=true;try{await api(`/api/characters/${c.id}/cyberware/${instanceId}/weapon/action`,{method:'POST',body});toast(T('Cyberweapon state updated.','Состояние Cyberweapon обновлено.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
   $$('[data-owned-item]', view).forEach(btn => btn.onclick = () => showCreationItemInfo(inv[Number(btn.dataset.ownedItem)]));
+  $$('[data-armor-repair]',view).forEach(button=>button.onclick=async()=>{const [instanceId,action]=button.dataset.armorRepair.split('|'),body={revision:c.revision,action};if(action==='start'){const methods=['manual_tech','jeeves','paid_service'],methodAnswer=Number(prompt(`1. ${T('Manual Tech repair','Ручной ремонт Tech')}\n2. Jeeves Executive Garment Bag\n3. ${T('Paid external service · manual quote','Платный внешний сервис · цена вручную')}`,'1'));body.method=methods[methodAnswer-1];if(!body.method)return;const useJeeves=body.method==='jeeves';body.technician=(prompt(T('Repair technician / service provider','Исполнитель ремонта / сервис'),useJeeves?'Jeeves Executive Garment Bag':ch.handle||'')||'').trim();if(body.technician.length<2)return;if(useJeeves){const bags=inv.filter(item=>item.catalog_item_id==='gear-39'||String(item.key||'').split('@')[0]==='gear-39'),answer=prompt(`${T('Choose Jeeves bag','Выберите сумку Jeeves')}:\n${bags.map((item,index)=>`${index+1}. ${item.custom_name||item.name}`).join('\n')}`,'1'),bag=bags[Number(answer)-1];if(!bag)return;body.jeeves_instance_id=bag.instance_id;}if(body.method==='paid_service'){const cost=Number(prompt(T('Agreed service cost in eb','Согласованная стоимость сервиса в eb'),'100'));if(!Number.isInteger(cost)||cost<0)return;if(!confirm(`${T('Pay non-refundable Armor Repair service quote','Оплатить невозвратную стоимость ремонта')}: ${money(cost)}?`))return;body.service_cost=cost;body.payment_confirmed=true;}}else if(action==='resolve'){if(!confirm(T('Confirm the manual repair time/check is complete.','Подтвердите завершение ручного времени/проверки ремонта.')))return;body.manual_resolution_confirmed=true;}else if(action==='self_repair_tick'){if(!confirm(T('Confirm one full day passed without this armor losing SP.','Подтвердите полный день без потери SP этой бронёй.')))return;body.no_sp_loss_confirmed=true;}body.reason=(prompt(T('Armor Repair reason','Причина Armor Repair'),action==='start'?T('Begin tracked armor repair','Начать отслеживаемый ремонт брони'):action==='resolve'?T('Repair time and check completed','Время и проверка ремонта завершены'):action==='cancel'?T('Armor repair interrupted','Ремонт брони прерван'):T('Daily nanomachine repair condition met','Условие ежедневного ремонта наномашинами выполнено'))||'').trim();if(body.reason.length<3)return;button.disabled=true;try{await api(`/api/characters/${c.id}/armor/${instanceId}/repair`,{method:'POST',body});toast(T('Armor Repair workflow updated.','Armor Repair workflow обновлён.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
+  $$('[data-armor-tech-upgrade]',view).forEach(button=>button.onclick=async()=>{const tech=(prompt(T('Tech performing Upgrade Expertise','Tech, выполняющий Upgrade Expertise'),ch.handle||'')||'').trim();if(tech.length<2)return;if(!confirm(T('Confirm successful Tech Upgrade Check. Armor SP +1 is automated; Shield effect remains manual.','Подтвердите успешный Tech Upgrade Check. SP брони +1 автоматизирован; эффект щита остаётся ручным.')))return;const reason=(prompt(T('Armor Tech Upgrade reason','Причина Armor Tech Upgrade'),T('Upgrade Expertise resolved at the table','Upgrade Expertise разрешён за столом'))||'').trim();if(reason.length<3)return;button.disabled=true;try{await api(`/api/characters/${c.id}/armor/${button.dataset.armorTechUpgrade}/tech-upgrade`,{method:'POST',body:{revision:c.revision,tech_name:tech,manual_confirm:true,reason}});toast(T('Permanent Armor Tech Upgrade recorded.','Permanent Armor Tech Upgrade записан.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
+  $$('[data-tech-maker-create]',view).forEach(button=>button.onclick=()=>openTechMakerCreateModal(c));
+  $$('[data-tech-maker-fabricate]',view).forEach(button=>button.onclick=()=>openTechMakerFabricateModal(c));
+  $$('[data-tech-maker-action]',view).forEach(button=>button.onclick=async()=>{const [modificationId,action]=button.dataset.techMakerAction.split('|');if(action!=='remove')return;if(!confirm(T('Remove this Tech Maker modification?','Снять эту Tech Maker modification?')))return;const reason=(prompt(T('Tech Maker removal reason','Причина снятия Tech Maker modification'),T('Removed during downtime','Снято во время downtime'))||'').trim();if(reason.length<3)return;button.disabled=true;try{await api(`/api/characters/${c.id}/tech-maker/modifications/${modificationId}/action`,{method:'POST',body:{revision:c.revision,action:'remove',reason}});toast(T('Tech Maker modification removed.','Tech Maker modification снята.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
+  $$('[data-item-equip]',view).forEach(button=>button.onclick=()=>{const item=inv.find(entry=>entry.instance_id===button.dataset.itemEquip);if(item)chooseEquipMode(c,item);});
+  $$('[data-item-use]',view).forEach(button=>button.onclick=()=>{const item=inv.find(entry=>entry.instance_id===button.dataset.itemUse);if(!item)return;const maximum=Math.max(1,Number(item.qty)||1),amount=maximum>1?Number(prompt(T(`How many uses? 1–${maximum}`,`Сколько использовать? 1–${maximum}`),'1')):1;if(!Number.isInteger(amount)||amount<1||amount>maximum)return;if(confirm(`${T('Use','Использовать')} ${item.custom_name||item.name} ×${amount}?`))performSheetItemAction(c,item,'use',{amount});});
+  $$('[data-item-transfer]',view).forEach(button=>button.onclick=()=>{const item=inv.find(entry=>entry.instance_id===button.dataset.itemTransfer);if(item)openItemTransferModal(c,item);});
+  $$('[data-loan-action]',view).forEach(button=>button.onclick=()=>{const [instanceId,action]=button.dataset.loanAction.split('|');const loan=(d.loans||[]).find(l=>l.instance_id===instanceId);if(loan)performLoanAction(c,loan,action);});
+  $$('[data-downtime-start]',view).forEach(button=>button.onclick=()=>openDowntimeStartModal(c));
+  $$('[data-downtime-complete]',view).forEach(button=>button.onclick=()=>{const note=(prompt(T('Downtime summary','Итог downtime'))||'').trim();if(!note)return;performDowntimeAction(c,'complete',{note});});
+  $$('[data-downtime-abandon]',view).forEach(button=>button.onclick=()=>{if(!confirm(T('Abandon this downtime period?','Отменить этот период downtime?')))return;performDowntimeAction(c,'abandon',{note:T('Downtime abandoned','Downtime отменён')});});
+  $$('[data-downtime-resolve]',view).forEach(button=>button.onclick=()=>{const [activityId,kind]=button.dataset.downtimeResolve.split('|');if(kind==='hustle'){const amount=Number(prompt(T('Hustle earnings (€$) — resolved at the table','Заработок Hustle (€$) — решено за столом'),'0'));if(!Number.isFinite(amount)||amount<0)return;const note=(prompt(T('Hustle note (roll, context)','Заметка Hustle (бросок, контекст)'),T('Manual Hustle roll','Ручной бросок Hustle'))||'').trim();performDowntimeAction(c,'resolve',{activity_id:activityId,earned:amount,note});}else if(kind==='recover_hp'){const amount=Number(prompt(T('HP recovered','Восстановлено HP'),'0'));if(!Number.isFinite(amount)||amount<0)return;const note=(prompt(T('Healing note','Заметка о лечении'))||'').trim();performDowntimeAction(c,'resolve',{activity_id:activityId,hp:amount,note});}else{const note=(prompt(T('Resolution note','Заметка о результате'))||'').trim();if(!note)return;performDowntimeAction(c,'resolve',{activity_id:activityId,note});}});
   $$('[data-sheet-jump]',view).forEach(button=>button.onclick=()=>document.getElementById(button.dataset.sheetJump)?.scrollIntoView({behavior:'smooth',block:'start'}));
-  $$('[data-attack-roll]',view).forEach(button=>button.onclick=()=>{const split=button.dataset.attackRoll.lastIndexOf('|');showCheckRoll(button.dataset.attackRoll.slice(0,split),Number(button.dataset.attackRoll.slice(split+1)));});$$('[data-damage-roll]',view).forEach(button=>button.onclick=()=>{const [name,dice,sides,multiplier]=button.dataset.damageRoll.split('|');rollDamage(name,Number(dice),Number(sides),Number(multiplier));});$$('[data-weapon-action]',view).forEach(button=>button.onclick=async()=>{const [subject,action]=button.dataset.weaponAction.split('|');try{await api(`/api/characters/${c.id}/resource`,{method:'POST',body:{resource:'weapon',subject,action,value:1}});viewSheet(c.id);}catch(e){toast(e.message,true);}});$$('[data-armor-action]',view).forEach(button=>button.onclick=async()=>{const [subject,value]=button.dataset.armorAction.split('|');try{await api(`/api/characters/${c.id}/resource`,{method:'POST',body:{resource:'armor',subject,action:value==='reset'?'reset':'delta',value:value==='reset'?0:Number(value)}});viewSheet(c.id);}catch(e){toast(e.message,true);}});
+  $$('[data-manage-upgrades]',view).forEach(button=>button.onclick=()=>openWeaponUpgradeManager(c,button.dataset.manageUpgrades));
+  $$('[data-manage-cyberdeck]',view).forEach(button=>button.onclick=()=>openCyberdeckManager(c,button.dataset.manageCyberdeck));
+  $$('[data-program-action]',view).forEach(button=>button.onclick=async()=>{const [deckId,programId,action]=button.dataset.programAction.split('|'),body={revision:c.revision,action};if(action==='damage'){const amount=Number(prompt(T('REZ damage','Урон REZ'),'1'));if(!Number.isInteger(amount)||amount<1||amount>100)return;body.amount=amount;}if(action==='destroy'&&!confirm(T('Destroy this concrete Program copy? Backup Drive may save eligible Programs.','Уничтожить эту конкретную копию Program? Backup Drive может сохранить подходящую Program.')))return;const reason=prompt(T('Program action reason / resolution note','Причина Program action / комментарий'),T('Resolved during Netrun','Применено во время Netrun'))||'';if(reason.trim().length<3)return;body.reason=reason.trim();button.disabled=true;try{await api(`/api/characters/${c.id}/cyberdecks/${deckId}/programs/${programId}/action`,{method:'POST',body});toast(T('Program runtime updated.','Runtime Program обновлён.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
+  $$('[data-black-ice-deploy]',view).forEach(button=>button.onclick=async()=>{const [deckId,programId,mode]=button.dataset.blackIceDeploy.split('|'),context=await chooseBlackIceDeploymentContext(c,mode);if(!context)return;const reason=prompt(T('Deployment reason / context','Причина / контекст развёртывания'),T('Deploy Black ICE during Netrun','Развернуть Black ICE во время Netrun'))||'';if(reason.trim().length<3)return;button.disabled=true;try{await api(`/api/characters/${c.id}/cyberdecks/${deckId}/black-ice/${programId}/deploy`,{method:'POST',body:{revision:c.revision,mode,...context,reason:reason.trim()}});toast(T('Black ICE NET entity deployed.','Black ICE NET entity развёрнута.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
+  $$('[data-net-entity-action]',view).forEach(button=>button.onclick=async()=>{const [entityId,action]=button.dataset.netEntityAction.split('|'),body={revision:c.revision,action};if(action==='damage'){const amount=Number(prompt(T('Black ICE REZ damage','Урон REZ Black ICE'),'1'));if(!Number.isInteger(amount)||amount<1||amount>100)return;body.amount=amount;}if(action==='engage'){const context=await chooseBlackIceEngageContext(c,d,entityId);if(!context)return;Object.assign(body,context);}if(action==='destroy'&&!confirm(T('Destroy this Black ICE entity and concrete Program copy?','Уничтожить Black ICE entity и конкретную копию Program?')))return;const reason=prompt(T('NET entity action reason','Причина действия NET entity'),T('Resolved during Netrun','Применено во время Netrun'))||'';if(reason.trim().length<3)return;body.reason=reason.trim();button.disabled=true;try{await api(`/api/characters/${c.id}/net-entities/${entityId}/action`,{method:'POST',body});toast(T('Black ICE entity updated.','Black ICE entity обновлена.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
+  $$('[data-backup-restore]',view).forEach(button=>button.onclick=async()=>{const [deckId,hardwareId]=button.dataset.backupRestore.split('|'),reason=prompt(T('Backup restore reason','Причина восстановления Backup'),T('Meat Action: restore saved Programs','Meat Action: восстановить сохранённые Programs'))||'';if(reason.trim().length<3)return;button.disabled=true;try{await api(`/api/characters/${c.id}/cyberdecks/${deckId}/hardware/${hardwareId}/restore`,{method:'POST',body:{revision:c.revision,reason:reason.trim()}});toast(T('Backup Drive restored saved Programs.','Backup Drive восстановил сохранённые Programs.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
+  $$('[data-defense-sequencer]',view).forEach(button=>button.onclick=async()=>{const [deckId,hardwareId]=button.dataset.defenseSequencer.split('|'),deck=d.effective_cyberdecks?.[deckId],hardware=(deck?.hardware||[]).find(item=>item.instance_id===hardwareId),eligible=hardware?.eligible_armor_programs||[];if(!eligible.length)return;const answer=eligible.length===1?'1':prompt(`${T('Choose an Armor not used during this Netrun','Выберите Armor, не использованную в этом Netrun')}:\n${eligible.map((item,index)=>`${index+1}. ${item.name}`).join('\n')}`,'1'),armor=eligible[Number(answer)-1];if(!armor)return;if(!confirm(T('Confirm this Armor was NOT used during the current Netrun. Defense Sequencer will Rez it without a NET Action.','Подтвердите: эта Armor НЕ использовалась в текущем Netrun. Defense Sequencer сделает Rez без NET Action.')))return;const reason=prompt(T('Defense Sequencer resolution reason','Причина разрешения Defense Sequencer'),T('Start of next Turn · Armor eligibility confirmed','Начало следующего хода · eligibility Armor подтверждена'))||'';if(reason.trim().length<3)return;button.disabled=true;try{await api(`/api/characters/${c.id}/cyberdecks/${deckId}/hardware/${hardwareId}/defense-sequencer/resolve`,{method:'POST',body:{revision:c.revision,armor_instance_id:armor.instance_id,not_used_in_netrun_confirmed:true,reason:reason.trim()}});toast(T('Defense Sequencer Rezzed Armor.','Defense Sequencer выполнил Rez Armor.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
+  $$('[data-manage-vehicle]',view).forEach(button=>button.onclick=()=>openVehicleUpgradeManager(c,button.dataset.manageVehicle));
+  $$('[data-vehicle-sdp]',view).forEach(button=>button.onclick=async()=>{const [instanceId,value]=button.dataset.vehicleSdp.split('|');button.disabled=true;try{await api(`/api/characters/${c.id}/resource`,{method:'POST',body:{revision:c.revision,resource:'vehicle_sdp',subject:instanceId,action:value==='reset'?'reset':'delta',value:value==='reset'?0:Number(value)}});viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
+  $$('[data-vehicle-repair]',view).forEach(button=>button.onclick=async()=>{const [instanceId,action]=button.dataset.vehicleRepair.split('|'),body={revision:c.revision,action};if(action==='start'){const technician=prompt(T('Technician / repairer','Техник / исполнитель ремонта'),ch.handle||'')||'',reason=prompt(T('Repair reason / work order','Причина ремонта / заказ-наряд'),T('Restore vehicle to perfect condition','Восстановить транспорт до идеального состояния'))||'';if(technician.trim().length<2||reason.trim().length<3)return;body.technician=technician.trim();body.reason=reason.trim();}else if(action==='resolve'){const total=Number(prompt(T('Repair Check total','Итог Repair Check'),'0')),reason=prompt(T('Resolution note','Комментарий к результату'),T('Repair time completed','Время ремонта завершено'))||'';if(!Number.isInteger(total)||reason.trim().length<3)return;body.check_total=total;body.reason=reason.trim();}else{const reason=prompt(T('Cancellation reason','Причина отмены'),T('Repair work interrupted','Ремонт прерван'))||'';if(reason.trim().length<3)return;body.reason=reason.trim();}button.disabled=true;try{await api(`/api/characters/${c.id}/vehicles/${instanceId}/repair`,{method:'POST',body});toast(T('Vehicle repair workflow updated.','Процесс ремонта транспорта обновлён.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
+  $$('[data-vehicle-mod-action]',view).forEach(button=>button.onclick=async()=>{
+    const [modificationId,action]=button.dataset.vehicleModAction.split('|'),body={revision:c.revision,action};
+    if(action==='reset_nos'){const reason=prompt(T('Campaign day reset reason','Причина сброса игрового дня'),T('New campaign day','Новый игровой день'))||'';if(reason.trim().length<3)return;body.reason=reason;}
+    if(action==='use_nos'&&!confirm(T('Spend this NOS tank for the current campaign day?','Потратить этот баллон NOS в текущем игровом дне?')))return;
+    if(action==='mount_weapon'){const select=$(`[data-heavy-mount-select="${modificationId}"]`,view),weaponInstanceId=select?.value||'';if(!weaponInstanceId){toast(T('Choose a two-handed weapon.','Выберите двуручное оружие.'),true);return;}const reason=prompt(T('Mounting reason','Причина установки'),T('Mounted using passenger Action','Установлено Action пассажира'))||'';if(reason.trim().length<3)return;body.weapon_instance_id=weaponInstanceId;body.reason=reason;}
+    if(action==='unmount_weapon'){const reason=prompt(T('Unmounting reason','Причина снятия'),T('Removed using passenger Action','Снято Action пассажира'))||'';if(reason.trim().length<3)return;body.reason=reason;}
+    if(action==='reload'){const requirement=modificationAmmoRequirement(d,ch,modificationId),ammoInstanceId=chooseAmmoStack(ch,requirement.ammoKind,requirement.weapon);if(!ammoInstanceId)return;body.ammo_instance_id=ammoInstanceId;}
+    button.disabled=true;try{await api(`/api/characters/${c.id}/modifications/${modificationId}/action`,{method:'POST',body});toast(action==='use_nos'?T('NOS spent. Resolve the additional Move Action manually.','NOS потрачен. Примените дополнительное Move Action вручную.'):T('Vehicle resource updated.','Ресурс транспорта обновлён.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}
+  });
+  $$('[data-mod-weapon-action]',view).forEach(button=>button.onclick=async()=>{const [modificationId,action]=button.dataset.modWeaponAction.split('|'),body={revision:c.revision,action};if(action==='reload'){const requirement=modificationAmmoRequirement(d,ch,modificationId),ammoInstanceId=chooseAmmoStack(ch,requirement.ammoKind,requirement.weapon);if(!ammoInstanceId)return;body.ammo_instance_id=ammoInstanceId;}button.disabled=true;try{await api(`/api/characters/${c.id}/modifications/${modificationId}/action`,{method:'POST',body});viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
+  $$('[data-attack-roll]',view).forEach(button=>button.onclick=()=>{const split=button.dataset.attackRoll.lastIndexOf('|');showCheckRoll(button.dataset.attackRoll.slice(0,split),Number(button.dataset.attackRoll.slice(split+1)));});$$('[data-damage-roll]',view).forEach(button=>button.onclick=()=>{const [name,dice,sides,multiplier]=button.dataset.damageRoll.split('|');rollDamage(name,Number(dice),Number(sides),Number(multiplier));});$$('[data-weapon-action]',view).forEach(button=>button.onclick=async()=>{const [subject,action]=button.dataset.weaponAction.split('|'),body={revision:c.revision,resource:'weapon',subject,action,value:1};if(action==='reload'){const weapon=inv.find(item=>item.instance_id===subject),ammoInstanceId=chooseAmmoStack(ch,null,weapon);if(!ammoInstanceId)return;body.ammo_instance_id=ammoInstanceId;}try{await api(`/api/characters/${c.id}/resource`,{method:'POST',body});viewSheet(c.id);}catch(e){toast(e.message,true);}});$$('[data-armor-action]',view).forEach(button=>button.onclick=async()=>{const [subject,value]=button.dataset.armorAction.split('|');try{await api(`/api/characters/${c.id}/resource`,{method:'POST',body:{resource:'armor',subject,action:value==='reset'?'reset':'delta',value:value==='reset'?0:Number(value)}});viewSheet(c.id);}catch(e){toast(e.message,true);}});
   $$('[data-roll-check]', view).forEach(button => button.onclick = () => { const split=button.dataset.rollCheck.lastIndexOf('|');showCheckRoll(button.dataset.rollCheck.slice(0,split),Number(button.dataset.rollCheck.slice(split+1))); });
   $$('[data-resource]', view).forEach(button => button.onclick = () => { const [resource,value]=button.dataset.resource.split('|'); sheetResource(c.id,resource,value); });
   const improveBtn=$('#sheet-improve');if(improveBtn)improveBtn.onclick=()=>openImprovementModal(c);const gmIp=$('#sheet-ip-gm');if(gmIp)gmIp.onclick=()=>openIpAdjustment(c.id,()=>viewSheet(c.id));
-  const notes=$('#sheet-notes');if(notes){let timer;notes.oninput=()=>{clearTimeout(timer);$('#sheet-notes-status').textContent='Saving…';timer=setTimeout(async()=>{try{ch.notes=notes.value;await api('/api/characters/'+c.id,{method:'PUT',body:{data:ch}});$('#sheet-notes-status').textContent='Saved';}catch(e){$('#sheet-notes-status').textContent=e.message;}},700);};}
-  const portraitInput=$('#sheet-portrait-file');if(portraitInput)portraitInput.onchange=()=>openImageCrop(portraitInput.files[0],'character_portrait',async media=>{try{ch.portrait_media_id=media.id;await api('/api/characters/'+c.id,{method:'PUT',body:{data:ch}});viewSheet(c.id);}catch(e){toast(e.message,true);}});
+  if($('#rep-edit'))$('#rep-edit').onclick=()=>{if(typeof openReputationEditor==='function')openReputationEditor(c.id,(c.reputation||[])[0]);};
+  if($('#sheet-personal-stash'))$('#sheet-personal-stash').onclick=()=>openPersonalStashModal(c.id);
+  const editSheet=$('#sheet-edit');if(editSheet)editSheet.onclick=()=>go(`/char/${c.id}?edit`);
+  const notes=$('#sheet-notes');if(notes){let timer;notes.oninput=()=>{clearTimeout(timer);$('#sheet-notes-status').textContent='Saving…';timer=setTimeout(async()=>{try{ch.notes=notes.value;const saved=await api('/api/characters/'+c.id,{method:'PUT',body:{revision:c.revision,patch:{notes:notes.value}}});c.revision=saved.revision;$('#sheet-notes-status').textContent='Saved';}catch(e){$('#sheet-notes-status').textContent=e.message;}},700);};}
+  const portraitInput=$('#sheet-portrait-file');if(portraitInput)portraitInput.onchange=()=>openImageCrop(portraitInput.files[0],'character_portrait',async media=>{try{await api('/api/characters/'+c.id,{method:'PUT',body:{revision:c.revision,patch:{portrait_media_id:media.id}}});viewSheet(c.id);}catch(e){toast(e.message,true);}});
   const networkButton=$('#sheet-network');
   if(networkButton)networkButton.onclick=async()=>{
     try{
@@ -2718,17 +3362,33 @@ async function viewSheet(id) {
   if(ledgerButton)ledgerButton.onclick=async()=>{
     try{
       const history=await api(`/api/characters/${c.id}/ledger`);
-      const rows=history.entries.length
-        ? history.entries.map(entry=>`<div class="inv-row"><span class="tag">${esc(entry.category)}</span><span class="iname user-content">${esc(entry.reason||'')}</span><span class="small muted">${timeAgo(entry.created)} · ${esc(entry.actor)}</span></div>`).join('')
-        : `<div class="empty">${T('No permanent changes recorded.','Постоянные изменения не записаны.')}</div>`;
-      openModal(`<h2>${T('Dossier Ledger','Журнал досье')}</h2>${rows}`,true);
+      const rows=history.entries.length?history.entries.map(entry=>{
+        const changes=(entry.changes||[]).map(change=>`<div class="ledger-change"><b>${esc(change.label)}</b><span>${esc(String(change.before??'—'))} → ${esc(String(change.after??'—'))}</span></div>`).join('');
+        return `<article class="panel mb ledger-entry"><div class="row" style="justify-content:space-between"><span class="tag">${esc(entry.category)}</span><span class="small muted">${timeAgo(entry.created)} · ${esc(entry.actor)}</span></div><b class="user-content">${esc(entry.reason||'')}</b>${changes?`<div class="ledger-changes mt">${changes}</div>`:''}${entry.can_revert?`<button class="btn-sm mt" data-ledger-revert="${entry.id}">↶ ${T('Revert this change set','Откатить этот набор изменений')}</button>`:''}</article>`;
+      }).join(''):`<div class="empty">${T('No permanent changes recorded.','Постоянные изменения не записаны.')}</div>`;
+      const modal=openModal(`<h2>${T('Dossier Ledger','Журнал досье')}</h2><p class="small muted">${T('Trust + Audit records who changed what, when, and why. Only the latest reversible change can be undone safely.','Trust + Audit записывает кто, что, когда и почему изменил. Безопасно откатить можно только последнее обратимое изменение.')}</p>${rows}`,true);
+      $$('[data-ledger-revert]',modal).forEach(button=>button.onclick=async()=>{if(!confirm(T('Revert the entire change set?','Откатить весь набор изменений?')))return;const reason=prompt(T('Reason for revert','Причина отката'))||'';button.disabled=true;try{await api(`/api/characters/${c.id}/ledger/${button.dataset.ledgerRevert}/revert`,{method:'POST',body:{revision:history.current_revision,reason}});closeModal();toast(T('Change set reverted.','Набор изменений отменён.'));viewSheet(c.id);}catch(error){button.disabled=false;toast(error.message,true);}});
     }catch(e){toast(e.message,true);}
   };
   $('#sheet-print').onclick = () => window.print();
   $('#sheet-json').onclick = () => { const blob = new Blob([JSON.stringify(ch, null, 2)], {type:'application/json'}), a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${(ch.handle || 'character').replace(/[^a-z0-9_-]+/gi,'-')}.json`; a.click(); URL.revokeObjectURL(a.href); };
   $('#sheet-back').onclick = () => go('/dossiers');
-  const editBtn = $('#sheet-edit');
-  if (editBtn) editBtn.onclick = () => { location.hash = '#/char/' + c.id + '?edit'; };
+  const privacyBtn = $('#sheet-privacy');
+  if (privacyBtn) privacyBtn.onclick = () => {
+    const defaults=state.meta.character_visibility_defaults||{},visibility={...defaults,...(ch.visibility||{})};
+    const fields=[
+      ['portrait','Portrait','Портрет'],['identity','Identity / real name','Имя персонажа'],
+      ['biography','Biography / appearance','Биография / внешность'],['stats','Characteristics','Характеристики'],
+      ['skills','Skills','Навыки'],['lifepath','Lifepath','Lifepath'],
+      ['equipment','Inventory / Cyberware / Armor','Инвентарь / Cyberware / броня'],
+      ['combat','Combat values','Боевые показатели'],['player_name','Player name','Имя игрока'],
+    ];
+    const modal=openModal(`<h2>${T('Dossier Privacy','Приватность Dossier')}</h2><label class="checkbox mb"><input id="dossier-public" type="checkbox" ${c.public?'checked':''}> <b>${T('List this Dossier in Crew Registry','Показывать Dossier в Crew Registry')}</b></label><div class="panel"><p class="small muted">${T('Notes, Cash, IP and private service data are never included in the public Dossier.','Notes, Cash, IP и служебные данные никогда не входят в публичный Dossier.')}</p>${fields.map(([key,en,ru])=>`<label class="checkbox"><input data-dossier-visibility="${key}" type="checkbox" ${visibility[key]?'checked':''}> ${T(en,ru)}</label>`).join('')}</div><div class="row mt"><button id="dossier-privacy-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="dossier-privacy-save">${T('Save Privacy','Сохранить приватность')}</button></div>`,true);
+    $('#dossier-privacy-cancel',modal).onclick=closeModal;
+    $('#dossier-privacy-save',modal).onclick=async()=>{const next={};$$('[data-dossier-visibility]',modal).forEach(input=>next[input.dataset.dossierVisibility]=input.checked);try{await api('/api/characters/'+c.id,{method:'PUT',body:{revision:c.revision,patch:{public:$('#dossier-public',modal).checked,visibility:next}}});closeModal();viewSheet(c.id);toast(T('Dossier privacy updated.','Приватность Dossier обновлена.'));}catch(e){toast(e.message,true);}};
+  };
+  const memorialBtn = $('#sheet-memorial');
+  if (memorialBtn) memorialBtn.onclick = () => openMemorializeModal(c);
   const delBtn = $('#sheet-del');
   if (delBtn) delBtn.onclick = async () => {
     if (!confirm(T('Delete this Character? Dossiers with NC//NET history will be archived instead.','Удалить Character? Досье с историей NC//NET будет перемещено в архив.'))) return;
@@ -2751,11 +3411,11 @@ async function viewCharacters(view) {
   const data = await api('/api/characters');
   const activeCount = data.characters.filter(character => !character.data.archived).length;
   const archivedCount = data.characters.length - activeCount;
-  view.insertAdjacentHTML('afterbegin', `
+  view.innerHTML = `
     <div class="page-head">
       <div><h1>🧬 ${T('My Characters','Мои персонажи')}</h1><div class="sub">${T('Active Dossiers','Активные досье')}: ${activeCount}/50${archivedCount ? ` · ${archivedCount} ${T('archived','в архиве')}` : ''}</div></div>
-      <button class="btn-primary" onclick="location.hash='#/char/new'">+ ${T('New Edgerunner','Новый эджраннер')}</button>
-    </div>`);
+      <div class="row"><button class="btn-sm" onclick="location.hash='#/stash'">🎒 ${T('Crew Stash','Общий склад')}</button><button class="btn-sm" id="chars-import">⬆ ${T('Import JSON','Импорт JSON')}</button><button class="btn-primary" onclick="location.hash='#/char/new'">+ ${T('New Edgerunner','Новый эджраннер')}</button></div>
+    </div>`;
   const listEl = document.createElement('div');
   listEl.className = 'grid cols-3';
   view.appendChild(listEl);
@@ -2795,6 +3455,44 @@ async function viewCharacters(view) {
       viewCharacters(view);
     } catch (e) { toast(e.message, true); }
   });
+  const importButton = $('#chars-import', view);
+  if (importButton) importButton.onclick = () => openCharacterImportModal(view);
+}
+
+function openCharacterImportModal(view) {
+  const modal = openModal(`
+    <h2>⬆ ${T('Import Character JSON','Импорт персонажа (JSON)')}</h2>
+    <div class="panel accent mb"><b>TRUST + AUDIT</b>
+      <p class="small">${T('Imports a portable Dossier export (⬇ JSON). Server-owned runtime state resets to fresh defaults, and the Dossier is imported as private.','Импортирует переносимый экспорт Dossier (⬇ JSON). Серверное runtime-состояние сбрасывается, а Dossier импортируется приватным.')}</p>
+    </div>
+    <label class="f"><span>${T('File','Файл')}</span><input id="imp-file" type="file" accept="application/json,.json"></label>
+    <label class="f"><span>${T('or paste JSON','или вставьте JSON')}</span><textarea id="imp-text" rows="12" spellcheck="false" placeholder='{"handle":"V","roles":[{"name":"Solo","rank":4,"primary":true}],...}'></textarea></label>
+    <div class="row"><button id="imp-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="imp-go" disabled>${T('Import','Импортировать')}</button></div>
+  `, true);
+  const text = $('#imp-text', modal), go = $('#imp-go', modal), file = $('#imp-file', modal);
+  const refresh = () => { go.disabled = !text.value.trim(); };
+  text.oninput = refresh;
+  file.onchange = () => {
+    const selected = file.files && file.files[0];
+    if (!selected) return;
+    const reader = new FileReader();
+    reader.onload = () => { text.value = String(reader.result || ''); refresh(); };
+    reader.readAsText(selected);
+  };
+  $('#imp-cancel', modal).onclick = closeModal;
+  go.onclick = async () => {
+    let payload;
+    try { payload = JSON.parse(text.value); }
+    catch (e) { toast(T('Invalid JSON.','Некорректный JSON.'), true); return; }
+    go.disabled = true;
+    try {
+      const res = await api('/api/characters/import', { method: 'POST', body: { data: payload } });
+      closeModal();
+      toast(T('Character imported.','Персонаж импортирован.'));
+      viewCharacters(view);
+      go('/char/' + res.id);
+    } catch (e) { go.disabled = false; toast(e.message, true); }
+  };
 }
 
 /* ============================== редактор персонажа ============================== */
@@ -2818,7 +3516,11 @@ async function viewEditor(id) {
       return;
     }
   }
-  state.editor = { id: payload.id, char: payload.data, tab: 'base', dirty: false };
+  state.editor = {
+    id: payload.id, revision: payload.revision || 0,
+    char: JSON.parse(JSON.stringify(payload.data)),
+    baseline: JSON.parse(JSON.stringify(payload.data)), tab: 'base', dirty: false,
+  };
 
   view.innerHTML = `
   <div class="page-head">
@@ -2829,6 +3531,7 @@ async function viewEditor(id) {
       <button class="btn-primary" id="ed-save">💾 ${T('Save','Сохранить')}</button>
     </div>
   </div>
+  ${payload.id?`<div class="panel accent mb"><b>TRUST + AUDIT</b> · ${T('You may edit your sheet freely. Every save requires a reason and records a readable before/after change set in the Dossier Ledger.','Вы можете свободно редактировать лист. Каждое сохранение требует причину и записывает понятный набор изменений «до → после» в журнал Dossier.')}</div>`:''}
   <div class="panel accent mb" id="ed-derived"></div>
   <div class="editor-tabs" id="ed-tabs">
     ${EDITOR_TABS.map(([k, en, ru]) => `<button data-tab="${k}" class="${state.editor.tab === k ? 'active' : ''}">${T(en,ru)}</button>`).join('')}
@@ -2874,22 +3577,45 @@ function renderDerived() {
   ${d.emp_cur != null && d.emp_cur <= 2 ? '<div class="small" style="color:var(--magenta);margin-top:6px">⚠️ EMP ≤ 2 — на грани киберпсихоза. Осторожно с хромом.</div>' : ''}`;
 }
 
+function editorChangePreview(before,after){
+  const groups=[
+    [T('Identity & biography','Личность и биография'),['handle','first_name','last_name','player','appearance','background','languages','lifestyle','housing','notes','public']],
+    [T('Role','Роль'),['role','role_rank','roles','active_role']],[T('Characteristics','Характеристики'),['stats','hp_cur','humanity_cur','luck_cur']],
+    [T('Skills','Навыки'),['skills','skill_pools','native_language']],[T('Resources','Ресурсы'),['cash','ip_available','reputation']],
+    ['Inventory',['inventory']],['Cyberware',['cyberware']],[T('Armor','Броня'),['armor']],
+  ];
+  return groups.filter(([,keys])=>keys.some(key=>JSON.stringify(before[key])!==JSON.stringify(after[key]))).map(([label])=>label);
+}
+
 async function saveEditor() {
   const ed = state.editor;
   if (!ed) return;
   const c = ed.char;
   if (!c.handle || !c.handle.trim()) { toast('Заполни псевдоним (Handle) на вкладке «Основное»', true); state.editor.tab = 'base'; renderEditorTab(); return; }
-  try {
-    const body = { data: c };
-    const r = ed.id
-      ? await api('/api/characters/' + ed.id, { method: 'PUT', body })
-      : await api('/api/characters', { method: 'POST', body });
-    state.editor.id = r.id;
-    state.editor.dirty = false;
-    history.replaceState(null, '', '#/char/' + r.id + '?edit');
-    toast('Сохранено ✓');
-    renderDerived();
-  } catch (e) { toast(e.message, true); }
+  if (!ed.id) {
+    try {
+      const r = await api('/api/characters', { method: 'POST', body: {data:c} });
+      state.editor.id = r.id; state.editor.revision=r.revision||0;
+      state.editor.baseline=JSON.parse(JSON.stringify(r.data));state.editor.char=JSON.parse(JSON.stringify(r.data));
+      state.editor.dirty = false;history.replaceState(null, '', '#/char/' + r.id + '?edit');
+      toast(T('Saved.','Сохранено ✓'));renderDerived();
+    } catch (e) { toast(e.message, true); }
+    return;
+  }
+  const changed=editorChangePreview(ed.baseline,c);
+  if(!changed.length){toast(T('There are no changes to save.','Нет изменений для сохранения.'),true);return;}
+  const modal=openModal(`<h2>${T('Save Character Sheet','Сохранить Character Sheet')}</h2><div class="panel accent mb"><b>TRUST + AUDIT</b><p class="small">${T('The following sections changed:','Изменены разделы:')} ${changed.map(esc).join(' · ')}</p></div><label class="f"><span>${T('Reason for changes *','Причина изменений *')}</span><textarea id="sheet-edit-reason" maxlength="500" rows="3" placeholder="${T('Loot from session, correction, downtime…','Добыча с сессии, исправление, downtime…')}" autofocus></textarea></label><p class="small muted">${T('The server will validate the sheet and record readable before/after changes.','Сервер проверит лист и запишет понятные изменения «до → после».')}</p><div class="row"><button id="sheet-edit-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="sheet-edit-confirm">${T('Save and record','Сохранить и записать')}</button></div>`);
+  $('#sheet-edit-cancel',modal).onclick=closeModal;
+  $('#sheet-edit-confirm',modal).onclick=async()=>{
+    const reason=$('#sheet-edit-reason',modal).value.trim();
+    if(reason.length<3){toast(T('Describe why the sheet changed.','Опишите причину изменения листа.'),true);return;}
+    const button=$('#sheet-edit-confirm',modal);button.disabled=true;
+    try{
+      const saved=await api(`/api/characters/${ed.id}/sheet`,{method:'PUT',body:{revision:ed.revision,reason,data:c}});
+      ed.revision=saved.revision;ed.char=JSON.parse(JSON.stringify(saved.data));ed.baseline=JSON.parse(JSON.stringify(saved.data));ed.dirty=false;
+      closeModal();toast(T('Sheet saved and recorded in the Ledger.','Лист сохранён и записан в журнал.'));renderEditorTab();renderDerived();
+    }catch(error){button.disabled=false;toast(error.message,true);}
+  };
 }
 
 function renderEditorTab() {
@@ -2914,8 +3640,8 @@ function renderEditorTab() {
       <div class="small muted mb" id="f-role-note">${roleDesc ? esc(roleDesc) + ` ${T('Ability:','Способность:')} <b>` + esc(roleAb) + '</b>.' : ''}</div>
       <label class="f"><span>Внешность</span><textarea id="f-appearance" maxlength="4000">${esc(c.appearance || '')}</textarea></label>
       <label class="f"><span>Биография / предыстория</span><textarea id="f-background" maxlength="4000">${esc(c.background || '')}</textarea></label>
-      <label class="f"><span>Счёт (€$)</span><input id="f-cash" type="number" min="0" step="50" value="${c.cash || 0}"></label>
-      <p class="small muted">${T('Starting budgets:','Старт по гайду:')} <b>${state.meta.start_cash_gear ?? 2550}€$</b> ${T('for Weapons, Armor, Gear, and Cyberware, plus','на оружие/броню/снаряжение/хром +')} <b>${state.meta.start_cash_fashion ?? 800}€$</b> ${T('separately for Fashion and Fashionware. See the','отдельно на Fashion и Fashionware. Подробнее — в')} <a href="#/guides">${T('guides','гайдах')}</a>.</p>
+      <div class="grid cols-3"><label class="f"><span>Cash (€$)</span><input id="f-cash" type="number" min="0" step="1" value="${c.cash || 0}"></label><label class="f"><span>${T('Available IP','Доступные IP')}</span><input id="f-ip" type="number" min="0" step="1" value="${c.ip_available||0}"></label><label class="f"><span>Reputation</span><input id="f-reputation" type="number" min="0" max="10" step="1" value="${c.reputation||0}"></label></div>
+      <p class="small muted">${T('Trust mode allows resource corrections, but the reason and exact before/after values are always written to the Ledger.','Trust mode разрешает исправлять ресурсы, но причина и точные значения «до → после» всегда записываются в журнал.')}</p>
     </div>`;
     $('#f-handle').oninput = (e) => { c.handle = e.target.value; edChanged(); };
     $('#f-first-name').oninput = (e) => { c.first_name = e.target.value; edChanged(); };
@@ -2928,38 +3654,40 @@ function renderEditorTab() {
     };
     $('#f-rank').oninput = (e) => { c.role_rank = num(e.target.value) || 4; edChanged(); };
     $('#f-player').oninput = (e) => { c.player = e.target.value; edChanged(); };
-    $('#f-appearance').oninput = (e) => { c.appearance = e.target.value; };
-    $('#f-background').oninput = (e) => { c.background = e.target.value; };
+    $('#f-appearance').oninput = (e) => { c.appearance = e.target.value; edChanged(); };
+    $('#f-background').oninput = (e) => { c.background = e.target.value; edChanged(); };
     $('#f-cash').oninput = (e) => { c.cash = num(e.target.value) || 0; edChanged(); };
+    $('#f-ip').oninput = (e) => { c.ip_available = num(e.target.value) || 0; edChanged(); };
+    $('#f-reputation').oninput = (e) => { c.reputation = num(e.target.value) || 0; edChanged(); };
   }
   if (ed.tab === 'stats') {
     const st = c.stats;
     const spent = Object.values(st).reduce((a, b) => a + (num(b) || 0), 0);
-    const budget = state.meta.stat_points || 62;
+    const budget = state.meta.stat_points || 62, statMax=ed.id?13:8;
     box.innerHTML = `
     <div class="panel">
       <div class="row mb">
-        <span class="muted small">${T('Creation standard:','Стандарт создания:')} <b>${budget} ${T('points','очков')}</b>, ${T('each Characteristic','каждая стата')} <b>2–8</b>. ${T('Spent:','Потрачено:')} <b id="st-spent" class="${spent !== budget ? 'warn-text' : ''}">${spent}</b>${spent > budget ? T(' — over budget!',' — перебор!') : ''}</span>
+        <span class="muted small">${ed.id?T('Post-creation Trust edit: values 1–13; every change is audited.','Trust-редактирование после создания: значения 1–13; каждое изменение записывается.'):T('Creation standard: 62 points, each Characteristic 2–8.','Стандарт создания: 62 очка, каждая характеристика 2–8.')} ${T('Current total:','Текущая сумма:')} <b id="st-spent">${spent}</b></span>
         <button class="btn-sm" id="st-roll">🎲 ${T('Random (array 8,7,7,6,6,6,6,6,5,5)','Случайно (массив 8,7,7,6,6,6,6,6,5,5)')}</button>
         <button class="btn-sm" id="st-reset">${T('Reset all to 5','Сбросить все на 5')}</button>
       </div>
       <div class="statgrid mb">
         ${state.meta.stats.map(s => {
           const v = num(st[s]);
-          const bad = v != null && (v < 2 || v > 8);
-          return `<div class="stat input${bad ? ' bad' : ''}"><span class="k">${s}</span><input type="number" min="2" max="8" data-stat="${s}" value="${st[s] != null ? st[s] : ''}"></div>`;
+          const bad = v != null && (v < (ed.id?1:2) || v > statMax);
+          return `<div class="stat input${bad ? ' bad' : ''}"><span class="k">${s}</span><input type="number" min="${ed.id?1:2}" max="${statMax}" data-stat="${s}" value="${st[s] != null ? st[s] : ''}"></div>`;
         }).join('')}
       </div>
       <div class="grid cols-2">
-        <label class="f"><span>Текущее HP (пусто = максимум)</span><input id="f-hpcur" type="number" min="0" value="${c.hp_cur != null ? c.hp_cur : ''}" placeholder="авто"></label>
-        <label class="f"><span>Текущая человечность (пусто = максимум)</span><input id="f-humcur" type="number" min="0" value="${c.humanity_cur != null ? c.humanity_cur : ''}" placeholder="авто"></label>
+        <label class="f"><span>Текущее HP (пусто = максимум)</span><input id="f-hpcur" type="number" min="-1000" max="1000" value="${c.hp_cur != null ? c.hp_cur : ''}" placeholder="авто"></label>
+        <label class="f"><span>Текущая человечность (пусто = максимум)</span><input id="f-humcur" type="number" min="0" max="100" value="${c.humanity_cur != null ? c.humanity_cur : ''}" placeholder="авто"></label>
       </div>
       <p class="small muted">${T('HP = 10 + 5×⌈(BODY+WILL)/2⌉. Current Humanity decreases by HL when Cyberware is installed. Maximum Humanity separately decreases by','HP = 10 + 5×⌈(BODY+WILL)/2⌉. Текущая Humanity при установке уменьшается на HL. Максимальная Humanity отдельно уменьшается на')} <b>2</b> ${T('for ordinary Cyberware and','за обычный хром и на')} <b>4</b> ${T('for Borgware; Fashionware and the free starting CEMK Neuroport are excluded. Current EMP = Humanity ÷ 10, rounded down.','за Borgware; Fashionware и бесплатный стартовый Neuroport CEMK исключены. Текущий EMP = Humanity ÷ 10 (вниз).')}</p>
     </div>`;
     $$('[data-stat]', box).forEach(inp => inp.oninput = () => {
       c.stats[inp.dataset.stat] = num(inp.value);
       const v = num(inp.value);
-      inp.parentElement.classList.toggle('bad', v != null && (v < 2 || v > 8));
+      inp.parentElement.classList.toggle('bad', v != null && (v < (ed.id?1:2) || v > statMax));
       const sp = Object.values(c.stats).reduce((a, b) => a + (num(b) || 0), 0);
       $('#st-spent').textContent = sp;
       $('#st-spent').classList.toggle('warn-text', sp > budget);
@@ -3040,18 +3768,16 @@ function renderEditorTab() {
     box.innerHTML = `
     <div class="panel">
       <div class="row mb">
-        <button class="btn-primary" id="add-weapon">＋ ${T('Weapons','Оружие')}</button>
-        <button id="add-gear">＋ ${T('Gear','Снаряжение')}</button>
-        <span class="muted small grow">Всё купленное на рынке тоже попадает сюда.</span>
+        <button class="btn-primary" id="add-weapon">＋ ${T('Weapon from Database','Оружие из Database')}</button>
+        <button id="add-gear">＋ ${T('Item from Database','Предмет из Database')}</button>
+        <button id="add-custom-item">＋ ${T('Custom / Found Item','Custom / найденный предмет')}</button>
+        <span class="muted small grow">${T('Items added here require an acquisition source and are recorded by Trust + Audit.','Добавленные здесь предметы требуют источник получения и записываются через Trust + Audit.')}</span>
       </div>
       <div id="inv-list"></div>
     </div>`;
-    $('#add-weapon').onclick = () => pickItem(['guns', 'melee', 'grenades', 'ammo'], 'Оружие', (it) => {
-      addInvItem(it); renderEditorTab();
-    });
-    $('#add-gear').onclick = () => pickItem(null, 'Снаряжение (все категории)', (it) => {
-      addInvItem(it); renderEditorTab();
-    });
+    $('#add-weapon').onclick = () => pickItem(['guns', 'melee', 'grenades', 'ammo'], T('Weapon from Database','Оружие из Database'), it => openCatalogAcquisitionModal(it,meta=>{addInvItem(it,meta);renderEditorTab();}));
+    $('#add-gear').onclick = () => pickItem(null, T('Item from Database','Предмет из Database'), it => openCatalogAcquisitionModal(it,meta=>{addInvItem(it,meta);renderEditorTab();}),it=>it.cat!=='cyberware');
+    $('#add-custom-item').onclick=()=>openOwnedItemEditor(null,item=>{c.inventory=c.inventory||[];c.inventory.push(item);renderEditorTab();edChanged();});
     renderInventoryList();
   }
   if (ed.tab === 'chrome') {
@@ -3064,12 +3790,11 @@ function renderEditorTab() {
       <p class="small muted">${T('Guide rule: each piece of Cyberware except Fashionware also reduces','Правило гайда: каждый хром (кроме Fashionware) дополнительно режет')} <b>${T('maximum','максимум')}</b> ${T('Humanity by 2, or by 4 for Borgware.','человечности на 2, Borgware — на 4.')}</p>
       <div id="chrome-list"></div>
     </div>`;
-    $('#add-chrome').onclick = () => pickItem(['cyberware'], 'Кибернетика', (it) => {
-      const c2 = state.editor.char;
-      c2.cyberware = c2.cyberware || [];
-      c2.cyberware.push({ key: it.id, name: it.name, hl: it.hl || 0, price: it.price, type: (it.fields && it.fields.Type) || '' });
-      renderEditorTab(); edChanged();
-    });
+    $('#add-chrome').onclick = () => pickItem(['cyberware'], T('Cyberware from Database','Кибернетика из Database'), it => openCatalogAcquisitionModal(it,meta=>{
+      const c2 = state.editor.char;c2.cyberware=c2.cyberware||[];
+      c2.cyberware.push({key:it.id,catalog_item_id:it.id,cat:'cyberware',name:it.name,custom_name:meta.custom_name||'',hl:it.hl||0,price:it.price,type:(it.fields&&it.fields.Type)||'',qty:1,state:'carried',fields:{...(it.fields||{})},mechanics:{...(it.mechanics||{})},requirements:[...(it.requirements||[])],capacity:it.capacity?{...it.capacity}:null,source:it.source||'',acquisition_source:meta.acquisition_source,acquisition_note:meta.acquisition_note||''});
+      renderEditorTab();edChanged();
+    },{quantity:false}));
     renderChromeList();
   }
   if (ed.tab === 'armor') {
@@ -3087,21 +3812,40 @@ function renderEditorTab() {
       <label class="f"><span>Заметки</span><textarea id="f-notes" maxlength="4000" style="min-height:160px">${esc(c.notes || '')}</textarea></label>
       <label class="checkbox"><input type="checkbox" id="f-public" ${c.public !== false ? 'checked' : ''}> Показывать персонажа в общем ростере партии</label>
     </div>`;
-    $('#f-lang').oninput = (e) => { c.languages = e.target.value; };
-    $('#f-notes').oninput = (e) => { c.notes = e.target.value; };
+    $('#f-lang').oninput = (e) => { c.languages = e.target.value; edChanged(); };
+    $('#f-notes').oninput = (e) => { c.notes = e.target.value; edChanged(); };
     $('#f-public').onchange = (e) => { c.public = e.target.checked; edChanged(); };
   }
 }
 
-function addInvItem(it) {
-  const c = state.editor.char;
-  c.inventory = c.inventory || [];
-  const ex = c.inventory.find(x => x.key === it.id);
-  if (ex) ex.qty = (ex.qty || 1) + 1;
-  else c.inventory.push({
-    key: it.id, cat: it.cat, name: it.name, price: it.price, qty: 1,
-    damage: it.damage || null, sp: it.sp != null ? it.sp : null,
-  });
+const ACQUISITION_SOURCES=[
+  ['loot','Loot','Добыча'],['gift','Gift','Подарок'],['crafted','Crafted','Создано'],
+  ['role_access','Role Access','Доступ роли'],['gm_award','GM Award','Награда GM'],
+  ['custom','Custom','Custom'],['other','Other','Другое'],
+];
+function acquisitionSourceOptions(selected,allowEmpty=false){return `${allowEmpty?`<option value="">${T('Keep recorded source','Сохранить текущий источник')}</option>`:''}${ACQUISITION_SOURCES.map(([id,en,ru])=>`<option value="${id}" ${selected===id?'selected':''}>${T(en,ru)}</option>`).join('')}`;}
+function acquisitionSourceLabel(source){const row=ACQUISITION_SOURCES.find(([id])=>id===source);return row?T(row[1],row[2]):source||'';}
+
+function openCatalogAcquisitionModal(item,onConfirm,options={}){
+  const modal=openModal(`<h2>${T('Add found item','Добавить найденный предмет')}</h2><div class="panel accent mb"><b>${esc(item.name)}</b><div class="small muted">${esc(item.source||'Database')} · ${item.price!=null?money(item.price):'—'}</div></div><div class="grid cols-2"><label class="f"><span>${T('Acquisition source *','Источник получения *')}</span><select id="acq-source">${acquisitionSourceOptions('loot')}</select></label>${options.quantity===false?'':`<label class="f"><span>${T('Quantity','Количество')}</span><input id="acq-qty" type="number" min="1" max="99" value="1"></label>`}<label class="f"><span>${T('Personal name (optional)','Собственное имя (необязательно)')}</span><input id="acq-name" maxlength="120" placeholder="${esc(item.name)}"></label></div><label class="f"><span>${T('Where did it come from?','Откуда предмет?')}</span><textarea id="acq-note" maxlength="500" rows="3" placeholder="${T('Found during the warehouse run…','Найден во время дела на складе…')}"></textarea></label><div class="row"><button id="acq-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="acq-add">${T('Add to Inventory','Добавить в Inventory')}</button></div>`);
+  $('#acq-cancel',modal).onclick=closeModal;
+  $('#acq-add',modal).onclick=()=>{const source=$('#acq-source',modal).value;if(!source)return;const qty=options.quantity===false?1:Math.max(1,Math.min(99,Number($('#acq-qty',modal).value)||1));const result={acquisition_source:source,acquisition_note:$('#acq-note',modal).value.trim(),custom_name:$('#acq-name',modal).value.trim(),qty};closeModal();onConfirm(result);};
+}
+
+function openOwnedItemEditor(item,onSave){
+  const isNew=!item,isCustom=isNew||!!item.is_custom,draft=JSON.parse(JSON.stringify(item||{}));
+  const categories=[['custom',T('Custom / Story Item','Custom / сюжетный предмет')],...(state.meta.cats||[]).filter(cat=>cat.id!=='cyberware').map(cat=>[cat.id,`${cat.emoji} ${catalogCategoryName(cat)}`])];
+  const selectedSource=draft.acquisition_source||(isNew?'loot':'');
+  const modal=openModal(`<h2>${isNew?T('Create Custom / Found Item','Создать Custom / найденный предмет'):T('Edit Item Instance','Редактировать экземпляр')}</h2>${isCustom?'<span class="tag">CUSTOM · MANUAL</span>':'<span class="tag">DATABASE ITEM</span>'}<div class="grid cols-2 mt"><label class="f"><span>${isCustom?T('Name *','Название *'):T('Personal name (optional)','Собственное имя (необязательно)')}</span><input id="owned-name" maxlength="120" value="${esc(isCustom?(draft.custom_name||draft.name||''):(draft.custom_name||''))}" placeholder="${esc(draft.name||'')}"></label>${isCustom?`<label class="f"><span>${T('Category','Категория')}</span><select id="owned-cat">${categories.map(([id,label])=>`<option value="${id}" ${(draft.cat||'custom')===id?'selected':''}>${esc(label)}</option>`).join('')}</select></label><label class="f"><span>${T('Reference value','Оценочная стоимость')}</span><input id="owned-price" type="number" min="0" max="9999999" step="1" value="${draft.price||0}"></label><label class="checkbox"><input id="owned-stackable" type="checkbox" ${draft.stackable?'checked':''}> ${T('Stackable quantity','Складывается в stack')}</label>`:`<div class="f"><span>${T('Database item','Предмет Database')}</span><b>${esc(draft.name||'')}</b></div>`}<label class="f"><span>${T('Quantity','Количество')}</span><input id="owned-qty" type="number" min="1" max="999" value="${draft.qty||1}" ${!isCustom&&draft.cat!=='ammo'?'disabled':''}></label><label class="f"><span>${T('Acquisition source','Источник получения')}</span><select id="owned-source">${acquisitionSourceOptions(selectedSource,!isNew)}</select></label></div>${isCustom?`<label class="f"><span>${T('Public description','Описание')}</span><textarea id="owned-desc" maxlength="4000" rows="4">${esc(draft.desc||'')}</textarea></label>`:''}<label class="f"><span>${T('Acquisition details','Обстоятельства получения')}</span><textarea id="owned-acq-note" maxlength="500" rows="2">${esc(draft.acquisition_note||'')}</textarea></label><label class="f"><span>${T('Private item notes','Личные заметки предмета')}</span><textarea id="owned-notes" maxlength="2000" rows="3">${esc(draft.notes||'')}</textarea></label><p class="small muted">${isCustom?T('Custom items are narrative/manual until Structured Effects are added. They cannot inject weapon, armor, or Cyberware mechanics.','Custom items остаются narrative/manual до Structured Effects и не могут подменять механику оружия, брони или Cyberware.'):T('Database mechanics are server-controlled; only this owned instance metadata can change.','Механика Database контролируется сервером; меняются только данные этого экземпляра.')}</p><div class="row"><button id="owned-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="owned-save">${T('Save Item','Сохранить предмет')}</button></div>`,true);
+  $('#owned-cancel',modal).onclick=closeModal;
+  $('#owned-save',modal).onclick=()=>{const name=$('#owned-name',modal).value.trim();if(isCustom&&!name){toast(T('Item name is required.','Укажите название предмета.'),true);return;}const source=$('#owned-source',modal).value;if(isNew&&!source){toast(T('Choose an acquisition source.','Выберите источник получения.'),true);return;}const result={...draft,custom_name:name,qty:Math.max(1,Math.min(999,Number($('#owned-qty',modal).value)||1)),notes:$('#owned-notes',modal).value.trim(),acquisition_source:source,acquisition_note:$('#owned-acq-note',modal).value.trim()};if(isCustom)Object.assign(result,{is_custom:true,key:draft.key||'custom',name,cat:$('#owned-cat',modal).value,price:Math.max(0,Number($('#owned-price',modal).value)||0),stackable:$('#owned-stackable',modal).checked,desc:$('#owned-desc',modal).value.trim(),state:draft.state||'carried',manual_resolution_required:true});closeModal();onSave(result);};
+}
+
+function addInvItem(it,meta={}) {
+  const c = state.editor.char;c.inventory=c.inventory||[];
+  const qty=Math.max(1,Math.min(99,Number(meta.qty)||1)),stackable=it.stackable===true||it.cat==='ammo';
+  const base={key:it.id,catalog_item_id:it.id,cat:it.cat,name:it.name,custom_name:meta.custom_name||'',price:it.price,qty:stackable?qty:1,state:'carried',damage:it.damage||null,sp:it.sp!=null?it.sp:null,hl:it.hl||0,fields:{...(it.fields||{})},mechanics:{...(it.mechanics||{})},source:it.source||'',acquisition_source:meta.acquisition_source||'loot',acquisition_note:meta.acquisition_note||''};
+  if(stackable){const ex=c.inventory.find(x=>x.key===it.id&&(x.custom_name||'')===base.custom_name&&(x.state||'carried')==='carried'&&x.acquisition_source===base.acquisition_source&&String(x.acquisition_note||'')===String(base.acquisition_note||''));if(ex)ex.qty=(ex.qty||1)+qty;else c.inventory.push(base);}else for(let index=0;index<qty;index++)c.inventory.push({...base});
   edChanged();
 }
 
@@ -3111,25 +3855,26 @@ function renderInventoryList() {
   const c = state.editor.char;
   const inv = c.inventory || [];
   if (!inv.length) { box.innerHTML = '<div class="empty">Пусто. Совсем. Даже пушки нет.</div>'; return; }
-  box.innerHTML = inv.map(i => `
-    <div class="inv-row" data-key="${esc(i.key)}">
-      <span class="iname">${esc(i.name)}</span>
+  box.innerHTML = inv.map((i,index) => `
+    <div class="inv-row" data-index="${index}">
+      <span class="iname">${esc(i.custom_name||i.name)}</span>${i.is_custom?'<span class="tag">CUSTOM · MANUAL</span>':''}<span class="chip">${esc(i.state||'carried')}</span>
       ${i.damage ? `<span class="weap-dmg">${esc(i.damage)}</span>` : ''}
       ${i.sp != null ? `<span class="chip">SP ${i.sp}</span>` : ''}
-      <span class="muted small">${money(i.price || 0)}</span>
-      <button class="btn-sm" data-act="minus">−</button>
-      <b>${i.qty || 1}</b>
-      <button class="btn-sm" data-act="plus">＋</button>
-      <button class="btn-sm btn-danger" data-act="del">✕</button>
+      ${i.acquisition_source?`<span class="chip">${esc(acquisitionSourceLabel(i.acquisition_source))}</span>`:''}<span class="muted small">${money(i.price || 0)}</span>
+      ${(i.stackable||i.cat==='ammo')?`<button class="btn-sm" data-act="minus">−</button><b>${i.qty || 1}</b><button class="btn-sm" data-act="plus">＋</button>`:'<b>×1</b>'}
+      <button class="btn-sm" data-act="edit">✎</button><button class="btn-sm btn-danger" data-act="del">✕</button>
     </div>`).join('');
   $$('.inv-row', box).forEach(row => {
-    const key = row.dataset.key;
     $$('button', row).forEach(b => b.onclick = () => {
-      const item = c.inventory.find(x => x.key === key);
+      const index=Number(row.dataset.index),item=c.inventory[index];
       if (!item) return;
+      if(b.dataset.act==='edit'){openOwnedItemEditor(item,updated=>{c.inventory[index]=updated;renderInventoryList();edChanged();});return;}
       if (b.dataset.act === 'plus') item.qty = (item.qty || 1) + 1;
-      if (b.dataset.act === 'minus') { item.qty = (item.qty || 1) - 1; if (item.qty < 1) item.qty = 1; }
-      if (b.dataset.act === 'del') c.inventory = c.inventory.filter(x => x.key !== key);
+      if (b.dataset.act === 'minus') item.qty = Math.max(1,(item.qty || 1) - 1);
+      if (b.dataset.act === 'del') {
+        c.inventory.splice(index,1);
+        for(const location of ['head','body','shield'])if(c.armor?.[location]?.instance_id&&c.armor[location].instance_id===item.instance_id)delete c.armor[location];
+      }
       renderInventoryList(); edChanged();
     });
   });
@@ -3143,15 +3888,11 @@ function renderChromeList() {
   if (!cw.length) { box.innerHTML = '<div class="empty">Ты ещё чист от хрома. Пока что.</div>'; return; }
   box.innerHTML = cw.map((i, idx) => `
     <div class="inv-row">
-      <span class="iname">${esc(i.name)}</span>
-      <span class="hl-badge">HL ${i.hl || 0}</span>
-      <span class="chip">${esc(i.type || 'хром')}</span>
-      <button class="btn-sm btn-danger" data-idx="${idx}">✕ вырезать</button>
+      <span class="iname">${esc(i.custom_name||i.name)}</span><span class="hl-badge">HL ${i.hl || 0}</span><span class="chip">${esc(i.type || 'Cyberware')}</span><span class="tag">${i.state==='installed'?T('INSTALLED','УСТАНОВЛЕНО'):T('STAGED','ПОДГОТОВЛЕНО')}</span>${i.acquisition_source?`<span class="chip">${esc(acquisitionSourceLabel(i.acquisition_source))}</span>`:''}
+      <button class="btn-sm" data-chrome-edit="${idx}">✎</button>${i.state==='installed'?`<span class="small muted">${T('Use audited Uninstall on the Dossier','Используйте audited Uninstall в Dossier')}</span>`:`<button class="btn-sm btn-danger" data-chrome-del="${idx}">✕ ${T('remove','удалить')}</button>`}
     </div>`).join('');
-  $$('[data-idx]', box).forEach(b => b.onclick = () => {
-    c.cyberware.splice(Number(b.dataset.idx), 1);
-    renderChromeList(); edChanged();
-  });
+  $$('[data-chrome-edit]',box).forEach(button=>button.onclick=()=>{const index=Number(button.dataset.chromeEdit);openOwnedItemEditor(c.cyberware[index],updated=>{c.cyberware[index]=updated;renderChromeList();edChanged();});});
+  $$('[data-chrome-del]', box).forEach(b => b.onclick = () => {c.cyberware.splice(Number(b.dataset.chromeDel), 1);renderChromeList();edChanged();});
 }
 
 function renderArmorSlots() {
@@ -3178,17 +3919,17 @@ function renderArmorSlots() {
   }).join('');
   $$('[data-pick]', box).forEach(b => {
     const slot = b.dataset.pick;
-    b.onclick = () => pickItem(['armor'], `Броня: ${slot === 'body' ? 'тело' : 'голова'}`, (it) => {
-      const piece = { key: it.id + (it.armor_bundled ? '@set' : '@' + slot), source_key: it.id,
-        name: it.name, sp: it.sp || 0, penalties: { ...(it.penalties || {}) }, bundled: !!it.armor_bundled };
-      if (it.armor_bundled) { c.armor.body = { ...piece }; c.armor.head = { ...piece }; }
-      else c.armor[slot] = piece;
-      renderArmorSlots(); edChanged();
+    b.onclick = () => pickItem(['armor'], `Броня: ${slot === 'body' ? 'тело' : 'голова'}`, it => {
+      c.inventory=c.inventory||[];
+      let owned=c.inventory.find(entry=>entry.cat==='armor'&&(entry.catalog_item_id||String(entry.key||'').split('@')[0])===it.id&&!['equipped','installed'].includes(entry.state));
+      const equip=meta=>{if(!owned){addInvItem(it,meta);owned=c.inventory[c.inventory.length-1];}owned.state='equipped';const piece={key:it.id+(it.armor_bundled?'@set':'@'+slot),source_key:it.id,catalog_item_id:it.id,instance_id:owned.instance_id,name:it.name,sp:it.sp||0,penalties:{...(it.penalties||{})},bundled:!!it.armor_bundled};if(it.armor_bundled){c.armor.body={...piece};c.armor.head={...piece};}else c.armor[slot]=piece;renderArmorSlots();edChanged();};
+      if(owned)equip({});else openCatalogAcquisitionModal(it,equip,{quantity:false});
     }, it => !(it.armor_locations || []).includes('shield') && (it.armor_locations || ['body','head']).includes(slot));
   });
   $$('[data-clear]', box).forEach(b => b.onclick = () => {
     const removed = c.armor[b.dataset.clear];
     delete c.armor[b.dataset.clear];
+    if(removed?.instance_id){const owned=(c.inventory||[]).find(item=>item.instance_id===removed.instance_id);if(owned)owned.state='carried';}
     if (removed && removed.bundled) {
       for (const slot of ['body','head']) if (c.armor[slot] && c.armor[slot].key === removed.key) delete c.armor[slot];
     }
@@ -3219,7 +3960,7 @@ async function pickItem(cats, title, onPick, predicate) {
       </div>`).join('') : '<div class="empty">Ничего не нашлось.</div>';
     $$('.inv-row', m).forEach(row => row.onclick = () => {
       const it = items.find(x => x.id === row.dataset.id);
-      if (it) { onPick(it); closeModal(); }
+      if (it) { closeModal(); onPick(it); }
     });
   };
   $('#pk-go', m).onclick = load;
@@ -3241,11 +3982,15 @@ async function viewRoster(view) {
     const chars = data.characters;
     if (!chars.length) { $('#ro-list').innerHTML = '<div class="empty">Никого. Пока что.</div>'; return; }
     const byOwner = {};
-    chars.forEach(c => { (byOwner[c.owner_name] = byOwner[c.owner_name] || []).push(c); });
+    chars.forEach(c => { const owner=c.owner_name||T('Private operator','Приватный оператор');(byOwner[owner] = byOwner[owner] || []).push(c); });
     $('#ro-list').innerHTML = Object.entries(byOwner).map(([owner, list]) => `
       <h2 class="mt" style="color:var(--yellow)">👤 ${esc(owner)} <span class="muted small">(${list.length})</span></h2>
       <div class="grid cols-3">${list.map(c => rosterCard(c)).join('')}</div>`).join('');
     $$('.ro-open', $('#ro-list')).forEach(el => el.onclick = () => showRosterModal(Number(el.dataset.id)));
+    $$('[data-memorialize]', $('#ro-list')).forEach(el => el.onclick = () => {
+      const c = chars.find(x => x.id === Number(el.dataset.memorialize));
+      if (c) openMemorializeModal(c);
+    });
   };
   $('#ro-go').onclick = async () => { q = $('#ro-q').value.trim(); load(); };
   $('#ro-q').onkeydown = (e) => { if (e.key === 'Enter') { q = $('#ro-q').value.trim(); load(); } };
@@ -3256,7 +4001,8 @@ function rosterCard(c) {
   const d = c.derived, ch = c.data;
   const st = ch.stats || {};
   return `
-  <div class="card">
+  <div class="card roster-card">
+    <img class="roster-portrait" src="${ch.portrait_media_id?`/api/media/${esc(ch.portrait_media_id)}`:`/role-art/${esc(String(ch.role||'solo').toLowerCase())}.webp`}" alt="${esc(ch.handle||T('Character portrait','Портрет персонажа'))}" loading="lazy">
     <div class="row" style="justify-content:space-between;align-items:baseline">
       <h3 class="ro-open user-content" style="cursor:pointer">${esc(ch.handle || T('Unnamed','Безымянный'))}</h3>
       ${ch.seed ? '<span class="tag seed">Data Pool</span>' : ''}
@@ -3271,6 +4017,7 @@ function rosterCard(c) {
     ${Object.keys(st).length ? `<div class="char-summary">${state.meta.stats.map(s => `<span class="chip"><b>${s}</b> ${st[s] != null ? st[s] : '—'}</span>`).join('')}</div>` : ''}
     ${ch.player ? `<div class="muted small">${T('player:','игрок:')} <span class="user-content">${esc(ch.player)}</span></div>` : ''}
     <button class="btn-sm ro-open mt" data-id="${c.id}">${T('Character Sheet','Лист персонажа')}</button>
+    ${state.me?.is_gm && !ch.archived ? `<button class="btn-sm" data-memorialize="${c.id}">🥃 ${T('Memorial','Мемориал')}</button>` : ''}
   </div>`;
 }
 
@@ -3282,12 +4029,12 @@ async function showRosterModal(id) {
   const cw = ch.cyberware || [];
   const extra = Object.entries(ch.extra || {});
   openModal(`
-    <h2 class="user-content">${esc(ch.handle)}</h2>
+    <div class="roster-modal-head"><img class="roster-modal-portrait" src="${ch.portrait_media_id?`/api/media/${esc(ch.portrait_media_id)}`:`/role-art/${esc(String(ch.role||'solo').toLowerCase())}.webp`}" alt=""><h2 class="user-content">${esc(ch.handle)}</h2></div>
     <div class="chips mb">
       <span class="tag role">${esc(ch.role || '—')}${ch.role_rank ? ' ' + ch.role_rank : ''}</span>
-      <span class="chip">${T('owner:','владелец:')} <span class="user-content">${esc(c.owner_name)}</span></span>
+      ${c.owner_name?`<span class="chip">${T('owner:','владелец:')} <span class="user-content">${esc(c.owner_name)}</span></span>`:''}
       ${ch.player ? `<span class="chip">${T('player:','игрок:')} <span class="user-content">${esc(ch.player)}</span></span>` : ''}
-      <span class="tag price">${money(ch.cash || 0)}</span>
+      ${ch.cash!=null?`<span class="tag price">${money(ch.cash)}</span>`:''}
       ${d.death_save ? `<span class="chip">Death Save ${d.death_save}</span>` : ''}
     </div>
     ${Object.keys(ch.stats || {}).length ? `
@@ -3478,6 +4225,7 @@ async function showJobModal(id) {
 /* ============================== вход / профиль ============================== */
 
 function viewLogin(view) {
+  const registrationMode=state.meta?.registration_mode||'invite';
   view.innerHTML = `
   <div class="grid cols-2" style="max-width:900px;margin:0 auto">
     <div class="panel">
@@ -3487,12 +4235,13 @@ function viewLogin(view) {
       <button class="btn-primary" id="lg-go">${T('Sign in','Войти')}</button>
     </div>
     <div class="panel accent">
-      <h2>${T('Register','Регистрация')}</h2>
+      ${registrationMode==='closed'?`<h2>${T('Registration closed','Регистрация закрыта')}</h2><p class="muted">${T('An NC//NET Admin creates new accounts.','Новые аккаунты создаёт Admin NC//NET.')}</p>`:`<h2>${T('Register','Регистрация')}</h2>
+      ${registrationMode==='invite'?`<label class="f"><span>${T('Invite code','Код приглашения')}</span><input id="rg-invite" autocomplete="one-time-code" placeholder="NCNET-XXXX-XXXX-XXXX-XXXX"></label>`:''}
       <label class="f"><span>${T('Username (Latin letters)','Логин (латиница)')}</span><input id="rg-u" autocomplete="username"></label>
       <label class="f"><span>${T('Display name','Отображаемое имя')}</span><input id="rg-d" placeholder="${T('How Night City knows you','Как тебя знают в городе')}"></label>
-      <label class="f"><span>${T('Password','Пароль')}</span><input id="rg-p" type="password" autocomplete="new-password"></label>
+      <label class="f"><span>${T('Password (8+ characters)','Пароль (от 8 символов)')}</span><input id="rg-p" type="password" minlength="8" autocomplete="new-password"></label>
       <p class="small muted">${T('New accounts receive Player access. NC//NET Admins assign GM permissions.','Новые аккаунты получают доступ Player. Права GM назначают администраторы NC//NET.')}</p>
-      <button class="btn-primary" id="rg-go">${T('Create account','Создать аккаунт')}</button>
+      <button class="btn-primary" id="rg-go">${T('Create account','Создать аккаунт')}</button>`}
     </div>
   </div>`;
   const doLogin = async () => {
@@ -3507,11 +4256,11 @@ function viewLogin(view) {
   };
   $('#lg-go').onclick = doLogin;
   $('#lg-p').onkeydown = (e) => { if (e.key === 'Enter') doLogin(); };
-  $('#rg-go').onclick = async () => {
+  if ($('#rg-go')) $('#rg-go').onclick = async () => {
     try {
       state.me = await api('/api/register', { method: 'POST', body: {
         username: $('#rg-u').value, display_name: $('#rg-d').value,
-        password: $('#rg-p').value } });
+        password: $('#rg-p').value,invite_code:$('#rg-invite')?.value||'' } });
       if(state.me.theme)APP_THEME.setFromProfile(state.me.theme);
       renderUserbox();
       refreshShellDossiers();
@@ -3527,6 +4276,7 @@ async function viewProfile(view) {
   if (!state.me) { view.innerHTML = `<div class="empty">${T('Sign in required.','Нужен вход.')} <a href="#/login">${T('Sign in','Войти')}</a></div>`; return; }
   const role = String(state.me.account_role || (state.me.is_gm ? 'gm' : 'player')).toUpperCase();
   let avatarMediaId = state.me.avatar_media_id || null;
+  let accountSessions=[];try{accountSessions=(await api('/api/account/sessions')).sessions;}catch(e){}
   view.innerHTML = `
   <div class="panel" style="max-width:620px;margin:0 auto">
     <div class="row" style="justify-content:space-between"><h2>${T('NC//NET Profile','Профиль NC//NET')}</h2><span class="tag role">${esc(role)}</span></div>
@@ -3536,6 +4286,8 @@ async function viewProfile(view) {
     <label class="checkbox mb"><input type="checkbox" id="pf-show-name" ${state.me.show_display_name ? 'checked' : ''}> ${T('Show my account display name to other members of my Contracts','Показывать display name аккаунта другим участникам моих контрактов')}</label>
     <div class="panel mb"><label class="f"><span>${T('NC//NET Audio Volume','Громкость NC//NET')}</span><input id="pf-audio-volume" type="range" min="0" max="1" step=".05" value="${typeof NC_AUDIO!=='undefined'?NC_AUDIO.getVolume():.55}"></label></div>
     <div class="panel mb"><div class="row" style="justify-content:space-between"><div><b>VK</b><div class="small muted">${state.me.vk_linked ? T('Connected for NC//NET mentions','Подключён для упоминаний NC//NET') : T('Connect VK to allow mentions in the campaign conversation.','Подключите VK для упоминаний в беседе кампании.')}</div></div>${state.me.vk_linked?'✓':`<button class="btn-sm" id="pf-vk-connect">${T('Connect VK','Подключить VK')}</button>`}</div></div>
+    <details class="panel mb"><summary><b>${T('Change Password','Сменить пароль')}</b></summary><div class="mt"><label class="f"><span>${T('Current Password','Текущий пароль')}</span><input id="pf-current-password" type="password" autocomplete="current-password"></label><label class="f"><span>${T('New Password (8+ characters)','Новый пароль (от 8 символов)')}</span><input id="pf-new-password" type="password" minlength="8" autocomplete="new-password"></label><label class="f"><span>${T('Repeat New Password','Повторите новый пароль')}</span><input id="pf-repeat-password" type="password" minlength="8" autocomplete="new-password"></label><button id="pf-change-password">${T('Change Password','Сменить пароль')}</button></div></details>
+    <details class="panel mb"><summary><b>${T('Active Login Sessions','Активные сеансы входа')} · ${accountSessions.length}</b></summary><div class="mt">${accountSessions.map(session=>`<div class="inv-row"><div class="iname"><b>${session.current?T('This device','Это устройство'):T('Other device','Другое устройство')}</b><div class="small muted">${esc(session.ip_address||T('unknown IP','неизвестный IP'))} · ${new Date(session.last_seen*1000).toLocaleString()}</div><div class="small muted session-agent">${esc(session.user_agent||T('Unknown browser','Неизвестный браузер'))}</div></div>${session.current?'<span class="tag">CURRENT</span>':`<button class="btn-danger" data-session-revoke="${session.id}">${T('Revoke','Завершить')}</button>`}</div>`).join('')||`<div class="empty">${T('No active sessions.','Нет активных сеансов.')}</div>`}<button class="btn-danger mt" id="pf-logout-all">${T('Sign Out Everywhere','Выйти на всех устройствах')}</button></div></details>
     <div class="row"><button class="btn-primary" id="pf-save">${T('Save','Сохранить')}</button>${state.me.is_admin ? `<a class="btn-sm" href="#/admin">${T('Admin Console','Панель Admin')}</a>` : ''}</div>
   </div>`;
   $('#pf-avatar-file').onchange=()=>openImageCrop($('#pf-avatar-file').files[0],'account_avatar',media=>{avatarMediaId=media.id;$('#pf-avatar-preview').innerHTML=`<img src="${esc(media.url)}" alt="">`;toast(T('Account avatar ready. Save the profile to apply it.','Аватар аккаунта готов. Сохраните профиль, чтобы применить его.'));});
@@ -3545,6 +4297,9 @@ async function viewProfile(view) {
     try { const result = await api('/api/vk/oauth/start', { method: 'POST' }); location.href = result.url; }
     catch (e) { toast(e.message, true); }
   };
+  $('#pf-change-password').onclick=async()=>{const current=$('#pf-current-password').value,next=$('#pf-new-password').value,repeat=$('#pf-repeat-password').value;if(next!==repeat){toast(T('New passwords do not match.','Новые пароли не совпадают.'),true);return;}try{await api('/api/account/password',{method:'POST',body:{current_password:current,new_password:next}});$('#pf-current-password').value='';$('#pf-new-password').value='';$('#pf-repeat-password').value='';toast(T('Password changed. Other sessions were revoked.','Пароль изменён. Остальные сеансы завершены.'));await viewProfile(view);}catch(e){toast(e.message,true);}};
+  $$('[data-session-revoke]',view).forEach(button=>button.onclick=async()=>{try{await api(`/api/account/sessions/${button.dataset.sessionRevoke}`,{method:'DELETE'});toast(T('Session revoked.','Сеанс завершён.'));await viewProfile(view);}catch(e){toast(e.message,true);}});
+  $('#pf-logout-all').onclick=async()=>{if(!confirm(T('Sign out on every device, including this one?','Выйти на всех устройствах, включая это?')))return;try{await api('/api/account/logout-all',{method:'POST'});}catch(e){}state.me=null;renderUserbox();go('/login');toast(T('All sessions were revoked.','Все сеансы завершены.'));};
   $('#pf-save').onclick = async () => {
     try {
       state.me = await api('/api/profile', { method: 'POST', body: {
@@ -3564,13 +4319,19 @@ async function viewAdmin(view) {
     return;
   }
   view.innerHTML = spinner();
-  const data = await api('/api/admin/users');
+  const [data,inviteData,backupData] = await Promise.all([api('/api/admin/users'),api('/api/admin/invites'),api('/api/admin/backups')]);
   const counts = Object.fromEntries(['player','gm','admin'].map(role=>[role,data.users.filter(user=>user.account_role===role).length]));
-  view.innerHTML = `<div class="page-head"><div><h1>⚙️ ${T('NC//NET Administration','Администрирование NC//NET')}</h1><div class="sub">${T('Role changes require an explicit reason and are written to the immutable access audit.','Для изменения роли нужна явная причина; действие записывается в неизменяемый журнал доступа.')}</div></div><a class="btn-sm" href="#/gm">GM OPS →</a></div><div class="admin-summary-grid"><div class="panel"><b>${data.users.length}</b><span>${T('Accounts','Аккаунты')}</span></div><div class="panel"><b>${counts.player}</b><span>PLAYER</span></div><div class="panel"><b>${counts.gm}</b><span>GM</span></div><div class="panel"><b>${counts.admin}</b><span>ADMIN</span></div></div><div class="panel mt"><div class="admin-toolbar"><input id="admin-user-search" type="search" placeholder="${T('Search account…','Поиск аккаунта…')}" aria-label="${T('Search accounts','Поиск аккаунтов')}"><select id="admin-role-filter" aria-label="${T('Filter by role','Фильтр по роли')}"><option value="">${T('All roles','Все роли')}</option><option value="player">PLAYER</option><option value="gm">GM</option><option value="admin">ADMIN</option></select><span id="admin-visible-count" class="small muted"></span></div><div class="table-scroll"><table class="rtable admin-users"><thead><tr><th>${T('Account','Аккаунт')}</th><th>${T('Characters','Персонажи')}</th><th>${T('Privacy','Приватность')}</th><th>${T('Network access','Доступ к сети')}</th><th>${T('Required reason','Обязательная причина')}</th><th></th></tr></thead><tbody>${data.users.map(user=>`<tr data-admin-user="${user.id}" data-admin-original-role="${user.account_role}" data-admin-filter-role="${user.account_role}" data-admin-search="${esc(`${user.display_name} ${user.username} ${user.id}`.toLowerCase())}"><td><b class="user-content">${esc(user.display_name)}</b>${user.id===state.me.id?` <span class="tag">${T('YOU','ВЫ')}</span>`:''}<div class="small muted">@${esc(user.username)} · #${user.id} · ${new Date(user.created*1000).toLocaleDateString()}</div></td><td>${user.character_count}</td><td>${user.show_display_name?T('Name visible','Имя видно'):T('Hidden','Скрыто')}${user.vk_linked?' · VK ✓':''}</td><td><select data-admin-role aria-label="${T('Role for ','Роль для ')+esc(user.username)}">${['player','gm','admin'].map(role=>`<option value="${role}" ${user.account_role===role?'selected':''}>${role.toUpperCase()}</option>`).join('')}</select><div class="small warn-text" data-admin-self-warning hidden>${T('Changing your own access may close this console.','Изменение собственной роли может закрыть эту панель.')}</div></td><td><input data-admin-reason maxlength="500" placeholder="${T('Why is access changing?','Почему меняется доступ?')}"></td><td><button class="btn-sm" data-admin-apply disabled>${T('Apply','Применить')}</button></td></tr>`).join('')}</tbody></table></div><div id="admin-no-results" class="empty" hidden>${T('No matching accounts.','Подходящих аккаунтов нет.')}</div></div>${(data.role_audit||[]).length?`<details class="panel mt" open><summary>${T('Access Audit','Журнал доступа')} · ${data.role_audit.length}</summary><div class="admin-toolbar mt"><input id="admin-audit-search" type="search" placeholder="${T('Search audit…','Поиск по журналу…')}" aria-label="${T('Search access audit','Поиск по журналу доступа')}"></div><div id="admin-audit-list">${data.role_audit.map(entry=>`<div class="admin-audit-row" data-audit-search="${esc(`${entry.target_username} ${entry.actor_username} ${entry.role_before} ${entry.role_after} ${entry.reason}`.toLowerCase())}"><div><b class="user-content">@${esc(entry.target_username)}</b><div class="small muted">${timeAgo(entry.created)}</div></div><span class="tag">${esc(entry.role_before.toUpperCase())} → ${esc(entry.role_after.toUpperCase())}</span><span class="user-content">${esc(entry.reason)}</span><span class="small user-content">${T('by','от')} @${esc(entry.actor_username)}</span></div>`).join('')}</div></details>`:''}`;
+  const invitePanel=`<section class="panel mt"><div class="row" style="justify-content:space-between"><div><h2>${T('Registration Invites','Приглашения')}</h2><div class="small muted">${T('Mode','Режим')}: ${esc(inviteData.registration_mode)}</div></div><button id="admin-invite-new">＋ ${T('Create Invite','Создать приглашение')}</button></div>${inviteData.invites.length?inviteData.invites.map(invite=>`<div class="inv-row"><div class="iname"><b class="user-content">${esc(invite.label||T('Campaign invite','Приглашение в кампанию'))}</b><div class="small muted">${invite.uses}/${invite.max_uses} · ${invite.expires_at?new Date(invite.expires_at*1000).toLocaleString():T('no expiry','без срока')} · ${invite.active?T('active','активно'):T('inactive','неактивно')}</div></div>${invite.active?`<button class="btn-danger" data-invite-revoke="${invite.id}">${T('Revoke','Отозвать')}</button>`:''}</div>`).join(''):`<div class="empty">${T('No invites yet.','Приглашений пока нет.')}</div>`}</section>`;
+  const backupPanel=`<section class="panel mt"><div class="row" style="justify-content:space-between"><div><h2>${T('Campaign Backups','Резервные копии кампании')}</h2><div class="small muted">${T('Online SQLite snapshot + uploads · retained','Online snapshot SQLite + uploads · хранится')}: ${backupData.retention}</div></div><button id="admin-backup-create">＋ ${T('Create Backup','Создать копию')}</button></div><p class="small warn-text">${T('Backup bundles contain private campaign data and password hashes. Store downloads securely.','Backup содержит приватные данные кампании и хеши паролей. Храните скачанные файлы безопасно.')}</p>${backupData.backups.length?backupData.backups.map(backup=>`<div class="inv-row"><div class="iname"><b>${esc(backup.name)}</b><div class="small muted">${new Date(backup.created_at*1000).toLocaleString()} · ${(Number(backup.size||0)/1_000_000).toFixed(1)} MB · ${backup.uploads??0} uploads · ${backup.readable?T('readable','читается'):T('damaged','повреждено')}</div></div><a class="btn-sm" href="/api/admin/backups/${encodeURIComponent(backup.name)}/download">${T('Download','Скачать')}</a><button data-backup-verify="${esc(backup.name)}">${T('Verify','Проверить')}</button></div>`).join(''):`<div class="empty">${T('No campaign backups yet.','Резервных копий пока нет.')}</div>`}</section>`;
+  view.innerHTML = `<div class="page-head"><div><h1>⚙️ ${T('NC//NET Administration','Администрирование NC//NET')}</h1><div class="sub">${T('Role changes require an explicit reason and are written to the immutable access audit.','Для изменения роли нужна явная причина; действие записывается в неизменяемый журнал доступа.')}</div></div><a class="btn-sm" href="#/gm">GM OPS →</a></div><div class="admin-summary-grid"><div class="panel"><b>${data.users.length}</b><span>${T('Accounts','Аккаунты')}</span></div><div class="panel"><b>${counts.player}</b><span>PLAYER</span></div><div class="panel"><b>${counts.gm}</b><span>GM</span></div><div class="panel"><b>${counts.admin}</b><span>ADMIN</span></div></div><div class="panel mt"><div class="admin-toolbar"><input id="admin-user-search" type="search" placeholder="${T('Search account…','Поиск аккаунта…')}" aria-label="${T('Search accounts','Поиск аккаунтов')}"><select id="admin-role-filter" aria-label="${T('Filter by role','Фильтр по роли')}"><option value="">${T('All roles','Все роли')}</option><option value="player">PLAYER</option><option value="gm">GM</option><option value="admin">ADMIN</option></select><span id="admin-visible-count" class="small muted"></span></div><div class="table-scroll"><table class="rtable admin-users"><thead><tr><th>${T('Account','Аккаунт')}</th><th>${T('Characters','Персонажи')}</th><th>${T('Privacy','Приватность')}</th><th>${T('Network access','Доступ к сети')}</th><th>${T('Required reason','Обязательная причина')}</th><th></th></tr></thead><tbody>${data.users.map(user=>`<tr data-admin-user="${user.id}" data-admin-original-role="${user.account_role}" data-admin-disabled="${user.disabled?'1':'0'}" class="${user.disabled?'disabled-account':''}" data-admin-filter-role="${user.account_role}" data-admin-search="${esc(`${user.display_name} ${user.username} ${user.id}`.toLowerCase())}"><td><b class="user-content">${esc(user.display_name)}</b>${user.disabled?` <span class="tag">${T('DISABLED','ОТКЛЮЧЁН')}</span>`:''}${user.id===state.me.id?` <span class="tag">${T('YOU','ВЫ')}</span>`:''}<div class="small muted">@${esc(user.username)} · #${user.id} · ${new Date(user.created*1000).toLocaleDateString()}</div></td><td>${user.character_count}</td><td>${user.show_display_name?T('Name visible','Имя видно'):T('Hidden','Скрыто')}${user.vk_linked?' · VK ✓':''}</td><td><select data-admin-role aria-label="${T('Role for ','Роль для ')+esc(user.username)}">${['player','gm','admin'].map(role=>`<option value="${role}" ${user.account_role===role?'selected':''}>${role.toUpperCase()}</option>`).join('')}</select><div class="small warn-text" data-admin-self-warning hidden>${T('Changing your own access may close this console.','Изменение собственной роли может закрыть эту панель.')}</div></td><td><input data-admin-reason maxlength="500" placeholder="${T('Why is access changing?','Почему меняется доступ?')}"></td><td><div class="row"><button class="btn-sm" data-admin-apply disabled>${T('Apply Role','Применить роль')}</button><button class="${user.disabled?'btn-sm':'btn-danger'}" data-admin-status>${user.disabled?T('Enable','Включить'):T('Disable','Отключить')}</button></div></td></tr>`).join('')}</tbody></table></div><div id="admin-no-results" class="empty" hidden>${T('No matching accounts.','Подходящих аккаунтов нет.')}</div></div>${invitePanel}${backupPanel}${(data.role_audit||[]).length?`<details class="panel mt" open><summary>${T('Access Audit','Журнал доступа')} · ${data.role_audit.length}</summary><div class="admin-toolbar mt"><input id="admin-audit-search" type="search" placeholder="${T('Search audit…','Поиск по журналу…')}" aria-label="${T('Search access audit','Поиск по журналу доступа')}"></div><div id="admin-audit-list">${data.role_audit.map(entry=>`<div class="admin-audit-row" data-audit-search="${esc(`${entry.target_username} ${entry.actor_username} ${entry.role_before} ${entry.role_after} ${entry.reason}`.toLowerCase())}"><div><b class="user-content">@${esc(entry.target_username)}</b><div class="small muted">${timeAgo(entry.created)}</div></div><span class="tag">${esc(entry.role_before.toUpperCase())} → ${esc(entry.role_after.toUpperCase())}</span><span class="user-content">${esc(entry.reason)}</span><span class="small user-content">${T('by','от')} @${esc(entry.actor_username)}</span></div>`).join('')}</div></details>`:''}${(data.security_audit||[]).length?`<details class="panel mt"><summary>${T('Security Audit','Журнал безопасности')} · ${data.security_audit.length}</summary><div class="mt">${data.security_audit.map(entry=>`<div class="admin-audit-row"><div><b class="user-content">@${esc(entry.target_username)}</b><div class="small muted">${timeAgo(entry.created)}</div></div><span class="tag">${esc(entry.event_type.replaceAll('_',' ').toUpperCase())}</span><span class="user-content">${esc(entry.detail||'—')}</span><span class="small user-content">${T('by','от')} @${esc(entry.actor_username)}</span></div>`).join('')}</div></details>`:''}`;
+  $('#admin-invite-new',view).onclick=()=>{const modal=openModal(`<h2>${T('Create Registration Invite','Создать приглашение')}</h2><label class="f"><span>${T('Label','Название')}</span><input id="invite-label" maxlength="120" placeholder="${T('Player name or purpose','Имя игрока или назначение')}"></label><div class="grid cols-2"><label class="f"><span>${T('Maximum uses','Количество использований')}</span><input id="invite-uses" type="number" min="1" max="100" value="1"></label><label class="f"><span>${T('Expires in days','Срок в днях')}</span><input id="invite-days" type="number" min="1" max="365" value="7"></label></div><button class="btn-primary" id="invite-create">${T('Create Invite','Создать приглашение')}</button>`);$('#invite-create',modal).onclick=async()=>{try{const created=await api('/api/admin/invites',{method:'POST',body:{label:$('#invite-label',modal).value,max_uses:Number($('#invite-uses',modal).value)||1,expires_days:Number($('#invite-days',modal).value)||7}});closeModal();prompt(T('Copy this code now. It is shown only once.','Скопируйте код сейчас. Он показывается только один раз.'),created.code);await viewAdmin(view);}catch(e){toast(e.message,true);}};};
+  $$('[data-invite-revoke]',view).forEach(button=>button.onclick=async()=>{if(!confirm(T('Revoke this invite?','Отозвать это приглашение?')))return;try{await api(`/api/admin/invites/${button.dataset.inviteRevoke}`,{method:'DELETE'});await viewAdmin(view);}catch(e){toast(e.message,true);}});
+  $('#admin-backup-create',view).onclick=async()=>{const reason=prompt(T('Backup label/reason','Название/причина backup'),'manual')||'manual';const button=$('#admin-backup-create',view);button.disabled=true;try{const created=await api('/api/admin/backups',{method:'POST',body:{reason}});toast(T('Campaign backup created: ','Резервная копия создана: ')+created.name);await viewAdmin(view);}catch(e){button.disabled=false;toast(e.message,true);}};
+  $$('[data-backup-verify]',view).forEach(button=>button.onclick=async()=>{button.disabled=true;try{const result=await api(`/api/admin/backups/${encodeURIComponent(button.dataset.backupVerify)}/verify`,{method:'POST'});const counts=result.manifest.counts||{};openModal(`<h2>✓ ${T('Backup Verified','Backup проверен')}</h2><p><b>${esc(result.name)}</b></p><div class="kv">${Object.entries(counts).map(([key,value])=>`<b>${esc(key)}</b><span>${value}</span>`).join('')}<b>SHA-256</b><span class="small">${esc(result.sha256)}</span></div><p class="small muted">${T('SQLite integrity and every bundled checksum are valid.','SQLite integrity и все checksum в bundle корректны.')}</p>`,true);}catch(e){toast(e.message,true);}finally{button.disabled=false;}});
   const filterUsers=()=>{const query=$('#admin-user-search',view).value.trim().toLowerCase(),role=$('#admin-role-filter',view).value;let visible=0;$$('[data-admin-user]',view).forEach(row=>{const show=(!query||row.dataset.adminSearch.includes(query))&&(!role||row.dataset.adminFilterRole===role);row.hidden=!show;if(show)visible++;});$('#admin-visible-count',view).textContent=`${visible}/${data.users.length}`;$('#admin-no-results',view).hidden=visible!==0;};
   $('#admin-user-search',view).oninput=filterUsers;$('#admin-role-filter',view).onchange=filterUsers;filterUsers();
   if($('#admin-audit-search',view))$('#admin-audit-search',view).oninput=event=>{const query=event.target.value.trim().toLowerCase();$$('[data-audit-search]',view).forEach(row=>row.hidden=Boolean(query&&!row.dataset.auditSearch.includes(query)));};
-  $$('[data-admin-user]',view).forEach(row=>{const role=$('[data-admin-role]',row),reason=$('[data-admin-reason]',row),apply=$('[data-admin-apply]',row),selfWarning=$('[data-admin-self-warning]',row);const validate=()=>{const changed=role.value!==row.dataset.adminOriginalRole,hasReason=reason.value.trim().length>0;apply.disabled=!(changed&&hasReason);if(selfWarning)selfWarning.hidden=!(Number(row.dataset.adminUser)===state.me.id&&changed);};role.onchange=validate;reason.oninput=validate;apply.onclick=async()=>{apply.disabled=true;try{const updated=await api(`/api/admin/users/${row.dataset.adminUser}/role`,{method:'POST',body:{account_role:role.value,reason:reason.value.trim()}});if(state.me.id===Number(row.dataset.adminUser)){state.me=updated;renderUserbox();}toast(T('Network access updated.','Доступ к сети обновлён.'));await viewAdmin(view);}catch(error){validate();toast(error.message,true);}};});
+  $$('[data-admin-user]',view).forEach(row=>{const role=$('[data-admin-role]',row),reason=$('[data-admin-reason]',row),apply=$('[data-admin-apply]',row),status=$('[data-admin-status]',row),selfWarning=$('[data-admin-self-warning]',row);const validate=()=>{const changed=role.value!==row.dataset.adminOriginalRole,hasReason=reason.value.trim().length>0;apply.disabled=!(changed&&hasReason);status.disabled=!hasReason;if(selfWarning)selfWarning.hidden=!(Number(row.dataset.adminUser)===state.me.id&&changed);};role.onchange=validate;reason.oninput=validate;apply.onclick=async()=>{apply.disabled=true;try{const updated=await api(`/api/admin/users/${row.dataset.adminUser}/role`,{method:'POST',body:{account_role:role.value,reason:reason.value.trim()}});if(state.me.id===Number(row.dataset.adminUser)){state.me=updated;renderUserbox();}toast(T('Network access updated.','Доступ к сети обновлён.'));await viewAdmin(view);}catch(error){validate();toast(error.message,true);}};status.onclick=async()=>{const disabled=row.dataset.adminDisabled!=='1';if(!confirm(disabled?T('Disable this account and revoke all sessions?','Отключить аккаунт и завершить все сеансы?'):T('Enable this account?','Включить аккаунт?')))return;status.disabled=true;try{await api(`/api/admin/users/${row.dataset.adminUser}/status`,{method:'POST',body:{disabled,reason:reason.value.trim()}});toast(disabled?T('Account disabled.','Аккаунт отключён.'):T('Account enabled.','Аккаунт включён.'));await viewAdmin(view);}catch(error){validate();toast(error.message,true);}};validate();});
 }
 
 /* ============================== запуск ============================== */
@@ -3612,3 +4373,17 @@ async function viewAdmin(view) {
   refreshShellDossiers();
   route();
 })();
+
+async function openPersonalStashModal(charId) {
+  const modal = openModal('<h2>📦 ' + T('Personal Stash','Личный тайник') + '</h2><div id="ps-list">' + spinner() + '</div>', true);
+  try {
+    const res = await api('/api/characters/' + charId + '/personal-stash');
+    const stash = res.stash || [];
+    $('#ps-list', modal).innerHTML = stash.length ? stash.map(item => {
+      return '<div class="inv-row"><span class="iname">' + esc(item.custom_name || item.name || item.catalog_item_id) + (item.quantity > 1 ? ' ×' + item.quantity : '') + '</span><button class="btn-sm" data-ps-take="' + esc(item.instance_id) + '">' + T('Take','Взять') + '</button></div>';
+    }).join('') : '<div class="empty">' + T('Personal stash is empty.','Личный тайник пуст.') + '</div>';
+    $$('[data-ps-take]', modal).forEach(btn => btn.onclick = async () => {
+      try { await api('/api/characters/' + charId + '/personal-stash', { method: 'POST', body: { action: 'take', instance_id: btn.dataset.psTake } }); toast(T('Item taken.','Предмет взят.')); closeModal(); viewSheet(charId); } catch (e) { toast(e.message, true); }
+    });
+  } catch (e) { $('#ps-list', modal).innerHTML = '<div class="empty">⚠️ ' + esc(e.message) + '</div>'; }
+}

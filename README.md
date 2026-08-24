@@ -9,42 +9,53 @@
 | Раздел | Описание |
 | --- | --- |
 | 🛰️ **Network Shell** | Плотный diegetic HUD с desktop left rail, system telemetry, Active Dossier, command palette, явным NETWORK/GM OPS mode switch и mobile bottom navigation. |
-| 🧬 **Dossiers** | Шестишаговый мастер и интерактивный официальный-inspired Character Sheet: Portrait upload/crop, Corebook role art, EN/RU, persistent draft, Hybrid Lifepath, 62/86, parent-pools, Shopping compatibility, Cyberware hosts/paired slots, HP/LUCK/Armor/ammo trackers, dice rolls, IP progression, multiclass, JSON/Print и read-only архив с сохранением NC//NET history. |
+| 🧬 **Dossiers** | Шестишаговый мастер и интерактивный официальный-inspired Character Sheet: Portrait upload/crop, Corebook role art, EN/RU, persistent draft, Hybrid Lifepath, 62/86, parent-pools, Shopping compatibility, concrete Cyberware hosts/paired slots, left/right sides, clinic audit, Quick Change, curated option payloads, tracked Integrated Cyberweapons, permanent generic Popup bindings, concrete Armor/Shield hosts, Armor SP +1 Tech Upgrades, manual/Jeeves/paid Armor Repair, Popup Shield replacement, Therapy и Humanity-safe Install/Uninstall, HP/LUCK/Armor/ammo trackers, dice rolls, IP progression, multiclass, JSON/Print и read-only архив с сохранением NC//NET history. |
 | 👤 **Profile** | Account avatar с квадратной crop-обработкой, privacy display name/avatar, Appearance, audio volume, VK linking и управляемые Admin роли. |
 | ♿ **Accessibility** | Skip link, видимый keyboard focus, Enter/Space activation для Contracts/Feed/Personas/map markers, modal focus trap/restore, ARIA live notifications и reduced-motion support. |
 | 📖 **Гайды** | Мини-гайды из «Spes Desperata»: пошаговое создание персонажа (роли, 62 очка статов, 86 очков навыков, стартовая закупка), боёвка FNFF (действия, DV-таблицы, крит. травмы, укрытия, транспорт) и нетраннинг (СЕТевые действия, Interface-способности). |
 | 📋 **Crew Registry** | Все публичные персонажи всех игроков. При старте импортируется ростер вашей партии из Folio (13 эджраннеров). |
-| 🕶️ **Чёрный рынок** | Ночная витрина (обновляется ежедневно в 00:00 МСК, уличные цены ±50%), полный каталог на 1092 предмета, скупка хлама за 50%, выплаты от ГМ. |
-| 📚 **Справочник** | Поиск по 14 категориям с ценами, характеристиками, описаниями и ссылками на книги (`CP:R 341` = Corebook, `BC` = Black Chrome, `CEMK` = Edgerunners Mission Kit). |
+| 🕶️ **Чёрный рынок** | Шесть продавцов-Personas с отдельным ежедневным ассортиментом, описаниями, фильтрами, сортировкой и уличными ценами ±50%; скупка хлама за 50% и выплаты GM. Купить можно только реально выставленный товар. |
+| 📚 **Справочник** | Reference-only база на 1092 предмета в 14 категориях: нормализованные mechanics, EN/RU labels, описания, Armor locations и ссылки на книги (`CP:R 341`, `BC`, `CEMK`). Справочник не является универсальным магазином. |
 | 🎲 **Quick Reference** | Damage/SP, Critical Injuries, Autofire, Death Saves, Range DV и General Difficulty с указанием книг и страниц; инструменты можно использовать как справочник или Resolver. |
 | ◈ **Personas / Storylines** | Private/Shared/System персоны, общий audit log, GM-соавторы сюжетных линий и публичная/закрытая хронология. |
 | 📡 **City Feed** | Шесть форматов, прямые Character-публикации, optional images с preset/custom crop, отображение полного соотношения без обрезки и полноразмерный lightbox, event/publication time, metadata, replies, revisions, moderation и скрытая GM truth. |
 | 📞 **Contracts** | Theme-aware карта с district/subdistrict markers; optional covers с preset/custom resolution crop, полным соотношением без обрезки и lightbox; Persona-роли, public/classified briefing, rewards, запись, waitlist, исторический Crew и Aftermath. |
-| ⚙️ **GM OPS** | Поиск и фильтры для Sessions/NPC Templates/Storylines, улучшенные Storyline/collaborator/timeline editors, стабильный initiative order, HP/SP/Shield/Ammo/LUCK/MOVE/Injuries controls, фильтруемый activity log, private GM JSON export и независимо настраиваемый Player View. |
+| ⚙️ **GM OPS** | Поиск и фильтры для Sessions/NPC Templates/Storylines, scoped Session-роли Co-GM/Assistant/Rules Helper/Observer, стабильный initiative order, HP/SP/Shield/Ammo/LUCK/MOVE/Injuries controls, анонимные Pause/X-card Safety signals, Lines/Veils, activity log, private GM JSON export и настраиваемый Player View. |
 
 ## Запуск
 
 Только Python 3.8+ из стандартной библиотеки, ничего ставить не нужно:
 
 ```bash
-python3 app/server.py            # http://0.0.0.0:8000
+python3 app/server.py            # http://127.0.0.1:8000
 python3 app/server.py --port 8080
+python3 app/server.py --host 0.0.0.0  # только для изолированной dev-сети без production-данных
 ```
 
 - `app/import_data.py` — пересборка `app/data/items.json` из `Data Pool.xlsx` (запускается автоматически, если файла нет);
-- `app/data/cbpr.db` — SQLite, создаётся при первом старте (в git не хранится);
+- `app/data/cbpr.db` — SQLite в WAL-режиме, создаётся при первом старте (в git не хранится);
+- критические операции Crew/Market/IP/Aftermath выполняются через `BEGIN IMMEDIATE` и откатываются целиком при ошибке;
+- Dossier содержит `revision`: устаревшая вкладка не может молча перезаписать более новое сохранение;
 - новый аккаунт всегда получает роль **Player**;
+- пароль нового аккаунта должен содержать минимум 8 символов;
+- регистрация по умолчанию требует invite-код, созданный в Admin Console;
+- `CBPR_REGISTRATION_MODE=invite|open|closed` управляет режимом регистрации (`invite` по умолчанию);
+- invite-коды хранятся только как SHA-256 hash, а исходный код показывается Admin один раз;
+- в Profile можно сменить пароль, просмотреть активные сеансы, завершить отдельный сеанс или выйти везде;
+- Admin может отключить аккаунт с обязательной причиной; все его сеансы сразу отзываются, действие попадает в Security Audit;
 - **GM** и **Admin** назначаются только через Admin Console;
 - перед первой выдачей прав существующий аккаунт явно указывается в `CBPR_ADMIN_USERS` и сервер перезапускается;
 - альтернативный путь БД для smoke/tests задаётся через `CBPR_DB_PATH`.
 
-Пример безопасного назначения первого Admin после регистрации аккаунта `operator`:
+Для самого первого аккаунта на новой базе временно запустите открытую регистрацию и одновременно укажите будущего Admin:
 
 ```bash
-CBPR_ADMIN_USERS=operator python3 app/server.py
+CBPR_REGISTRATION_MODE=open CBPR_ADMIN_USERS=operator python3 app/server.py
 ```
 
-Для systemd переменная задаётся в конфигурации службы, после чего сервис перезапускается. Не добавляйте имена администраторов вместе с секретами или токенами в Git.
+Зарегистрируйте `operator`, остановите сервер и запустите его снова без `CBPR_REGISTRATION_MODE=open`. При следующем старте `CBPR_ADMIN_USERS` назначит существующему `operator` роль Admin. После этого новые приглашения создаются в Admin Console.
+
+Для systemd переменные задаются в drop-in конфигурации службы, после чего сервис перезапускается. Не добавляйте invite-коды, пароли или токены в Git.
 
 Опциональная интеграция с общей беседой VK и OAuth-привязка пользователей включаются только серверными переменными:
 
@@ -55,10 +66,11 @@ VK_CLIENT_ID=...                # VK OAuth app
 VK_CLIENT_SECRET=...
 VK_REDIRECT_URI=https://example.com/api/vk/oauth/callback
 NCNET_PUBLIC_URL=https://example.com
-CBPR_SECURE_COOKIES=1
+CBPR_SECURE_COOKIES=1           # install.sh включает автоматически
+CBPR_TRUST_PROXY=1              # только за доверенным nginx/Cloudflare proxy
 ```
 
-Секреты не сохраняются в SQLite, frontend или Git. Без этих переменных NC//NET работает полностью, а VK outbox остаётся в состоянии pending.
+Секреты не сохраняются в SQLite, frontend или Git. Без VK-переменных NC//NET работает полностью, а VK outbox остаётся в состоянии pending. `CBPR_TRUST_PROXY=1` разрешает использовать `CF-Connecting-IP`/`X-Forwarded-For` для rate limits и session history; включайте его только когда backend слушает loopback и запросы приходят через ваш доверенный reverse proxy. В LAN-режиме с прямым доступом к Python-серверу оставляйте значение выключенным.
 
 Проверка правил и каталога:
 
@@ -88,7 +100,10 @@ cd CBPR-helper
 bash deploy/install.sh          # можно свой порт: bash deploy/install.sh 8080
 ```
 
-После установки сайт живёт по адресу `http://IP_СЕРВЕРА:8000` и **переживает перезагрузку сервера**.
+После установки backend **переживает перезагрузку сервера**, но слушает только
+`127.0.0.1:8000` и устанавливает только Secure session cookies. Порт приложения не
+следует открывать наружу: публичный доступ настраивается через домен и HTTPS reverse
+proxy по инструкции ниже.
 
 Полезные команды:
 
@@ -98,29 +113,55 @@ systemctl restart cbpr               # перезапустить сайт
 cd CBPR-helper && git pull && systemctl restart cbpr   # обновить до новой версии
 ```
 
-Если сайт не открывается снаружи — открой порт 8000 в панели хостинга (группа безопасности) и/или `ufw allow 8000/tcp`.
+Не добавляйте порт 8000 в `ufw` или security group: снаружи должны быть доступны только 80/443 для nginx.
 
-**Резервная копия** (все аккаунты, персонажи и посты лежат в одном файле `app/data/cbpr.db`):
+### Резервные копии
+
+`install.sh` устанавливает `cbpr-backup.timer`: каждый день около 04:00 он создаёт online SQLite snapshot, добавляет uploads и checksummed manifest в `app/data/backups/`. Останавливать сайт не требуется. По умолчанию хранятся последние 14 bundle-файлов.
 
 ```bash
-systemctl stop cbpr
-cp CBPR-helper/app/data/cbpr.db ~/cbpr-backup-$(date +%F).db
-tar -czf ~/cbpr-uploads-$(date +%F).tar.gz -C CBPR-helper/app/data uploads 2>/dev/null || true
-systemctl start cbpr
+systemctl status cbpr-backup.timer          # расписание
+systemctl start cbpr-backup.service         # создать backup сейчас
+journalctl -u cbpr-backup.service -n 50     # результат последнего запуска
+python3 app/backup.py list                   # список копий
+python3 app/backup.py verify ИМЯ.tar.gz      # integrity + SHA-256 каждого файла
 ```
 
-### Свой домен и HTTPS (по желанию)
+Admin также может создавать, проверять и скачивать bundle в Admin Console. Bundle содержит приватные данные, password hashes и media — храните его как секрет. Для другой директории/retention используются `CBPR_BACKUP_DIR` и `CBPR_BACKUP_RETENTION`. Пошаговое безопасное восстановление и перенос на VPS описаны в [`docs/backup-restore.md`](docs/backup-restore.md).
+
+Ручное создание без systemd:
 
 ```bash
-apt install -y nginx                # nginx на порту 80 проксирует сайт
+python3 app/backup.py create --retention 14 --reason manual
+```
+
+### Домен и HTTPS (обязательно для production)
+
+1. Привяжите A/AAAA-запись домена к серверу.
+2. Остановите nginx и получите сертификат (замените `ncnet.example.ru`):
+
+```bash
+apt install -y nginx certbot
+systemctl stop nginx
+certbot certonly --standalone -d ncnet.example.ru
+```
+
+3. Во всех местах `deploy/nginx-cbpr.conf` замените `YOUR_DOMAIN` на домен, затем включите конфигурацию:
+
+```bash
 cp deploy/nginx-cbpr.conf /etc/nginx/sites-available/cbpr
+sed -i 's/YOUR_DOMAIN/ncnet.example.ru/g' /etc/nginx/sites-available/cbpr
 ln -sf /etc/nginx/sites-available/cbpr /etc/nginx/sites-enabled/cbpr
 rm -f /etc/nginx/sites-enabled/default
-nginx -t && systemctl reload nginx
+nginx -t && systemctl enable --now nginx
+```
 
-# HTTPS, когда домен привязан A-записью к IP сервера:
-apt install -y certbot python3-certbot-nginx
-certbot --nginx -d твой-домен.ru
+Конфигурация перенаправляет HTTP на HTTPS, добавляет HSTS и проксирует запросы на
+локальный Python backend. Так как сертификат получен через standalone challenge,
+продлевайте его с освобождением порта 80:
+
+```bash
+certbot renew --pre-hook 'systemctl stop nginx' --post-hook 'systemctl start nginx'
 ```
 
 ## Используемые правила

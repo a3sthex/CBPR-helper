@@ -4,6 +4,7 @@ app/data/cbpr.db-wal
 app/data/cbpr.db-shm
 app/data/cbpr.db.backup-*
 app/data/uploads/
+app/data/backups/
 
 __pycache__/
 *.pyc

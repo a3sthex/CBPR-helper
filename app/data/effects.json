@@ -1,0 +1,1167 @@
+{
+  "version": 1,
+  "rules_version": "cp-red-2070-campaign-2026-08-21",
+  "synergy_rules": [
+    {
+      "id": "light-tattoo-trio",
+      "label_en": "Light Tattoo Ensemble",
+      "label_ru": "Ансамбль Light Tattoo",
+      "required_counts": {
+        "cyberware-52": {
+          "minimum": 3,
+          "state": "installed",
+          "label": "Light Tattoo"
+        }
+      },
+      "effects": [
+        {
+          "id": "light-tattoo-style-bonus",
+          "target": "skill.Wardrobe & Style.check",
+          "operation": "add",
+          "value": 2,
+          "stack_group": "light_tattoo_style_bonus",
+          "stack_policy": "unique",
+          "priority": 200,
+          "source": "CP:R 358"
+        }
+      ]
+    },
+    {
+      "id": "chemskin-techhair-combo",
+      "label_en": "Chemskin + TechHair",
+      "label_ru": "Chemskin + TechHair",
+      "required_all": [
+        {
+          "catalog_id": "cyberware-51",
+          "state": "installed",
+          "label": "Chemskin"
+        },
+        {
+          "catalog_id": "cyberware-55",
+          "state": "installed",
+          "label": "TechHair"
+        }
+      ],
+      "effects": [
+        {
+          "id": "chemskin-techhair-grooming-bonus",
+          "target": "skill.Personal Grooming.check",
+          "operation": "add",
+          "value": 2,
+          "stack_group": "chemskin_techhair_grooming_bonus",
+          "stack_policy": "unique",
+          "priority": 200,
+          "source": "CP:R 358"
+        }
+      ]
+    }
+  ],
+  "item_effect_rules": [
+    {
+      "id": "agent-standard-active",
+      "catalog_id": "gear-91",
+      "label_en": "Agent (Standard)",
+      "label_ru": "Agent (Standard)",
+      "active_when": {
+        "state": "equipped",
+        "active": true
+      },
+      "effects": [
+        {
+          "id": "agent-library-search-bonus",
+          "target": "skill.Library Search.check",
+          "operation": "add",
+          "value": 2,
+          "stack_group": "agent_library_search_bonus",
+          "stack_policy": "unique",
+          "priority": 200,
+          "source": "CP:R 352"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "agent-wardrobe-seasonal-suggestion",
+          "text_en": "+2 Wardrobe & Style only while wearing the seasonal outfit suggested by this Agent.",
+          "text_ru": "+2 Wardrobe & Style только при ношении сезонного комплекта, предложенного этим Agent.",
+          "condition": "wearing_agent_suggested_clothes",
+          "source": "CP:R 352"
+        }
+      ]
+    }
+  ],
+  "use_effect_rules": [
+    {
+      "id": "boost-primary-effect",
+      "catalog_id": "gear-161",
+      "label_en": "Boost Primary Effect",
+      "label_ru": "Основной эффект Boost",
+      "duration_type": "campaign_time",
+      "duration_value": 1440,
+      "effects": [
+        {
+          "id": "boost-primary-int-bonus",
+          "target": "character.stat.INT",
+          "operation": "add",
+          "value": 2,
+          "stack_group": "boost_primary_int",
+          "stack_policy": "replace",
+          "priority": 300,
+          "source": "CP:R 357"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "boost-secondary-addiction",
+          "text_en": "Resolve the DV17 Secondary Effect and addiction separately. While addicted and not under Boost's Primary Effect, INT is reduced by 2.",
+          "text_ru": "Отдельно примените Secondary Effect DV17 и зависимость. При зависимости вне Primary Effect Boost значение INT уменьшается на 2.",
+          "condition": "secondary_effect_and_addiction",
+          "source": "CP:R 357"
+        }
+      ]
+    },
+    {
+      "id": "synthcoke-primary-effect",
+      "catalog_id": "gear-173",
+      "label_en": "Synthcoke Primary Effect",
+      "label_ru": "Основной эффект Synthcoke",
+      "duration_type": "campaign_time",
+      "duration_value": 240,
+      "effects": [
+        {
+          "id": "synthcoke-primary-ref-bonus",
+          "target": "character.stat.REF",
+          "operation": "add",
+          "value": 1,
+          "stack_group": "synthcoke_primary_ref",
+          "stack_policy": "replace",
+          "priority": 300,
+          "source": "CP:R 358"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "synthcoke-paranoia-and-addiction",
+          "text_en": "Roleplay the Primary Effect paranoia and resolve the DV15 Secondary Effect/addiction separately. Addiction penalties are not created automatically.",
+          "text_ru": "Отыгрывайте паранойю Primary Effect и отдельно применяйте Secondary Effect DV15/зависимость. Штрафы зависимости не создаются автоматически.",
+          "condition": "roleplay_and_secondary_effect",
+          "source": "CP:R 358"
+        }
+      ]
+    }
+  ],
+  "weapon_modification_rules": [
+    {
+      "id": "drum-magazine-effective",
+      "catalog_id": "gun_upgrades-4",
+      "label_en": "Drum Magazine",
+      "label_ru": "Барабанный магазин",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "drum-magazine-capacity",
+          "target": "weapon.magazine",
+          "operation": "set_by_weapon_type",
+          "values": {
+            "Medium Pistol": 36,
+            "Heavy Pistol": 28,
+            "Very Heavy Pistol": 28,
+            "SMG": 50,
+            "Heavy SMG": 60,
+            "Shotgun": 16,
+            "Assault Rifle": 45,
+            "Sniper Rifle": 12,
+            "Grenade Launcher": 6,
+            "Rocket Launcher": 3
+          },
+          "source": "CP:R 343"
+        },
+        {
+          "id": "drum-magazine-concealability",
+          "target": "weapon.concealable",
+          "operation": "set",
+          "value": "NO",
+          "source": "CP:R 343"
+        }
+      ],
+      "manual_rules": []
+    },
+    {
+      "id": "extended-magazine-effective",
+      "catalog_id": "gun_upgrades-5",
+      "label_en": "Extended Magazine",
+      "label_ru": "Увеличенный магазин",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "extended-magazine-capacity",
+          "target": "weapon.magazine",
+          "operation": "set_by_weapon_type",
+          "values": {
+            "Medium Pistol": 18,
+            "Heavy Pistol": 14,
+            "Very Heavy Pistol": 14,
+            "SMG": 40,
+            "Heavy SMG": 50,
+            "Shotgun": 8,
+            "Assault Rifle": 35,
+            "Sniper Rifle": 8,
+            "Grenade Launcher": 4,
+            "Rocket Launcher": 2
+          },
+          "source": "CP:R 343"
+        },
+        {
+          "id": "extended-magazine-concealability",
+          "target": "weapon.concealable",
+          "operation": "set",
+          "value": "NO",
+          "source": "CP:R 343"
+        }
+      ],
+      "manual_rules": []
+    },
+    {
+      "id": "smartgun-link-effective",
+      "catalog_id": "gun_upgrades-9",
+      "label_en": "Smartgun Link",
+      "label_ru": "Smartgun Link",
+      "requirements": {
+        "installed_any": [
+          "cyberware-61",
+          "cyberware-125"
+        ],
+        "label_en": "Interface Plugs or Subdermal Grip installed",
+        "label_ru": "Установлены Interface Plugs или Subdermal Grip"
+      },
+      "effects": [
+        {
+          "id": "smartgun-link-attack-bonus",
+          "target": "weapon.attack_check",
+          "operation": "add",
+          "value": 1,
+          "source": "CP:R 343"
+        }
+      ],
+      "manual_rules": []
+    },
+    {
+      "id": "bayonet-effective",
+      "catalog_id": "gun_upgrades-3",
+      "label_en": "Bayonet",
+      "label_ru": "Штык",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "bayonet-concealability",
+          "target": "weapon.concealable",
+          "operation": "set",
+          "value": "NO",
+          "source": "CP:R 343"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "bayonet-light-melee-mode",
+          "text_en": "The attached weapon can also be used as a Light Melee Weapon.",
+          "text_ru": "Оружие с установленным штыком также можно использовать как Light Melee Weapon.",
+          "condition": "alternate_melee_attack",
+          "source": "CP:R 343"
+        }
+      ]
+    },
+    {
+      "id": "infrared-nightvision-scope-rule",
+      "catalog_id": "gun_upgrades-7",
+      "label_en": "Infrared Nightvision Scope",
+      "label_ru": "Инфракрасный прицел",
+      "requirements": {},
+      "effects": [],
+      "manual_rules": [
+        {
+          "id": "infrared-obscurement-penalty",
+          "text_en": "When looking through the scope, reduce firing penalties from darkness, smoke, fog, and similar obscurement to 0.",
+          "text_ru": "При прицеливании через scope штрафы к стрельбе из-за темноты, дыма, тумана и похожих помех уменьшаются до 0.",
+          "condition": "looking_through_scope_and_obscured",
+          "source": "CP:R 343"
+        }
+      ]
+    },
+    {
+      "id": "sniping-scope-rule",
+      "catalog_id": "gun_upgrades-10",
+      "label_en": "Sniping Scope",
+      "label_ru": "Снайперский прицел",
+      "requirements": {},
+      "effects": [],
+      "manual_rules": [
+        {
+          "id": "sniping-scope-long-range-check",
+          "text_en": "+1 Check only at 51m/yards or farther with single shot or an Aimed Shot; does not stack with TeleOptics.",
+          "text_ru": "+1 к Check только на дистанции 51 м/ярд и дальше при single shot или Aimed Shot; не складывается с TeleOptics.",
+          "condition": "range_51_plus_single_or_aimed_without_teleoptics",
+          "source": "CP:R 343"
+        }
+      ]
+    },
+    {
+      "id": "grenade-underbarrel-profile",
+      "catalog_id": "gun_upgrades-6",
+      "label_en": "Grenade Launcher Underbarrel",
+      "label_ru": "Подствольный гранатомёт",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "grenade-underbarrel-attack",
+          "target": "weapon.alternate_profile",
+          "operation": "grant",
+          "profile": {
+            "id": "grenade_launcher_underbarrel",
+            "label_en": "Underbarrel Grenade Launcher",
+            "label_ru": "Подствольный гранатомёт",
+            "skill": "Heavy Weapons",
+            "damage": "6d6",
+            "rof": 1,
+            "magazine": 1,
+            "ammo_kind": "grenade",
+            "hands_required": 2
+          },
+          "source": "CP:R 343"
+        },
+        {
+          "id": "grenade-underbarrel-concealability",
+          "target": "weapon.concealable",
+          "operation": "set",
+          "value": "NO",
+          "source": "CP:R 343"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "grenade-underbarrel-two-hands",
+          "text_en": "The host must be wielded in two hands to use this alternate attack profile.",
+          "text_ru": "Для использования этого alternate attack profile host необходимо держать двумя руками.",
+          "condition": "host_wielded_two_hands",
+          "source": "CP:R 343"
+        }
+      ]
+    },
+    {
+      "id": "shotgun-underbarrel-profile",
+      "catalog_id": "gun_upgrades-8",
+      "label_en": "Shotgun Underbarrel",
+      "label_ru": "Подствольный дробовик",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "shotgun-underbarrel-attack",
+          "target": "weapon.alternate_profile",
+          "operation": "grant",
+          "profile": {
+            "id": "shotgun_underbarrel",
+            "label_en": "Underbarrel Shotgun",
+            "label_ru": "Подствольный дробовик",
+            "skill": "Shoulder Arms",
+            "damage": "5d6",
+            "rof": 1,
+            "magazine": 2,
+            "ammo_kind": "shotgun",
+            "hands_required": 2
+          },
+          "source": "CP:R 343"
+        },
+        {
+          "id": "shotgun-underbarrel-concealability",
+          "target": "weapon.concealable",
+          "operation": "set",
+          "value": "NO",
+          "source": "CP:R 343"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "shotgun-underbarrel-two-hands",
+          "text_en": "The host must be wielded in two hands to use this alternate attack profile.",
+          "text_ru": "Для использования этого alternate attack profile host необходимо держать двумя руками.",
+          "condition": "host_wielded_two_hands",
+          "source": "CP:R 343"
+        }
+      ]
+    },
+    {
+      "id": "pistol-autosear-profile",
+      "catalog_id": "gun_upgrades-20",
+      "label_en": "Pistol Autosear",
+      "label_ru": "Pistol Autosear",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "pistol-autosear-autofire",
+          "target": "weapon.autofire_profile",
+          "operation": "grant",
+          "profile": {
+            "id": "pistol_autosear",
+            "label_en": "Machine Pistol Autofire",
+            "label_ru": "Автоматический огонь Machine Pistol",
+            "skill": "Autofire",
+            "table": "Machine Pistol",
+            "multiplier": 3,
+            "ammo_cost": 10,
+            "suppressive_fire": true
+          },
+          "enhanced_when": [
+            "excellent_quality",
+            "base_autofire"
+          ],
+          "enhanced_multiplier": 4,
+          "source": "IR5 115"
+        }
+      ],
+      "manual_rules": []
+    },
+    {
+      "id": "smg-cyclic-internals-profile",
+      "catalog_id": "gun_upgrades-22",
+      "label_en": "SMG Cyclic Internals",
+      "label_ru": "SMG Cyclic Internals",
+      "requirements": {},
+      "configuration": {
+        "key": "autofire_mode",
+        "label_en": "Replacement Autofire profile",
+        "label_ru": "Новый профиль Autofire",
+        "required": true,
+        "choices": [
+          {
+            "value": "smg4",
+            "label_en": "Autofire (SMG 4)",
+            "label_ru": "Autofire (SMG 4)"
+          },
+          {
+            "value": "machine_pistol4",
+            "label_en": "Autofire (Machine Pistol 4)",
+            "label_ru": "Autofire (Machine Pistol 4)"
+          }
+        ]
+      },
+      "effects": [
+        {
+          "id": "smg-cyclic-configured-autofire",
+          "target": "weapon.autofire_profile",
+          "operation": "configure",
+          "configuration_key": "autofire_mode",
+          "profiles": {
+            "smg4": {
+              "id": "smg_cyclic_smg4",
+              "label_en": "Autofire (SMG 4)",
+              "label_ru": "Autofire (SMG 4)",
+              "skill": "Autofire",
+              "table": "SMG",
+              "multiplier": 4,
+              "ammo_cost": 10,
+              "suppressive_fire": true
+            },
+            "machine_pistol4": {
+              "id": "smg_cyclic_machine_pistol4",
+              "label_en": "Autofire (Machine Pistol 4)",
+              "label_ru": "Autofire (Machine Pistol 4)",
+              "skill": "Autofire",
+              "table": "Machine Pistol",
+              "multiplier": 4,
+              "ammo_cost": 10,
+              "suppressive_fire": true
+            }
+          },
+          "source": "IR5 115"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "smg-cyclic-installation-check",
+          "text_en": "Installing this upgrade requires the source-specific DV17 Weaponstech check.",
+          "text_ru": "Установка этого upgrade требует указанную в источнике проверку Weaponstech DV17.",
+          "condition": "installation_check_confirmed",
+          "source": "IR5 115"
+        }
+      ]
+    },
+    {
+      "id": "shotgun-auto-control-manual",
+      "catalog_id": "gun_upgrades-21",
+      "label_en": "Shotgun Auto Control Group",
+      "label_ru": "Shotgun Auto Control Group",
+      "requirements": {},
+      "effects": [],
+      "manual_rules": [
+        {
+          "id": "shotgun-auto-ammo-dependent-modes",
+          "text_en": "Autofire differs for slugs and shells, consumes 4 rounds, and the shell mode changes the attack Skill and dodge penalty. Resolve by loaded ammunition and source text.",
+          "text_ru": "Autofire различается для slugs и shells, расходует 4 выстрела, а shell mode меняет Skill атаки и штраф уклонения. Применяйте по загруженным боеприпасам и тексту источника.",
+          "condition": "loaded_ammunition_mode",
+          "source": "IR5 115"
+        }
+      ]
+    },
+    {
+      "id": "power-rebuild-effective",
+      "catalog_id": "gun_upgrades-0",
+      "label_en": "Power Rebuild",
+      "label_ru": "Power Rebuild",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "power-rebuild-tag",
+          "target": "weapon.tag",
+          "operation": "grant",
+          "value": "Power Weapon",
+          "source": "CEMK 30"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "power-critical-bonus-damage",
+          "text_en": "When this weapon causes a Critical Injury, increase that Critical Injury's Bonus Damage by 5.",
+          "text_ru": "Когда это оружие наносит Critical Injury, увеличьте Bonus Damage этой травмы на 5.",
+          "condition": "critical_injury_caused_by_host",
+          "source": "CEMK 30"
+        },
+        {
+          "id": "power-ricochet-shot",
+          "text_en": "Ricochet shots use the source-specific path/range rules and normally take -4; Aimed Shots use only their Aimed Shot penalty.",
+          "text_ru": "Ricochet shots используют правила траектории/дистанции из источника и обычно получают -4; Aimed Shot применяет только свой штраф.",
+          "condition": "manual_ricochet_attack",
+          "source": "CEMK 30"
+        }
+      ]
+    },
+    {
+      "id": "smart-rebuild-tag",
+      "catalog_id": "gun_upgrades-1",
+      "label_en": "Smart Rebuild",
+      "label_ru": "Smart Rebuild",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "smart-rebuild-weapon-tag",
+          "target": "weapon.tag",
+          "operation": "grant",
+          "value": "Smart Weapon",
+          "source": "CEMK 31"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "smart-rebuild-improved-ammunition",
+          "text_en": "The weapon may load compatible Improved Smart Ammunition; resolve the ammunition's own advantages separately.",
+          "text_ru": "Оружие может использовать совместимые Improved Smart Ammunition; преимущества самих боеприпасов применяются отдельно.",
+          "condition": "improved_smart_ammunition_loaded",
+          "source": "CEMK 31"
+        }
+      ]
+    },
+    {
+      "id": "smart-rebuild-attack-bonus",
+      "catalog_id": "gun_upgrades-1",
+      "label_en": "Smart Rebuild Connection",
+      "label_ru": "Подключение Smart Rebuild",
+      "requirements": {
+        "installed_any": [
+          "cyberware-61",
+          "cyberware-125"
+        ],
+        "label_en": "Interface Plugs or Subdermal Grip installed",
+        "label_ru": "Установлены Interface Plugs или Subdermal Grip"
+      },
+      "effects": [
+        {
+          "id": "smart-rebuild-connected-attack-bonus",
+          "target": "weapon.attack_check",
+          "operation": "add",
+          "value": 1,
+          "source": "CEMK 31"
+        }
+      ],
+      "manual_rules": []
+    },
+    {
+      "id": "tech-rebuild-effective",
+      "catalog_id": "gun_upgrades-2",
+      "label_en": "Tech Rebuild",
+      "label_ru": "Tech Rebuild",
+      "requirements": {},
+      "effects": [
+        {
+          "id": "tech-rebuild-weapon-tag",
+          "target": "weapon.tag",
+          "operation": "grant",
+          "value": "Tech Weapon",
+          "source": "CEMK 31"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "tech-rebuild-charge-action",
+          "text_en": "Spend the Move Action to charge this weapon. The charge lasts until fired or 60 seconds / 20 rounds.",
+          "text_ru": "Потратьте Move Action, чтобы зарядить оружие. Заряд сохраняется до выстрела или 60 секунд / 20 раундов.",
+          "condition": "manual_charge_state",
+          "source": "CEMK 31"
+        },
+        {
+          "id": "tech-rebuild-charged-shot",
+          "text_en": "The next charged non-explosive attack is ROF1, can pass through Thin Cover, and ignores half target SP rounded up; Cover does not lose HP.",
+          "text_ru": "Следующая заряженная non-explosive атака становится ROF1, проходит через Thin Cover и игнорирует половину SP цели с округлением вверх; Cover не теряет HP.",
+          "condition": "next_charged_non_explosive_attack",
+          "source": "CEMK 31"
+        }
+      ]
+    },
+    {
+      "id": "range-table-modification-effective",
+      "catalog_id": "gun_upgrades-19",
+      "label_en": "Range Table Modification",
+      "label_ru": "Модификация таблицы дистанции",
+      "requirements": {},
+      "configuration": {
+        "key": "range_table",
+        "label_en": "Replacement Range Table",
+        "label_ru": "Новая таблица дистанции",
+        "required": true,
+        "choice_source": "compatible_range_tables"
+      },
+      "effects": [
+        {
+          "id": "configured-range-table",
+          "target": "weapon.range_table",
+          "operation": "configure",
+          "configuration_key": "range_table",
+          "source": "IR5 112"
+        }
+      ],
+      "manual_rules": []
+    }
+  ],
+  "vehicle_modification_rules": [
+    {
+      "id": "armored-chassis-effective",
+      "catalog_id": "vehicles_upgrades-0",
+      "label_en": "Armored Chassis",
+      "label_ru": "Бронированное шасси",
+      "effects": [
+        {
+          "id": "armored-chassis-body-sp",
+          "target": "vehicle.body_sp",
+          "operation": "set",
+          "value": 13,
+          "source": "CP:R 163"
+        }
+      ],
+      "manual_rules": []
+    },
+    {
+      "id": "bulletproof-glass-effective",
+      "catalog_id": "vehicles_upgrades-1",
+      "label_en": "Bulletproof Glass",
+      "label_ru": "Пуленепробиваемое стекло",
+      "effects": [
+        {
+          "id": "bulletproof-glass-hp",
+          "target": "vehicle.glass_hp",
+          "operation": "set_by_count",
+          "values": {
+            "1": 15,
+            "2": 30
+          },
+          "source": "CP:R 163"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "glass-windows-individual",
+          "text_en": "Each vehicle window sustains damage individually.",
+          "text_ru": "Каждое окно транспорта получает повреждения отдельно.",
+          "condition": "individual_windows",
+          "source": "CP:R 163"
+        }
+      ]
+    },
+    {
+      "id": "heavy-chassis-effective",
+      "catalog_id": "vehicles_upgrades-9",
+      "label_en": "Heavy Chassis",
+      "label_ru": "Тяжёлое шасси",
+      "effects": [
+        {
+          "id": "heavy-chassis-sdp",
+          "target": "vehicle.sdp_max",
+          "operation": "add",
+          "value": 20,
+          "source": "CP:R 164"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "heavy-chassis-towing",
+          "text_en": "The upgraded vehicle can tow up to 10 tons.",
+          "text_ru": "Улучшенный транспорт может буксировать до 10 тонн.",
+          "condition": "towing_capacity",
+          "source": "CP:R 164"
+        }
+      ]
+    },
+    {
+      "id": "seating-upgrade-effective",
+      "catalog_id": "vehicles_upgrades-6",
+      "label_en": "Seating Upgrade",
+      "label_ru": "Дополнительные сиденья",
+      "effects": [
+        {
+          "id": "seating-upgrade-seats",
+          "target": "vehicle.seats",
+          "operation": "add",
+          "value": 2,
+          "source": "CP:R 163"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "seating-ejector-options",
+          "text_en": "Sidecar, enclosure, ejector-seat, parachute, and collision details require manual configuration and resolution.",
+          "text_ru": "Sidecar, enclosure, ejector-seat, parachute и столкновения требуют ручной конфигурации и применения.",
+          "condition": "optional_seating_configuration",
+          "source": "CP:R 163"
+        }
+      ]
+    },
+    {
+      "id": "cycle-armor-effective",
+      "catalog_id": "vehicles_upgrades-29",
+      "label_en": "Cycle Armor",
+      "label_ru": "Броня велосипеда",
+      "effects": [
+        {
+          "id": "cycle-armor-body-sp",
+          "target": "vehicle.body_sp",
+          "operation": "set",
+          "value": 7,
+          "source": "DLC:Wheels 4"
+        }
+      ],
+      "manual_rules": []
+    },
+    {
+      "id": "reinforced-frame-effective",
+      "catalog_id": "vehicles_upgrades-36",
+      "label_en": "Reinforced Frame",
+      "label_ru": "Усиленная рама",
+      "effects": [
+        {
+          "id": "reinforced-frame-sdp",
+          "target": "vehicle.sdp_max",
+          "operation": "add",
+          "value": 5,
+          "source": "DLC:Wheels 5"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "reinforced-frame-body-limit",
+          "text_en": "The reinforced frame permits riders with BODY 11 or higher.",
+          "text_ru": "Усиленная рама позволяет ездить персонажам с BODY 11 или выше.",
+          "condition": "rider_body_limit",
+          "source": "DLC:Wheels 5"
+        }
+      ]
+    },
+    {
+      "id": "nos-tank-resource",
+      "catalog_id": "vehicles_upgrades-3",
+      "label_en": "NOS Tank",
+      "label_ru": "Баллон NOS",
+      "effects": [
+        {
+          "id": "nos-tank-use",
+          "target": "vehicle.nos_tank",
+          "operation": "grant",
+          "resource": {
+            "id": "nos_tank",
+            "label_en": "NOS Tank",
+            "label_ru": "Баллон NOS",
+            "uses": 1
+          },
+          "source": "CP:R 163"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "nos-extra-move-action",
+          "text_en": "Spend this tank using an Action while driving to take one additional Move Action.",
+          "text_ru": "Потратьте этот баллон, используя Action за рулём, чтобы совершить ещё одно Move Action.",
+          "condition": "driver_uses_action",
+          "source": "CP:R 163"
+        },
+        {
+          "id": "nos-campaign-day-reset",
+          "text_en": "Each tank refreshes once per campaign day. Reset it explicitly when the campaign day advances.",
+          "text_ru": "Каждый баллон восстанавливается раз в игровой день. Сбросьте ресурс вручную при смене игрового дня.",
+          "condition": "campaign_day_advanced",
+          "source": "CP:R 163"
+        }
+      ]
+    },
+    {
+      "id": "onboard-flamethrower-profile",
+      "catalog_id": "vehicles_upgrades-4",
+      "label_en": "Onboard Flamethrower",
+      "label_ru": "Бортовой огнемёт",
+      "effects": [
+        {
+          "id": "onboard-flamethrower-weapon",
+          "target": "vehicle.mounted_weapon",
+          "operation": "grant",
+          "profile": {
+            "id": "onboard_flamethrower",
+            "label_en": "Onboard Flamethrower",
+            "label_ru": "Бортовой огнемёт",
+            "kind": "standard",
+            "skill": "Heavy Weapons",
+            "weapon_type": "Flamethrower",
+            "range_table": "Shotgun",
+            "damage": "3d6",
+            "rof": 1,
+            "magazine": 4,
+            "ammo_kind": "incendiary_shotgun",
+            "ammo_cost": 1,
+            "orientations": [
+              "front",
+              "side",
+              "rear"
+            ],
+            "operator": "driver",
+            "suppressive_fire": false
+          },
+          "source": "CP:R 163; CP:R 348"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "onboard-flamethrower-driver-action",
+          "text_en": "The driver fires this weapon using their Action. Resolve incendiary ignition and ongoing fire manually.",
+          "text_ru": "Водитель стреляет из этого оружия своим Action. Возгорание и продолжающийся урон применяются вручную.",
+          "condition": "driver_action_and_incendiary",
+          "source": "CP:R 163; CP:R 348"
+        },
+        {
+          "id": "onboard-flamethrower-driving-reload",
+          "text_en": "This weapon cannot be reloaded while driving; driving state is not tracked automatically yet.",
+          "text_ru": "Это оружие нельзя перезаряжать во время движения; состояние движения пока не отслеживается автоматически.",
+          "condition": "vehicle_is_driving",
+          "source": "CP:R 163"
+        }
+      ]
+    },
+    {
+      "id": "onboard-machinegun-profile",
+      "catalog_id": "vehicles_upgrades-5",
+      "label_en": "Onboard Machinegun",
+      "label_ru": "Бортовой пулемёт",
+      "effects": [
+        {
+          "id": "onboard-machinegun-weapon",
+          "target": "vehicle.mounted_weapon",
+          "operation": "grant",
+          "profile": {
+            "id": "onboard_machinegun",
+            "label_en": "Onboard Machinegun",
+            "label_ru": "Бортовой пулемёт",
+            "kind": "autofire",
+            "skill": "Autofire",
+            "weapon_type": "Assault Rifle",
+            "range_table": "Assault Rifle",
+            "rof": 1,
+            "magazine": 30,
+            "ammo_kind": "rifle",
+            "ammo_cost": 10,
+            "orientations": [
+              "front"
+            ],
+            "operator": "driver",
+            "autofire_multiplier": 4,
+            "suppressive_fire": true
+          },
+          "source": "CP:R 163"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "onboard-machinegun-autofire-only",
+          "text_en": "The driver fires this weapon using their Action. It can only use Autofire or Suppressive Fire.",
+          "text_ru": "Водитель стреляет из этого оружия своим Action. Доступны только Autofire или Suppressive Fire.",
+          "condition": "driver_action_autofire_only",
+          "source": "CP:R 163"
+        },
+        {
+          "id": "onboard-machinegun-driving-reload",
+          "text_en": "This weapon cannot be reloaded while driving; driving state is not tracked automatically yet.",
+          "text_ru": "Это оружие нельзя перезаряжать во время движения; состояние движения пока не отслеживается автоматически.",
+          "condition": "vehicle_is_driving",
+          "source": "CP:R 163"
+        }
+      ]
+    },
+    {
+      "id": "onboard-rocket-pod-profile",
+      "catalog_id": "vehicles_upgrades-10",
+      "label_en": "Onboard Rocket Pod",
+      "label_ru": "Бортовой ракетный блок",
+      "effects": [
+        {
+          "id": "onboard-rocket-pod-weapon",
+          "target": "vehicle.mounted_weapon",
+          "operation": "grant",
+          "profile": {
+            "id": "onboard_rocket_pod",
+            "label_en": "Onboard Rocket Pod",
+            "label_ru": "Бортовой ракетный блок",
+            "kind": "standard",
+            "skill": "Heavy Weapons",
+            "weapon_type": "Rocket Launcher",
+            "range_table": "Rocket Launcher",
+            "damage": "8d6",
+            "rof": 1,
+            "magazine": 3,
+            "ammo_kind": "rocket",
+            "ammo_cost": 1,
+            "orientations": [
+              "front"
+            ],
+            "operator": "driver",
+            "suppressive_fire": false
+          },
+          "source": "CP:R 164; CP:R 341"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "onboard-rocket-pod-driver-action",
+          "text_en": "The driver fires this weapon using their Action. Resolve explosion area, cover, and targets manually.",
+          "text_ru": "Водитель стреляет из этого оружия своим Action. Область взрыва, укрытия и цели применяются вручную.",
+          "condition": "driver_action_explosion_resolution",
+          "source": "CP:R 164; CP:R 341"
+        },
+        {
+          "id": "onboard-rocket-pod-driving-reload",
+          "text_en": "This weapon cannot be reloaded while driving; driving state is not tracked automatically yet.",
+          "text_ru": "Это оружие нельзя перезаряжать во время движения; состояние движения пока не отслеживается автоматически.",
+          "condition": "vehicle_is_driving",
+          "source": "CP:R 164"
+        }
+      ]
+    },
+    {
+      "id": "vehicle-heavy-weapon-mount-resource",
+      "catalog_id": "vehicles_upgrades-11",
+      "label_en": "Vehicle Heavy Weapon Mount",
+      "label_ru": "Транспортное крепление тяжёлого оружия",
+      "effects": [
+        {
+          "id": "heavy-weapon-mount-seat",
+          "target": "vehicle.seats",
+          "operation": "add",
+          "value": -1,
+          "source": "CP:R 164"
+        },
+        {
+          "id": "heavy-weapon-mount-binding",
+          "target": "vehicle.weapon_mount",
+          "operation": "grant",
+          "resource": {
+            "id": "heavy_weapon_mount",
+            "label_en": "Passenger Heavy Weapon Mount",
+            "label_ru": "Пассажирское крепление тяжёлого оружия"
+          },
+          "source": "CP:R 164"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "heavy-weapon-mount-passenger-action",
+          "text_en": "A passenger operates the bound two-handed ranged weapon using their Action and may reload it while the vehicle is moving.",
+          "text_ru": "Пассажир использует закреплённое двуручное дальнобойное оружие своим Action и может перезаряжать его во время движения.",
+          "condition": "passenger_operator_action",
+          "source": "CP:R 164"
+        },
+        {
+          "id": "heavy-weapon-mount-glass-bubble",
+          "text_en": "If the vehicle has Bulletproof Glass, a bubble of the same glass protects the gunner; resolve individual glass damage manually.",
+          "text_ru": "Если у транспорта есть Bulletproof Glass, стрелка защищает купол из такого же стекла; повреждения отдельного стекла применяются вручную.",
+          "condition": "bulletproof_glass_gunner_bubble",
+          "source": "CP:R 164"
+        },
+        {
+          "id": "heavy-weapon-mount-family-gift",
+          "text_en": "The first Family-provided mount may include one source-listed heavy weapon. Granting that weapon remains a Nomad/GM decision and is not automatic.",
+          "text_ru": "Первое крепление от Семьи может включать одно указанное в источнике тяжёлое оружие. Выдача оружия остаётся решением Nomad/GM и не автоматизируется.",
+          "condition": "first_family_mount_gift",
+          "source": "CP:R 164"
+        }
+      ]
+    },
+    {
+      "id": "housing-capacity-interior",
+      "catalog_id": "vehicles_upgrades-18",
+      "label_en": "Housing Capacity",
+      "label_ru": "Жилой модуль",
+      "effects": [
+        {
+          "id": "housing-capacity-module",
+          "target": "vehicle.interior",
+          "operation": "grant",
+          "profile": {
+            "id": "housing_capacity",
+            "kind": "housing",
+            "rooms": 1,
+            "beds": 1,
+            "amenities": [
+              "toilet",
+              "shower",
+              "small_kitchen"
+            ]
+          },
+          "source": "CP:R 165"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "housing-capacity-room-layout",
+          "text_en": "Groundcars and AV-4s become a one-bed Kombi. Cabin Cruisers, Yachts, and Aerozeps add one normal room; exact layout and stored contents remain narrative.",
+          "text_ru": "Groundcar и AV-4 становятся Kombi с одной кроватью. Cabin Cruiser, Yacht и Aerozep получают одну обычную комнату; точная планировка и содержимое остаются нарративными.",
+          "condition": "vehicle_interior_layout",
+          "source": "CP:R 165"
+        }
+      ]
+    },
+    {
+      "id": "luxury-vehicle-room-interior",
+      "catalog_id": "vehicles_upgrades-25",
+      "label_en": "Luxury Vehicle Room",
+      "label_ru": "Роскошная комната транспорта",
+      "effects": [
+        {
+          "id": "luxury-room-upgrade",
+          "target": "vehicle.room_upgrade",
+          "operation": "grant",
+          "profile": {
+            "id": "luxury_vehicle_room",
+            "kind": "luxury"
+          },
+          "source": "DL:12V 16"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "luxury-room-aesthetics",
+          "text_en": "A Luxury Room changes aesthetics and perceived housing quality only. Rental category and narrative benefits are decided manually.",
+          "text_ru": "Luxury Room меняет только эстетику и воспринимаемое качество жилья. Категорию аренды и нарративные преимущества определяют вручную.",
+          "condition": "luxury_room_narrative_quality",
+          "source": "DL:12V 16"
+        }
+      ]
+    },
+    {
+      "id": "complex-vehicle-room-interior",
+      "catalog_id": "vehicles_upgrades-26",
+      "label_en": "Complex Vehicle Room",
+      "label_ru": "Комплексная комната транспорта",
+      "effects": [
+        {
+          "id": "complex-room-upgrade",
+          "target": "vehicle.room_upgrade",
+          "operation": "grant",
+          "profile": {
+            "id": "complex_vehicle_room",
+            "kind": "complex",
+            "purposes": [
+              "cargo_bay",
+              "bunkhouse",
+              "cafeteria",
+              "restaurant",
+              "recreation_deck",
+              "prison",
+              "bowling_alley",
+              "laser_tag_arena",
+              "other_complex"
+            ]
+          },
+          "source": "DL:12V 16"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "complex-room-purpose-resolution",
+          "text_en": "The selected purpose labels the room. Equipment, cargo contents, prisoners, services, and other functional benefits require manual resolution.",
+          "text_ru": "Выбранное назначение обозначает комнату. Оснащение, груз, заключённые, услуги и другие функциональные преимущества применяются вручную.",
+          "condition": "complex_room_contents",
+          "source": "DL:12V 16"
+        }
+      ]
+    },
+    {
+      "id": "smuggling-upgrade-cargo",
+      "catalog_id": "vehicles_upgrades-8",
+      "label_en": "Smuggling Upgrade",
+      "label_ru": "Контрабандный модуль",
+      "effects": [
+        {
+          "id": "smuggling-hidden-cargo",
+          "target": "vehicle.cargo",
+          "operation": "grant",
+          "profile": {
+            "id": "smuggling_upgrade",
+            "kind": "hidden",
+            "cargo_spaces": 1,
+            "hidden_holsters": 2,
+            "discovery_dv": 17
+          },
+          "source": "CP:R 164"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "smuggling-upgrade-contents",
+          "text_en": "The hidden spaces are tracked, but their exact dimensions, contents, and who can reach each holster are resolved manually.",
+          "text_ru": "Скрытые пространства учитываются, но их точные размеры, содержимое и доступ к каждому holster применяются вручную.",
+          "condition": "hidden_space_contents",
+          "source": "CP:R 164"
+        }
+      ]
+    },
+    {
+      "id": "bicycle-smuggling-cargo",
+      "catalog_id": "vehicles_upgrades-38",
+      "label_en": "Bicycle Smuggling Compartment",
+      "label_ru": "Тайник велосипеда",
+      "effects": [
+        {
+          "id": "bicycle-hidden-cargo",
+          "target": "vehicle.cargo",
+          "operation": "grant",
+          "profile": {
+            "id": "bicycle_smuggling_compartment",
+            "kind": "hidden_small",
+            "cargo_spaces": 1,
+            "hidden_holsters": 0,
+            "discovery_dv": 17
+          },
+          "source": "DLC:Wheels 5"
+        }
+      ],
+      "manual_rules": [
+        {
+          "id": "bicycle-compartment-dimensions",
+          "text_en": "This compartment only holds objects up to 1 × 6 inches (2.54 × 15.24 cm). Contents are tracked manually.",
+          "text_ru": "Тайник вмещает только предметы до 1 × 6 дюймов (2,54 × 15,24 см). Содержимое учитывается вручную.",
+          "condition": "small_compartment_dimensions",
+          "source": "DLC:Wheels 5"
+        }
+      ]
+    }
+  ]
+}
