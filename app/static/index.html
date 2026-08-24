@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NC//NET — Night City Network</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Orbitron:wght@600;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/ncnet.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🌆%3C/text%3E%3C/svg%3E">
+</head>
+<body class="dense-network">
+<a class="skip-link" href="#view" data-en="Skip to main content" data-ru="Перейти к основному содержимому">Skip to main content</a>
+<header class="topbar system-bar">
+  <a class="brand" href="#/" aria-label="NC//NET home">
+    <span class="brand-mark">//</span>
+    <span class="brand-name">NC<b>//NET</b></span>
+  </a>
+  <div id="workspace-switch" class="workspace-switch" hidden>
+    <button type="button" data-workspace="network">NETWORK</button>
+    <button type="button" data-workspace="gm">GM OPS</button>
+  </div>
+  <div class="system-telemetry" aria-label="Network status">
+    <span><i></i> LIVE</span>
+    <time id="city-clock">--:-- NC</time>
+  </div>
+  <label id="active-dossier-wrap" class="active-dossier-control" hidden>
+    <span data-en="ACTIVE DOSSIER" data-ru="АКТИВНОЕ ДОСЬЕ">ACTIVE DOSSIER</span>
+    <select id="active-dossier" aria-label="Active Dossier"></select>
+  </label>
+  <button id="command-toggle" class="btn-sm command-toggle" type="button" aria-label="Open command palette">⌕ <span>CTRL K</span></button>
+  <button id="theme-toggle" class="btn-sm" type="button" title="Appearance" aria-label="Appearance">◐</button>
+  <button id="audio-toggle" class="btn-sm" type="button" title="NC//NET Audio" aria-label="NC//NET Audio">🔊</button>
+  <button id="language-toggle" class="btn-sm language-toggle" type="button" aria-label="Change language">RU</button>
+  <div id="userbox" class="userbox"></div>
+</header>
+<div class="network-shell">
+  <aside class="nav-rail" aria-label="NC//NET sections">
+    <nav id="nav" aria-label="Primary navigation">
+      <div class="rail-label">CITY NETWORK</div>
+      <a href="#/" data-route=""><span class="rail-icon">⌂</span><span data-en="City" data-ru="Город">City</span><small>01</small></a>
+      <a href="#/contracts" data-route="contracts"><span class="rail-icon">◎</span><span data-en="Contracts" data-ru="Контракты">Contracts</span><small>02</small></a>
+      <a href="#/feed" data-route="feed"><span class="rail-icon">≋</span><span data-en="City Feed" data-ru="Городская лента">City Feed</span><small>03</small></a>
+      <a href="#/dossiers" data-route="dossiers"><span class="rail-icon">◇</span><span data-en="Dossiers" data-ru="Досье">Dossiers</span><small>04</small></a>
+      <details class="rail-data" open>
+        <summary data-en="DATA LAYER" data-ru="СЛОЙ ДАННЫХ">DATA LAYER</summary>
+        <a href="#/database" data-route="database"><span class="rail-icon">▦</span><span data-en="Database" data-ru="База данных">Database</span></a>
+        <a href="#/market" data-route="market"><span class="rail-icon">◈</span><span data-en="Night Market" data-ru="Ночной рынок">Night Market</span></a>
+        <a href="#/quick-reference" data-route="quick-reference"><span class="rail-icon">◫</span><span data-en="Quick Reference" data-ru="Быстрые правила">Quick Reference</span></a>
+        <a href="#/crew" data-route="crew"><span class="rail-icon">⌘</span><span data-en="Crew Registry" data-ru="Реестр команд">Crew Registry</span></a>
+        <a href="#/personas" data-route="personas"><span class="rail-icon">◉</span><span>Personas</span></a>
+        <a href="#/guides" data-route="guides"><span class="rail-icon">▤</span><span data-en="Archive" data-ru="Архив">Archive</span></a>
+      </details>
+    </nav>
+    <div class="rail-status"><span>RELAY 07</span><b>ENCRYPTED</b><small>EUROPE/MOSCOW</small></div>
+  </aside>
+  <main id="view" class="container network-workspace" tabindex="-1"></main>
+</div>
+<nav class="mobile-primary-nav" aria-label="Mobile navigation">
+  <a href="#/" data-route=""><span>⌂</span><small data-en="City" data-ru="Город">City</small></a>
+  <a href="#/contracts" data-route="contracts"><span>◎</span><small data-en="Contracts" data-ru="Контракты">Contracts</small></a>
+  <a href="#/feed" data-route="feed"><span>≋</span><small data-en="Feed" data-ru="Лента">Feed</small></a>
+  <a href="#/dossiers" data-route="dossiers"><span>◇</span><small data-en="Dossier" data-ru="Досье">Dossier</small></a>
+  <button id="mobile-more-toggle" type="button"><span>•••</span><small data-en="More" data-ru="Ещё">More</small></button>
+</nav>
+<div id="mobile-more-menu" class="mobile-more-menu" hidden>
+  <a href="#/database">Database</a><a href="#/market">Night Market</a><a href="#/quick-reference">Quick Reference</a><a href="#/crew">Crew Registry</a><a href="#/personas">Personas</a><a href="#/guides">Archive</a><a href="#/profile">Profile</a><a id="mobile-gm-link" href="#/gm" hidden>GM OPS</a><button id="mobile-logout" type="button" hidden>Sign Out</button>
+</div>
+<footer class="footer">
+  <span data-en="NC//NET — an unofficial Night City campaign network." data-ru="NC//NET — неофициальная сеть кампаний Найт-Сити.">NC//NET — an unofficial Night City campaign network.</span>
+  <span>RELAY STATUS // NOMINAL</span>
+</footer>
+<div id="modal-root" aria-hidden="true"></div>
+<div id="toast-root" role="status" aria-live="polite" aria-atomic="false"></div>
+<script src="/i18n.js"></script>
+<script src="/theme.js"></script>
+<script src="/guides-data.js"></script>
+<script src="/gm-ref.js"></script>
+<script src="/player-actions.js"></script>
+<script src="/creation-data.js"></script>
+<script src="/ncnet.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
