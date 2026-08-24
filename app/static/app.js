@@ -3063,6 +3063,13 @@ async function openItemTransferModal(c, item) {
   $('#tr-stash', modal).onclick = () => {
     performItemTransfer(c, item.instance_id, { revision: c.revision, action: 'stash', quantity: qty('#tr-stash-qty'), notes: notes() });
   };
+  const personalBtn = $('#tr-personal', modal);
+  if (personalBtn) personalBtn.onclick = async () => {
+    try {
+      await api('/api/characters/' + c.id + '/personal-stash', { method: 'POST', body: { action: 'store', instance_id: item.instance_id } });
+      closeModal(); toast(T('Item stored in personal stash.', '\u041f\u0440\u0435\u0434\u043c\u0435\u0442 \u0432 \u043b\u0438\u0447\u043d\u043e\u043c \u0442\u0430\u0439\u043d\u0438\u043a\u0435.')); viewSheet(c.id);
+    } catch (e) { toast(e.message, true); }
+  };
   const splitButton = $('#tr-split', modal);
   if (splitButton) splitButton.onclick = () => {
     const amount = Number(prompt(T(`Split amount (1–${fullQty - 1})`,`Количество для разделения (1–${fullQty - 1})`), '1'));
