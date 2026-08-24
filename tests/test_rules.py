@@ -1734,14 +1734,25 @@ class CatalogArmorTests(unittest.TestCase):
 
     def test_night_market_is_grouped_by_deterministic_vendors(self):
         market = server.night_market()
-        self.assertEqual(len(market['vendors']), 6)
+        self.assertEqual(len(market['vendors']), len(server.NIGHT_MARKET_VENDORS))
         self.assertEqual(len(market['items']),
                          sum(len(vendor['items']) for vendor in market['vendors']))
         vendor_ids = {vendor['id'] for vendor in market['vendors']}
-        self.assertEqual(len(vendor_ids), 6)
+        self.assertEqual(len(vendor_ids), len(server.NIGHT_MARKET_VENDORS))
         self.assertTrue(all(item['vendor_id'] in vendor_ids for item in market['items']))
         self.assertTrue(all('mechanics' in item and 'desc' in item for item in market['items']))
         self.assertEqual(market, server.night_market())
+        # 20.9: consumables live only at Street Pharmacy, never at Back-Alley.
+        catalog_by_id = server.catalog()['_by_id']
+        for vendor in market['vendors']:
+            consumables = [item for item in vendor['items']
+                           if catalog_by_id[item['id']].get('consumable')]
+            if vendor['id'] == 'street-pharmacy':
+                self.assertTrue(vendor['items'], 'Street Pharmacy should stock consumables')
+                self.assertEqual(consumables, vendor['items'])
+            else:
+                self.assertEqual(consumables, [],
+                                 f'{vendor["id"]} must not sell consumables')
 
 
 if __name__ == '__main__':

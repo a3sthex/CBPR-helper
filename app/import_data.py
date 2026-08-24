@@ -246,6 +246,12 @@ def normalize_mechanic_value(key, value):
     if key in NUMERIC_MECHANICS and re.fullmatch(r'-?\d+(?:\.\d+)?', text):
         number = float(text)
         return int(number) if number.is_integer() else number
+    # Magazine may use exotic notation ("20 / 2", "6 (Rubber Arrows)", "-");
+    # take the first integer so weapon_state magazine_max stays meaningful.
+    if key == 'magazine':
+        match = re.search(r'\d+', text)
+        if match:
+            return int(match.group(0))
     return normalize_display_value(text)
 
 

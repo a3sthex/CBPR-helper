@@ -17,7 +17,7 @@
   --radius: 10px;
 }
 * { box-sizing: border-box; }
-html { scrollbar-color: #2c3a5e var(--bg); }
+html { scrollbar-color: var(--line) var(--bg); }
 body {
   margin: 0;
   background:
@@ -189,7 +189,7 @@ button {
 }
 button:hover { border-color: var(--cyan); }
 button:disabled { opacity: .45; cursor: not-allowed; }
-.btn-primary { background: linear-gradient(135deg, #00c9e0, #0079a8); border-color: #00d5f0; color: #041018; }
+.btn-primary { background: linear-gradient(135deg, color-mix(in srgb, var(--cyan) 85%, var(--bg)), color-mix(in srgb, var(--cyan) 50%, var(--bg))); border-color: var(--cyan); color: var(--bg); }
 .btn-primary:hover { box-shadow: var(--glow-c); }
 .btn-danger { border-color: rgba(255, 82, 82, .5); color: var(--red); }
 .btn-danger:hover { border-color: var(--red); box-shadow: 0 0 14px rgba(255, 82, 82, .25); }
@@ -679,3 +679,87 @@ body { background: radial-gradient(1200px 500px at 80% -10%, color-mix(in srgb, 
 .cyber-host-card header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
 .cyber-host-card header div,.cyber-host-options{display:grid;gap:4px}
 .cyberware-issues{border:1px solid var(--warning);padding:10px;background:color-mix(in srgb,var(--warning) 8%,transparent)}
+
+/* ===================== P6: Landscape Print Character Sheet ===================== */
+@media print {
+  /* Force landscape */
+  @page { size: A4 landscape; margin: 10mm; }
+
+  /* Hide everything that's not the character sheet */
+  .topbar, .nav-rail, .mobile-primary-nav, .mobile-more-toggle, .mobile-more-menu,
+  .footer, .wizard-nav, .wiz-live, .wiz-footer, .summary-status button,
+  .validation-section, .sheet-tabs, .page-head .row, .resource-actions,
+  .luck-pips, #sheet-print, #sheet-json, #sheet-network, #sheet-ledger,
+  #sheet-memorial, #sheet-edit, #sheet-del, #sheet-privacy, #sheet-portrait-file,
+  #sheet-improve, #sheet-ip-gm, .skip-link, #workspace-switch, .system-telemetry,
+  #active-dossier-wrap, #cart-slot, #toast-root, .nc-map-layers, .nc-map-zoom-btn,
+  .nc-map-palette, .feed-signal, .city-signal, .data-layer-strip,
+  .modal-overlay, #view > .page-head {
+    display: none !important;
+  }
+
+  /* Print basics */
+  body { background: #fff !important; color: #000 !important; font-size: 11px; }
+  body * { color: #000 !important; border-color: #999 !important; background: #fff !important;
+           box-shadow: none !important; text-shadow: none !important; filter: none !important; }
+  h1 { font-size: 18px; } h2 { font-size: 14px; } h3 { font-size: 12px; }
+  a { color: #000 !important; text-decoration: underline; }
+
+  /* Sheet header: portrait + identity */
+  .official-sheet-head {
+    display: grid !important; grid-template-columns: auto 1fr; gap: 12px;
+    page-break-after: avoid;
+  }
+  .sheet-portrait { width: 80px !important; height: 100px !important; }
+
+  /* Resource strip: compact */
+  .panel.accent .derived { gap: 6px; }
+  .derived .dstat { min-width: 60px; }
+  .derived .v { font-size: 13px; font-weight: 700; }
+  .derived .k { font-size: 9px; }
+
+  /* Two-column layout: left (identity/stats/skills/combat), right (gear/cyberware/lifepath) */
+  .sheet-layout { grid-template-columns: 1fr 1fr !important; gap: 8px !important; }
+
+  /* Panels: compact, no rounded corners */
+  .panel { padding: 6px !important; border: 1px solid #999 !important; border-radius: 0 !important;
+           break-inside: avoid; }
+
+  /* Stat grid */
+  .statgrid { grid-template-columns: repeat(5, 1fr) !important; gap: 4px; }
+  .stat { text-align: center; padding: 3px; }
+  .stat .v { font-size: 14px; font-weight: 700; }
+  .stat .k { font-size: 9px; }
+
+  /* Skill table */
+  #sheet-skills, .skill-table { font-size: 10px; break-inside: avoid; }
+
+  /* Inventory rows */
+  .inv-row { font-size: 10px; padding: 3px; border-bottom: 1px solid #ccc !important; }
+
+  /* Tables */
+  .table-scroll table { font-size: 10px; }
+  .table-scroll th, .table-scroll td { padding: 2px 4px; }
+
+  /* Force page breaks between major sections */
+  #sheet-cyberware, #sheet-garage { page-break-before: auto; }
+
+  /* Details open for print */
+  details { break-inside: avoid; }
+  details:not([open]) > .desc-wrap { display: block !important; }
+  details:not([open]) .desc { display: block !important; }
+  summary { list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+
+  /* Combat sheet */
+  #sheet-combat { break-inside: avoid; }
+
+  /* Hide descriptions for print (too verbose) */
+  .desc-wrap { display: none !important; }
+
+  /* Effect panels: hide (too detailed for print) */
+  .effect-panel { display: none !important; }
+
+  /* Downtime / loans / tech-maker: hide */
+  .downtime-panel, .loans-panel, #sheet-tech-maker { display: none !important; }
+}

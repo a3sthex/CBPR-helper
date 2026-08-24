@@ -1,6 +1,7 @@
 import copy
 import importlib.util
 import json
+import os
 import re
 import sqlite3
 import tempfile
@@ -3524,7 +3525,8 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         self.assertNotIn('cash', public['data'])
         self.assertNotIn('notes', public['data'])
         self.assertNotIn('player', public['data'])
-        self.assertNotIn('stats', public['data'])
+        self.assertIn('stats', public['data'])
+        self.assertIn('top_skills', public['data'])
         self.assertNotIn('inventory', public['data'])
         self.assertEqual(public['derived'], {})
 
@@ -4049,6 +4051,51 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         login_routes = [route for route in server.ROUTES
                         if route[0] == 'POST' and route[1].pattern == '^/api/login$']
         self.assertEqual(len(login_routes), 1)
+
+
+class SecurityHeadersTests(unittest.TestCase):
+    def test_default_security_headers(self):
+        had = os.environ.get('CBPR_CSP')
+        os.environ.pop('CBPR_CSP', None)
+        try:
+            pairs = dict(server.security_headers())
+        finally:
+            if had is not None:
+                os.environ['CBPR_CSP'] = had
+        self.assertEqual(pairs['X-Content-Type-Options'], 'nosniff')
+        self.assertEqual(pairs['X-Frame-Options'], 'SAMEORIGIN')
+        self.assertEqual(pairs['Referrer-Policy'], 'strict-origin-when-cross-origin')
+        csp = pairs['Content-Security-Policy']
+        for directive in ("object-src 'none'", "connect-src 'self'",
+                          "frame-ancestors 'self'", "base-uri 'self'"):
+            self.assertIn(directive, csp)
+
+    def test_csp_env_override_replaces_policy(self):
+        with mock.patch.dict(os.environ, {'CBPR_CSP': "default-src 'none'"}):
+            pairs = dict(server.security_headers())
+        self.assertEqual(pairs['Content-Security-Policy'], "default-src 'none'")
+        self.assertEqual(pairs['X-Frame-Options'], 'SAMEORIGIN')
+
+    def test_empty_csp_env_disables_header(self):
+        with mock.patch.dict(os.environ, {'CBPR_CSP': ''}):
+            pairs = dict(server.security_headers())
+        self.assertNotIn('Content-Security-Policy', pairs)
+        self.assertIn('X-Content-Type-Options', pairs)
+
+
+class LoginThrottleTests(unittest.TestCase):
+    USERNAME = 'throttle-target'
+
+    def tearDown(self):
+        server.clear_failed_logins(self.USERNAME)
+
+    def test_locks_after_threshold_and_unlocks_on_clear(self):
+        for _ in range(server.FAILED_LOGIN_LIMIT):
+            self.assertFalse(server.account_login_locked(self.USERNAME))
+            server.record_failed_login(self.USERNAME)
+        self.assertTrue(server.account_login_locked(self.USERNAME))
+        server.clear_failed_logins(self.USERNAME)
+        self.assertFalse(server.account_login_locked(self.USERNAME))
 
 
 if __name__ == '__main__':

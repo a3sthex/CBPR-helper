@@ -953,6 +953,26 @@ class MarketStockFlowTests(unittest.TestCase):
         return json.loads(self.conn.execute(
             'SELECT data FROM characters WHERE id=?', (char_id,)).fetchone()['data'])['cash']
 
+    def test_permanent_supply_buys_at_book_price_without_stock(self):
+        server.ensure_market_permanent(self.conn)
+        self.conn.commit()
+        market = server.night_market(conn=self.conn)
+        permanent_ids = {item['id'] for vendor in market['vendors']
+                         for item in vendor.get('permanent', [])}
+        self.assertIn('guns-0', permanent_ids)
+        book_price = server.item_by_id('guns-0')['price']
+        self.current = self.user('runner1')
+        result = self.call(server.Handler.api_buy, {}, None, {
+            'char_id': 1, 'items': [{'id': 'guns-0', 'qty': 1, 'mode': 'nm', 'permanent': True}]})
+        self.assertTrue(result['payload']['ok'])
+        self.assertEqual(result['payload']['total'], book_price)
+        # Permanent purchases never create or touch finite-stock rows.
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) n FROM market_stock WHERE item_id='guns-0'").fetchone()['n'], 0)
+        data = json.loads(self.conn.execute(
+            'SELECT data FROM characters WHERE id=1').fetchone()['data'])
+        self.assertEqual(data['cash'], 100000 - book_price)
+
     def test_buy_decrements_stock_then_sells_out(self):
         item = self.market_item()
         self.seed_stock(item, 2)
@@ -1652,13 +1672,14 @@ class MapLocationsFlowTests(unittest.TestCase):
 
     def test_seed_location_is_read_only_and_player_cannot_write(self):
         self.current = self.user('gm')
+        # Seed locations cannot be edited (canonical data), but CAN be archived
+        # (20.4: GM may remove 2077-era POIs for a 2070 campaign).
         with self.assertRaises(server.ApiError) as seed_edit:
             self.call(server.Handler.api_location_update, {}, self.match('afterlife'),
                       {'name_en': 'Changed'})
         self.assertEqual(seed_edit.exception.status, 403)
-        with self.assertRaises(server.ApiError) as seed_delete:
-            self.call(server.Handler.api_location_delete, {}, self.match('afterlife'), {})
-        self.assertEqual(seed_delete.exception.status, 403)
+        result = self.call(server.Handler.api_location_delete, {}, self.match('afterlife'), {})
+        self.assertTrue(result['payload']['archived'])
         self.current = self.user('runner1')
         with self.assertRaises(server.ApiError) as player_create:
             self.call(server.Handler.api_location_create, {}, None, {'name_en': 'Sneaky'})
@@ -1792,6 +1813,61 @@ class MemorialFlowTests(unittest.TestCase):
         data = self.char_data()
         self.assertNotIn('status', data)
         self.assertFalse(data['archived'])
+
+    def test_restore_does_not_require_reason(self):
+        self.current = self.user('gm')
+        memorial = self.call(server.Handler.api_character_memorialize, {}, self.match(1), {
+            'status': 'deceased', 'reason': 'Finale'})['payload']
+        # Restore without a reason must succeed (20.5: reason is optional).
+        self.call(server.Handler.api_memorial_restore, {}, self.match(memorial['id']), {})
+        self.assertEqual(self.conn.execute('SELECT COUNT(*) n FROM memorials').fetchone()['n'], 0)
+        self.assertFalse(self.char_data()['archived'])
+
+    def test_archived_character_can_be_memorialized(self):
+        self.current = self.user('gm')
+        # Archive the character first (e.g. a player left the campaign).
+        data = self.char_data()
+        data['archived'] = True
+        self.conn.execute('UPDATE characters SET data=? WHERE id=1', (json.dumps(data),))
+        self.conn.commit()
+        memorial = self.call(server.Handler.api_character_memorialize, {}, self.match(1), {
+            'status': 'deceased', 'reason': 'Late honor'})['payload']
+        self.assertEqual(memorial['status'], 'deceased')
+        self.assertEqual(
+            self.conn.execute('SELECT COUNT(*) n FROM memorials WHERE character_id=1').fetchone()['n'], 1)
+
+    def test_collaborative_memorial_owner_fills_then_gm_publishes(self):
+        self.current = self.user('gm')
+        initiated = self.call(server.Handler.api_character_memorialize, {}, self.match(1), {
+            'status': 'deceased', 'reason': 'Finale', 'collaborative': True})['payload']
+        self.assertEqual(initiated['draft_state'], 'pending_owner')
+        # The Dossier is NOT frozen at initiation.
+        self.assertFalse(self.char_data().get('archived'))
+        memorial_id = initiated['id']
+        # A non-owner (the GM here) cannot fill the collaborative draft.
+        with self.assertRaises(server.ApiError) as denied:
+            self.call(server.Handler.api_memorial_owner_draft, {}, self.match(memorial_id), {
+                'obituary': 'nope'})
+        self.assertEqual(denied.exception.status, 403)
+        # The owner (runner1) fills the narrative and an optional Afterlife recipe.
+        self.current = self.user('runner1')
+        filled = self.call(server.Handler.api_memorial_owner_draft, {}, self.match(memorial_id), {
+            'location': 'Night City', 'cause': 'Flatlined', 'epitaph': 'Burned bright',
+            'last_words': 'See ya', 'obituary': 'V fell.', 'visibility': 'public',
+            'drink_name': 'The V', 'legend': 'A legend'})['payload']
+        self.assertEqual(filled['obituary'], 'V fell.')
+        self.assertEqual(filled['draft_state'], 'pending_owner')
+        self.assertIsNotNone(filled['legacy'])
+        self.assertEqual(filled['legacy']['drink_name'], 'The V')
+        # Publishing freezes the Dossier and finalizes the memorial.
+        self.current = self.user('gm')
+        published = self.call(server.Handler.api_memorial_publish, {}, self.match(memorial_id), {})['payload']
+        self.assertEqual(published['draft_state'], 'published')
+        self.assertTrue(self.char_data()['archived'])
+        # Re-publishing is rejected.
+        with self.assertRaises(server.ApiError) as repeat:
+            self.call(server.Handler.api_memorial_publish, {}, self.match(memorial_id), {})
+        self.assertEqual(repeat.exception.status, 409)
 
 
 if __name__ == '__main__':

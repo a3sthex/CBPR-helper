@@ -41,6 +41,36 @@ MOSCOW = timezone(timedelta(hours=3))
 SESSION_TTL = 30 * 24 * 3600
 PBKDF_ITERS = 120_000
 
+
+def security_headers():
+    """Defense-in-depth response headers.
+
+    CSP is deliberately lenient on script/style ('unsafe-inline') because the
+    SPA builds UI with innerHTML + inline event handlers, but still hardens
+    object-src/base-uri/connect-src/frame-ancestors. Override the whole policy
+    with CBPR_CSP (empty value disables the header).
+    """
+    csp = os.environ.get('CBPR_CSP')
+    if csp is None:
+        csp = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "img-src 'self' data:; "
+            "connect-src 'self'; "
+            "object-src 'none'; base-uri 'self'; "
+            "frame-ancestors 'self'; form-action 'self'"
+        )
+    pairs = [
+        ('X-Content-Type-Options', 'nosniff'),
+        ('X-Frame-Options', 'SAMEORIGIN'),
+        ('Referrer-Policy', 'strict-origin-when-cross-origin'),
+    ]
+    if csp:
+        pairs.append(('Content-Security-Policy', csp))
+    return pairs
+
 # ---------------------------------------------------------------- каталог
 
 _catalog = None
@@ -93,6 +123,15 @@ def load_catalog():
         _catalog = json.load(f)
     for item in _catalog.get('items') or []:
         item.update(cyberdeck_item_metadata(item))
+        # Normalize exotic/multi-ammo magazine notation ("20 / 2",
+        # "6 (Rubber Arrows)", "-") to the first integer so weapon_state
+        # magazine_max does not collapse to 0. Raw text stays in `fields`.
+        mechanics = item.get('mechanics')
+        if isinstance(mechanics, dict) and 'magazine' in mechanics:
+            mag = mechanics['magazine']
+            if not isinstance(mag, int):
+                match = re.search(r'\d+', str(mag))
+                mechanics['magazine'] = int(match.group(0)) if match else 0
     _catalog['_by_id'] = {it['id']: it for it in _catalog['items']}
     return _catalog
 
@@ -2796,6 +2835,20 @@ CREATE TABLE IF NOT EXISTS crew_stash(
   created REAL NOT NULL,
   updated REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS personal_stash(
+  instance_id TEXT PRIMARY KEY,
+  character_id INTEGER NOT NULL,
+  catalog_item_id TEXT,
+  custom_name TEXT,
+  state TEXT NOT NULL DEFAULT 'stored',
+  quantity INTEGER NOT NULL DEFAULT 1,
+  notes TEXT NOT NULL DEFAULT '',
+  stored_at REAL NOT NULL,
+  data_json TEXT NOT NULL DEFAULT '{}',
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_personal_stash_char ON personal_stash(character_id);
 CREATE INDEX IF NOT EXISTS idx_crew_stash_stored ON crew_stash(stored_at);
 
 CREATE TABLE IF NOT EXISTS item_transfers(
@@ -2860,6 +2913,83 @@ CREATE TABLE IF NOT EXISTS fixer_requests(
 );
 CREATE INDEX IF NOT EXISTS idx_fixer_requests_status ON fixer_requests(status, created);
 """
+
+MARKET_PERMANENT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS market_permanent(
+  vendor_id TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created REAL NOT NULL,
+  PRIMARY KEY (vendor_id, item_id)
+);
+"""
+
+ORGANIZATION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS persona_memberships(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  member_persona_id INTEGER NOT NULL,
+  organization_persona_id INTEGER NOT NULL,
+  role_title TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'active',
+  visibility TEXT NOT NULL DEFAULT 'public',
+  since_at REAL,
+  until_at REAL,
+  note TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memberships_member ON persona_memberships(member_persona_id);
+CREATE INDEX IF NOT EXISTS idx_memberships_org ON persona_memberships(organization_persona_id);
+CREATE TABLE IF NOT EXISTS crew_reputation(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  organization_persona_id INTEGER NOT NULL,
+  reputation INTEGER NOT NULL DEFAULT 0,
+  favor INTEGER NOT NULL DEFAULT 0,
+  heat INTEGER NOT NULL DEFAULT 0,
+  standing TEXT NOT NULL DEFAULT 'neutral',
+  note TEXT NOT NULL DEFAULT '',
+  created_by INTEGER,
+  created REAL NOT NULL,
+  updated REAL NOT NULL,
+  UNIQUE(organization_persona_id)
+);
+CREATE TABLE IF NOT EXISTS character_reputation(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  character_id INTEGER NOT NULL,
+  organization_persona_id INTEGER NOT NULL,
+  reputation INTEGER NOT NULL DEFAULT 0,
+  favor INTEGER NOT NULL DEFAULT 0,
+  heat INTEGER NOT NULL DEFAULT 0,
+  standing TEXT NOT NULL DEFAULT 'neutral',
+  note TEXT NOT NULL DEFAULT '',
+  created_by INTEGER,
+  created REAL NOT NULL,
+  updated REAL NOT NULL,
+  UNIQUE(character_id, organization_persona_id)
+);
+"""
+
+# Curated always-available base stock (20.10). Book price, no daily rotation,
+# no finite stock. Sourced from docs/permanent-assortment.md.
+PERMANENT_SUPPLY = {
+    'gunmart-after-dark': [
+        'ammo-0', 'ammo-1', 'ammo-4', 'ammo-8',
+        'guns-0', 'guns-1', 'guns-2', 'guns-3', 'guns-5', 'guns-6',
+        'guns-8', 'guns-9', 'melee-0', 'melee-1', 'melee-2', 'melee-3',
+        'grenades-14', 'grenades-7', 'grenades-3'],
+    'iron-shell': ['armor-1', 'armor-2', 'armor-3', 'armor-5', 'armor-6', 'armor-0'],
+    'chrome-saint': ['cyberware-49', 'cyberware-56', 'cyberware-31', 'cyberware-2',
+                     'cyberware-1', 'cyberware-90', 'cyberware-88'],
+    'ghost-packet': ['net_stuff-5', 'net_stuff-4', 'net_stuff-19', 'programs-14',
+                     'programs-12', 'programs-13', 'programs-6', 'programs-0'],
+    'back-alley-general': [
+        'gear-22', 'gear-27', 'gear-47', 'gear-60', 'gear-72', 'gear-10', 'gear-1',
+        'gear-0', 'gear-6', 'gear-13', 'gear-19', 'gear-31', 'gear-50', 'gear-67',
+        'gear-82', 'gear-91'],
+    'street-pharmacy': ['gear-150', 'gear-151', 'gear-152', 'gear-153', 'gear-154',
+                        'gear-155', 'gear-156', 'gear-157', 'gear-164'],
+}
 
 SESSION_RECAP_SCHEMA = """
 CREATE TABLE IF NOT EXISTS session_recaps(
@@ -2997,6 +3127,9 @@ MIGRATION_NPC_STATBLOCKS = 15
 MIGRATION_SESSION_RECAPS = 16
 MIGRATION_LOCATIONS = 17
 MIGRATION_MEMORIAL = 18
+MIGRATION_MEMORIAL_DRAFT = 19
+MIGRATION_MARKET_PERMANENT = 20
+MIGRATION_ORGANIZATIONS = 21
 DB_BACKUP_LIMIT = 5
 _RATE_LIMIT_BUCKETS = {}
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -3034,6 +3167,37 @@ def enforce_rate_limit(identifier, limit, window):
             raise ApiError(429, 'Слишком много запросов; попробуйте позже')
         bucket.append(now)
         _RATE_LIMIT_BUCKETS[identifier] = bucket
+
+
+# Per-account login throttle: mitigates distributed brute-force that bypasses
+# the IP-level limit. Only failed attempts are counted; a successful login
+# clears the counter. In-memory (resets on restart), like the IP limiter.
+FAILED_LOGIN_LIMIT = 8
+FAILED_LOGIN_WINDOW = 900  # 15 minutes
+
+
+def _failed_login_bucket(username):
+    now = time.time()
+    key = f'login-user:{username}'
+    with _RATE_LIMIT_LOCK:
+        bucket = [stamp for stamp in _RATE_LIMIT_BUCKETS.get(key, [])
+                  if stamp > now - FAILED_LOGIN_WINDOW]
+        _RATE_LIMIT_BUCKETS[key] = bucket
+        return bucket
+
+
+def account_login_locked(username):
+    return len(_failed_login_bucket(username)) >= FAILED_LOGIN_LIMIT
+
+
+def record_failed_login(username):
+    bucket = _failed_login_bucket(username)
+    bucket.append(time.time())
+
+
+def clear_failed_logins(username):
+    with _RATE_LIMIT_LOCK:
+        _RATE_LIMIT_BUCKETS.pop(f'login-user:{username}', None)
         if len(_RATE_LIMIT_BUCKETS) > 5000:
             for key in list(_RATE_LIMIT_BUCKETS)[:1000]:
                 if not _RATE_LIMIT_BUCKETS[key] or _RATE_LIMIT_BUCKETS[key][-1] <= now - 3600:
@@ -4331,6 +4495,9 @@ def apply_schema_migrations(conn, make_backup=True):
         (MIGRATION_SESSION_RECAPS, 'session recaps and campaign chronicle'),
         (MIGRATION_LOCATIONS, 'map points of interest and key locations'),
         (MIGRATION_MEMORIAL, 'fallen edgerunners memorial and afterlife legacy'),
+        (MIGRATION_MEMORIAL_DRAFT, 'collaborative memorial draft state'),
+        (MIGRATION_MARKET_PERMANENT, 'permanent market supply'),
+        (MIGRATION_ORGANIZATIONS, 'organization memberships and reputation'),
     ]
     pending = [version for version, _ in migrations if version not in applied]
     if make_backup and pending:
@@ -4395,6 +4562,46 @@ def apply_schema_migrations(conn, make_backup=True):
         conn.executescript(LOCATION_SCHEMA)
     if MIGRATION_MEMORIAL not in applied:
         conn.executescript(MEMORIAL_SCHEMA)
+    if MIGRATION_MEMORIAL_DRAFT not in applied:
+        ensure_column(conn, 'memorials', 'draft_state', "TEXT NOT NULL DEFAULT 'published'")
+    if MIGRATION_MARKET_PERMANENT not in applied:
+        conn.executescript(MARKET_PERMANENT_SCHEMA)
+    if MIGRATION_ORGANIZATIONS not in applied:
+        conn.executescript(ORGANIZATION_SCHEMA)
+    # Crew reputation (additive to organizations migration).
+    try:
+        conn.execute('''CREATE TABLE IF NOT EXISTS crew_reputation(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  organization_persona_id INTEGER NOT NULL,
+  reputation INTEGER NOT NULL DEFAULT 0,
+  favor INTEGER NOT NULL DEFAULT 0,
+  heat INTEGER NOT NULL DEFAULT 0,
+  standing TEXT NOT NULL DEFAULT 'neutral',
+  note TEXT NOT NULL DEFAULT '',
+  created_by INTEGER,
+  created REAL NOT NULL,
+  updated REAL NOT NULL,
+  UNIQUE(organization_persona_id))''')
+    except Exception:
+        pass
+    # Personal stash (additive to crew_stash migration).
+    try:
+        conn.executescript('''CREATE TABLE IF NOT EXISTS personal_stash(
+  instance_id TEXT PRIMARY KEY,
+  character_id INTEGER NOT NULL,
+  catalog_item_id TEXT,
+  custom_name TEXT,
+  state TEXT NOT NULL DEFAULT 'stored',
+  quantity INTEGER NOT NULL DEFAULT 1,
+  notes TEXT NOT NULL DEFAULT '',
+  stored_at REAL NOT NULL,
+  data_json TEXT NOT NULL DEFAULT '{}',
+  created REAL NOT NULL,
+  updated REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_personal_stash_char ON personal_stash(character_id);''')
+    except Exception:
+        pass
     # Re-run additive CREATE IF NOT EXISTS blocks so patch-level tables added to an
     # already-applied migration remain safe during development and rolling deploys.
     conn.executescript(NETWORK_SCHEMA)
@@ -4501,6 +4708,7 @@ NC_LOCATION_IDS = {
     'badlands-near-pacifica', 'orbital-air-space-center',
 }
 FEED_FORMATS = {'short', 'article', 'blog', 'bulletin', 'statement', 'rumor'}
+FEED_DEFAULT_FORMAT = 'article'
 FEED_TRUTH = {'true', 'partially_true', 'false', 'propaganda', 'unknown'}
 SESSION_VIEW_DEFAULTS = {
     'show_initiative': True,
@@ -6091,6 +6299,7 @@ def location_payload(row, user):
         'source': row['source'], 'custom': bool(row['custom']),
         'archived': bool(row['archived']),
         'can_edit': bool(user and user_is_gm(user) and row['custom']),
+        'can_delete': bool(user and user_is_gm(user) and not row['archived']),
         'created': row['created'], 'updated': row['updated'],
     }
 
@@ -6099,6 +6308,67 @@ def location_payload(row, user):
 
 MEMORIAL_STATUSES = {'deceased', 'retired', 'missing'}
 MEMORIAL_VISIBILITIES = {'public', 'private'}
+MEMBERSHIP_STATUSES = {'active', 'former', 'secret', 'expelled', 'deceased'}
+MEMBERSHIP_VISIBILITIES = {'public', 'gm', 'classified'}
+REPUTATION_STANDINGS = {'allied', 'friendly', 'neutral', 'hostile', 'hunted'}
+
+def membership_payload(row):
+    return {
+        'id': row['id'], 'member_persona_id': row['member_persona_id'],
+        'organization_persona_id': row['organization_persona_id'],
+        'role_title': row['role_title'], 'status': row['status'],
+        'visibility': row['visibility'], 'since_at': row['since_at'],
+        'until_at': row['until_at'], 'note': row['note'],
+        'sort_order': row['sort_order'],
+    }
+
+def crew_reputation_map(conn):
+    try:
+        rows = conn.execute('SELECT * FROM crew_reputation').fetchall()
+        return {row['organization_persona_id']: dict(row) for row in rows}
+    except sqlite3.OperationalError:
+        return {}
+
+def clean_membership_input(body, existing=None):
+    base = dict(existing or {})
+    get = lambda key, default='': (body or {}).get(key, base.get(key, default))
+    status = str(get('status', 'active')).lower()
+    if status not in MEMBERSHIP_STATUSES:
+        status = 'active'
+    visibility = str(get('visibility', 'public')).lower()
+    if visibility not in MEMBERSHIP_VISIBILITIES:
+        visibility = 'public'
+    member = _num(get('member_persona_id') or base.get('member_persona_id'))
+    org = _num(get('organization_persona_id') or base.get('organization_persona_id'))
+    if not member or not org:
+        raise ApiError(400, 'Membership требует member и organization persona')
+    since = get('since_at')
+    until = get('until_at')
+    return {
+        'member_persona_id': member, 'organization_persona_id': org,
+        'role_title': str(get('role_title') or '')[:120],
+        'status': status, 'visibility': visibility,
+        'since_at': optional_timestamp(since) if since not in (None, '') else None,
+        'until_at': optional_timestamp(until) if until not in (None, '') else None,
+        'note': str(get('note') or '')[:2000],
+        'sort_order': max(0, min(999, _num(get('sort_order')) or 0)),
+    }
+
+def clean_reputation_input(body, existing=None):
+    base = dict(existing or {})
+    get = lambda key, default=0: (body or {}).get(key, base.get(key, default))
+    standing = str(get('standing', 'neutral')).lower()
+    if standing not in REPUTATION_STANDINGS:
+        standing = 'neutral'
+    return {
+        'organization_persona_id': _num(get('organization_persona_id')),
+        'reputation': max(-100, min(100, _num(get('reputation')) or 0)),
+        'favor': max(-100, min(100, _num(get('favor')) or 0)),
+        'heat': max(0, min(100, _num(get('heat')) or 0)),
+        'standing': standing,
+        'note': str(get('note') or '')[:2000],
+    }
+
 
 
 def clean_memorial_input(body, existing=None):
@@ -6154,7 +6424,9 @@ def memorial_payload(row, user=None, full=False):
         'id': row['id'], 'character_id': row['character_id'],
         'handle': row['handle'], 'role': row['role'], 'role_rank': row['role_rank'],
         'portrait_media_id': row['portrait_media_id'],
-        'status': row['status'], 'death_date': row['death_date'],
+        'status': row['status'],
+        'draft_state': row['draft_state'] if 'draft_state' in row.keys() else 'published',
+        'death_date': row['death_date'],
         'location': row['location'], 'cause': row['cause'],
         'epitaph': row['epitaph'], 'last_words': row['last_words'],
         'obituary': row['obituary'],
@@ -6434,6 +6706,7 @@ def init_db():
     apply_schema_migrations(conn, make_backup=had_users_table)
     ensure_campaign_clock(conn)
     ensure_seed_locations(conn)
+    ensure_market_permanent(conn)
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     stale = conn.execute('SELECT * FROM media WHERE attached_type IS NULL AND created < ?', (time.time() - 7 * 86400,)).fetchall()
     for media in stale:
@@ -6550,7 +6823,7 @@ def create_session(conn, user_id, ip_address='', user_agent=''):
 
 # ---------------------------------------------------------------- ночной рынок
 
-NM_PER_CAT = 4
+NM_PER_CAT = 6
 NM_MULTS = [0.7, 0.8, 0.9, 0.9, 1.0, 1.0, 1.1, 1.2, 1.5]
 NIGHT_MARKET_VENDORS = [
     {
@@ -6560,6 +6833,7 @@ NIGHT_MARKET_VENDORS = [
         'tagline_ru': 'Оружие, боеприпасы, взрывчатка и сомнительные переделки.',
         'cats': ['guns', 'melee', 'gun_upgrades', 'ammo', 'grenades'],
         'location': 'Watson',
+        'location_id': 'megabuilding-h10',
     },
     {
         'id': 'iron-shell', 'handle': 'iron-shell', 'accent_color': '#8fa0bd', 'name_en': 'Iron Shell', 'name_ru': 'Iron Shell', 'icon': '🛡️',
@@ -6567,6 +6841,7 @@ NIGHT_MARKET_VENDORS = [
         'tagline_ru': 'Броня, щиты и уверенность, что переживёшь второй выстрел.',
         'cats': ['armor'],
         'location': 'Westbrook',
+        'location_id': None,
     },
     {
         'id': 'chrome-saint', 'handle': 'chrome-saint', 'accent_color': '#ff2d78', 'name_en': 'Chrome Saint', 'name_ru': 'Chrome Saint', 'icon': '🦾',
@@ -6574,6 +6849,7 @@ NIGHT_MARKET_VENDORS = [
         'tagline_ru': 'Fashionware, хром и контакты для неброской установки.',
         'cats': ['cyberware'],
         'location': 'City Center',
+        'location_id': None,
     },
     {
         'id': 'ghost-packet', 'handle': 'ghost-packet', 'accent_color': '#00e5ff', 'name_en': 'Ghost Packet', 'name_ru': 'Ghost Packet', 'icon': '💾',
@@ -6581,6 +6857,7 @@ NIGHT_MARKET_VENDORS = [
         'tagline_ru': 'Cyberdeck, Programs, Black ICE и NET-железо.',
         'cats': ['net_stuff', 'programs'],
         'location': 'Heywood',
+        'location_id': 'afterlife',
     },
     {
         'id': 'nomad-exchange', 'handle': 'nomad-exchange', 'accent_color': '#ffd500', 'name_en': 'Nomad Exchange', 'name_ru': 'Nomad Exchange', 'icon': '🏍️',
@@ -6588,6 +6865,7 @@ NIGHT_MARKET_VENDORS = [
         'tagline_ru': 'Транспорт, апгрейды, грузовые решения и никакого адреса.',
         'cats': ['vehicles', 'vehicles_upgrades'],
         'location': 'Badlands',
+        'location_id': None,
     },
     {
         'id': 'back-alley-general', 'handle': 'back-alley-general', 'accent_color': '#3cf28a', 'name_en': 'Back-Alley General',
@@ -6595,7 +6873,19 @@ NIGHT_MARKET_VENDORS = [
         'tagline_en': 'Gear, fashion, services, and everything nobody admits buying.',
         'tagline_ru': 'Снаряжение, мода, услуги и всё, в покупке чего не признаются.',
         'cats': ['gear', 'fashion', 'services'],
+        'exclude_consumable': True,
         'location': 'Pacifica',
+        'location_id': 'grand-imperial-mall',
+    },
+    {
+        'id': 'street-pharmacy', 'handle': 'street-pharmacy', 'accent_color': '#b388ff', 'name_en': 'Street Pharmacy',
+        'name_ru': 'Street Pharmacy', 'icon': '💊',
+        'tagline_en': 'Pharma and street drugs — no prescription, no questions.',
+        'tagline_ru': 'Фарма и уличные наркотики — без рецепта и без вопросов.',
+        'cats': ['gear'],
+        'consumable_only': True,
+        'location': 'Watson',
+        'location_id': None,
     },
 ]
 
@@ -6619,6 +6909,52 @@ def nm_day_offset(day, delta_days):
 def nm_stock_seed(day, vendor_id, item_id):
     """Deterministic 1..5 unit stock seed for a daily vendor+item offer."""
     return 1 + _h(f'stock|{day}|{vendor_id}|{item_id}') % 5
+
+
+def permanent_offer_payload(item, vendor_id):
+    return {
+        'id': item['id'], 'cat': item['cat'], 'name': item['name'],
+        'price': item['price'], 'street_price': item['price'],
+        'permanent': True, 'discount': False, 'multiplier': 1.0,
+        'fields': item.get('fields') or {}, 'mechanics': item.get('mechanics') or {},
+        'requirements': item.get('requirements') or [], 'capacity': item.get('capacity'),
+        'source': item.get('source'), 'desc': item.get('desc'),
+        'armor_locations': item.get('armor_locations'), 'armor_bundled': item.get('armor_bundled'),
+        'effect_coverage': item_effect_coverage(item.get('id')), 'vendor_id': vendor_id,
+    }
+
+
+def ensure_market_permanent(conn):
+    """Idempotently seed the curated always-available base stock."""
+    now = time.time()
+    by_id = catalog()['_by_id']
+    for vendor_id, item_ids in PERMANENT_SUPPLY.items():
+        for sort_order, item_id in enumerate(item_ids):
+            if item_id in by_id:
+                conn.execute(
+                    'INSERT OR IGNORE INTO market_permanent(vendor_id,item_id,sort_order,created) '
+                    'VALUES(?,?,?,?)', (vendor_id, item_id, sort_order, now))
+
+
+def market_permanent_rows(conn):
+    try:
+        rows = conn.execute(
+            'SELECT vendor_id,item_id FROM market_permanent ORDER BY vendor_id,sort_order').fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    groups = {}
+    for row in rows:
+        groups.setdefault(row['vendor_id'], []).append(row['item_id'])
+    return groups
+
+
+def permanent_offers(conn):
+    """Permanent offer payloads grouped by vendor_id."""
+    groups = market_permanent_rows(conn)
+    by_id = catalog()['_by_id']
+    return {vendor_id: [permanent_offer_payload(by_id[item_id], vendor_id)
+                        for item_id in item_ids if item_id in by_id]
+            for vendor_id, item_ids in groups.items()}
 
 
 def nm_offer_payload(item, day, vendor_id):
@@ -6651,13 +6987,18 @@ def nm_rotation(day):
         for category_id in vendor['cats']:
             pool = [item for item in cat['items']
                     if item['cat'] == category_id and item.get('price')]
+            if vendor.get('consumable_only'):
+                pool = [item for item in pool if item.get('consumable')]
+            elif vendor.get('exclude_consumable'):
+                pool = [item for item in pool if not item.get('consumable')]
             pool.sort(key=lambda item: _h(
                 f'{day}|{vendor["id"]}|{category_id}|{item["id"]}'))
             for item in pool[:NM_PER_CAT]:
                 payload = nm_offer_payload(item, day, vendor['id'])
                 stock.append(payload)
                 all_items.append(payload)
-        vendor_payload = {key: value for key, value in vendor.items() if key != 'cats'}
+        vendor_payload = {key: value for key, value in vendor.items()
+                          if key not in ('cats', 'consumable_only', 'exclude_consumable')}
         vendor_payload.update({'categories': list(vendor['cats']), 'items': stock})
         vendors.append(vendor_payload)
     return {'items': all_items, 'vendors': vendors}
@@ -6723,6 +7064,11 @@ def night_market(day=None, conn=None):
         item['sold_out'] = item['stock_remaining'] <= 0
         item['reserved'] = bool(item.get('reserved_character_id'))
         item['reserved_handle'] = reserved_handles.get(item['reserved_character_id'])
+    perm = permanent_offers(conn) if conn is not None else {}
+    crew_rep = crew_reputation_map(conn) if conn is not None else {}
+    for vendor in rotation['vendors']:
+        vendor['permanent'] = perm.get(vendor['id'], [])
+    rotation['crew_reputation'] = crew_rep
     rotation['date'] = day
     return rotation
 
@@ -6738,7 +7084,7 @@ CHARACTER_VISIBILITY_DEFAULTS = {
     'portrait': True,
     'identity': True,
     'biography': True,
-    'stats': False,
+    'stats': True,
     'skills': False,
     'lifepath': False,
     'equipment': False,
@@ -6772,11 +7118,12 @@ def public_character_data(data):
     if visibility['identity']:
         allowed.update({'first_name', 'last_name'})
     if visibility['biography']:
-        allowed.update({'appearance', 'background', 'languages', 'lifestyle', 'housing'})
+        allowed.update({'appearance', 'background', 'languages', 'native_language',
+                        'lifestyle', 'housing'})
     if visibility['stats']:
         allowed.add('stats')
     if visibility['skills']:
-        allowed.update({'skills', 'skill_pools', 'skill_specializations', 'native_language'})
+        allowed.update({'skills', 'skill_pools', 'skill_specializations'})
     if visibility['lifepath']:
         allowed.update({'lifepath', 'role_lifepath', 'lifepath_mode'})
     if visibility['equipment']:
@@ -6786,6 +7133,24 @@ def public_character_data(data):
     if visibility['player_name']:
         allowed.add('player')
     public = {key: source[key] for key in allowed if key in source}
+    # Mini-dossier highlight: top-5 skills (excluding Language) so a public
+    # profile reads like a hireable operator card without exposing every skill.
+    skills_source = source.get('skills') if isinstance(source.get('skills'), dict) else {}
+    top_pairs = []
+    for name, level in skills_source.items():
+        if name == 'Language':
+            continue
+        try:
+            value = int(level)
+        except (TypeError, ValueError):
+            try:
+                value = int(float(level))
+            except (TypeError, ValueError):
+                continue
+        top_pairs.append((str(name), value))
+    top_pairs.sort(key=lambda item: item[1], reverse=True)
+    public['top_skills'] = [{'name': name, 'level': level}
+                            for name, level in top_pairs[:5]]
     for bucket in ('inventory', 'cyberware'):
         if isinstance(public.get(bucket), list):
             for entry in public[bucket]:
@@ -9537,6 +9902,22 @@ SERVER_ERROR_EN = {
     'Укажите revision Dossier': 'Dossier revision is required',
     'Dossier изменён в другой вкладке; обновите страницу': 'Dossier changed in another tab; reload the page',
     'Слишком много запросов; попробуйте позже': 'Too many requests; try again later',
+    'Слишком много неудачных входов; попробуйте позже': 'Too many failed sign-in attempts; try again later',
+    'Memorial уже опубликован': 'Memorial is already published',
+    'Только владелец персонажа заполняет memorial': 'Only the character owner may fill the memorial',
+    'Membership требует member и organization persona': 'Membership requires a member and an organization persona',
+    'Membership не найден': 'Membership not found',
+    'Укажите организацию': 'Specify an organization',
+    'Нет доступа к репутации персонажа': 'No access to this character reputation',
+    'Действие: store или take': 'Action: store or take',
+    'Предмет не найден в личном тайнике': 'Item not found in personal stash',
+    'Сначала снимите предмет': 'Unequip the item first',
+    'Нет права синхронизировать сессию': 'No permission to sync session',
+    'PDF обязателен (base64)': 'PDF is required (base64)',
+    'Некорректный base64': 'Invalid base64',
+    'Файл не является PDF': 'File is not a PDF',
+    'PDF слишком большой (макс 5 МБ)': 'PDF is too large (max 5 MB)',
+    'Ошибка парсинга PDF': 'PDF parsing error',
     'Недопустимый источник запроса': 'Invalid request origin',
     'Tech Maker modification содержит неподдерживаемые поля': 'Tech Maker modification contains unsupported fields',
     'Укажите название Tech Maker modification': 'Tech Maker modification name is required',
@@ -9817,12 +10198,17 @@ class Handler(BaseHTTPRequestHandler):
         identity = str(user_id) if user_id is not None else self.client_ip()
         enforce_rate_limit(f'{scope}:{identity}', limit, window)
 
+    def send_security_headers(self):
+        for name, value in security_headers():
+            self.send_header(name, value)
+
     def send_json(self, obj, status=200, cookies=None):
         body = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-store')
+        self.send_security_headers()
         for c in cookies or []:
             self.send_header('Set-Cookie', c)
         self.end_headers()
@@ -9953,10 +10339,12 @@ class Handler(BaseHTTPRequestHandler):
             fp = os.path.join(STATIC_DIR, 'index.html')
         else:
             rel = os.path.normpath(path.lstrip('/'))
-            if rel.startswith('..'):
+            fp = os.path.join(STATIC_DIR, rel)
+            # Resolve symlinks and '..' so a crafted path cannot escape STATIC_DIR.
+            real_fp = os.path.realpath(fp)
+            if not (real_fp == STATIC_DIR or real_fp.startswith(STATIC_DIR + os.sep)):
                 self.send_error_json(403, 'Запрещено')
                 return
-            fp = os.path.join(STATIC_DIR, rel)
         if not os.path.isfile(fp):
             # SPA-фолбэк на корневые не-/api пути
             if not os.path.splitext(path)[1]:
@@ -9977,6 +10365,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-cache')
+        self.send_security_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -10028,12 +10417,16 @@ class Handler(BaseHTTPRequestHandler):
     def api_login(self, conn, qs, m, body):
         self.rate_limit('login', 12, 60)
         username = str(body.get('username') or '').strip().lower()
+        if account_login_locked(username):
+            raise ApiError(429, 'Слишком много неудачных входов; попробуйте позже')
         password = str(body.get('password') or '')
         u = conn.execute('SELECT * FROM users WHERE username=?', (username,)).fetchone()
         if not u or not verify_password(password, u['pass_hash']):
+            record_failed_login(username)
             raise ApiError(401, 'Неверный логин или пароль')
         if _row_value(u, 'disabled_at'):
             raise ApiError(403, 'Аккаунт отключён администратором')
+        clear_failed_logins(username)
         token = create_session(
             conn, u['id'], self.client_ip(),
             getattr(self, 'headers', {}).get('User-Agent', ''))
@@ -10360,7 +10753,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Disposition', f'attachment; filename="{path.name}"')
         self.send_header('Content-Length', str(path.stat().st_size))
         self.send_header('Cache-Control', 'private, no-store')
-        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_security_headers()
         self.end_headers()
         with open(path, 'rb') as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b''):
@@ -10497,6 +10890,12 @@ class Handler(BaseHTTPRequestHandler):
             (row['id'], 1 if can_edit else 0)).fetchall()
         payload['contracts'] = [dict(item) for item in contract_rows]
         payload['posts'] = [dict(item) for item in post_rows]
+        gm = user_is_gm(user)
+        member_rows = conn.execute(
+            'SELECT * FROM persona_memberships WHERE member_persona_id=? OR organization_persona_id=? '
+            'ORDER BY sort_order,id', (row['id'], row['id'])).fetchall()
+        payload['memberships'] = [membership_payload(r) for r in member_rows
+                                  if gm or r['visibility'] == 'public']
         if can_edit:
             audit = conn.execute(
                 'SELECT a.*,u.display_name actor FROM persona_audit a '
@@ -10566,6 +10965,140 @@ class Handler(BaseHTTPRequestHandler):
             payload['private_summary'] = row['private_summary']
             payload['collaborators'] = [dict(item) for item in collaborators]
         return payload
+
+    def api_memberships(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        gm = user_is_gm(user)
+        pid = int(m.group(1))
+        rows = conn.execute(
+            'SELECT * FROM persona_memberships WHERE member_persona_id=? OR organization_persona_id=? '
+            'ORDER BY sort_order,id', (pid, pid)).fetchall()
+        visible = [membership_payload(r) for r in rows
+                   if gm or r['visibility'] == 'public']
+        self.send_json({'memberships': visible})
+
+    @atomic_endpoint
+    def api_membership_create(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        cleaned = clean_membership_input(body or {})
+        now = time.time()
+        cur = conn.execute(
+            'INSERT INTO persona_memberships(member_persona_id,organization_persona_id,'
+            'role_title,status,visibility,since_at,until_at,note,sort_order,created,updated) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+            (cleaned['member_persona_id'], cleaned['organization_persona_id'],
+             cleaned['role_title'], cleaned['status'], cleaned['visibility'],
+             cleaned['since_at'], cleaned['until_at'], cleaned['note'],
+             cleaned['sort_order'], now, now))
+        conn.commit()
+        row = conn.execute('SELECT * FROM persona_memberships WHERE id=?', (cur.lastrowid,)).fetchone()
+        self.send_json(membership_payload(row), status=201)
+
+    @atomic_endpoint
+    def api_membership_update(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM persona_memberships WHERE id=?', (int(m.group(2)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Membership не найден')
+        cleaned = clean_membership_input(body or {}, dict(row))
+        conn.execute(
+            'UPDATE persona_memberships SET member_persona_id=?,organization_persona_id=?,'
+            'role_title=?,status=?,visibility=?,since_at=?,until_at=?,note=?,sort_order=?,updated=? WHERE id=?',
+            (cleaned['member_persona_id'], cleaned['organization_persona_id'],
+             cleaned['role_title'], cleaned['status'], cleaned['visibility'],
+             cleaned['since_at'], cleaned['until_at'], cleaned['note'],
+             cleaned['sort_order'], time.time(), row['id']))
+        conn.commit()
+        fresh = conn.execute('SELECT * FROM persona_memberships WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(membership_payload(fresh))
+
+    @atomic_endpoint
+    def api_membership_delete(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        conn.execute('DELETE FROM persona_memberships WHERE id=?', (int(m.group(2)),))
+        conn.commit()
+        self.send_json({'ok': True})
+
+    def api_crew_reputation(self, conn, qs, m, body):
+        rows = conn.execute(
+            'SELECT cr.*,p.display_name org_name,p.handle org_handle '
+            'FROM crew_reputation cr JOIN personas p ON p.id=cr.organization_persona_id '
+            'ORDER BY cr.updated DESC').fetchall()
+        self.send_json({'reputation': [dict(r) for r in rows]})
+
+    @atomic_endpoint
+    def api_crew_reputation_set(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        cleaned = clean_reputation_input(body or {})
+        if not cleaned['organization_persona_id']:
+            raise ApiError(400, 'Укажите организацию')
+        now = time.time()
+        conn.execute(
+            'INSERT INTO crew_reputation(organization_persona_id,reputation,'
+            'favor,heat,standing,note,created_by,created,updated) '
+            'VALUES(?,?,?,?,?,?,?,?,?) '
+            'ON CONFLICT(organization_persona_id) DO UPDATE SET '
+            'reputation=excluded.reputation,favor=excluded.favor,heat=excluded.heat,'
+            'standing=excluded.standing,note=excluded.note,updated=excluded.updated',
+            (cleaned['organization_persona_id'], cleaned['reputation'],
+             cleaned['favor'], cleaned['heat'], cleaned['standing'],
+             cleaned['note'], user['id'], now, now))
+        conn.commit()
+        row = conn.execute(
+            'SELECT * FROM crew_reputation WHERE organization_persona_id=?',
+            (cleaned['organization_persona_id'],)).fetchone()
+        self.send_json(dict(row))
+
+    @atomic_endpoint
+    def api_crew_reputation_delete(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        conn.execute('DELETE FROM crew_reputation WHERE id=?', (int(m.group(1)),))
+        conn.commit()
+        self.send_json({'ok': True})
+
+    def api_character_reputation(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        gm = user_is_gm(user)
+        cid = int(m.group(1))
+        if not gm:
+            row = conn.execute('SELECT owner_id FROM characters WHERE id=?', (cid,)).fetchone()
+            if not row or row['owner_id'] != (user['id'] if user else -1):
+                raise ApiError(403, 'Нет доступа к репутации персонажа')
+        rows = conn.execute(
+            'SELECT * FROM character_reputation WHERE character_id=? ORDER BY updated DESC', (cid,)).fetchall()
+        self.send_json({'reputation': [dict(r) for r in rows]})
+
+    @atomic_endpoint
+    def api_character_reputation_set(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        cid = int(m.group(1))
+        cleaned = clean_reputation_input(body or {})
+        if not cleaned['organization_persona_id']:
+            raise ApiError(400, 'Укажите организацию')
+        now = time.time()
+        conn.execute(
+            'INSERT INTO character_reputation(character_id,organization_persona_id,reputation,'
+            'favor,heat,standing,note,created_by,created,updated) '
+            'VALUES(?,?,?,?,?,?,?,?,?,?) '
+            'ON CONFLICT(character_id,organization_persona_id) DO UPDATE SET '
+            'reputation=excluded.reputation,favor=excluded.favor,heat=excluded.heat,'
+            'standing=excluded.standing,note=excluded.note,updated=excluded.updated',
+            (cid, cleaned['organization_persona_id'], cleaned['reputation'],
+             cleaned['favor'], cleaned['heat'], cleaned['standing'],
+             cleaned['note'], user['id'], now, now))
+        conn.commit()
+        row = conn.execute(
+            'SELECT * FROM character_reputation WHERE character_id=? AND organization_persona_id=?',
+            (cid, cleaned['organization_persona_id'])).fetchone()
+        self.send_json(dict(row))
+
+    @atomic_endpoint
+    def api_character_reputation_delete(self, conn, qs, m, body):
+        user = self.require_gm(conn)
+        conn.execute('DELETE FROM character_reputation WHERE id=? AND character_id=?',
+                     (int(m.group(2)), int(m.group(1))))
+        conn.commit()
+        self.send_json({'ok': True})
 
     def api_storylines(self, conn, qs, m, body):
         user = self.current_user(conn)
@@ -11151,12 +11684,12 @@ class Handler(BaseHTTPRequestHandler):
         user = self.require_user(conn)
         self.rate_limit('feed-post', 20, 3600, user['id'])
         persona_id, character_id = self.resolve_feed_author(conn, user, body or {})
-        fmt = str((body or {}).get('format') or 'short').lower()
+        fmt = str((body or {}).get('format') or FEED_DEFAULT_FORMAT).lower()
         if fmt not in FEED_FORMATS:
             raise ApiError(400, 'Некорректный формат публикации')
         headline = str((body or {}).get('headline') or '').strip()[:240] or None
         text = str((body or {}).get('body') or '').strip()[:30000]
-        if not text or (fmt in ('article', 'blog', 'bulletin') and not headline):
+        if not text:
             raise ApiError(400, 'Публикации нужен текст и, для длинного формата, заголовок')
         status = 'draft' if user_is_gm(user) and (body or {}).get('status') == 'draft' else 'published'
         truth = str((body or {}).get('truth_status') or 'unknown') if user_is_gm(user) else 'unknown'
@@ -11243,7 +11776,7 @@ class Handler(BaseHTTPRequestHandler):
         if row['status'] == 'hidden' and not user_is_gm(user) and requested_status != 'archived':
             status = 'hidden'
         if (fmt not in FEED_FORMATS or status not in ('draft', 'published', 'archived', 'hidden') or
-                not text or (fmt in ('article', 'blog', 'bulletin') and not headline)):
+                not text):
             raise ApiError(400, 'Некорректная публикация')
         image_media_id = str((body or {}).get('image_media_id', row['image_media_id'] or ''))[:64] or None
         event_at = (optional_timestamp((body or {}).get('event_at'))
@@ -11270,12 +11803,12 @@ class Handler(BaseHTTPRequestHandler):
         """Normalise and permission-check a draft post without writing anything."""
         user = self.require_user(conn)
         persona_id, character_id = self.resolve_feed_author(conn, user, body or {})
-        fmt = str((body or {}).get('format') or 'short').lower()
+        fmt = str((body or {}).get('format') or FEED_DEFAULT_FORMAT).lower()
         if fmt not in FEED_FORMATS:
             raise ApiError(400, 'Некорректный формат публикации')
         headline = str((body or {}).get('headline') or '').strip()[:240] or None
         text = str((body or {}).get('body') or '').strip()[:30000]
-        if not text or (fmt in ('article', 'blog', 'bulletin') and not headline):
+        if not text:
             raise ApiError(400, 'Публикации нужен текст и, для длинного формата, заголовок')
         contract_id = _num((body or {}).get('contract_id'))
         if contract_id:
@@ -11507,6 +12040,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type', row['mime'])
         self.send_header('Content-Length', str(len(raw)))
         self.send_header('Cache-Control', 'public, max-age=86400' if public_media else 'private, no-store')
+        self.send_security_headers()
         self.end_headers(); self.wfile.write(raw)
 
     def api_media_delete(self, conn, qs, m, body):
@@ -11849,6 +12383,18 @@ class Handler(BaseHTTPRequestHandler):
 
     CHAR_LIST_FIELDS = ('id', 'owner_id', 'public', 'created', 'updated')
 
+    def _reputation_for(self, character_id, conn, public_view):
+        if conn is None:
+            return []
+        try:
+            rows = conn.execute(
+                'SELECT cr.*,p.display_name org_name,p.handle org_handle '
+                'FROM character_reputation cr JOIN personas p ON p.id=cr.organization_persona_id '
+                'WHERE cr.character_id=? ORDER BY cr.updated DESC', (int(character_id),)).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.OperationalError:
+            return []
+
     def char_payload(self, row, owner_name=None, public_view=False, conn=None):
         full_data = enrich_owned_item_interactions(ensure_progression(json.loads(row['data'])))
         visibility = ensure_character_visibility(full_data)
@@ -11926,6 +12472,7 @@ class Handler(BaseHTTPRequestHandler):
             'public': bool(row['public']),
             'owner_name': owner_name, 'created': row['created'], 'updated': row['updated'],
             'data': data, 'derived': derived,
+            'reputation': self._reputation_for(row['id'], conn, public_view),
         }
 
     def api_my_characters(self, conn, qs, m, body):
@@ -11963,6 +12510,30 @@ class Handler(BaseHTTPRequestHandler):
         conn.commit()
         row = conn.execute('SELECT * FROM characters WHERE id=?', (cur.lastrowid,)).fetchone()
         self.send_json(self.char_payload(row, u['display_name'], conn=conn), status=201)
+
+    def api_pdf_import(self, conn, qs, m, body):
+        """Parse a fillable PDF character sheet and return draft character data."""
+        user = self.require_user(conn)
+        pdf_b64 = str((body or {}).get('pdf') or '')
+        if not pdf_b64:
+            raise ApiError(400, 'PDF обязателен (base64)')
+        try:
+            pdf_bytes = base64.b64decode(pdf_b64)
+        except Exception:
+            raise ApiError(400, 'Некорректный base64')
+        if len(pdf_bytes) < 100 or not pdf_bytes[:5].startswith(b'%PDF'):
+            raise ApiError(400, 'Файл не является PDF')
+        if len(pdf_bytes) > 5_000_000:
+            raise ApiError(413, 'PDF слишком большой (макс 5 МБ)')
+        try:
+            sys.path.insert(0, BASE)
+            import pdf_import
+            result = pdf_import.import_pdf(pdf_bytes)
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        except Exception as e:
+            raise ApiError(500, 'Ошибка парсинга PDF')
+        self.send_json(result)
 
     @atomic_endpoint
     def api_character_import(self, conn, qs, m, body):
@@ -15696,6 +16267,90 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({'ok': True, 'action': action, 'message': message,
                         'character': self.char_payload(fresh, fresh['owner'], conn=conn)})
 
+    def api_personal_stash(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        cid = int(m.group(1))
+        char = conn.execute('SELECT * FROM characters WHERE id=?', (cid,)).fetchone()
+        if not char:
+            raise ApiError(404, 'Персонаж не найден')
+        if char['owner_id'] != user['id'] and not user_is_gm(user):
+            raise ApiError(403, 'Это не ваш персонаж')
+        rows = conn.execute(
+            'SELECT * FROM personal_stash WHERE character_id=? ORDER BY stored_at', (cid,)).fetchall()
+        payload = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item.update(json.loads(row['data_json'] or '{}'))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+            payload.append(item)
+        self.send_json({'stash': payload, 'character_id': cid})
+
+    @atomic_endpoint
+    def api_personal_stash_action(self, conn, qs, m, body):
+        user = self.require_user(conn)
+        cid = int(m.group(1))
+        char = conn.execute('SELECT * FROM characters WHERE id=?', (cid,)).fetchone()
+        if not char:
+            raise ApiError(404, 'Персонаж не найден')
+        if char['owner_id'] != user['id'] and not user_is_gm(user):
+            raise ApiError(403, 'Это не ваш персонаж')
+        action = str((body or {}).get('action') or '').lower()
+        instance_id = str((body or {}).get('instance_id') or '').lower()
+        if action not in ('store', 'take'):
+            raise ApiError(400, 'Действие: store или take')
+        if action == 'take':
+            row = conn.execute(
+                'SELECT * FROM personal_stash WHERE instance_id=? AND character_id=?',
+                (instance_id, cid)).fetchone()
+            if not row:
+                raise ApiError(404, 'Предмет не найден в личном тайнике')
+            data = json.loads(char['data'])
+            data = ensure_progression(data)
+            ensure_character_item_instances(data)
+            item_data = json.loads(row['data_json'] or '{}')
+            item_data['instance_id'] = instance_id
+            item_data['state'] = 'carried'
+            data.setdefault('inventory', []).append(item_data)
+            persist_character_item_instances(conn, cid, data, 'personal_stash_take')
+            conn.execute('DELETE FROM personal_stash WHERE instance_id=? AND character_id=?',
+                         (instance_id, cid))
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
+                         (json.dumps(data, ensure_ascii=False), time.time(), cid))
+            conn.commit()
+            self.send_json({'ok': True, 'action': 'take'})
+        else:  # store
+            data = json.loads(char['data'])
+            data = ensure_progression(data)
+            inv = data.get('inventory') or []
+            item = next((e for e in inv if isinstance(e, dict) and e.get('instance_id') == instance_id), None)
+            if not item:
+                raise ApiError(404, 'Предмет не найден в инвентаре')
+            if item.get('state') in ('equipped', 'installed'):
+                raise ApiError(409, 'Сначала снимите предмет')
+            stash_data = copy.deepcopy(item)
+            for key in ('active',):
+                stash_data.pop(key, None)
+            stash_data['state'] = 'stored'
+            now = time.time()
+            conn.execute(
+                'INSERT OR REPLACE INTO personal_stash(instance_id,character_id,catalog_item_id,'
+                'custom_name,state,quantity,notes,stored_at,data_json,created,updated) '
+                'VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+                (instance_id, cid, stash_data.get('catalog_item_id') or stash_data.get('key') or '',
+                 str(stash_data.get('custom_name') or stash_data.get('name') or '')[:120],
+                 'stored', max(1, int(stash_data.get('qty') or 1)),
+                 str(stash_data.get('notes') or '')[:5000], now,
+                 json.dumps(stash_data, ensure_ascii=False), now, now))
+            inv = [e for e in inv if not (isinstance(e, dict) and e.get('instance_id') == instance_id)]
+            data['inventory'] = inv
+            persist_character_item_instances(conn, cid, data, 'personal_stash_store')
+            conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
+                         (json.dumps(data, ensure_ascii=False), time.time(), cid))
+            conn.commit()
+            self.send_json({'ok': True, 'action': 'store'})
+
     def api_crew_stash(self, conn, qs, m, body):
         user = self.require_user(conn)
         self.send_json({
@@ -16117,6 +16772,9 @@ class Handler(BaseHTTPRequestHandler):
         ensure_market_stock(conn)
         day = nm_day()
         stock_rows = market_stock_rows(conn, day)
+        pm = {item_id: item_by_id(item_id)['price']
+              for item_ids in market_permanent_rows(conn).values()
+              for item_id in item_ids if item_by_id(item_id)}
         total = 0.0
         bought = []
         wanted = {}
@@ -16125,10 +16783,17 @@ class Handler(BaseHTTPRequestHandler):
             if not it or not it.get('price'):
                 continue
             qty = max(1, min(99, int(entry.get('qty') or 1)))
-            if entry.get('mode') != 'nm' or it['id'] not in nm:
+            is_permanent = bool(entry.get('permanent')) and it['id'] in pm
+            if entry.get('mode') != 'nm':
                 raise ApiError(400, 'Покупка доступна только из текущего Night Market')
-            price = nm[it['id']]
-            wanted[it['id']] = wanted.get(it['id'], 0) + qty
+            if is_permanent:
+                price = pm[it['id']]
+            elif it['id'] in nm:
+                price = nm[it['id']]
+            else:
+                raise ApiError(400, 'Покупка доступна только из текущего Night Market')
+            if not is_permanent:
+                wanted[it['id']] = wanted.get(it['id'], 0) + qty
             total += price * qty
             bought.append((it, qty, price))
         if not bought:
@@ -17138,8 +17803,6 @@ class Handler(BaseHTTPRequestHandler):
         row = conn.execute('SELECT * FROM locations WHERE id=?', (m.group(1),)).fetchone()
         if not row:
             raise ApiError(404, 'Локация не найдена')
-        if not row['custom']:
-            raise ApiError(403, 'Seed локации нельзя удалить')
         conn.execute('UPDATE locations SET archived=1,updated=? WHERE id=?',
                      (time.time(), row['id']))
         conn.commit()
@@ -17156,7 +17819,7 @@ class Handler(BaseHTTPRequestHandler):
         status = str((body or {}).get('status') or 'deceased').lower()
         if status not in MEMORIAL_STATUSES:
             raise ApiError(400, 'Неизвестный статус memorial')
-        if data.get('archived') or data.get('status') in MEMORIAL_STATUSES:
+        if data.get('status') in MEMORIAL_STATUSES:
             raise ApiError(409, 'Персонаж уже помечен memorial')
         existing = conn.execute('SELECT * FROM memorials WHERE character_id=?',
                                 (row['id'],)).fetchone()
@@ -17165,6 +17828,7 @@ class Handler(BaseHTTPRequestHandler):
         reason = str((body or {}).get('reason') or '').strip()[:500]
         if len(reason) < 3:
             raise ApiError(400, 'Укажите причину memorial')
+        collaborative = bool((body or {}).get('collaborative'))
         # Identity fields are always taken from the Dossier for a memorial.
         source = dict(body or {})
         source.setdefault('handle', data.get('handle'))
@@ -17172,38 +17836,46 @@ class Handler(BaseHTTPRequestHandler):
         source.setdefault('role_rank', _num(data.get('role_rank')) or 0)
         cleaned = clean_memorial_input(source)
         now = time.time()
+        draft_state = 'pending_owner' if collaborative else 'published'
         cur = conn.execute(
             'INSERT INTO memorials(character_id,handle,role,role_rank,portrait_media_id,status,'
             'death_date,location,cause,epitaph,last_words,obituary,gm_notes,visibility,'
-            'created_by,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            'created_by,created,updated,draft_state) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             (row['id'], cleaned['handle'], cleaned['role'], cleaned['role_rank'],
              str(data.get('portrait_media_id') or '')[:64] or None, cleaned['status'],
              cleaned['death_date'], cleaned['location'], cleaned['cause'],
              cleaned['epitaph'], cleaned['last_words'], cleaned['obituary'],
-             cleaned['gm_notes'], cleaned['visibility'], user['id'], now, now))
+             cleaned['gm_notes'], cleaned['visibility'], user['id'], now, now, draft_state))
         memorial_id = cur.lastrowid
-        # Optional obituary draft in the City Feed.
-        feed_post_id = None
-        if (body or {}).get('publish_obituary') and cleaned['obituary']:
-            cur_feed = conn.execute(
-                'INSERT INTO feed_posts(format,status,creator_user_id,headline,body,'
-                'truth_status,event_at,created,updated) '
-                "VALUES('article','draft',?,?,?,'unknown',?,?,?)",
-                (user['id'], f'In Memoriam: {cleaned["handle"]}', cleaned['obituary'],
-                 cleaned['death_date'] or now, now, now))
-            feed_post_id = cur_feed.lastrowid
-        conn.execute('UPDATE memorials SET feed_post_id=? WHERE id=?',
-                     (feed_post_id, memorial_id))
-        before = json.loads(row['data'])
-        after = copy.deepcopy(before)
-        after['status'] = status
-        after['archived'] = True
-        after['public'] = False
-        after['archive_reason'] = reason
-        conn.execute('UPDATE characters SET data=?,public=0,updated=?,revision=revision+1 WHERE id=?',
-                     (json.dumps(after, ensure_ascii=False), now, row['id']))
-        record_character_changes(conn, row['id'], user['id'], before, after,
-                                 f'Memorialized as {status}: {reason}')
+        if collaborative:
+            # Owner fills the narrative; the Dossier is frozen only at publish.
+            if row['owner_id']:
+                add_notification(conn, row['owner_id'], 'memorial_draft',
+                                 'Memorial draft awaiting your input',
+                                 data.get('handle') or 'Edgerunner',
+                                 f'#/memorial/{memorial_id}')
+        else:
+            feed_post_id = None
+            if (body or {}).get('publish_obituary') and cleaned['obituary']:
+                cur_feed = conn.execute(
+                    'INSERT INTO feed_posts(format,status,creator_user_id,headline,body,'
+                    'truth_status,event_at,created,updated) '
+                    "VALUES('article','draft',?,?,?,'unknown',?,?,?)",
+                    (user['id'], f'In Memoriam: {cleaned["handle"]}', cleaned['obituary'],
+                     cleaned['death_date'] or now, now, now))
+                feed_post_id = cur_feed.lastrowid
+            conn.execute('UPDATE memorials SET feed_post_id=? WHERE id=?',
+                         (feed_post_id, memorial_id))
+            before = json.loads(row['data'])
+            after = copy.deepcopy(before)
+            after['status'] = status
+            after['archived'] = True
+            after['public'] = False
+            after['archive_reason'] = reason
+            conn.execute('UPDATE characters SET data=?,public=0,updated=?,revision=revision+1 WHERE id=?',
+                         (json.dumps(after, ensure_ascii=False), now, row['id']))
+            record_character_changes(conn, row['id'], user['id'], before, after,
+                                     f'Memorialized as {status}: {reason}')
         conn.commit()
         fresh = conn.execute('SELECT * FROM memorials WHERE id=?', (memorial_id,)).fetchone()
         self.send_json(memorial_payload(fresh, user, full=True), status=201)
@@ -17211,21 +17883,53 @@ class Handler(BaseHTTPRequestHandler):
     def api_memorial_list(self, conn, qs, m, body):
         user = self.current_user(conn)
         gm = user_is_gm(user)
+        user_id = user['id'] if user else None
         rows = conn.execute(
-            'SELECT * FROM memorials WHERE (? OR visibility=\'public\') '
+            'SELECT * FROM memorials WHERE '
+            '(? OR visibility=\'public\' OR '
+            '(draft_state=\'pending_owner\' AND character_id IN '
+            '(SELECT id FROM characters WHERE owner_id=?))) '
             'ORDER BY (status=\'deceased\') DESC,death_date DESC,id DESC',
-            (1 if gm else 0,)).fetchall()
-        self.send_json({'memorials': [memorial_payload(row, user, full=gm) for row in rows]})
+            (1 if gm else 0, user_id)).fetchall()
+        owner_ids = {}
+        char_ids = [row['character_id'] for row in rows if row['character_id']]
+        if char_ids:
+            marks = ','.join('?' for _ in char_ids)
+            for r in conn.execute(
+                    f'SELECT id,owner_id FROM characters WHERE id IN ({marks})', char_ids):
+                owner_ids[r['id']] = r['owner_id']
+        memorials = []
+        for row in rows:
+            payload = memorial_payload(row, user, full=gm)
+            draft = row['draft_state'] if 'draft_state' in row.keys() else 'published'
+            payload['can_publish'] = bool(gm and draft != 'published')
+            owns = bool(row['character_id'] and owner_ids.get(row['character_id']) == user_id)
+            payload['can_owner_draft'] = bool(owns and draft == 'pending_owner')
+            memorials.append(payload)
+        self.send_json({'memorials': memorials})
 
     def api_memorial_detail(self, conn, qs, m, body):
         user = self.current_user(conn)
+        gm = user_is_gm(user)
+        user_id = user['id'] if user else None
         row = conn.execute('SELECT * FROM memorials WHERE id=?',
                            (int(m.group(1)),)).fetchone()
         if not row:
             raise ApiError(404, 'Memorial не найден')
-        if row['visibility'] != 'public' and not user_is_gm(user):
+        draft = row['draft_state'] if 'draft_state' in row.keys() else 'published'
+        owner_match = False
+        if row['character_id']:
+            owner_match = conn.execute(
+                'SELECT owner_id FROM characters WHERE id=?',
+                (row['character_id'],)).fetchone()
+            owner_match = bool(owner_match and owner_match['owner_id'] == user_id)
+        if row['visibility'] != 'public' and not gm and not (
+                draft == 'pending_owner' and owner_match):
             raise ApiError(404, 'Memorial не найден')
-        self.send_json(memorial_payload(row, user, full=user_is_gm(user)))
+        payload = memorial_payload(row, user, full=gm)
+        payload['can_publish'] = bool(gm and draft != 'published')
+        payload['can_owner_draft'] = bool(owner_match and draft == 'pending_owner')
+        self.send_json(payload)
 
     @atomic_endpoint
     def api_memorial_update(self, conn, qs, m, body):
@@ -17273,6 +17977,98 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(memorial_payload(fresh, user, full=True))
 
     @atomic_endpoint
+    def api_memorial_owner_draft(self, conn, qs, m, body):
+        """Owner fills the narrative fields of a pending collaborative memorial."""
+        user = self.require_user(conn)
+        row = conn.execute('SELECT * FROM memorials WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Memorial не найден')
+        if row['draft_state'] == 'published':
+            raise ApiError(409, 'Memorial уже опубликован')
+        owner_id = None
+        if row['character_id']:
+            character = conn.execute('SELECT owner_id FROM characters WHERE id=?',
+                                     (row['character_id'],)).fetchone()
+            owner_id = character['owner_id'] if character else None
+        if owner_id is None or owner_id != user['id']:
+            raise ApiError(403, 'Только владелец персонажа заполняет memorial')
+        payload = body or {}
+        visibility = str(payload.get('visibility') or row['visibility']).lower()
+        if visibility not in MEMORIAL_VISIBILITIES:
+            visibility = row['visibility']
+        death_date = row['death_date']
+        if payload.get('death_date') not in (None, ''):
+            death_date = optional_timestamp(payload.get('death_date'))
+        values = [
+            death_date,
+            str(payload.get('location') or '')[:240],
+            str(payload.get('cause') or '')[:2000],
+            str(payload.get('epitaph') or '')[:1000],
+            str(payload.get('last_words') or '')[:2000],
+            str(payload.get('obituary') or '')[:10000],
+            visibility,
+        ]
+        columns = ('death_date=?,location=?,cause=?,epitaph=?,last_words=?,'
+                   'obituary=?,visibility=?')
+        if len(str(payload.get('drink_name') or '').strip()) >= 2:
+            legacy = clean_legacy_input(payload)
+            columns = (columns + ',legacy_drink_name=?,legacy_ingredients=?,'
+                       'legacy_preparation=?,legacy_glass=?,legacy_garnish=?,'
+                       'legacy_quote=?,legacy_legend=?,legacy_awarded_by=?,'
+                       'legacy_awarded_at=?')
+            values.extend([legacy['drink_name'], legacy['ingredients'],
+                           legacy['preparation'], legacy['glass'], legacy['garnish'],
+                           legacy['quote'], legacy['legend'], user['id'], time.time()])
+        values.extend([time.time(), row['id']])
+        conn.execute(f'UPDATE memorials SET {columns},updated=? WHERE id=?', values)
+        conn.commit()
+        fresh = conn.execute('SELECT * FROM memorials WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(memorial_payload(fresh, user, full=True))
+
+    @atomic_endpoint
+    def api_memorial_publish(self, conn, qs, m, body):
+        """GM finalizes a collaborative memorial: freeze Dossier + obituary draft."""
+        user = self.require_gm(conn)
+        row = conn.execute('SELECT * FROM memorials WHERE id=?',
+                           (int(m.group(1)),)).fetchone()
+        if not row:
+            raise ApiError(404, 'Memorial не найден')
+        if row['draft_state'] == 'published':
+            raise ApiError(409, 'Memorial уже опубликован')
+        now = time.time()
+        feed_post_id = row['feed_post_id']
+        if not feed_post_id and row['obituary']:
+            cur_feed = conn.execute(
+                'INSERT INTO feed_posts(format,status,creator_user_id,headline,body,'
+                'truth_status,event_at,created,updated) '
+                "VALUES('article','draft',?,?,?,'unknown',?,?,?)",
+                (user['id'], f'In Memoriam: {row["handle"]}', row['obituary'],
+                 row['death_date'] or now, now, now))
+            feed_post_id = cur_feed.lastrowid
+        if row['character_id']:
+            character = conn.execute('SELECT * FROM characters WHERE id=?',
+                                     (row['character_id'],)).fetchone()
+            if character:
+                before = json.loads(character['data'])
+                after = copy.deepcopy(before)
+                after['status'] = row['status']
+                after['archived'] = True
+                after['public'] = False
+                after['archive_reason'] = 'Memorial published'
+                conn.execute(
+                    'UPDATE characters SET data=?,public=0,updated=?,revision=revision+1 WHERE id=?',
+                    (json.dumps(after, ensure_ascii=False), now, row['character_id']))
+                record_character_changes(conn, row['character_id'], user['id'],
+                                         before, after, 'Memorial published')
+        conn.execute(
+            'UPDATE memorials SET draft_state=?,feed_post_id=?,updated=? WHERE id=?',
+            ('published', feed_post_id, now, row['id']))
+        conn.commit()
+        fresh = conn.execute('SELECT * FROM memorials WHERE id=?', (row['id'],)).fetchone()
+        self.send_json(memorial_payload(fresh, user, full=True))
+
+    @atomic_endpoint
     def api_memorial_restore(self, conn, qs, m, body):
         user = self.require_gm(conn)
         row = conn.execute('SELECT * FROM memorials WHERE id=?',
@@ -17280,8 +18076,6 @@ class Handler(BaseHTTPRequestHandler):
         if not row:
             raise ApiError(404, 'Memorial не найден')
         reason = str((body or {}).get('reason') or '').strip()[:500]
-        if len(reason) < 3:
-            raise ApiError(400, 'Укажите причину отмены memorial')
         if row['character_id']:
             character = conn.execute('SELECT * FROM characters WHERE id=?',
                                      (row['character_id'],)).fetchone()
@@ -17294,8 +18088,9 @@ class Handler(BaseHTTPRequestHandler):
                 conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
                              (json.dumps(after, ensure_ascii=False), time.time(),
                               row['character_id']))
+                restore_note = f'Memorial restored: {reason}' if reason else 'Memorial restored'
                 record_character_changes(conn, row['character_id'], user['id'],
-                                         before, after, f'Memorial restored: {reason}')
+                                         before, after, restore_note)
         if row['feed_post_id']:
             conn.execute("DELETE FROM feed_posts WHERE id=? AND status='draft'",
                          (row['feed_post_id'],))
@@ -18927,6 +19722,43 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(403, 'Нет доступа к экрану сессии')
         self.send_json(self.session_payload(conn, session, user, player_view=True))
 
+
+    @atomic_endpoint
+    def api_session_sync(self, conn, qs, m, body):
+        """Write Session combatant resources back to their Dossiers (P-Sync)."""
+        user = self.require_user(conn)
+        session = conn.execute('SELECT * FROM nc_sessions WHERE id=?',
+                               (int(m.group(1)),)).fetchone()
+        if not session or 'edit_combatants' not in self.session_capabilities(conn, user, session)[1]:
+            raise ApiError(403, 'Нет права синхронизировать сессию')
+        combatants = conn.execute(
+            'SELECT * FROM session_combatants WHERE session_id=? AND character_id IS NOT NULL',
+            (session['id'],)).fetchall()
+        synced = []
+        for combatant in combatants:
+            char = conn.execute('SELECT * FROM characters WHERE id=?',
+                                (combatant['character_id'],)).fetchone()
+            if not char:
+                continue
+            before = json.loads(char['data'])
+            after = copy.deepcopy(before)
+            changed = False
+            if combatant['hp_current'] is not None:
+                after['hp_cur'] = max(0, combatant['hp_current'])
+                changed = True
+            if combatant['luck_current'] is not None:
+                after['luck_cur'] = max(0, combatant['luck_current'])
+                changed = True
+            if changed:
+                record_character_changes(conn, char['id'], user['id'], before, after,
+                                         f'Session sync: {session["title"]}',
+                                         session_id=session['id'])
+                conn.execute('UPDATE characters SET data=?,updated=?,revision=revision+1 WHERE id=?',
+                             (json.dumps(after, ensure_ascii=False), time.time(), char['id']))
+                synced.append(char['id'])
+        conn.commit()
+        self.send_json({'ok': True, 'synced': synced, 'count': len(synced)})
+
     @atomic_endpoint
     def api_contract_aftermath(self, conn, qs, m, body):
         user = self.require_gm(conn)
@@ -19145,6 +19977,16 @@ ROUTES = [
     ('GET', rx(r'/api/personas/(\d+)'), Handler.api_persona_detail),
     ('PUT', rx(r'/api/personas/(\d+)'), Handler.api_persona_update),
     ('DELETE', rx(r'/api/personas/(\d+)'), Handler.api_persona_delete),
+    ('GET', rx(r'/api/personas/(\d+)/memberships'), Handler.api_memberships),
+    ('POST', rx(r'/api/personas/(\d+)/memberships'), Handler.api_membership_create),
+    ('PUT', rx(r'/api/personas/(\d+)/memberships/(\d+)'), Handler.api_membership_update),
+    ('DELETE', rx(r'/api/personas/(\d+)/memberships/(\d+)'), Handler.api_membership_delete),
+    ('GET', rx(r'/api/crew-reputation'), Handler.api_crew_reputation),
+    ('POST', rx(r'/api/crew-reputation'), Handler.api_crew_reputation_set),
+    ('DELETE', rx(r'/api/crew-reputation/(\d+)'), Handler.api_crew_reputation_delete),
+    ('GET', rx(r'/api/characters/(\d+)/reputation'), Handler.api_character_reputation),
+    ('POST', rx(r'/api/characters/(\d+)/reputation'), Handler.api_character_reputation_set),
+    ('DELETE', rx(r'/api/characters/(\d+)/reputation/(\d+)'), Handler.api_character_reputation_delete),
     ('GET', rx(r'/api/storylines'), Handler.api_storylines),
     ('POST', rx(r'/api/storylines'), Handler.api_storyline_create),
     ('GET', rx(r'/api/storylines/(\d+)'), Handler.api_storyline_detail),
@@ -19179,6 +20021,8 @@ ROUTES = [
     ('GET', rx(r'/api/memorial/(\d+)'), Handler.api_memorial_detail),
     ('PUT', rx(r'/api/memorial/(\d+)'), Handler.api_memorial_update),
     ('POST', rx(r'/api/memorial/(\d+)/legacy'), Handler.api_memorial_legacy),
+    ('PUT', rx(r'/api/memorial/(\d+)/owner-draft'), Handler.api_memorial_owner_draft),
+    ('POST', rx(r'/api/memorial/(\d+)/publish'), Handler.api_memorial_publish),
     ('DELETE', rx(r'/api/memorial/(\d+)'), Handler.api_memorial_restore),
     ('POST', rx(r'/api/locations'), Handler.api_location_create),
     ('GET', rx(r'/api/locations/([a-z0-9-]+)'), Handler.api_location_detail),
@@ -19229,6 +20073,7 @@ ROUTES = [
     ('POST', rx(r'/api/fixer-requests/(\d+)/resolve'), Handler.api_fixer_request_resolve),
     ('GET', rx(r'/api/characters'), Handler.api_my_characters),
     ('POST', rx(r'/api/characters'), Handler.api_create_character),
+    ('POST', rx(r'/api/characters/pdf-import'), Handler.api_pdf_import),
     ('POST', rx(r'/api/characters/import'), Handler.api_character_import),
     ('GET', rx(r'/api/characters/(\d+)'), Handler.api_get_character),
     ('PUT', rx(r'/api/characters/(\d+)'), Handler.api_save_character),
@@ -19242,6 +20087,8 @@ ROUTES = [
     ('GET', rx(r'/api/characters/(\d+)/items'), Handler.api_character_items),
     ('POST', rx(r'/api/characters/(\d+)/items/([a-f0-9]{32})/action'), Handler.api_character_item_action),
     ('POST', rx(r'/api/characters/(\d+)/items/([a-f0-9]{32})/transfer'), Handler.api_character_item_transfer),
+    ('GET', rx(r'/api/characters/(\d+)/personal-stash'), Handler.api_personal_stash),
+    ('POST', rx(r'/api/characters/(\d+)/personal-stash'), Handler.api_personal_stash_action),
     ('GET', rx(r'/api/crew-stash'), Handler.api_crew_stash),
     ('POST', rx(r'/api/crew-stash/take'), Handler.api_crew_stash_take),
     ('POST', rx(r'/api/characters/(\d+)/cyberware/([a-f0-9]{32})/action'), Handler.api_character_cyberware_action),

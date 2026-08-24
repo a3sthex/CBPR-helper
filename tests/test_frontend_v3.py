@@ -336,6 +336,8 @@ console.log('ok');
             (ROOT / 'app/static/theme.js').read_text(encoding='utf-8'),
             (ROOT / 'app/static/creation-data.js').read_text(encoding='utf-8'),
             (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8'),
+            (ROOT / 'app/static/gm-ref.js').read_text(encoding='utf-8'),
+            (ROOT / 'app/static/player-actions.js').read_text(encoding='utf-8'),
             app,
             test,
         ])
