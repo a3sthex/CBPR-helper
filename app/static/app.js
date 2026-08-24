@@ -369,11 +369,26 @@ function renderUserbox() {
       <span>${esc(state.me.display_name)}</span>
       ${state.me.is_admin ? '<span class="gm-badge">ADMIN</span>' : (state.me.is_gm ? `<span class="gm-badge">${T('GM','ГМ')}</span>` : '')}
     </button>
-    <button class="btn-sm" id="notifications-btn" title="${T('Notifications','Уведомления')}" aria-label="${T('Notifications','Уведомления')}">◉</button>
+    <button class="btn-sm" id="notifications-btn" style="position:relative" title="${T('Notifications','Уведомления')}" aria-label="${T('Notifications','Уведомления')}">◉<span id="notif-badge" style="display:none;position:absolute;top:-4px;right:-4px;background:var(--red);color:#fff;font-size:9px;font-weight:700;border-radius:50%;width:16px;height:16px;display:none;align-items:center;justify-content:center"></span></button>
     <button class="btn-sm" id="logout-btn">${T('Sign out','Выйти')}</button>`;
   $('#userchip').onclick = () => go('/profile');
   if ($('#notifications-btn') && typeof openNotifications === 'function') $('#notifications-btn').onclick = openNotifications;
   $('#logout-btn').onclick = performLogout;
+  // Poll notifications for badge
+  if (state.me) {
+    const pollNotifs = async () => {
+      try {
+        const nd = await api('/api/notifications');
+        const badge = $('#notif-badge');
+        if (badge) {
+          if (nd.unread > 0) { badge.textContent = nd.unread > 9 ? '9+' : nd.unread; badge.style.display = 'flex'; }
+          else { badge.style.display = 'none'; }
+        }
+      } catch (e) {}
+    };
+    pollNotifs();
+    if (!window._notifInterval) window._notifInterval = setInterval(pollNotifs, 30000);
+  }
 }
 
 function updateCityClock(){const clock=$('#city-clock');if(clock)clock.textContent=new Intl.DateTimeFormat(APP_I18N.current()==='ru'?'ru-RU':'en-GB',{timeZone:'Europe/Moscow',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date())+' NC';}
@@ -535,7 +550,7 @@ async function loadCodexItems() {
       ${data.items.map(it => `
         <div class="card item-card">
           <div class="head">
-            <span class="name" data-id="${it.id}">${esc(it.name)}</span>
+            <span class="item-thumb-placeholder">${{'guns':'🔫','ammo':'📦','melee':'⚔️','armor':'🛡️','grenades':'💣','gear':'🔧','fashion':'👕','services':'💼','cyberware':'🦾','net_stuff':'💻','programs':'💾','vehicles':'🏍️','vehicles_upgrades':'⚙️','gun_upgrades':'🔧'}[it.cat]||'📦'}</span><span class="name" data-id="${it.id}">${esc(it.name)}</span>
             <span class="price">${it.price != null ? money(it.price) : '<span class="muted">—</span>'}</span>
           </div>
           <div class="chips"><span class="chip">${catName(it.cat)}</span>${itemMechanicChips(it)}</div>

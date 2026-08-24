@@ -10771,8 +10771,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_notification_read(self, conn, qs, m, body):
         user = self.require_user(conn)
-        conn.execute('UPDATE notifications SET read_at=? WHERE id=? AND user_id=?',
-                     (time.time(), int(m.group(1)), user['id']))
+        if (body or {}).get('all'):
+            conn.execute('UPDATE notifications SET read_at=? WHERE user_id=? AND read_at IS NULL',
+                         (time.time(), user['id']))
+        else:
+            conn.execute('UPDATE notifications SET read_at=? WHERE id=? AND user_id=?',
+                         (time.time(), int(m.group(1)), user['id']))
         conn.commit(); self.send_json({'ok': True})
 
     def api_admin_vk_status(self, conn, qs, m, body):
@@ -19860,6 +19864,40 @@ class Handler(BaseHTTPRequestHandler):
 
     NEWS_FIELDS = ('id', 'author_id', 'title', 'tag', 'body', 'created')
 
+    def api_calendar_ics(self, conn, qs, m, body):
+        user = self.current_user(conn)
+        contracts = conn.execute(
+            'SELECT id,title,district_id,scheduled_at,crew_capacity FROM contracts '
+            "WHERE status IN ('open','crew_full','in_progress') AND scheduled_at IS NOT NULL "
+            'ORDER BY scheduled_at').fetchall()
+        lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//NC//NET//Cyberpunk RED//EN',
+                 'CALSCALE:GREGORIAN', 'X-WR-CALNAME:NC//NET Contracts']
+        for c in contracts:
+            if not c['scheduled_at']:
+                continue
+            dt = datetime.fromtimestamp(c['scheduled_at'], tz=MOSCOW)
+            dt_end = dt + timedelta(hours=3)
+            lines.extend([
+                'BEGIN:VEVENT',
+                f'UID:contract-{c["id"]}@ncnet',
+                f'DTSTAMP:{dt.strftime("%Y%m%dT%H%M%S")}',
+                f'DTSTART:{dt.strftime("%Y%m%dT%H%M%S")}',
+                f'DTEND:{dt_end.strftime("%Y%m%dT%H%M%S")}',
+                f'SUMMARY:{str(c["title"] or "Contract")[:100]}',
+                f'DESCRIPTION:NC//NET Contract #{c["id"]}',
+                'END:VEVENT',
+            ])
+        lines.append('END:VCALENDAR')
+        ics = '\r\n'.join(lines)
+        body_bytes = ics.encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/calendar; charset=utf-8')
+        self.send_header('Content-Disposition', 'attachment; filename="ncnet-contracts.ics"')
+        self.send_header('Content-Length', str(len(body_bytes)))
+        self.send_security_headers()
+        self.end_headers()
+        self.wfile.write(body_bytes)
+
     def api_news(self, conn, qs, m, body):
         user = self.current_user(conn)
         rows = conn.execute(
@@ -19967,6 +20005,7 @@ ROUTES = [
     ('POST', rx(r'/api/admin/backups/([A-Za-z0-9_.-]+)/verify'), Handler.api_admin_backup_verify),
     ('GET', rx(r'/api/admin/backups/([A-Za-z0-9_.-]+)/download'), Handler.api_admin_backup_download),
     ('GET', rx(r'/api/notifications'), Handler.api_notifications),
+    ('GET', rx(r'/api/calendar.ics'), Handler.api_calendar_ics),
     ('POST', rx(r'/api/notifications/(\d+)/read'), Handler.api_notification_read),
     ('GET', rx(r'/api/admin/vk'), Handler.api_admin_vk_status),
     ('POST', rx(r'/api/admin/vk/flush'), Handler.api_admin_vk_flush),
