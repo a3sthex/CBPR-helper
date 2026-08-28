@@ -1,0 +1,2217 @@
+{
+ "BC Black Chrome": {
+  "pages": 170,
+  "method": "chapter-map",
+  "categories": {
+   "service": [
+    [
+     1,
+     1
+    ],
+    [
+     3,
+     6
+    ]
+   ],
+   "art_splash": [
+    [
+     2,
+     2
+    ],
+    [
+     136,
+     136
+    ],
+    [
+     140,
+     140
+    ],
+    [
+     143,
+     143
+    ],
+    [
+     151,
+     151
+    ],
+    [
+     156,
+     156
+    ]
+   ],
+   "rules_core": [
+    [
+     7,
+     12
+    ],
+    [
+     129,
+     129
+    ],
+    [
+     132,
+     132
+    ]
+   ],
+   "items_gear": [
+    [
+     13,
+     128
+    ],
+    [
+     130,
+     131
+    ],
+    [
+     159,
+     170
+    ]
+   ],
+   "gm_advice": [
+    [
+     133,
+     135
+    ],
+    [
+     137,
+     139
+    ],
+    [
+     141,
+     142
+    ],
+    [
+     144,
+     150
+    ],
+    [
+     152,
+     155
+    ],
+    [
+     157,
+     158
+    ]
+   ]
+  },
+  "labels": {
+   "1": "service",
+   "2": "art_splash",
+   "3": "service",
+   "4": "service",
+   "5": "service",
+   "6": "service",
+   "7": "rules_core",
+   "8": "rules_core",
+   "9": "rules_core",
+   "10": "rules_core",
+   "11": "rules_core",
+   "12": "rules_core",
+   "13": "items_gear",
+   "14": "items_gear",
+   "15": "items_gear",
+   "16": "items_gear",
+   "17": "items_gear",
+   "18": "items_gear",
+   "19": "items_gear",
+   "20": "items_gear",
+   "21": "items_gear",
+   "22": "items_gear",
+   "23": "items_gear",
+   "24": "items_gear",
+   "25": "items_gear",
+   "26": "items_gear",
+   "27": "items_gear",
+   "28": "items_gear",
+   "29": "items_gear",
+   "30": "items_gear",
+   "31": "items_gear",
+   "32": "items_gear",
+   "33": "items_gear",
+   "34": "items_gear",
+   "35": "items_gear",
+   "36": "items_gear",
+   "37": "items_gear",
+   "38": "items_gear",
+   "39": "items_gear",
+   "40": "items_gear",
+   "41": "items_gear",
+   "42": "items_gear",
+   "43": "items_gear",
+   "44": "items_gear",
+   "45": "items_gear",
+   "46": "items_gear",
+   "47": "items_gear",
+   "48": "items_gear",
+   "49": "items_gear",
+   "50": "items_gear",
+   "51": "items_gear",
+   "52": "items_gear",
+   "53": "items_gear",
+   "54": "items_gear",
+   "55": "items_gear",
+   "56": "items_gear",
+   "57": "items_gear",
+   "58": "items_gear",
+   "59": "items_gear",
+   "60": "items_gear",
+   "61": "items_gear",
+   "62": "items_gear",
+   "63": "items_gear",
+   "64": "items_gear",
+   "65": "items_gear",
+   "66": "items_gear",
+   "67": "items_gear",
+   "68": "items_gear",
+   "69": "items_gear",
+   "70": "items_gear",
+   "71": "items_gear",
+   "72": "items_gear",
+   "73": "items_gear",
+   "74": "items_gear",
+   "75": "items_gear",
+   "76": "items_gear",
+   "77": "items_gear",
+   "78": "items_gear",
+   "79": "items_gear",
+   "80": "items_gear",
+   "81": "items_gear",
+   "82": "items_gear",
+   "83": "items_gear",
+   "84": "items_gear",
+   "85": "items_gear",
+   "86": "items_gear",
+   "87": "items_gear",
+   "88": "items_gear",
+   "89": "items_gear",
+   "90": "items_gear",
+   "91": "items_gear",
+   "92": "items_gear",
+   "93": "items_gear",
+   "94": "items_gear",
+   "95": "items_gear",
+   "96": "items_gear",
+   "97": "items_gear",
+   "98": "items_gear",
+   "99": "items_gear",
+   "100": "items_gear",
+   "101": "items_gear",
+   "102": "items_gear",
+   "103": "items_gear",
+   "104": "items_gear",
+   "105": "items_gear",
+   "106": "items_gear",
+   "107": "items_gear",
+   "108": "items_gear",
+   "109": "items_gear",
+   "110": "items_gear",
+   "111": "items_gear",
+   "112": "items_gear",
+   "113": "items_gear",
+   "114": "items_gear",
+   "115": "items_gear",
+   "116": "items_gear",
+   "117": "items_gear",
+   "118": "items_gear",
+   "119": "items_gear",
+   "120": "items_gear",
+   "121": "items_gear",
+   "122": "items_gear",
+   "123": "items_gear",
+   "124": "items_gear",
+   "125": "items_gear",
+   "126": "items_gear",
+   "127": "items_gear",
+   "128": "items_gear",
+   "129": "rules_core",
+   "130": "items_gear",
+   "131": "items_gear",
+   "132": "rules_core",
+   "133": "gm_advice",
+   "134": "gm_advice",
+   "135": "gm_advice",
+   "136": "art_splash",
+   "137": "gm_advice",
+   "138": "gm_advice",
+   "139": "gm_advice",
+   "140": "art_splash",
+   "141": "gm_advice",
+   "142": "gm_advice",
+   "143": "art_splash",
+   "144": "gm_advice",
+   "145": "gm_advice",
+   "146": "gm_advice",
+   "147": "gm_advice",
+   "148": "gm_advice",
+   "149": "gm_advice",
+   "150": "gm_advice",
+   "151": "art_splash",
+   "152": "gm_advice",
+   "153": "gm_advice",
+   "154": "gm_advice",
+   "155": "gm_advice",
+   "156": "art_splash",
+   "157": "gm_advice",
+   "158": "gm_advice",
+   "159": "items_gear",
+   "160": "items_gear",
+   "161": "items_gear",
+   "162": "items_gear",
+   "163": "items_gear",
+   "164": "items_gear",
+   "165": "items_gear",
+   "166": "items_gear",
+   "167": "items_gear",
+   "168": "items_gear",
+   "169": "items_gear",
+   "170": "items_gear"
+  }
+ },
+ "CEMK Edgerunners Handbook": {
+  "pages": 42,
+  "method": "heuristic",
+  "categories": {
+   "service": [
+    [
+     1,
+     2
+    ]
+   ],
+   "rules_netrunner": [
+    [
+     3,
+     3
+    ],
+    [
+     10,
+     10
+    ],
+    [
+     12,
+     12
+    ],
+    [
+     14,
+     14
+    ]
+   ],
+   "lore": [
+    [
+     4,
+     4
+    ],
+    [
+     6,
+     7
+    ],
+    [
+     13,
+     13
+    ],
+    [
+     15,
+     25
+    ],
+    [
+     27,
+     33
+    ],
+    [
+     35,
+     41
+    ]
+   ],
+   "gm_advice": [
+    [
+     5,
+     5
+    ]
+   ],
+   "items_gear": [
+    [
+     8,
+     9
+    ],
+    [
+     11,
+     11
+    ],
+    [
+     26,
+     26
+    ],
+    [
+     34,
+     34
+    ]
+   ],
+   "rules_combat": [
+    [
+     42,
+     42
+    ]
+   ]
+  },
+  "labels": {
+   "1": "service",
+   "2": "service",
+   "3": "rules_netrunner",
+   "4": "lore",
+   "5": "gm_advice",
+   "6": "lore",
+   "7": "lore",
+   "8": "items_gear",
+   "9": "items_gear",
+   "10": "rules_netrunner",
+   "11": "items_gear",
+   "12": "rules_netrunner",
+   "13": "lore",
+   "14": "rules_netrunner",
+   "15": "lore",
+   "16": "lore",
+   "17": "lore",
+   "18": "lore",
+   "19": "lore",
+   "20": "lore",
+   "21": "lore",
+   "22": "lore",
+   "23": "lore",
+   "24": "lore",
+   "25": "lore",
+   "26": "items_gear",
+   "27": "lore",
+   "28": "lore",
+   "29": "lore",
+   "30": "lore",
+   "31": "lore",
+   "32": "lore",
+   "33": "lore",
+   "34": "items_gear",
+   "35": "lore",
+   "36": "lore",
+   "37": "lore",
+   "38": "lore",
+   "39": "lore",
+   "40": "lore",
+   "41": "lore",
+   "42": "rules_combat"
+  }
+ },
+ "CEMK Rule Book": {
+  "pages": 42,
+  "method": "heuristic",
+  "categories": {
+   "service": [
+    [
+     1,
+     2
+    ]
+   ],
+   "rules_combat": [
+    [
+     3,
+     4
+    ],
+    [
+     7,
+     11
+    ],
+    [
+     13,
+     15
+    ],
+    [
+     19,
+     19
+    ],
+    [
+     30,
+     35
+    ],
+    [
+     38,
+     38
+    ],
+    [
+     40,
+     41
+    ]
+   ],
+   "rules_core": [
+    [
+     5,
+     6
+    ],
+    [
+     12,
+     12
+    ]
+   ],
+   "rules_netrunner": [
+    [
+     16,
+     18
+    ],
+    [
+     24,
+     24
+    ],
+    [
+     27,
+     28
+    ],
+    [
+     36,
+     37
+    ],
+    [
+     39,
+     39
+    ],
+    [
+     42,
+     42
+    ]
+   ],
+   "char_creation": [
+    [
+     20,
+     20
+    ],
+    [
+     25,
+     25
+    ]
+   ],
+   "lore": [
+    [
+     21,
+     23
+    ]
+   ],
+   "items_gear": [
+    [
+     26,
+     26
+    ],
+    [
+     29,
+     29
+    ]
+   ]
+  },
+  "labels": {
+   "1": "service",
+   "2": "service",
+   "3": "rules_combat",
+   "4": "rules_combat",
+   "5": "rules_core",
+   "6": "rules_core",
+   "7": "rules_combat",
+   "8": "rules_combat",
+   "9": "rules_combat",
+   "10": "rules_combat",
+   "11": "rules_combat",
+   "12": "rules_core",
+   "13": "rules_combat",
+   "14": "rules_combat",
+   "15": "rules_combat",
+   "16": "rules_netrunner",
+   "17": "rules_netrunner",
+   "18": "rules_netrunner",
+   "19": "rules_combat",
+   "20": "char_creation",
+   "21": "lore",
+   "22": "lore",
+   "23": "lore",
+   "24": "rules_netrunner",
+   "25": "char_creation",
+   "26": "items_gear",
+   "27": "rules_netrunner",
+   "28": "rules_netrunner",
+   "29": "items_gear",
+   "30": "rules_combat",
+   "31": "rules_combat",
+   "32": "rules_combat",
+   "33": "rules_combat",
+   "34": "rules_combat",
+   "35": "rules_combat",
+   "36": "rules_netrunner",
+   "37": "rules_netrunner",
+   "38": "rules_combat",
+   "39": "rules_netrunner",
+   "40": "rules_combat",
+   "41": "rules_combat",
+   "42": "rules_netrunner"
+  }
+ },
+ "CPR Cyberpunk RED Corebook": {
+  "pages": 458,
+  "method": "chapter-map",
+  "categories": {
+   "service": [
+    [
+     1,
+     1
+    ],
+    [
+     3,
+     5
+    ],
+    [
+     72,
+     72
+    ]
+   ],
+   "art_splash": [
+    [
+     2,
+     2
+    ],
+    [
+     71,
+     71
+    ],
+    [
+     107,
+     107
+    ],
+    [
+     427,
+     427
+    ],
+    [
+     435,
+     435
+    ],
+    [
+     453,
+     453
+    ]
+   ],
+   "lore": [
+    [
+     6,
+     22
+    ],
+    [
+     25,
+     27
+    ],
+    [
+     122,
+     125
+    ],
+    [
+     234,
+     333
+    ]
+   ],
+   "rules_core": [
+    [
+     23,
+     24
+    ],
+    [
+     73,
+     91
+    ],
+    [
+     108,
+     110
+    ],
+    [
+     126,
+     167
+    ],
+    [
+     230,
+     230
+    ],
+    [
+     232,
+     233
+    ],
+    [
+     334,
+     338
+    ],
+    [
+     409,
+     412
+    ]
+   ],
+   "char_creation": [
+    [
+     28,
+     70
+    ]
+   ],
+   "items_gear": [
+    [
+     92,
+     106
+    ],
+    [
+     111,
+     121
+    ],
+    [
+     186,
+     186
+    ],
+    [
+     191,
+     191
+    ],
+    [
+     224,
+     229
+    ],
+    [
+     231,
+     231
+    ],
+    [
+     339,
+     381
+    ],
+    [
+     383,
+     386
+    ]
+   ],
+   "rules_combat": [
+    [
+     168,
+     185
+    ],
+    [
+     187,
+     190
+    ],
+    [
+     192,
+     195
+    ],
+    [
+     220,
+     223
+    ]
+   ],
+   "rules_netrunner": [
+    [
+     196,
+     219
+    ]
+   ],
+   "gm_advice": [
+    [
+     382,
+     382
+    ],
+    [
+     387,
+     408
+    ],
+    [
+     413,
+     426
+    ],
+    [
+     428,
+     434
+    ],
+    [
+     436,
+     452
+    ],
+    [
+     454,
+     458
+    ]
+   ]
+  },
+  "labels": {
+   "1": "service",
+   "2": "art_splash",
+   "3": "service",
+   "4": "service",
+   "5": "service",
+   "6": "lore",
+   "7": "lore",
+   "8": "lore",
+   "9": "lore",
+   "10": "lore",
+   "11": "lore",
+   "12": "lore",
+   "13": "lore",
+   "14": "lore",
+   "15": "lore",
+   "16": "lore",
+   "17": "lore",
+   "18": "lore",
+   "19": "lore",
+   "20": "lore",
+   "21": "lore",
+   "22": "lore",
+   "23": "rules_core",
+   "24": "rules_core",
+   "25": "lore",
+   "26": "lore",
+   "27": "lore",
+   "28": "char_creation",
+   "29": "char_creation",
+   "30": "char_creation",
+   "31": "char_creation",
+   "32": "char_creation",
+   "33": "char_creation",
+   "34": "char_creation",
+   "35": "char_creation",
+   "36": "char_creation",
+   "37": "char_creation",
+   "38": "char_creation",
+   "39": "char_creation",
+   "40": "char_creation",
+   "41": "char_creation",
+   "42": "char_creation",
+   "43": "char_creation",
+   "44": "char_creation",
+   "45": "char_creation",
+   "46": "char_creation",
+   "47": "char_creation",
+   "48": "char_creation",
+   "49": "char_creation",
+   "50": "char_creation",
+   "51": "char_creation",
+   "52": "char_creation",
+   "53": "char_creation",
+   "54": "char_creation",
+   "55": "char_creation",
+   "56": "char_creation",
+   "57": "char_creation",
+   "58": "char_creation",
+   "59": "char_creation",
+   "60": "char_creation",
+   "61": "char_creation",
+   "62": "char_creation",
+   "63": "char_creation",
+   "64": "char_creation",
+   "65": "char_creation",
+   "66": "char_creation",
+   "67": "char_creation",
+   "68": "char_creation",
+   "69": "char_creation",
+   "70": "char_creation",
+   "71": "art_splash",
+   "72": "service",
+   "73": "rules_core",
+   "74": "rules_core",
+   "75": "rules_core",
+   "76": "rules_core",
+   "77": "rules_core",
+   "78": "rules_core",
+   "79": "rules_core",
+   "80": "rules_core",
+   "81": "rules_core",
+   "82": "rules_core",
+   "83": "rules_core",
+   "84": "rules_core",
+   "85": "rules_core",
+   "86": "rules_core",
+   "87": "rules_core",
+   "88": "rules_core",
+   "89": "rules_core",
+   "90": "rules_core",
+   "91": "rules_core",
+   "92": "items_gear",
+   "93": "items_gear",
+   "94": "items_gear",
+   "95": "items_gear",
+   "96": "items_gear",
+   "97": "items_gear",
+   "98": "items_gear",
+   "99": "items_gear",
+   "100": "items_gear",
+   "101": "items_gear",
+   "102": "items_gear",
+   "103": "items_gear",
+   "104": "items_gear",
+   "105": "items_gear",
+   "106": "items_gear",
+   "107": "art_splash",
+   "108": "rules_core",
+   "109": "rules_core",
+   "110": "rules_core",
+   "111": "items_gear",
+   "112": "items_gear",
+   "113": "items_gear",
+   "114": "items_gear",
+   "115": "items_gear",
+   "116": "items_gear",
+   "117": "items_gear",
+   "118": "items_gear",
+   "119": "items_gear",
+   "120": "items_gear",
+   "121": "items_gear",
+   "122": "lore",
+   "123": "lore",
+   "124": "lore",
+   "125": "lore",
+   "126": "rules_core",
+   "127": "rules_core",
+   "128": "rules_core",
+   "129": "rules_core",
+   "130": "rules_core",
+   "131": "rules_core",
+   "132": "rules_core",
+   "133": "rules_core",
+   "134": "rules_core",
+   "135": "rules_core",
+   "136": "rules_core",
+   "137": "rules_core",
+   "138": "rules_core",
+   "139": "rules_core",
+   "140": "rules_core",
+   "141": "rules_core",
+   "142": "rules_core",
+   "143": "rules_core",
+   "144": "rules_core",
+   "145": "rules_core",
+   "146": "rules_core",
+   "147": "rules_core",
+   "148": "rules_core",
+   "149": "rules_core",
+   "150": "rules_core",
+   "151": "rules_core",
+   "152": "rules_core",
+   "153": "rules_core",
+   "154": "rules_core",
+   "155": "rules_core",
+   "156": "rules_core",
+   "157": "rules_core",
+   "158": "rules_core",
+   "159": "rules_core",
+   "160": "rules_core",
+   "161": "rules_core",
+   "162": "rules_core",
+   "163": "rules_core",
+   "164": "rules_core",
+   "165": "rules_core",
+   "166": "rules_core",
+   "167": "rules_core",
+   "168": "rules_combat",
+   "169": "rules_combat",
+   "170": "rules_combat",
+   "171": "rules_combat",
+   "172": "rules_combat",
+   "173": "rules_combat",
+   "174": "rules_combat",
+   "175": "rules_combat",
+   "176": "rules_combat",
+   "177": "rules_combat",
+   "178": "rules_combat",
+   "179": "rules_combat",
+   "180": "rules_combat",
+   "181": "rules_combat",
+   "182": "rules_combat",
+   "183": "rules_combat",
+   "184": "rules_combat",
+   "185": "rules_combat",
+   "186": "items_gear",
+   "187": "rules_combat",
+   "188": "rules_combat",
+   "189": "rules_combat",
+   "190": "rules_combat",
+   "191": "items_gear",
+   "192": "rules_combat",
+   "193": "rules_combat",
+   "194": "rules_combat",
+   "195": "rules_combat",
+   "196": "rules_netrunner",
+   "197": "rules_netrunner",
+   "198": "rules_netrunner",
+   "199": "rules_netrunner",
+   "200": "rules_netrunner",
+   "201": "rules_netrunner",
+   "202": "rules_netrunner",
+   "203": "rules_netrunner",
+   "204": "rules_netrunner",
+   "205": "rules_netrunner",
+   "206": "rules_netrunner",
+   "207": "rules_netrunner",
+   "208": "rules_netrunner",
+   "209": "rules_netrunner",
+   "210": "rules_netrunner",
+   "211": "rules_netrunner",
+   "212": "rules_netrunner",
+   "213": "rules_netrunner",
+   "214": "rules_netrunner",
+   "215": "rules_netrunner",
+   "216": "rules_netrunner",
+   "217": "rules_netrunner",
+   "218": "rules_netrunner",
+   "219": "rules_netrunner",
+   "220": "rules_combat",
+   "221": "rules_combat",
+   "222": "rules_combat",
+   "223": "rules_combat",
+   "224": "items_gear",
+   "225": "items_gear",
+   "226": "items_gear",
+   "227": "items_gear",
+   "228": "items_gear",
+   "229": "items_gear",
+   "230": "rules_core",
+   "231": "items_gear",
+   "232": "rules_core",
+   "233": "rules_core",
+   "234": "lore",
+   "235": "lore",
+   "236": "lore",
+   "237": "lore",
+   "238": "lore",
+   "239": "lore",
+   "240": "lore",
+   "241": "lore",
+   "242": "lore",
+   "243": "lore",
+   "244": "lore",
+   "245": "lore",
+   "246": "lore",
+   "247": "lore",
+   "248": "lore",
+   "249": "lore",
+   "250": "lore",
+   "251": "lore",
+   "252": "lore",
+   "253": "lore",
+   "254": "lore",
+   "255": "lore",
+   "256": "lore",
+   "257": "lore",
+   "258": "lore",
+   "259": "lore",
+   "260": "lore",
+   "261": "lore",
+   "262": "lore",
+   "263": "lore",
+   "264": "lore",
+   "265": "lore",
+   "266": "lore",
+   "267": "lore",
+   "268": "lore",
+   "269": "lore",
+   "270": "lore",
+   "271": "lore",
+   "272": "lore",
+   "273": "lore",
+   "274": "lore",
+   "275": "lore",
+   "276": "lore",
+   "277": "lore",
+   "278": "lore",
+   "279": "lore",
+   "280": "lore",
+   "281": "lore",
+   "282": "lore",
+   "283": "lore",
+   "284": "lore",
+   "285": "lore",
+   "286": "lore",
+   "287": "lore",
+   "288": "lore",
+   "289": "lore",
+   "290": "lore",
+   "291": "lore",
+   "292": "lore",
+   "293": "lore",
+   "294": "lore",
+   "295": "lore",
+   "296": "lore",
+   "297": "lore",
+   "298": "lore",
+   "299": "lore",
+   "300": "lore",
+   "301": "lore",
+   "302": "lore",
+   "303": "lore",
+   "304": "lore",
+   "305": "lore",
+   "306": "lore",
+   "307": "lore",
+   "308": "lore",
+   "309": "lore",
+   "310": "lore",
+   "311": "lore",
+   "312": "lore",
+   "313": "lore",
+   "314": "lore",
+   "315": "lore",
+   "316": "lore",
+   "317": "lore",
+   "318": "lore",
+   "319": "lore",
+   "320": "lore",
+   "321": "lore",
+   "322": "lore",
+   "323": "lore",
+   "324": "lore",
+   "325": "lore",
+   "326": "lore",
+   "327": "lore",
+   "328": "lore",
+   "329": "lore",
+   "330": "lore",
+   "331": "lore",
+   "332": "lore",
+   "333": "lore",
+   "334": "rules_core",
+   "335": "rules_core",
+   "336": "rules_core",
+   "337": "rules_core",
+   "338": "rules_core",
+   "339": "items_gear",
+   "340": "items_gear",
+   "341": "items_gear",
+   "342": "items_gear",
+   "343": "items_gear",
+   "344": "items_gear",
+   "345": "items_gear",
+   "346": "items_gear",
+   "347": "items_gear",
+   "348": "items_gear",
+   "349": "items_gear",
+   "350": "items_gear",
+   "351": "items_gear",
+   "352": "items_gear",
+   "353": "items_gear",
+   "354": "items_gear",
+   "355": "items_gear",
+   "356": "items_gear",
+   "357": "items_gear",
+   "358": "items_gear",
+   "359": "items_gear",
+   "360": "items_gear",
+   "361": "items_gear",
+   "362": "items_gear",
+   "363": "items_gear",
+   "364": "items_gear",
+   "365": "items_gear",
+   "366": "items_gear",
+   "367": "items_gear",
+   "368": "items_gear",
+   "369": "items_gear",
+   "370": "items_gear",
+   "371": "items_gear",
+   "372": "items_gear",
+   "373": "items_gear",
+   "374": "items_gear",
+   "375": "items_gear",
+   "376": "items_gear",
+   "377": "items_gear",
+   "378": "items_gear",
+   "379": "items_gear",
+   "380": "items_gear",
+   "381": "items_gear",
+   "382": "gm_advice",
+   "383": "items_gear",
+   "384": "items_gear",
+   "385": "items_gear",
+   "386": "items_gear",
+   "387": "gm_advice",
+   "388": "gm_advice",
+   "389": "gm_advice",
+   "390": "gm_advice",
+   "391": "gm_advice",
+   "392": "gm_advice",
+   "393": "gm_advice",
+   "394": "gm_advice",
+   "395": "gm_advice",
+   "396": "gm_advice",
+   "397": "gm_advice",
+   "398": "gm_advice",
+   "399": "gm_advice",
+   "400": "gm_advice",
+   "401": "gm_advice",
+   "402": "gm_advice",
+   "403": "gm_advice",
+   "404": "gm_advice",
+   "405": "gm_advice",
+   "406": "gm_advice",
+   "407": "gm_advice",
+   "408": "gm_advice",
+   "409": "rules_core",
+   "410": "rules_core",
+   "411": "rules_core",
+   "412": "rules_core",
+   "413": "gm_advice",
+   "414": "gm_advice",
+   "415": "gm_advice",
+   "416": "gm_advice",
+   "417": "gm_advice",
+   "418": "gm_advice",
+   "419": "gm_advice",
+   "420": "gm_advice",
+   "421": "gm_advice",
+   "422": "gm_advice",
+   "423": "gm_advice",
+   "424": "gm_advice",
+   "425": "gm_advice",
+   "426": "gm_advice",
+   "427": "art_splash",
+   "428": "gm_advice",
+   "429": "gm_advice",
+   "430": "gm_advice",
+   "431": "gm_advice",
+   "432": "gm_advice",
+   "433": "gm_advice",
+   "434": "gm_advice",
+   "435": "art_splash",
+   "436": "gm_advice",
+   "437": "gm_advice",
+   "438": "gm_advice",
+   "439": "gm_advice",
+   "440": "gm_advice",
+   "441": "gm_advice",
+   "442": "gm_advice",
+   "443": "gm_advice",
+   "444": "gm_advice",
+   "445": "gm_advice",
+   "446": "gm_advice",
+   "447": "gm_advice",
+   "448": "gm_advice",
+   "449": "gm_advice",
+   "450": "gm_advice",
+   "451": "gm_advice",
+   "452": "gm_advice",
+   "453": "art_splash",
+   "454": "gm_advice",
+   "455": "gm_advice",
+   "456": "gm_advice",
+   "457": "gm_advice",
+   "458": "gm_advice"
+  }
+ },
+ "IR1 Cyberpunk RED - Interface RED - Volume 1": {
+  "pages": 66,
+  "method": "chapter-map",
+  "categories": {
+   "service": [
+    [
+     1,
+     2
+    ]
+   ],
+   "items_gear": [
+    [
+     3,
+     40
+    ],
+    [
+     45,
+     45
+    ],
+    [
+     58,
+     64
+    ],
+    [
+     66,
+     66
+    ]
+   ],
+   "lore": [
+    [
+     41,
+     44
+    ],
+    [
+     46,
+     57
+    ]
+   ],
+   "art_splash": [
+    [
+     65,
+     65
+    ]
+   ]
+  },
+  "labels": {
+   "1": "service",
+   "2": "service",
+   "3": "items_gear",
+   "4": "items_gear",
+   "5": "items_gear",
+   "6": "items_gear",
+   "7": "items_gear",
+   "8": "items_gear",
+   "9": "items_gear",
+   "10": "items_gear",
+   "11": "items_gear",
+   "12": "items_gear",
+   "13": "items_gear",
+   "14": "items_gear",
+   "15": "items_gear",
+   "16": "items_gear",
+   "17": "items_gear",
+   "18": "items_gear",
+   "19": "items_gear",
+   "20": "items_gear",
+   "21": "items_gear",
+   "22": "items_gear",
+   "23": "items_gear",
+   "24": "items_gear",
+   "25": "items_gear",
+   "26": "items_gear",
+   "27": "items_gear",
+   "28": "items_gear",
+   "29": "items_gear",
+   "30": "items_gear",
+   "31": "items_gear",
+   "32": "items_gear",
+   "33": "items_gear",
+   "34": "items_gear",
+   "35": "items_gear",
+   "36": "items_gear",
+   "37": "items_gear",
+   "38": "items_gear",
+   "39": "items_gear",
+   "40": "items_gear",
+   "41": "lore",
+   "42": "lore",
+   "43": "lore",
+   "44": "lore",
+   "45": "items_gear",
+   "46": "lore",
+   "47": "lore",
+   "48": "lore",
+   "49": "lore",
+   "50": "lore",
+   "51": "lore",
+   "52": "lore",
+   "53": "lore",
+   "54": "lore",
+   "55": "lore",
+   "56": "lore",
+   "57": "lore",
+   "58": "items_gear",
+   "59": "items_gear",
+   "60": "items_gear",
+   "61": "items_gear",
+   "62": "items_gear",
+   "63": "items_gear",
+   "64": "items_gear",
+   "65": "art_splash",
+   "66": "items_gear"
+  }
+ },
+ "IR2 Cyberpunk RED - Interface RED - Volume 2": {
+  "pages": 78,
+  "method": "chapter-map",
+  "categories": {
+   "service": [
+    [
+     1,
+     3
+    ]
+   ],
+   "gm_advice": [
+    [
+     4,
+     20
+    ],
+    [
+     22,
+     24
+    ],
+    [
+     26,
+     33
+    ]
+   ],
+   "items_gear": [
+    [
+     21,
+     21
+    ],
+    [
+     25,
+     25
+    ],
+    [
+     34,
+     39
+    ],
+    [
+     58,
+     76
+    ],
+    [
+     78,
+     78
+    ]
+   ],
+   "lore": [
+    [
+     40,
+     57
+    ]
+   ],
+   "art_splash": [
+    [
+     77,
+     77
+    ]
+   ]
+  },
+  "labels": {
+   "1": "service",
+   "2": "service",
+   "3": "service",
+   "4": "gm_advice",
+   "5": "gm_advice",
+   "6": "gm_advice",
+   "7": "gm_advice",
+   "8": "gm_advice",
+   "9": "gm_advice",
+   "10": "gm_advice",
+   "11": "gm_advice",
+   "12": "gm_advice",
+   "13": "gm_advice",
+   "14": "gm_advice",
+   "15": "gm_advice",
+   "16": "gm_advice",
+   "17": "gm_advice",
+   "18": "gm_advice",
+   "19": "gm_advice",
+   "20": "gm_advice",
+   "21": "items_gear",
+   "22": "gm_advice",
+   "23": "gm_advice",
+   "24": "gm_advice",
+   "25": "items_gear",
+   "26": "gm_advice",
+   "27": "gm_advice",
+   "28": "gm_advice",
+   "29": "gm_advice",
+   "30": "gm_advice",
+   "31": "gm_advice",
+   "32": "gm_advice",
+   "33": "gm_advice",
+   "34": "items_gear",
+   "35": "items_gear",
+   "36": "items_gear",
+   "37": "items_gear",
+   "38": "items_gear",
+   "39": "items_gear",
+   "40": "lore",
+   "41": "lore",
+   "42": "lore",
+   "43": "lore",
+   "44": "lore",
+   "45": "lore",
+   "46": "lore",
+   "47": "lore",
+   "48": "lore",
+   "49": "lore",
+   "50": "lore",
+   "51": "lore",
+   "52": "lore",
+   "53": "lore",
+   "54": "lore",
+   "55": "lore",
+   "56": "lore",
+   "57": "lore",
+   "58": "items_gear",
+   "59": "items_gear",
+   "60": "items_gear",
+   "61": "items_gear",
+   "62": "items_gear",
+   "63": "items_gear",
+   "64": "items_gear",
+   "65": "items_gear",
+   "66": "items_gear",
+   "67": "items_gear",
+   "68": "items_gear",
+   "69": "items_gear",
+   "70": "items_gear",
+   "71": "items_gear",
+   "72": "items_gear",
+   "73": "items_gear",
+   "74": "items_gear",
+   "75": "items_gear",
+   "76": "items_gear",
+   "77": "art_splash",
+   "78": "items_gear"
+  }
+ },
+ "IR3 Cyberpunk RED - Interface RED - Volume 3": {
+  "pages": 114,
+  "method": "chapter-map",
+  "categories": {
+   "service": [
+    [
+     1,
+     3
+    ]
+   ],
+   "gm_advice": [
+    [
+     4,
+     9
+    ]
+   ],
+   "lore": [
+    [
+     10,
+     24
+    ],
+    [
+     38,
+     42
+    ],
+    [
+     45,
+     45
+    ],
+    [
+     52,
+     67
+    ],
+    [
+     69,
+     70
+    ],
+    [
+     73,
+     73
+    ],
+    [
+     75,
+     75
+    ]
+   ],
+   "art_splash": [
+    [
+     25,
+     25
+    ],
+    [
+     51,
+     51
+    ],
+    [
+     89,
+     90
+    ]
+   ],
+   "items_gear": [
+    [
+     26,
+     31
+    ],
+    [
+     43,
+     44
+    ],
+    [
+     46,
+     50
+    ],
+    [
+     68,
+     68
+    ],
+    [
+     71,
+     72
+    ],
+    [
+     74,
+     74
+    ],
+    [
+     76,
+     88
+    ],
+    [
+     91,
+     91
+    ],
+    [
+     106,
+     107
+    ],
+    [
+     109,
+     109
+    ],
+    [
+     111,
+     112
+    ]
+   ],
+   "rules_core": [
+    [
+     32,
+     37
+    ],
+    [
+     92,
+     105
+    ],
+    [
+     108,
+     108
+    ],
+    [
+     110,
+     110
+    ],
+    [
+     113,
+     114
+    ]
+   ]
+  },
+  "labels": {
+   "1": "service",
+   "2": "service",
+   "3": "service",
+   "4": "gm_advice",
+   "5": "gm_advice",
+   "6": "gm_advice",
+   "7": "gm_advice",
+   "8": "gm_advice",
+   "9": "gm_advice",
+   "10": "lore",
+   "11": "lore",
+   "12": "lore",
+   "13": "lore",
+   "14": "lore",
+   "15": "lore",
+   "16": "lore",
+   "17": "lore",
+   "18": "lore",
+   "19": "lore",
+   "20": "lore",
+   "21": "lore",
+   "22": "lore",
+   "23": "lore",
+   "24": "lore",
+   "25": "art_splash",
+   "26": "items_gear",
+   "27": "items_gear",
+   "28": "items_gear",
+   "29": "items_gear",
+   "30": "items_gear",
+   "31": "items_gear",
+   "32": "rules_core",
+   "33": "rules_core",
+   "34": "rules_core",
+   "35": "rules_core",
+   "36": "rules_core",
+   "37": "rules_core",
+   "38": "lore",
+   "39": "lore",
+   "40": "lore",
+   "41": "lore",
+   "42": "lore",
+   "43": "items_gear",
+   "44": "items_gear",
+   "45": "lore",
+   "46": "items_gear",
+   "47": "items_gear",
+   "48": "items_gear",
+   "49": "items_gear",
+   "50": "items_gear",
+   "51": "art_splash",
+   "52": "lore",
+   "53": "lore",
+   "54": "lore",
+   "55": "lore",
+   "56": "lore",
+   "57": "lore",
+   "58": "lore",
+   "59": "lore",
+   "60": "lore",
+   "61": "lore",
+   "62": "lore",
+   "63": "lore",
+   "64": "lore",
+   "65": "lore",
+   "66": "lore",
+   "67": "lore",
+   "68": "items_gear",
+   "69": "lore",
+   "70": "lore",
+   "71": "items_gear",
+   "72": "items_gear",
+   "73": "lore",
+   "74": "items_gear",
+   "75": "lore",
+   "76": "items_gear",
+   "77": "items_gear",
+   "78": "items_gear",
+   "79": "items_gear",
+   "80": "items_gear",
+   "81": "items_gear",
+   "82": "items_gear",
+   "83": "items_gear",
+   "84": "items_gear",
+   "85": "items_gear",
+   "86": "items_gear",
+   "87": "items_gear",
+   "88": "items_gear",
+   "89": "art_splash",
+   "90": "art_splash",
+   "91": "items_gear",
+   "92": "rules_core",
+   "93": "rules_core",
+   "94": "rules_core",
+   "95": "rules_core",
+   "96": "rules_core",
+   "97": "rules_core",
+   "98": "rules_core",
+   "99": "rules_core",
+   "100": "rules_core",
+   "101": "rules_core",
+   "102": "rules_core",
+   "103": "rules_core",
+   "104": "rules_core",
+   "105": "rules_core",
+   "106": "items_gear",
+   "107": "items_gear",
+   "108": "rules_core",
+   "109": "items_gear",
+   "110": "rules_core",
+   "111": "items_gear",
+   "112": "items_gear",
+   "113": "rules_core",
+   "114": "rules_core"
+  }
+ },
+ "IR4 Cyberpunk RED - Interface RED - Volume 4": {
+  "pages": 90,
+  "method": "chapter-map",
+  "categories": {
+   "service": [
+    [
+     1,
+     3
+    ]
+   ],
+   "items_gear": [
+    [
+     4,
+     23
+    ],
+    [
+     52,
+     53
+    ],
+    [
+     66,
+     69
+    ],
+    [
+     72,
+     85
+    ],
+    [
+     87,
+     87
+    ],
+    [
+     90,
+     90
+    ]
+   ],
+   "gm_advice": [
+    [
+     24,
+     31
+    ],
+    [
+     56,
+     65
+    ]
+   ],
+   "lore": [
+    [
+     32,
+     37
+    ]
+   ],
+   "rules_combat": [
+    [
+     38,
+     51
+    ],
+    [
+     54,
+     55
+    ]
+   ],
+   "art_splash": [
+    [
+     70,
+     71
+    ],
+    [
+     86,
+     86
+    ],
+    [
+     88,
+     89
+    ]
+   ]
+  },
+  "labels": {
+   "1": "service",
+   "2": "service",
+   "3": "service",
+   "4": "items_gear",
+   "5": "items_gear",
+   "6": "items_gear",
+   "7": "items_gear",
+   "8": "items_gear",
+   "9": "items_gear",
+   "10": "items_gear",
+   "11": "items_gear",
+   "12": "items_gear",
+   "13": "items_gear",
+   "14": "items_gear",
+   "15": "items_gear",
+   "16": "items_gear",
+   "17": "items_gear",
+   "18": "items_gear",
+   "19": "items_gear",
+   "20": "items_gear",
+   "21": "items_gear",
+   "22": "items_gear",
+   "23": "items_gear",
+   "24": "gm_advice",
+   "25": "gm_advice",
+   "26": "gm_advice",
+   "27": "gm_advice",
+   "28": "gm_advice",
+   "29": "gm_advice",
+   "30": "gm_advice",
+   "31": "gm_advice",
+   "32": "lore",
+   "33": "lore",
+   "34": "lore",
+   "35": "lore",
+   "36": "lore",
+   "37": "lore",
+   "38": "rules_combat",
+   "39": "rules_combat",
+   "40": "rules_combat",
+   "41": "rules_combat",
+   "42": "rules_combat",
+   "43": "rules_combat",
+   "44": "rules_combat",
+   "45": "rules_combat",
+   "46": "rules_combat",
+   "47": "rules_combat",
+   "48": "rules_combat",
+   "49": "rules_combat",
+   "50": "rules_combat",
+   "51": "rules_combat",
+   "52": "items_gear",
+   "53": "items_gear",
+   "54": "rules_combat",
+   "55": "rules_combat",
+   "56": "gm_advice",
+   "57": "gm_advice",
+   "58": "gm_advice",
+   "59": "gm_advice",
+   "60": "gm_advice",
+   "61": "gm_advice",
+   "62": "gm_advice",
+   "63": "gm_advice",
+   "64": "gm_advice",
+   "65": "gm_advice",
+   "66": "items_gear",
+   "67": "items_gear",
+   "68": "items_gear",
+   "69": "items_gear",
+   "70": "art_splash",
+   "71": "art_splash",
+   "72": "items_gear",
+   "73": "items_gear",
+   "74": "items_gear",
+   "75": "items_gear",
+   "76": "items_gear",
+   "77": "items_gear",
+   "78": "items_gear",
+   "79": "items_gear",
+   "80": "items_gear",
+   "81": "items_gear",
+   "82": "items_gear",
+   "83": "items_gear",
+   "84": "items_gear",
+   "85": "items_gear",
+   "86": "art_splash",
+   "87": "items_gear",
+   "88": "art_splash",
+   "89": "art_splash",
+   "90": "items_gear"
+  }
+ },
+ "IR5 Cyberpunk RED - Interface RED - Volume 5": {
+  "pages": 150,
+  "method": "chapter-map",
+  "categories": {
+   "service": [
+    [
+     1,
+     3
+    ]
+   ],
+   "rules_combat": [
+    [
+     4,
+     5
+    ],
+    [
+     7,
+     7
+    ],
+    [
+     9,
+     13
+    ]
+   ],
+   "items_gear": [
+    [
+     6,
+     6
+    ],
+    [
+     8,
+     8
+    ],
+    [
+     24,
+     34
+    ],
+    [
+     36,
+     61
+    ],
+    [
+     72,
+     83
+    ],
+    [
+     98,
+     148
+    ],
+    [
+     150,
+     150
+    ]
+   ],
+   "lore": [
+    [
+     14,
+     23
+    ]
+   ],
+   "art_splash": [
+    [
+     35,
+     35
+    ],
+    [
+     149,
+     149
+    ]
+   ],
+   "gm_advice": [
+    [
+     62,
+     71
+    ],
+    [
+     84,
+     97
+    ]
+   ]
+  },
+  "labels": {
+   "1": "service",
+   "2": "service",
+   "3": "service",
+   "4": "rules_combat",
+   "5": "rules_combat",
+   "6": "items_gear",
+   "7": "rules_combat",
+   "8": "items_gear",
+   "9": "rules_combat",
+   "10": "rules_combat",
+   "11": "rules_combat",
+   "12": "rules_combat",
+   "13": "rules_combat",
+   "14": "lore",
+   "15": "lore",
+   "16": "lore",
+   "17": "lore",
+   "18": "lore",
+   "19": "lore",
+   "20": "lore",
+   "21": "lore",
+   "22": "lore",
+   "23": "lore",
+   "24": "items_gear",
+   "25": "items_gear",
+   "26": "items_gear",
+   "27": "items_gear",
+   "28": "items_gear",
+   "29": "items_gear",
+   "30": "items_gear",
+   "31": "items_gear",
+   "32": "items_gear",
+   "33": "items_gear",
+   "34": "items_gear",
+   "35": "art_splash",
+   "36": "items_gear",
+   "37": "items_gear",
+   "38": "items_gear",
+   "39": "items_gear",
+   "40": "items_gear",
+   "41": "items_gear",
+   "42": "items_gear",
+   "43": "items_gear",
+   "44": "items_gear",
+   "45": "items_gear",
+   "46": "items_gear",
+   "47": "items_gear",
+   "48": "items_gear",
+   "49": "items_gear",
+   "50": "items_gear",
+   "51": "items_gear",
+   "52": "items_gear",
+   "53": "items_gear",
+   "54": "items_gear",
+   "55": "items_gear",
+   "56": "items_gear",
+   "57": "items_gear",
+   "58": "items_gear",
+   "59": "items_gear",
+   "60": "items_gear",
+   "61": "items_gear",
+   "62": "gm_advice",
+   "63": "gm_advice",
+   "64": "gm_advice",
+   "65": "gm_advice",
+   "66": "gm_advice",
+   "67": "gm_advice",
+   "68": "gm_advice",
+   "69": "gm_advice",
+   "70": "gm_advice",
+   "71": "gm_advice",
+   "72": "items_gear",
+   "73": "items_gear",
+   "74": "items_gear",
+   "75": "items_gear",
+   "76": "items_gear",
+   "77": "items_gear",
+   "78": "items_gear",
+   "79": "items_gear",
+   "80": "items_gear",
+   "81": "items_gear",
+   "82": "items_gear",
+   "83": "items_gear",
+   "84": "gm_advice",
+   "85": "gm_advice",
+   "86": "gm_advice",
+   "87": "gm_advice",
+   "88": "gm_advice",
+   "89": "gm_advice",
+   "90": "gm_advice",
+   "91": "gm_advice",
+   "92": "gm_advice",
+   "93": "gm_advice",
+   "94": "gm_advice",
+   "95": "gm_advice",
+   "96": "gm_advice",
+   "97": "gm_advice",
+   "98": "items_gear",
+   "99": "items_gear",
+   "100": "items_gear",
+   "101": "items_gear",
+   "102": "items_gear",
+   "103": "items_gear",
+   "104": "items_gear",
+   "105": "items_gear",
+   "106": "items_gear",
+   "107": "items_gear",
+   "108": "items_gear",
+   "109": "items_gear",
+   "110": "items_gear",
+   "111": "items_gear",
+   "112": "items_gear",
+   "113": "items_gear",
+   "114": "items_gear",
+   "115": "items_gear",
+   "116": "items_gear",
+   "117": "items_gear",
+   "118": "items_gear",
+   "119": "items_gear",
+   "120": "items_gear",
+   "121": "items_gear",
+   "122": "items_gear",
+   "123": "items_gear",
+   "124": "items_gear",
+   "125": "items_gear",
+   "126": "items_gear",
+   "127": "items_gear",
+   "128": "items_gear",
+   "129": "items_gear",
+   "130": "items_gear",
+   "131": "items_gear",
+   "132": "items_gear",
+   "133": "items_gear",
+   "134": "items_gear",
+   "135": "items_gear",
+   "136": "items_gear",
+   "137": "items_gear",
+   "138": "items_gear",
+   "139": "items_gear",
+   "140": "items_gear",
+   "141": "items_gear",
+   "142": "items_gear",
+   "143": "items_gear",
+   "144": "items_gear",
+   "145": "items_gear",
+   "146": "items_gear",
+   "147": "items_gear",
+   "148": "items_gear",
+   "149": "art_splash",
+   "150": "items_gear"
+  }
+ },
+ "RTG-CPR-CharacterSheet-Fillable": {
+  "pages": 3,
+  "method": "heuristic",
+  "categories": {
+   "service": [
+    [
+     1,
+     2
+    ]
+   ],
+   "items_gear": [
+    [
+     3,
+     3
+    ]
+   ]
+  },
+  "labels": {
+   "1": "service",
+   "2": "service",
+   "3": "items_gear"
+  }
+ },
+ "RTG-CPR-DLC-NightMarketIndexv1.24": {
+  "pages": 74,
+  "method": "heuristic",
+  "categories": {
+   "service": [
+    [
+     1,
+     2
+    ]
+   ],
+   "items_gear": [
+    [
+     3,
+     74
+    ]
+   ]
+  },
+  "labels": {
+   "1": "service",
+   "2": "service",
+   "3": "items_gear",
+   "4": "items_gear",
+   "5": "items_gear",
+   "6": "items_gear",
+   "7": "items_gear",
+   "8": "items_gear",
+   "9": "items_gear",
+   "10": "items_gear",
+   "11": "items_gear",
+   "12": "items_gear",
+   "13": "items_gear",
+   "14": "items_gear",
+   "15": "items_gear",
+   "16": "items_gear",
+   "17": "items_gear",
+   "18": "items_gear",
+   "19": "items_gear",
+   "20": "items_gear",
+   "21": "items_gear",
+   "22": "items_gear",
+   "23": "items_gear",
+   "24": "items_gear",
+   "25": "items_gear",
+   "26": "items_gear",
+   "27": "items_gear",
+   "28": "items_gear",
+   "29": "items_gear",
+   "30": "items_gear",
+   "31": "items_gear",
+   "32": "items_gear",
+   "33": "items_gear",
+   "34": "items_gear",
+   "35": "items_gear",
+   "36": "items_gear",
+   "37": "items_gear",
+   "38": "items_gear",
+   "39": "items_gear",
+   "40": "items_gear",
+   "41": "items_gear",
+   "42": "items_gear",
+   "43": "items_gear",
+   "44": "items_gear",
+   "45": "items_gear",
+   "46": "items_gear",
+   "47": "items_gear",
+   "48": "items_gear",
+   "49": "items_gear",
+   "50": "items_gear",
+   "51": "items_gear",
+   "52": "items_gear",
+   "53": "items_gear",
+   "54": "items_gear",
+   "55": "items_gear",
+   "56": "items_gear",
+   "57": "items_gear",
+   "58": "items_gear",
+   "59": "items_gear",
+   "60": "items_gear",
+   "61": "items_gear",
+   "62": "items_gear",
+   "63": "items_gear",
+   "64": "items_gear",
+   "65": "items_gear",
+   "66": "items_gear",
+   "67": "items_gear",
+   "68": "items_gear",
+   "69": "items_gear",
+   "70": "items_gear",
+   "71": "items_gear",
+   "72": "items_gear",
+   "73": "items_gear",
+   "74": "items_gear"
+  }
+ }
+}
