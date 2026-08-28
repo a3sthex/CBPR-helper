@@ -6,6 +6,7 @@ import secrets
 import sqlite3
 import time
 
+from charbuild import ensure_progression
 from core import (BACKUP_DIR, DATA_DIR, DB_PATH, UPLOAD_DIR, ApiError,
                   parse_json_object, user_is_gm)
 from catalog import catalog, load_effect_rules
@@ -19,12 +20,6 @@ from recap import (ensure_system_persona, migrate_legacy_network_content,
                    record_character_change_set)
 
 
-_LATE = {}
-
-
-def bind(**kwargs):
-    """Подключить ensure_progression (живёт в server.py до домена progression)."""
-    _LATE.update(kwargs)
 
 
 
@@ -255,7 +250,7 @@ def _record_transfer_ledger(conn, character_id, actor_user_id, before, after,
 
 
 def _persist_transfer_side(conn, character_id, data, source_type, source_ref):
-    _LATE['ensure_progression'](data)
+    ensure_progression(data)
     persist_character_item_instances(
         conn, character_id, data, source_type, source_ref=source_ref, prune=True)
 

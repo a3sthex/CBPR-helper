@@ -28,15 +28,9 @@ from mod_engine import (character_effective_vehicles, character_effective_weapon
 from inventory import (catalog_item_id_for_entry, character_modifications,
                        ensure_character_item_instances,
                        persist_character_item_instances)
-from charbuild import skill_base
+from charbuild import ensure_progression, skill_base
 
 
-_LATE = {}
-
-
-def bind(**kwargs):
-    """Подключить поздние зависимости (см. docstring модуля)."""
-    _LATE.update(kwargs)
 
 
 
@@ -1691,7 +1685,7 @@ def validate_active_modification_references(conn, character_id, data):
 
 
 def sync_weapon_states_with_modifications(conn, character_id, data):
-    _LATE['ensure_progression'](data)
+    ensure_progression(data)
     modifications = character_modifications(conn, character_id)
     effective_weapons = character_effective_weapons(data, modifications)
     states = data.setdefault('weapon_state', {})
@@ -1763,7 +1757,7 @@ def backfill_character_item_instances(conn):
             continue
         original = copy.deepcopy(data)
         changed = ensure_character_item_instances(data)
-        _LATE['ensure_progression'](data)
+        ensure_progression(data)
         changed = changed or data != original
         persist_character_item_instances(
             conn, row['id'], data, 'legacy_migration', acquired_at=row['created'], prune=True)

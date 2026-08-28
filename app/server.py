@@ -294,6 +294,7 @@ from inventory import (                                                    # noq
 )
 import charbuild as _charbuild_mod                                        # noqa: E402
 from charbuild import (                                                    # noqa: E402
+    ensure_progression,
     public_character_data,
     character_author_payload,
     clean_character_profile_patch,
@@ -601,49 +602,6 @@ def attach_network_media(conn, user_id, entity_type, entity_id, media_ids, allow
     for media_id in validated:
         conn.execute('UPDATE media SET attached_type=?,attached_id=? WHERE id=?',
                      (entity_type, entity_id, media_id))
-
-
-def ensure_progression(data):
-    """Lazy backward-compatible progression schema."""
-    if not isinstance(data.get('roles'), list) or not data['roles']:
-        role = str(data.get('role') or '')
-        data['roles'] = [{'name': role, 'rank': _num(data.get('role_rank')) or 4,
-                          'setup': dict(data.get('role_setup') or {}), 'primary': True}] if role else []
-    if data['roles']:
-        primary = next((row for row in data['roles'] if row.get('primary')), data['roles'][0])
-        primary['primary'] = True
-        data['primary_role'] = str(primary.get('name') or data.get('primary_role') or '')
-        data['role'] = data['primary_role']
-        data['role_rank'] = _num(primary.get('rank')) or _num(data.get('role_rank')) or 4
-        data['active_role'] = str(data.get('active_role') or data['roles'][-1].get('name') or data['primary_role'])
-    data['luck_cur'] = max(0, min(_num((data.get('stats') or {}).get('LUCK')) or 0,
-                                  _num(data.get('luck_cur')) if _num(data.get('luck_cur')) is not None else (_num((data.get('stats') or {}).get('LUCK')) or 0)))
-    data['ip_available'] = max(0, _num(data.get('ip_available')) or 0)
-    data['ip_total_earned'] = max(data['ip_available'], _num(data.get('ip_total_earned')) or data['ip_available'])
-    data['ip_total_spent'] = max(0, _num(data.get('ip_total_spent')) or 0)
-    data['reputation'] = max(0, min(10, _num(data.get('reputation')) or 0))
-    armor = data.get('armor') or {}
-    for location in ('head','body','shield'):
-        piece = armor.get(location)
-        if isinstance(piece, dict):
-            maximum = _num(piece.get('sp')) or _num(piece.get('sdp')) or 0
-            piece['current'] = max(0, min(maximum, _num(piece.get('current')) if _num(piece.get('current')) is not None else maximum))
-            piece['maximum'] = maximum
-    states = data.setdefault('weapon_state', {})
-    inventory = data.get('inventory') or []
-    for weapon in [item for item in inventory if item.get('cat') in ('guns','melee')]:
-        key = str(weapon.get('instance_id') or weapon.get('key') or
-                  weapon.get('source_key') or weapon.get('name'))
-        magazine = _num((weapon.get('mechanics') or {}).get('magazine')) or 0
-        if key not in states:
-            states[key] = {'magazine': magazine, 'magazine_max': magazine, 'reserve': 0}
-    ensure_shared_ammo_state(data)
-    if not isinstance(data.get('program_state'), dict):
-        data['program_state'] = {}
-    if not isinstance(data.get('net_entities'), dict):
-        data['net_entities'] = {}
-    data['schema_version'] = max(8, _num(data.get('schema_version')) or 0)
-    return data
 
 
 SERVER_ERROR_EN = {
@@ -11187,12 +11145,10 @@ def rx(p):
 
 
 # позднее связывание каталога (обратные зависимости — do выделения домена rules)
-_crew_mod.bind(ensure_progression=ensure_progression)
 _market_mod.bind(crew_reputation_map=crew_reputation_map)
-_db_mod.bind(ensure_progression=ensure_progression)
 _charbuild_mod.bind(catalog_item_id_for_entry=catalog_item_id_for_entry,
                    ensure_character_item_instances=ensure_character_item_instances,
-                   ensure_progression=ensure_progression)
+)
 _engine_mod.bind(catalog_item_id_for_entry=catalog_item_id_for_entry,
                 character_tech_maker_modifications=character_tech_maker_modifications,
                 weapon_slot_capacity=weapon_slot_capacity)

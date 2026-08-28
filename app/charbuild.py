@@ -18,7 +18,8 @@ from rules import (CULTURAL_LANGUAGES, CUSTOM_EFFECT_DURATIONS, MUST_SKILLS,
 from catalog import (ITEM_INTERACTION_FIELDS, ITEM_MODIFICATION_FIELDS, catalog,
                      item_by_id, item_effect_coverage, validate_effect_definition,
                      weapon_range_table_info)
-from mod_engine import ammo_pack_size, ammo_rounds, shared_ammo_available
+from mod_engine import (ammo_pack_size, ammo_rounds, ensure_shared_ammo_state,
+                        shared_ammo_available)
 
 
 _LATE = {}
@@ -222,7 +223,7 @@ def clean_character(data):
     except (TypeError, ValueError):
         raise ApiError(400, 'cash должен быть числом')
     out['portrait_media_id'] = str(out.get('portrait_media_id') or '')[:64]
-    progressed = _LATE['ensure_progression'](out)
+    progressed = ensure_progression(out)
     ensure_character_visibility(progressed)
     if any(role.get('role_lifepath') for role in progressed.get('roles', []) if not role.get('primary')):
         raise ApiError(400, 'Role-Based Lifepath разрешён только primary Role')
@@ -633,7 +634,7 @@ def clean_character_trust_update(old_data, incoming):
         key: value for key, value in (old_data.get('weapon_state') or {}).items()
         if key in valid_weapon_ids
     }
-    _LATE['ensure_progression'](data)
+    ensure_progression(data)
     ensure_character_visibility(data)
     return data
 
@@ -683,7 +684,7 @@ def canonical_import_character(raw):
     # stale per-instance state from the source sheet survives the import.
     for key in ('weapon_state', 'program_state', 'net_entities'):
         data.pop(key, None)
-    _LATE['ensure_progression'](data)
+    ensure_progression(data)
     ensure_character_visibility(data)
     return data
 
@@ -2125,3 +2126,49 @@ def validate_creation(data):
     if (derive(data).get('humanity_cur') or 0) < 0:
         raise ApiError(400, 'Нельзя завершить создание с Humanity ниже 0')
     validate_creation_budget(data)
+
+
+# --- Прогрессия персонажа (P1-10, из server.py; логика не менялась) ---
+
+
+def ensure_progression(data):
+    """Lazy backward-compatible progression schema."""
+    if not isinstance(data.get('roles'), list) or not data['roles']:
+        role = str(data.get('role') or '')
+        data['roles'] = [{'name': role, 'rank': _num(data.get('role_rank')) or 4,
+                          'setup': dict(data.get('role_setup') or {}), 'primary': True}] if role else []
+    if data['roles']:
+        primary = next((row for row in data['roles'] if row.get('primary')), data['roles'][0])
+        primary['primary'] = True
+        data['primary_role'] = str(primary.get('name') or data.get('primary_role') or '')
+        data['role'] = data['primary_role']
+        data['role_rank'] = _num(primary.get('rank')) or _num(data.get('role_rank')) or 4
+        data['active_role'] = str(data.get('active_role') or data['roles'][-1].get('name') or data['primary_role'])
+    data['luck_cur'] = max(0, min(_num((data.get('stats') or {}).get('LUCK')) or 0,
+                                  _num(data.get('luck_cur')) if _num(data.get('luck_cur')) is not None else (_num((data.get('stats') or {}).get('LUCK')) or 0)))
+    data['ip_available'] = max(0, _num(data.get('ip_available')) or 0)
+    data['ip_total_earned'] = max(data['ip_available'], _num(data.get('ip_total_earned')) or data['ip_available'])
+    data['ip_total_spent'] = max(0, _num(data.get('ip_total_spent')) or 0)
+    data['reputation'] = max(0, min(10, _num(data.get('reputation')) or 0))
+    armor = data.get('armor') or {}
+    for location in ('head','body','shield'):
+        piece = armor.get(location)
+        if isinstance(piece, dict):
+            maximum = _num(piece.get('sp')) or _num(piece.get('sdp')) or 0
+            piece['current'] = max(0, min(maximum, _num(piece.get('current')) if _num(piece.get('current')) is not None else maximum))
+            piece['maximum'] = maximum
+    states = data.setdefault('weapon_state', {})
+    inventory = data.get('inventory') or []
+    for weapon in [item for item in inventory if item.get('cat') in ('guns','melee')]:
+        key = str(weapon.get('instance_id') or weapon.get('key') or
+                  weapon.get('source_key') or weapon.get('name'))
+        magazine = _num((weapon.get('mechanics') or {}).get('magazine')) or 0
+        if key not in states:
+            states[key] = {'magazine': magazine, 'magazine_max': magazine, 'reserve': 0}
+    ensure_shared_ammo_state(data)
+    if not isinstance(data.get('program_state'), dict):
+        data['program_state'] = {}
+    if not isinstance(data.get('net_entities'), dict):
+        data['net_entities'] = {}
+    data['schema_version'] = max(8, _num(data.get('schema_version')) or 0)
+    return data
