@@ -32,7 +32,7 @@ python3 app/server.py --port 8080
 python3 app/server.py --host 0.0.0.0  # только для изолированной dev-сети без production-данных
 ```
 
-- `app/import_data.py` — пересборка `app/data/items.json` из `Data Pool.xlsx` (запускается автоматически, если файла нет);
+- `app/import_data.py` — пересборка `app/data/items.json` из `import/Data Pool.xlsx` (запускается автоматически, если файла нет);
 - `app/data/cbpr.db` — SQLite в WAL-режиме, создаётся при первом старте (в git не хранится);
 - критические операции Crew/Market/IP/Aftermath выполняются через `BEGIN IMMEDIATE` и откатываются целиком при ошибке;
 - Dossier содержит `revision`: устаревшая вкладка не может молча перезаписать более новое сохранение;

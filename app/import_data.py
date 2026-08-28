@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Импорт Data Pool.xlsx -> app/data/items.json (каталог + таблицы + сид-ростер Folio).
+"""Импорт import/Data Pool.xlsx -> app/data/items.json (каталог + таблицы + сид-ростер Folio).
 
 Только стандартная библиотека — xlsx читается напрямую как zip+xml.
 """
@@ -11,7 +11,7 @@ import zipfile
 from xml.etree import ElementTree as ET
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-XLSX = os.path.join(BASE, os.pardir, 'Data Pool.xlsx')
+XLSX = os.path.join(BASE, os.pardir, 'import', 'Data Pool.xlsx')
 OUT = os.path.join(BASE, 'data', 'items.json')
 
 M = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
