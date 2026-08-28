@@ -12,6 +12,12 @@ from datetime import timedelta, timezone
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE, 'data')
 UPLOAD_DIR = os.path.join(DATA_DIR, 'uploads')
+DB_PATH = os.path.abspath(os.path.expanduser(
+    os.environ.get('CBPR_DB_PATH') or os.path.join(DATA_DIR, 'cbpr.db')))
+BACKUP_DIR = os.path.abspath(os.path.expanduser(
+    os.environ.get('CBPR_BACKUP_DIR') or os.path.join(DATA_DIR, 'backups')))
+
+SESSION_TTL = 30 * 24 * 3600
 ITEMS_PATH = os.path.join(DATA_DIR, 'items.json')
 EFFECTS_PATH = os.path.join(DATA_DIR, 'effects.json')
 

@@ -36,8 +36,8 @@ class AccessRoleMigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = str(Path(directory) / 'campaign.db')
             conn = self.legacy_connection(path)
-            original_path = server.DB_PATH
-            server.DB_PATH = path
+            original_path = server._db_mod.DB_PATH
+            server._db_mod.DB_PATH = path
             try:
                 server.apply_schema_migrations(conn, make_backup=True)
                 conn.execute(
@@ -46,7 +46,7 @@ class AccessRoleMigrationTests(unittest.TestCase):
                 conn.commit()
                 server.apply_schema_migrations(conn, make_backup=True)
             finally:
-                server.DB_PATH = original_path
+                server._db_mod.DB_PATH = original_path
             roles = {row['username']: row['account_role']
                      for row in conn.execute('SELECT * FROM users')}
             self.assertEqual(roles, {'alice': 'gm', 'bob': 'player'})
