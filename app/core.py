@@ -10,6 +10,14 @@ import os
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE, 'data')
 UPLOAD_DIR = os.path.join(DATA_DIR, 'uploads')
+ITEMS_PATH = os.path.join(DATA_DIR, 'items.json')
+EFFECTS_PATH = os.path.join(DATA_DIR, 'effects.json')
+
+STATS = ['INT', 'REF', 'DEX', 'TECH', 'COOL', 'WILL', 'LUCK', 'MOVE', 'BODY', 'EMP']
+ACTIVE_EFFECT_DURATIONS = {'manual', 'real_time', 'rounds', 'campaign_time'}
+ITEM_INSTANCE_STATES = {
+    'carried', 'stored', 'equipped', 'installed', 'consumed', 'broken',
+}
 ACCOUNT_ROLES = {'player', 'gm', 'admin'}
 
 
