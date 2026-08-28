@@ -7,6 +7,7 @@ docs/repo-audit-2026-08.md, P1). Импортируется и server.py, и д�
 import json
 import os
 import re
+from datetime import timedelta, timezone
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE, 'data')
@@ -20,6 +21,8 @@ ITEM_INSTANCE_STATES = {
     'carried', 'stored', 'equipped', 'installed', 'consumed', 'broken',
 }
 INSTANCE_ID_RE = re.compile(r'^[a-f0-9]{32}$')
+MOSCOW = timezone(timedelta(hours=3))
+
 ACCOUNT_ROLES = {'player', 'gm', 'admin'}
 
 
