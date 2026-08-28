@@ -388,6 +388,18 @@ class NCNetCoreFlowTests(unittest.TestCase):
         post_after_archive = self.call(server.Handler.api_feed_detail, {}, self.match(post['id']), {})['payload']
         self.assertEqual(post_after_archive['author']['display_name'], 'K')
 
+    def test_legacy_feed_formats_collapse_to_single_post_type(self):
+        """23.1: в City Feed один тип публикации — устаревшие форматы склеиваются в 'post'."""
+        self.current = self.user('runner2')
+        post = self.call(server.Handler.api_feed_create, {}, None, {
+            'author_character_id': 2, 'format': 'short', 'body': 'Legacy format probe.',
+        })['payload']
+        self.assertEqual(post['format'], 'post')
+        edited = self.call(server.Handler.api_feed_update, {}, self.match(post['id']), {
+            'format': 'rumor', 'body': 'Still a single post type.',
+        })['payload']
+        self.assertEqual(edited['format'], 'post')
+
     def test_campaign_clock_gm_advance_and_player_denied(self):
         server.ensure_campaign_clock(self.conn)
         self.current = self.user('gm')

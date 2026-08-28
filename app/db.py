@@ -850,6 +850,7 @@ MIGRATION_MEMORIAL = 18
 MIGRATION_MEMORIAL_DRAFT = 19
 MIGRATION_MARKET_PERMANENT = 20
 MIGRATION_ORGANIZATIONS = 21
+MIGRATION_FEED_SINGLE_FORMAT = 22
 DB_BACKUP_LIMIT = 5
 _RATE_LIMIT_BUCKETS = {}
 _RATE_LIMIT_LOCK = threading.Lock()
@@ -1812,6 +1813,7 @@ def apply_schema_migrations(conn, make_backup=True):
         (MIGRATION_MEMORIAL_DRAFT, 'collaborative memorial draft state'),
         (MIGRATION_MARKET_PERMANENT, 'permanent market supply'),
         (MIGRATION_ORGANIZATIONS, 'organization memberships and reputation'),
+        (MIGRATION_FEED_SINGLE_FORMAT, 'city feed single post type'),
     ]
     pending = [version for version, _ in migrations if version not in applied]
     if make_backup and pending:
@@ -1963,6 +1965,8 @@ CREATE INDEX IF NOT EXISTS idx_personal_stash_char ON personal_stash(character_i
                  'WHERE shield_max=0 AND shield_current>0')
     conn.execute('UPDATE session_combatants SET ammo_max=ammo_current '
                  'WHERE ammo_max=0 AND ammo_current>0')
+    if MIGRATION_FEED_SINGLE_FORMAT not in applied:
+        conn.execute("UPDATE feed_posts SET format='post' WHERE format <> 'post'")
     for version, name in migrations:
         if version not in applied:
             conn.execute(
@@ -2021,8 +2025,9 @@ NC_LOCATION_IDS = {
     'badlands', 'badlands-near-westbrook', 'badlands-near-santo-domingo',
     'badlands-near-pacifica', 'orbital-air-space-center',
 }
-FEED_FORMATS = {'short', 'article', 'blog', 'bulletin', 'statement', 'rumor'}
-FEED_DEFAULT_FORMAT = 'article'
+FEED_FORMATS = {'post'}
+# 23.1: единый тип публикации City Feed; старые форматы склеиваются в 'post' миграцией 22
+FEED_DEFAULT_FORMAT = 'post'
 FEED_TRUTH = {'true', 'partially_true', 'false', 'propaganda', 'unknown'}
 SESSION_VIEW_DEFAULTS = {
     'show_initiative': True,

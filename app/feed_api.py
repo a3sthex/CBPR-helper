@@ -71,11 +71,12 @@ class FeedMixin:
         persona_id, character_id = self.resolve_feed_author(conn, user, body or {})
         fmt = str((body or {}).get('format') or FEED_DEFAULT_FORMAT).lower()
         if fmt not in FEED_FORMATS:
-            raise ApiError(400, 'Некорректный формат публикации')
+            # 23.1: единый тип «пост» — старые форматы склеиваются, не отклоняются
+            fmt = FEED_DEFAULT_FORMAT
         headline = str((body or {}).get('headline') or '').strip()[:240] or None
         text = str((body or {}).get('body') or '').strip()[:30000]
         if not text:
-            raise ApiError(400, 'Публикации нужен текст и, для длинного формата, заголовок')
+            raise ApiError(400, 'Публикации нужен текст')
         status = 'draft' if user_is_gm(user) and (body or {}).get('status') == 'draft' else 'published'
         truth = str((body or {}).get('truth_status') or 'unknown') if user_is_gm(user) else 'unknown'
         if truth not in FEED_TRUTH:
@@ -164,11 +165,12 @@ class FeedMixin:
         persona_id, character_id = self.resolve_feed_author(conn, user, body or {})
         fmt = str((body or {}).get('format') or FEED_DEFAULT_FORMAT).lower()
         if fmt not in FEED_FORMATS:
-            raise ApiError(400, 'Некорректный формат публикации')
+            # 23.1: единый тип «пост» — старые форматы склеиваются, не отклоняются
+            fmt = FEED_DEFAULT_FORMAT
         headline = str((body or {}).get('headline') or '').strip()[:240] or None
         text = str((body or {}).get('body') or '').strip()[:30000]
         if not text:
-            raise ApiError(400, 'Публикации нужен текст и, для длинного формата, заголовок')
+            raise ApiError(400, 'Публикации нужен текст')
         contract_id = _num((body or {}).get('contract_id'))
         if contract_id:
             contract = conn.execute('SELECT * FROM contracts WHERE id=?', (contract_id,)).fetchone()
@@ -273,8 +275,10 @@ class FeedMixin:
         status = requested_status
         if row['status'] == 'hidden' and not user_is_gm(user) and requested_status != 'archived':
             status = 'hidden'
-        if (fmt not in FEED_FORMATS or status not in ('draft', 'published', 'archived', 'hidden') or
-                not text):
+        if fmt not in FEED_FORMATS:
+            # 23.1: склейка устаревших форматов при правке серии
+            fmt = FEED_DEFAULT_FORMAT
+        if status not in ('draft', 'published', 'archived', 'hidden') or not text:
             raise ApiError(400, 'Некорректная публикация')
         image_media_id = str((body or {}).get('image_media_id', row['image_media_id'] or ''))[:64] or None
         event_at = (optional_timestamp((body or {}).get('event_at'))
