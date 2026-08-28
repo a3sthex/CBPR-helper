@@ -3756,7 +3756,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 ### P5 · Организации и репутация (приоритет выше визуала)
 > Разблокирует reputation-гейтинг маркета (20.8 / A.2 №4) — поэтому идёт раньше P6.
-9. ◐ **Persona memberships + organization roster** (Пакет F #1–2). **Сверка 28.08: ядро реализовано** — `persona_memberships` CRUD + UI редактирования + блок Affiliations на странице персоны; ❔ проверить обратное направление (roster организации на её странице).
+9. ✅ **Persona memberships + organization roster** (Пакет F #1–2). **Сделано/сверено 28.08:** `persona_memberships` CRUD + UI редактирования + блок Affiliations; обратное направление допилено — `api_persona_detail` обогащает каждое членство блоком `counterpart` (handle/display), и Affiliations на странице организации теперь ссылается на страницы участников.
 10. ✅ **Reputation / Favor / Heat, ядро** (§16.4): таблицы `character_reputation` и `crew_reputation` (обе scoped по `organization_persona_id`, standing + **favor + heat** поля есть), CRUD-эндпоинты (персонаж/экипаж); ручные GM-изменения + ledger — как раз спецификация первой версии. **Разблокирует A.2 №4 (гейтинг маркета) для планирования.**
 11. Intel / Case Board · Faction Clocks · Universal Search + Entity Links · Medical Record.
 

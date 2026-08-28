@@ -86,8 +86,20 @@ class PersonasMixin:
         member_rows = conn.execute(
             'SELECT * FROM persona_memberships WHERE member_persona_id=? OR organization_persona_id=? '
             'ORDER BY sort_order,id', (row['id'], row['id'])).fetchall()
-        payload['memberships'] = [membership_payload(r) for r in member_rows
-                                  if gm or r['visibility'] == 'public']
+        memberships = []
+        for r in member_rows:
+            if not (gm or r['visibility'] == 'public'):
+                continue
+            item = membership_payload(r)
+            other_id = (r['member_persona_id'] if r['organization_persona_id'] == row['id']
+                        else r['organization_persona_id'])  # P5: обратное направление — roster организации
+            other = conn.execute('SELECT handle, display_name, kind FROM personas WHERE id=?',
+                                 (other_id,)).fetchone()
+            if other:
+                item['counterpart'] = {'id': other_id, 'handle': other['handle'],
+                                       'display_name': other['display_name'], 'kind': other['kind']}
+            memberships.append(item)
+        payload['memberships'] = memberships
         if can_edit:
             audit = conn.execute(
                 'SELECT a.*,u.display_name actor FROM persona_audit a '
