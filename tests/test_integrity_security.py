@@ -3771,8 +3771,9 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
     def test_market_cyberware_is_staged_without_humanity_loss(self):
         self.current = self.user('runner')
         item = server.item_by_id('cyberware-18')
-        with mock.patch.object(server, 'nm_price_map', return_value={item['id']: 50}), \
-                mock.patch.object(server, 'nm_day', return_value='test-day'):
+        misc_mod = importlib.import_module('misc_api')
+        with mock.patch.object(misc_mod, 'nm_price_map', return_value={item['id']: 50}), \
+                mock.patch.object(misc_mod, 'nm_day', return_value='test-day'):
             self.call(server.Handler.api_buy, body={
                 'char_id': 1,
                 'items': [{'id': item['id'], 'qty': 1, 'mode': 'nm'}],
