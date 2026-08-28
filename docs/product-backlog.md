@@ -8,10 +8,10 @@
 
 ## 1. Продуктовые принципы
 
-1. **NC//NET остаётся внутриигровой сетью, а не просто таблицей правил.** Магазины, жильё, контракты, публикации и персонажи должны быть частью мира.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. **Доверие + прозрачный аудит — основной режим кампании.** Игрок может свободно вести персонажа, а постоянные изменения попадают в понятный журнал before/after. Строгий режим подтверждения GM можно оставить опциональным для других кампаний.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. **Database и Market — разные сущности.** Database отвечает на вопрос «что существует и как работает», Market — «что сейчас реально можно купить и у кого».  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. **Удаление не должно незаметно разрушать историю.** Для связанных сущностей сначала используются archive/tombstone/trash, а hard delete выполняется с предварительным показом зависимостей.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. **NC//NET остаётся внутриигровой сетью, а не просто таблицей правил.** Магазины, жильё, контракты, публикации и персонажи должны быть частью мира.
+2. **Доверие + прозрачный аудит — основной режим кампании.** Игрок может свободно вести персонажа, а постоянные изменения попадают в понятный журнал before/after. Строгий режим подтверждения GM можно оставить опциональным для других кампаний.
+3. **Database и Market — разные сущности.** Database отвечает на вопрос «что существует и как работает», Market — «что сейчас реально можно купить и у кого».
+4. **Удаление не должно незаметно разрушать историю.** Для связанных сущностей сначала используются archive/tombstone/trash, а hard delete выполняется с предварительным показом зависимостей.
 5. **Атмосфера не должна мешать пониманию.** Внутриигровые термины можно оставлять на английском, но действия, фильтры и пояснения должны быть однозначными в выбранном языке.
 6. **Публичный Dossier не равен полному Character JSON.** Нужны уровни видимости для биографии, механики, имущества и служебных заметок.
 
@@ -102,10 +102,10 @@
 
 **Проверка статуса 2026-08-22:** базовый слой реализован этапом **B.15** (finite stock, New Today, Sold Out/Reserved, Vendor Locations, Fixer Requests); остальные пункты отложены и описаны ниже.
 
-1. ✅ **Finite Stock по количеству.** Persisted `market_stock` (day+vendor+item), детерминированный сид 1–5 единиц, атомарное уменьшение при покупке, блокировка «недостаточно единиц».  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. ✅ **New Today.** Метка сравнивает сегодняшнюю ротацию продавца со вчерашней (детерминированно, без истории snapshots).  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. ◐ **Vendor Locations.** У каждого продавца есть текстовый `location` (район Night City), выводится на карточке. Стабильный `location_id` и страницы локаций реализуются вместе с пакетом E (Map POIs).  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. ☐ **Reputation / Favor requirements.** Отложено до Organization Reputation/Favor/Heat (пакет 16.4).  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. ✅ **Finite Stock по количеству.** Persisted `market_stock` (day+vendor+item), детерминированный сид 1–5 единиц, атомарное уменьшение при покупке, блокировка «недостаточно единиц».
+2. ✅ **New Today.** Метка сравнивает сегодняшнюю ротацию продавца со вчерашней (детерминированно, без истории snapshots).
+3. ◐ **Vendor Locations.** У каждого продавца есть текстовый `location` (район Night City), выводится на карточке. Стабильный `location_id` и страницы локаций реализуются вместе с пакетом E (Map POIs).
+4. ☐ **Reputation / Favor requirements.** Отложено до Organization Reputation/Favor/Heat (пакет 16.4).
 5. ☐ **Один предмет у нескольких продавцов.** Отложено: требует `offer_id`-адресацию в корзине/покупке вместо item→vendor 1:1.
 6. ◐ **Legal Retail / Common Supply → постоянный ассортимент у продавцов (20.11).** Теперь концепция «постоянной розницы» реализуется как **permanent-слой ассортимента конкретного продавца** (прежде всего Back-Alley General): часть товаров всегда в наличии и не зависит от дневной ротации. Отдельная глобальная розница пока не нужна.
 7. ✅ **Fixer Item Requests.** `POST/GET /api/fixer-requests` и `POST /api/fixer-requests/{id}/resolve`; Character запрашивает catalog item (через кнопку на карточке) или free-text предмет; GM выполняет (выдаёт catalog/custom предмет, списывает цену) или отклоняет.
@@ -119,10 +119,10 @@
 
 #### Рекомендуемый порядок A.2
 
-1. `offer_id` + persisted daily stock + atomic Sold Out;  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. несколько offers одного item у разных Vendors;  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. `New Today` и история snapshots;  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. Reservation с TTL;  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. `offer_id` + persisted daily stock + atomic Sold Out;
+2. несколько offers одного item у разных Vendors;
+3. `New Today` и история snapshots;
+4. Reservation с TTL;
 5. Legal Retail и Fixer Requests;
 6. Reputation/Favor gates и Vendor Locations после появления зависимых World/Organization моделей.
 
@@ -209,10 +209,10 @@ active                включён ли уже экипированный пр
 
 Правила поведения:
 
-1. `carried` предмет не применяет эффекты `while_equipped` и не предоставляет equipment-only actions.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. `equipped`, но выключенный предмет применяет только эффекты `while_equipped`; `while_active` требует `active=true`.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. Нельзя экипировать сломанный, consumed или находящийся в чужом Stash экземпляр.  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. Сервер проверяет руки, hard slots, compatible host, `exclusive_group` и лимит копий.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. `carried` предмет не применяет эффекты `while_equipped` и не предоставляет equipment-only actions.
+2. `equipped`, но выключенный предмет применяет только эффекты `while_equipped`; `while_active` требует `active=true`.
+3. Нельзя экипировать сломанный, consumed или находящийся в чужом Stash экземпляр.
+4. Сервер проверяет руки, hard slots, compatible host, `exclusive_group` и лимит копий.
 5. `Equip / Unequip / Activate / Deactivate / Mount / Unmount` записываются в Character Ledger.
 6. Character Sheet и Session panel показывают отдельный **Active Gear / Loadout**, чтобы готовое снаряжение не терялось в полном Inventory.
 7. Не нужно превращать всё снаряжение в жёсткий «инвентарный тетрис»: строгие ограничения обязательны для рук, mounts и rules-defined hosts; обычный `ready` gear может использовать мягкий campaign limit.
@@ -675,10 +675,10 @@ Chemskin + TechHair         2/2   ACTIVE   Personal Grooming +2
 
 Нужен детерминированный pipeline, одинаковый на сервере и в UI:
 
-1. base values;  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. `set/minimum/maximum` foundations по priority;  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. additive modifiers;  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. multipliers/replacements;  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. base values;
+2. `set/minimum/maximum` foundations по priority;
+3. additive modifiers;
+4. multipliers/replacements;
 5. caps и rules exceptions;
 6. derived values;
 7. current resource clamping без потери history.
@@ -723,10 +723,10 @@ Session хранит snapshot/temporary effects и Round duration. Permanent cha
 
 Автоматически разбирать весь свободный текст описаний в effects рискованно. Рекомендуемый порядок:
 
-1. нормализовать очевидные поля из Data Pool;  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. создать curated overrides для предметов с механическими эффектами;  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. добавить schema validation и source/page;  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. помечать неподдержанный эффект `manual_resolution_required`;  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. нормализовать очевидные поля из Data Pool;
+2. создать curated overrides для предметов с механическими эффектами;
+3. добавить schema validation и source/page;
+4. помечать неподдержанный эффект `manual_resolution_required`;
 5. постепенно расширять покрытие с regression tests.
 
 Карточка честно показывает:
@@ -857,9 +857,9 @@ Page 2: Weapons, Armor, Inventory, Cyberware, Lifepath, Notes
 
 Разделить задачу на этапы:
 
-1. **JSON import без подтверждения GM** — самый надёжный первый этап.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. **Fillable PDF import** — чтение AcroForm-полей официального заполняемого PDF, mapping → draft → preview → import.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. **Скан/фото PDF** — OCR; значительно сложнее и ошибочнее, не первая версия.  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
+1. **JSON import без подтверждения GM** — самый надёжный первый этап.
+2. **Fillable PDF import** — чтение AcroForm-полей официального заполняемого PDF, mapping → draft → preview → import.
+3. **Скан/фото PDF** — OCR; значительно сложнее и ошибочнее, не первая версия.
 
 Импорт выполняет сам владелец персонажа. Перед сохранением показывается preview и предупреждения, но GM approval не требуется. В ledger создаётся событие `Character imported`.
 
@@ -932,9 +932,9 @@ ROF → «СКО »
 
 ### Исправление
 
-1. Карточки Database должны использовать нормализованный `mechanics`, а не первые случайные поля Excel.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. Убирать `.0` у целых значений на этапе импорта.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. Ввести EN/RU labels:  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
+1. Карточки Database должны использовать нормализованный `mechanics`, а не первые случайные поля Excel.
+2. Убирать `.0` у целых значений на этапе импорта.
+3. Ввести EN/RU labels:
 
 | Key | EN | RU |
 |---|---|---|
@@ -945,7 +945,7 @@ ROF → «СКО »
 | damage | Damage | Урон |
 | quality | Quality | Качество |
 
-4. Не показывать голые значения без label.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+4. Не показывать голые значения без label.
 5. Добавить tooltip/legend «Что означает тег?».
 
 ### Armor tags
@@ -1259,10 +1259,10 @@ Contract #12 references:
 
 Не общий мессенджер, а контекстные каналы:
 
-1. **Contract Crew Channel** — доступен GM и Crew;  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. **Session Channel** — короткие сообщения во время игры;  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. **Persona/Character identity** — сообщение публикуется от выбранного автора;  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. System messages: join, leave, promotion, time changed.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. **Contract Crew Channel** — доступен GM и Crew;
+2. **Session Channel** — короткие сообщения во время игры;
+3. **Persona/Character identity** — сообщение публикуется от выбранного автора;
+4. System messages: join, leave, promotion, time changed.
 
 Для маленькой кампании достаточно polling раз в 5–10 секунд или SSE; WebSocket-инфраструктуру можно не вводить сразу.
 
@@ -1357,10 +1357,10 @@ House Rules UI
 
 После официального релиза нужен отдельный этап Rules Review:
 
-1. получить и изучить финальный текст новой системы;  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. составить таблицу отличий от текущего Hybrid;  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. решить, переходит ли кампания полностью или частично;  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. определить, нужен один новый ruleset или несколько profiles;  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. получить и изучить финальный текст новой системы;
+2. составить таблицу отличий от текущего Hybrid;
+3. решить, переходит ли кампания полностью или частично;
+4. определить, нужен один новый ruleset или несколько profiles;
 5. спроектировать миграцию Character/NPC/Items/Programs;
 6. только после этого возвращать Ruleset Profiles в активный backlog.
 
@@ -1496,10 +1496,10 @@ Publish Now
 
 Редактор Contract получает несколько режимов предпросмотра:
 
-1. **List Card** — карточка в списке Contracts;  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. **Map Signal** — marker, title и краткая информация;  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. **Public View** — то, что видит любой пользователь;  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. **Crew/Classified View** — то, что увидит подтверждённый Crew;  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. **List Card** — карточка в списке Contracts;
+2. **Map Signal** — marker, title и краткая информация;
+3. **Public View** — то, что видит любой пользователь;
+4. **Crew/Classified View** — то, что увидит подтверждённый Crew;
 5. **Service/GM View** — служебные поля и реальные участники.
 
 Preview должен показывать Cover в итоговом соотношении, Posting Persona, Risk, Reward, время, Crew Capacity, Requirements, Content Notes и все public/classified participants.
@@ -2254,10 +2254,10 @@ Threat tier `Netrunner` использует тот же Program Manager:
 
 Program Manager лучше реализовать до полноценного Architecture Builder. Последовательность:
 
-1. нормализовать Programs/Hardware в каталоге;  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. добавить Cyberdeck loadout;  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. добавить Program states и REZ;  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. сделать Netrunner Session panel;  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. нормализовать Programs/Hardware в каталоге;
+2. добавить Cyberdeck loadout;
+3. добавить Program states и REZ;
+4. сделать Netrunner Session panel;
 5. затем добавить NET Architecture floors/nodes и live run.
 
 ### 16.14 Online VTT и поддержка живых встреч
@@ -2331,10 +2331,10 @@ AFTER SESSION
 
 Поддерживаемые варианты живой встречи:
 
-1. **Fully Analog** — сайт используется только для подготовки и печати; во время игры устройства не нужны.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. **GM Assisted** — один ноутбук GM ведёт Initiative/NPC/Session, игроки используют бумагу и физические кубики.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. **Shared Screen** — дополнительно телевизор/проектор показывает карту, handouts и текущий turn.  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. **Companion Phones** — игроки по желанию открывают Dossiers/Inventory, но это не обязательное условие игры.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. **Fully Analog** — сайт используется только для подготовки и печати; во время игры устройства не нужны.
+2. **GM Assisted** — один ноутбук GM ведёт Initiative/NPC/Session, игроки используют бумагу и физические кубики.
+3. **Shared Screen** — дополнительно телевизор/проектор показывает карту, handouts и текущий turn.
+4. **Companion Phones** — игроки по желанию открывают Dossiers/Inventory, но это не обязательное условие игры.
 
 #### Hybrid
 
@@ -2359,10 +2359,10 @@ Optional relay и local-first replication остаются технически�
 
 Первая полезная версия:
 
-1. Scenes/Battle Maps;  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. square/hex/gridless режим;  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. Tokens;  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. drag & drop;  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. Scenes/Battle Maps;
+2. square/hex/gridless режим;
+3. Tokens;
+4. drag & drop;
 5. измерение расстояния;
 6. Initiative tracker;
 7. HP/SP/Shield/Ammo/Conditions на token;
@@ -2560,10 +2560,10 @@ Client command
 
 Порядок:
 
-1. ручная маска Fog;  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. reveal/hide polygons;  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. walls/doors/cover metadata;  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. простая token vision;  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. ручная маска Fog;
+2. reveal/hide polygons;
+3. walls/doors/cover metadata;
+4. простая token vision;
 5. динамическое освещение только после профилирования производительности.
 
 Для Cyberpunk большую пользу раньше дадут Cover, range measurement и elevation, чем сложные красивые источники света.
@@ -2632,10 +2632,10 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 
 Если выбирать только пять следующих идей вне уже утверждённого backlog:
 
-1. **Session Recap / Chronicle**;  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. **Crew Stash и transfer**;  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. **Downtime Planner**;  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. **Organization Reputation / Favor / Heat**;  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. **Session Recap / Chronicle**;
+2. **Crew Stash и transfer**;
+3. **Downtime Planner**;
+4. **Organization Reputation / Favor / Heat**;
 5. **Intel / Case Board**.
 
 Они чаще используются в реальной кампании, чем общий чат или сложная автоматическая симуляция города, и хорошо переиспользуют уже существующие данные.
@@ -2646,18 +2646,18 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 
 ### P0 — до публичного доступа
 
-1. Privacy payload для Dossiers/Roster/Folio.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. Сильные пароли, invite registration, session controls.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. Атомарные транзакции для Crew, Market, IP.  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. Проверка URL schemes.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. Privacy payload для Dossiers/Roster/Folio.
+2. Сильные пароли, invite registration, session controls.
+3. Атомарные транзакции для Crew, Market, IP.
+4. Проверка URL schemes.
 5. Автоматические backups.
 
 ### P1 — основной продуктовый пакет
 
-1. Trust + Audit character editor, включая Admin edit чужих Dossiers.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. Item instances, Structured Effects Engine, consumables и host-based Upgrades/Attachments.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. Market vendors + Database без универсальной покупки.  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. Database tags/i18n/armor locations.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. Trust + Audit character editor, включая Admin edit чужих Dossiers.
+2. Item instances, Structured Effects Engine, consumables и host-based Upgrades/Attachments.
+3. Market vendors + Database без универсальной покупки.
+4. Database tags/i18n/armor locations.
 5. Feed/Contract preview перед публикацией.
 6. NPC Manager: stats, skills, weapons, attacks и full templates.
 7. Netrunner Cyberdeck/Program Manager.
@@ -2669,10 +2669,10 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 
 ### P2 — расширение мира
 
-1. Map zoom/pan/layers.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. Key Locations / POI и Location pages.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. Housing map.  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. Persona organization memberships.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. Map zoom/pan/layers.
+2. Key Locations / POI и Location pages.
+3. Housing map.
+4. Persona organization memberships.
 5. Fallen Edgerunners / Memorial Wall / Afterlife Menu.
 6. Contract Crew Chat.
 7. Calendar.
@@ -2691,18 +2691,18 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 
 ### P3 — технический долг
 
-1. ◐ Разделить `server.py`, `app.js`, `ncnet.js`, CSS. **Backend — ✅ 2026-08-28** (`server.py` 20 217 → 805 строк, 21 модуль app/, 260/260 тестов на каждом шаге; см. §24.1 и `docs/architecture.md`). Осталась frontend-часть: `app.js` (4 389 строк) и CSS.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. Убрать N+1 queries.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. Pagination/summary endpoints.  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. Browser E2E и visual regression по темам.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. ◐ Разделить `server.py`, `app.js`, `ncnet.js`, CSS. **Backend — ✅ 2026-08-28** (`server.py` 20 217 → 805 строк, 21 модуль app/, 260/260 тестов на каждом шаге; см. §24.1 и `docs/architecture.md`). Осталась frontend-часть: `app.js` (4 389 строк) и CSS.
+2. Убрать N+1 queries.
+3. Pagination/summary endpoints.
+4. Browser E2E и visual regression по темам.
 5. Health endpoint, HEAD, self-hosted fonts.
 
 ### P4 — далёкое будущее / Cyberpunk Tabletop
 
-1. Live/Offline Session Pack и GM companion для живой встречи.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. Optional Shared Screen/Player Phone для живой встречи.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. Online VTT через Internet или LAN: Scenes/Tokens/Initiative/Event Stream.  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. Cyberpunk attack/range/damage integration.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. Live/Offline Session Pack и GM companion для живой встречи.
+2. Optional Shared Screen/Player Phone для живой встречи.
+3. Online VTT через Internet или LAN: Scenes/Tokens/Initiative/Event Stream.
+4. Cyberpunk attack/range/damage integration.
 5. Fog/Handouts/Journals.
 6. NET Architecture tabletop scene.
 7. Online presence/reconnect и optional hybrid relay.
@@ -2727,10 +2727,10 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 
 ### Пакет 0 — Foundation, Privacy & Data Safety
 
-1. Privacy payload для Dossiers/Roster/Folio.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. Invite registration, password/session controls.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. Атомарные транзакции и регулярные backups.  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. Full Campaign Export/Import bundle.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. Privacy payload для Dossiers/Roster/Folio.
+2. Invite registration, password/session controls.
+3. Атомарные транзакции и регулярные backups.
+4. Full Campaign Export/Import bundle.
 5. Source metadata, `rules_version` snapshots и migration-friendly IDs без Ruleset UI.
 6. Session-scoped Co-GM/Observer permissions.
 7. Базовые Safety Tools.
@@ -2741,10 +2741,10 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 **Статус A.1 — базовая переработка реализована.**
 
-1. ✅ Исправить numeric normalization и EN/RU item tags.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. ✅ Добавить item detail во все Market cards.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. ✅ Добавить sorting/filtering/compare.  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. ✅ Вывести armor locations.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. ✅ Исправить numeric normalization и EN/RU item tags.
+2. ✅ Добавить item detail во все Market cards.
+3. ✅ Добавить sorting/filtering/compare.
+4. ✅ Вывести armor locations.
 5. ✅ Убрать мгновенную покупку из Database/Full Catalog.
 6. ✅ Добавить Vendor Personas и vendor-specific stock.
 
@@ -3363,7 +3363,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - UI: пункт навигации `🥃 Memorial` (страница `#/memorial` = Memorial Wall + секция Afterlife Menu с легендами), badge `AFTERLIFE LEGEND · drink`, модалки Edit Memorial / Award Legacy, кнопка `🥃 Memorial` на Character Sheet у GM (модалка memorialize с obituary/feed);
 - 9 новых тестов (252 total): unit (clean memorial/legacy, payload gating) + интеграционные (memorialize замораживает Dossier и публикует obituary, legacy award + публичная видимость, player deny, private hidden, restore обратим);
 - отложено: отдельные секции retired/missing в Registry, связь memorial с Contract/Session events.
-2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
+2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.
 
 **Статус B.18 — реализован Downtime Planner:**
 
@@ -3376,9 +3376,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - `derived.downtime` на Character Sheet (скрыт в public view); панель `🛌 Downtime Planner` показывает активный период + активности + историю и кнопки Start/Resolve/Complete/Abandon;
 - 9 новых тестов (232 total): unit (allowlist, bounds, payload, strip на creation) + интеграционные (start→hustle cash+ledger→complete, recover_hp bounded, неизвестная activity, double-start, GM/player права);
 - отложено: работа с Contact/Organization, переезд/Lifestyle (нужны Organization/Location модели).
-2. ✅ Расширить ledger до понятных diff events и безопасного revert последнего change set.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. ✅ Мигрировать stack inventory к стабильным item instances.  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. ✅ Добавить custom/found items и acquisition provenance.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+3. ✅ Мигрировать stack inventory к стабильным item instances.
+4. ✅ Добавить custom/found items и acquisition provenance.
 5. ✅ Consumable/use и базовый Equippable Active Gear: equip modes, hands/slots, Activate/Deactivate, Active Loadout.
    - остаётся: mounted host links и расширение курируемой разметки предметов.
 6. ✅ Structured Effects & Modifiers declarative schema/evaluator и первые curated synergies.
@@ -3404,22 +3403,22 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 **Статус 2026-08-22 (B.19):** реализованы серверные preview-эндпоинты и Preview-кнопки в Feed composer и Contract editor (card + public/classified view с плашкой `PREVIEW — NOT PUBLISHED`). Feed/Contract card render-функции уже общие (`ncFeedCard`/`ncContractCard`) и переиспользуются в preview.
 
-1. ✅ Вынести Feed/Contract cards и detail views в общие render functions (уже было: `ncFeedCard`/`ncContractCard`).  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. ✅ Добавить серверную validation preview без записи в БД (`POST /api/feed/preview`, `POST /api/contracts/preview`).  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. ◐ Сделать Feed preview: card/detail/mobile/desktop.  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
+1. ✅ Вынести Feed/Contract cards и detail views в общие render functions (уже было: `ncFeedCard`/`ncContractCard`).
+2. ✅ Добавить серверную validation preview без записи в БД (`POST /api/feed/preview`, `POST /api/contracts/preview`).
+3. ◐ Сделать Feed preview: card/detail/mobile/desktop.
    - готово: card preview с автором/портретом, форматом, headline/lead/body, изображением, district, event time, truth-status (GM);
    - дальше: mobile/desktop width toggle и контекст reply/related post.
-4. ◐ Сделать Contract preview: card/map/public/classified/service.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+4. ◐ Сделать Contract preview: card/map/public/classified/service.
    - готово: card + public briefing + classified package + participants + reward/risk/crew;
    - дальше: map-signal и service/GM view (реальные участники).
 5. ✅ Сохранять состояние формы при возврате из preview (preview открывается поверх редактора — Back to Edit возвращает форму без потери данных) и блокировать double publish (publish закрывает все модалки одним действием).
 
 ### Пакет D — Visual/Print/Roster
 
-1. Theme consistency audit.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. Исправить Open Contracts.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. Portraits и owner avatars в Crew Registry.  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. Новый landscape print renderer.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. Theme consistency audit.
+2. Исправить Open Contracts.
+3. Portraits и owner avatars в Crew Registry.
+4. Новый landscape print renderer.
 5. Visual regression по темам и разрешениям.
 6. ◐ **(20.1)** Мини-досье в Crew Registry для обычных игроков: публичный payload → мини-досье, полный Character Sheet — только owner + GM/Admin.
 7. ◐ **(20.7)** Role-gated кнопки в Character Sheet: контролы, привязанные к роли (Netrunner/Tech/Medtech/Nomad…), скрываются без соответствующей роли.
@@ -3427,12 +3426,12 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 ### Пакет E — World Layer
 
 0. ☐**(20.4)** Перенести все функции Map на страницу в **City** (вместо отдельного раздела). **Проверка 28.08: не начато** — в навигации по-прежнему отдельный `🗺️ Map` (§24.3).
-1. ◐ Zoomable layered map.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
+1. ◐ Zoomable layered map.
    - готово (B.20): интерактивная SVG-карта с POI-маркерами, palette toggle, фильтры по району/типу и поиск;
    - дальше: zoom/pan, слои (Contracts/POI), location-specific offers.
-2. ✅ Key Locations / POI data model, filters и Location pages (реализовано B.20).  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. ✅ Seed основных мест 2070-х с source metadata (реализовано B.20: 20 seed POI + `source`).  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. ✅ GM coordinate editor и custom campaign locations (реализовано B.20: create/edit/delete custom, координаты X/Y).  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+2. ✅ Key Locations / POI data model, filters и Location pages (реализовано B.20).
+3. ✅ Seed основных мест 2070-х с source metadata (реализовано B.20: 20 seed POI + `source`).
+4. ✅ GM coordinate editor и custom campaign locations (реализовано B.20: create/edit/delete custom, координаты X/Y).
 5. Housing.
 6. ◐ Vendor locations (текстовый район добавлен в B.15; связь с POI `location_id` остаётся).
 7. Contract Crew Channel.
@@ -3440,10 +3439,10 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 ### Пакет F — Organizations & Legacy
 
-1. Добавить Persona memberships и organization roster.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. Перенести строковый `affiliation` в структурированные связи.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. ✅ Добавить Dossier statuses: active/retired/missing/deceased/archived (реализовано B.21: `status` в data + `archived`).  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. ✅ Реализовать death flow и Memorial Wall в Crew Registry (реализовано B.21: страница `#/memorial`).  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. Добавить Persona memberships и organization roster.
+2. Перенести строковый `affiliation` в структурированные связи.
+3. ✅ Добавить Dossier statuses: active/retired/missing/deceased/archived (реализовано B.21: `status` в data + `archived`).
+4. ✅ Реализовать death flow и Memorial Wall в Crew Registry (реализовано B.21: страница `#/memorial`).
 5. ◐ Добавить obituary preview и связь с Feed/Contract/Session.
    - готово: obituary-draft в City Feed (`publish_obituary`) с `feed_post_id` и автообновлением при правке memorial;
    - дальше: связь с Contract/Session и отдельные секции retired/missing.
@@ -3454,12 +3453,12 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 ### Пакет G — Campaign Operations
 
-1. ◐ Session Recap / Chronicle и автоматические history links (реализовано B.17).  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
+1. ◐ Session Recap / Chronicle и автоматические history links (реализовано B.17).
    - готово: CRUD recap'ов, автосбор участников, публичная хроника + приватные GM-детали, авто-черновик City Feed и авто-событие Storyline timeline;
    - дальше: автосвязь Location/Organization history и Memorial achievements.
-2. ✅ Crew Stash, item transfer и ownership history (реализовано B.13).  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. ✅ Downtime Planner с лечением, Therapy, Crafting и поиском предметов (реализовано B.18).  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. Organization Reputation / Favor / Heat.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+2. ✅ Crew Stash, item transfer и ownership history (реализовано B.13).
+3. ✅ Downtime Planner с лечением, Therapy, Crafting и поиском предметов (реализовано B.18).
+4. Organization Reputation / Favor / Heat.
 5. Storyline/Faction Clocks.
 6. Intel Fragments и Case Board.
 7. Universal Search и stable Entity Links.
@@ -3467,12 +3466,12 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 ### Пакет H — GM Combat & NET
 
-1. ✅ Расширить NPC Template до Quick/Full statblock (реализовано B.16).  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. ✅ Добавить STATs, Skills, calculated Bases, Weapons и Attacks (реализовано B.16).  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. ◐ Реализовать Session snapshot, one-click attacks и ammo/reload. **Конфликт с §23.3 снят 28.08:** однокликовые Attack/Damage/Fire/Reload НЕ строим в существующем Session Dashboard (он демонтируется по 23.3) — целимся в будущую «панель действий игрока» и VTT-сцену,  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
+1. ✅ Расширить NPC Template до Quick/Full statblock (реализовано B.16).
+2. ✅ Добавить STATs, Skills, calculated Bases, Weapons и Attacks (реализовано B.16).
+3. ◐ Реализовать Session snapshot, one-click attacks и ammo/reload. **Конфликт с §23.3 снят 28.08:** однокликовые Attack/Damage/Fire/Reload НЕ строим в существующем Session Dashboard (он демонтируется по 23.3) — целимся в будущую «панель действий игрока» и VTT-сцену,
    - готово: снапшот full statblock в `session_combatants` (statblock_json) и расчётные базы атак для GM/Player View;
    - дальше: one-click Attack/Damage/Fire/Reload в Session Dashboard.
-4. ✅ Добавить NPC threat presets и Player View visibility (реализовано B.16: Mook/Lieutenant/Mini-Boss/Boss + флаг `show_npc_stats`).  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+4. ✅ Добавить NPC threat presets и Player View visibility (реализовано B.16: Mook/Lieutenant/Mini-Boss/Boss + флаг `show_npc_stats`).
 5. Нормализовать Programs/Black ICE/Hardware в каталоге.
 6. Добавить Cyberdeck loadout, slots, Program states и REZ.
 7. Реализовать Rezzed Black ICE как отдельные `net_entities` с target/floor/initiative.
@@ -3482,10 +3481,10 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 ### Пакет I — Tabletop Foundations (далёкое будущее)
 
-1. Подготовить stable entity IDs, permissions и authoritative Session events.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. Сначала реализовать Live Session Pack, print/export и GM quick screen для живых встреч.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. Добавить QR links для Character/NPC/Item/Location/Handout и short-lived Session PIN.  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. Добавить optional Shared Screen и Player Companion, не делая их обязательными.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. Подготовить stable entity IDs, permissions и authoritative Session events.
+2. Сначала реализовать Live Session Pack, print/export и GM quick screen для живых встреч.
+3. Добавить QR links для Character/NPC/Item/Location/Handout и short-lived Session PIN.
+4. Добавить optional Shared Screen и Player Companion, не делая их обязательными.
 5. Добавить официальный Online/LAN deployment mode и локальные assets.
 6. Реализовать Online VTT Scenes, Tokens, Grid/Measurement и Initiative sync — одинаково для Internet и LAN.
 7. Связать token actions с Dossiers/NPC/Weapons/Effects.
@@ -3684,7 +3683,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 **Задача:** Пакет A — permanent-слой ассортимента + bigger rotation + per-vendor tabs UI.
 
-> 📄 **Курируемый список permanent-ассортимента:** [`docs/permanent-assortment.md`](permanent-assortment.md) (~54 базовых позиции по 5 продавцам + открытие для Street Pharmacy).
+> 📄 **Курируемый список permanent-ассортимента:** [`docs/permanent-assortment.md`](permanent-assortment.md) (≈65 постоянных позиций по 6 продавцам, включая Street Pharmacy).
 
 ### 20.11 Плейсхолдеры изображений предметов
 
@@ -3722,10 +3721,10 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 Сформирован по итогам аудита (реализовано/частично/не реализовано), проверки логических конфликтов и дубликатов. Порядок согласован с владельцем проекта.
 
 ### P1 · Быстрые правки (низкие усилия, чистый выигрыш)
-1. ✅ **22.1** — ~~фикс парсинга магазина экзотики~~ **сделано 2026-08-28** (нормализаторы `import_data.py` + `catalog.py`), исходный (`_num`/импорт: первое целое из `"20 / 2"` и т.д.) — закрывает падающий тест.  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. **20.5** — Restore Memorial без обязательной причины.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. **20.6** — Архивные персонажи в Memorial.  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. **20.7** — Role-gated кнопки в Dossier (скрывать контролы без роли).  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. ✅ **22.1** — ~~фикс парсинга магазина экзотики~~ **сделано 2026-08-28** (нормализаторы `import_data.py` + `catalog.py`), исходный (`_num`/импорт: первое целое из `"20 / 2"` и т.д.) — закрывает падающий тест.
+2. ✅ **20.5** — Restore Memorial без обязательной причины (проверено 28.08 по коду: `reason` читается без обязательности).
+3. ✅ **20.6** — Архивные персонажи в Memorial (проверено 28.08 по коду: запрета на archived в memorialize нет).
+4. **20.7** — Role-gated кнопки в Dossier (скрывать контролы без роли).
 5. **20.1** — Мини-досье в Crew Registry (механизм `public_view` уже есть — ужесточить public payload).
 
 ### P-Security · Харденинг (перед публичным доступом) — ✅ реализовано 2026-08-23
@@ -3802,10 +3801,10 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 ✅ Что хорошо: параметризованный SQL повсюду; f-string SQL строит только allowlisted колонки (значения — параметры); media валидируется по **magic-bytes**, а не по клиентскому MIME; rate-limit на register (5/300s) и login (12/60s); cookies `HttpOnly` + `SameSite=Lax` + условный `Secure`; OAuth redirect_uri и state — server-controlled/validated; path-traversal guard в `serve_static`.
 
 🔶 Харденинг (в порядке приоритета):
-1. **Security-headers отсутствуют** (есть только `X-Content-Type-Options: nosniff`): добавить **Content-Security-Policy** (особенно важно при обширном `innerHTML`), **X-Frame-Options** (clickjacking), **Referrer-Policy**. HSTS — на nginx (README).  → **Решено (20.10/`permanent-assortment.md`):** постоянный базовый ассортимент зафиксирован (~65 позиций по 6 продавцам); Legal Retail как отдельная сущность не нужна.
-2. **Brute-force per-account:** login лимитируется по IP, но нет per-account lockout/throttle → распределённая атака обходит IP-лимит.  → **Решено (20.9):** 7 продавцов (6 + новый Street Pharmacy).
-3. **CSRF:** защита строится на `SameSite=Lax`. Приемлемо; defense-in-depth — CSRF-токены для state-changing POST (особенно если когда-то понадобится `SameSite=None`).  → **Решено (B.15):** по количеству (persisted finite stock 1–5 единиц).
-4. **Static path:** `os.path.realpath(fp).startswith(STATIC_DIR)` надёжнее текущего `normpath`+`startswith('..')` (учитывает symlinks). Low.  → **Решено (B.3):** да, полностью custom item без каталога, помечается `CUSTOM · MANUAL`.
+1. **Security-headers отсутствуют** (есть только `X-Content-Type-Options: nosniff`): добавить **Content-Security-Policy** (особенно важно при обширном `innerHTML`), **X-Frame-Options** (clickjacking), **Referrer-Policy**. HSTS — на nginx (README).
+2. **Brute-force per-account:** login лимитируется по IP, но нет per-account lockout/throttle → распределённая атака обходит IP-лимит.
+3. **CSRF:** защита строится на `SameSite=Lax`. Приемлемо; defense-in-depth — CSRF-токены для state-changing POST (особенно если когда-то понадобится `SameSite=None`).
+4. **Static path:** `os.path.realpath(fp).startswith(STATIC_DIR)` надёжнее текущего `normpath`+`startswith('..')` (учитывает symlinks). Low.
 
 ### 22.3 UX и пробелы (в основном уже в бэклоге)
 
@@ -3871,7 +3870,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 - `app/server.py`: **20 217 → 805 строк**. Вынесено 21 модуль в `app/` — см. навигационную карту в шапке `server.py` и `docs/architecture.md` (слои: API-миксины → домены → db/rules/catalog → core).
 - Избранные модули: `core, auth, db, httpkit, rules, catalog, mod_engine, charbuild, inventory, night_market, recap, campaign, locations, memorial, crew` + API-миксины Handler: `account_api, feed_api, personas_api, world_api, sessions_api, characters_api, admin_api, misc_api`.
-- **260/260 тестов зелёные на каждом из 28 коммитов; логика не менялась ни в одной строке.**
+- **260/260 тестов зелёные на каждом шаге кампании** (22 код-коммита P1 + связанные аудит-коммиты, 50 коммитов за день); логика не менялась ни в одной строке.
 - Контракты кода (обязательны на будущее): направление зависимостей строго вниз; bind() только для трёх анти-циклических швов (night_market←crew, charbuild↔inventory, catalog/rules→inventory); тестовые монопатчи — на модуль-владелец имени (`importlib.import_module('<mod>')`), а не на `server.<name>`.
 - Правила процесса и уроки (AST-аудит швов, порядок срезов, PID-дисциплина smoke) — `docs/repo-audit-2026-08.md`.
 - **Осталось внутри P3 #1:** frontend — `app.js` (4 389 строк), `style.css` (765) и `ncnet.css` — та же механика по кластерам вью (эльстичные швы есть: hash-router и соответствие view* функций доменам).
