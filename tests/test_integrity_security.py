@@ -3912,8 +3912,9 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
         uploads_dir = Path(self.tmp.name) / 'api-uploads'
         uploads_dir.mkdir()
         (uploads_dir / 'portrait.webp').write_bytes(b'private portrait')
-        original = (server.DB_PATH, server.BACKUP_DIR, server.UPLOAD_DIR)
-        server.DB_PATH, server.BACKUP_DIR, server.UPLOAD_DIR = (
+        admin_mod = importlib.import_module('admin_api')
+        original = (admin_mod.DB_PATH, admin_mod.BACKUP_DIR, admin_mod.UPLOAD_DIR)
+        admin_mod.DB_PATH, admin_mod.BACKUP_DIR, admin_mod.UPLOAD_DIR = (
             self.db_path, str(backup_dir), str(uploads_dir))
         try:
             self.conn.execute("UPDATE users SET account_role='admin',is_gm=1 WHERE username='gm'")
@@ -3934,7 +3935,7 @@ class IntegritySecurityRegressionTests(unittest.TestCase):
                 "SELECT * FROM account_security_audit WHERE event_type='backup_created'").fetchone()
             self.assertEqual(audit['detail'], created['name'])
         finally:
-            server.DB_PATH, server.BACKUP_DIR, server.UPLOAD_DIR = original
+            admin_mod.DB_PATH, admin_mod.BACKUP_DIR, admin_mod.UPLOAD_DIR = original
 
     def test_scoped_session_roles_enforce_capabilities(self):
         self.current = self.user('gm')
