@@ -81,6 +81,17 @@ node --check app/static/ncnet.js
 node --check app/static/app.js
 ```
 
+CI запускает эти же команды (`.github/workflows/tests.yml`) на каждый push/PR.
+
+## Книги-источники и извлечение текста
+
+PDF правил лежат в корне репозитория как Git LFS-указатели (сами файлы — в LFS-хранилище). Для работы с их содержимым:
+
+- `tools/extract_books.py` — извлекает весь текст постранично (`extracted/text/<книга>.md` + сводный `extracted/ALL_TEXT.md`), встроенные картинки (`extracted/images/<книга>/`, в git не попадают) и опционально OCR страниц без текстового слоя (`--ocr`, нужен `rapidocr-onnxruntime`);
+- `tools/merge_books.py` — склеивает книги, разрезанные онлайн-сплиттером на части `*-страницы-N.pdf` в `uploads/` (обход лимита веб-загрузки GitHub в 25 МБ);
+- `tools/classify_books.py` — разбивает все страницы по категориям (правила/бой/нетраннинг/лор/предметы/…) по карте глав оглавления; отчёт — `extracted/analysis/CATEGORIES.md`, постраничный индекс — `page_index.csv` + `categories.json`;
+- `uploads/` — зона ручной заливки новых книг через веб-интерфейс GitHub (см. `uploads/README.md`; папка исключена из LFS в `.gitattributes`).
+
 ## Установка на Ubuntu Server (сайт работает постоянно)
 
 Нужен только сервер с Ubuntu и доступ по SSH. Скопируй команды по шагам:
