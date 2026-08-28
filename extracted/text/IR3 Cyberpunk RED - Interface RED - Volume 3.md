@@ -1527,7 +1527,39 @@ BY HUNTANG
 
 <!-- page 25 -->
 
-
+**[OCR]** CYBER
+CARe?
+WoUND
+Worries?
+PLAGUE
+PROBLEMS?
+S
+D
+AVAGE
++CS
+OPEN
+FuLL SERVICE · NO QuESTIONS
+24/7
+qindaotz
+10 RUTHLESS ROUNDS
+OF METAL MAYHEM!
+★★★★2★★★★
+LYVER
+ARNOLD
+PETER
+BIONIC BEAR
+VS
+WARCLUB
+PATRICK
+BURKE
+champion
+challenger
+OIL-FUELEDCARNAGE
+Live!
+SOUTH NIGHT CITY'SHOTTESTBRAINDANCE CLUB
+THEREDLINE
+RESERVED SEATING DOORSOPENAT8PM NOTONLINE!
+FEATURINGDJFRAME!
 
 
 ---
@@ -3710,7 +3742,36 @@ information.
 
 <!-- page 51 -->
 
-
+**[OCR]** SOVOIL
+LUBRICANT
+SOVOIL
+SOVOIL
+SOVOIL
+PERSONAL
+OUSTRIAL
+DBR
+UBRICANT
+NETWT10Z（283NETW100Z（28gTWT100Z（283g
+MAKE
+EVERYTHING
+EASIER
+LINK
+YOUR
+DRINKS
+ntuentae
+Cowtin
+Leutaa
+LIMITED EDITION
+DITION
+LIMITED EDITION
+LIMITED EDITION
+ELFLINES ELIXIR
+LIGHTNING
+RAIN
+SOLAR FLARE
+BLOOD
+Contunent
+Brands
 
 
 ---
@@ -6985,14 +7046,32 @@ a word.
 
 <!-- page 89 -->
 
-
+**[OCR]** ChainRipP
+DeathTrance
+Kiroshi OptiShield
+CuclopsInternational
+Cybermatrix
+GrangJazzler
+Kiroshi MonoVision
+Ilustrationsofcyberwarenottoscale
 
 
 ---
 
 <!-- page 90 -->
 
-
+**[OCR]** RavenMicrocybernetics
+MicroWaldo
+Poser
+Chip
+WyzardTechnologies
+RomanovaCyberlegs
+PsiberstuffWatch-Man
+SycustFleshWeave
+RABLINE
+RadineBlitzkrieg
+Arc-ThrowerCyberarm
+Ilvstrationsofcyberwarenottoscale
 
 
 ---

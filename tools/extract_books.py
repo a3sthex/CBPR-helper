@@ -14,10 +14,32 @@ For every PDF found:
 Requires PyMuPDF (pymupdf) — see .venv at workspace root.
 """
 import argparse
+import re
 import sys
 from pathlib import Path
 
 import pymupdf  # PyMuPDF
+
+_OCR = None  # lazy RapidOCR instance
+
+
+def ocr_page(page):
+    """OCR one PDF page via RapidOCR (bundled PP-OCR models). ~200 DPI render."""
+    global _OCR
+    if _OCR is None:
+        from rapidocr_onnxruntime import RapidOCR
+        _OCR = RapidOCR()
+    import numpy as np
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(2.8, 2.8), alpha=False)
+    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+    result, _ = _OCR(img)
+    if not result:
+        return ''
+    # result: [[box, text, score], ...] top-to-bottom; keep original line order
+    return '\n'.join(r[1] for r in result)
+
+
+MIN_WORD_CHARS = 10
 
 
 def iter_pdfs(paths):
@@ -40,12 +62,13 @@ def safe_stem(path: Path) -> str:
 
 
 def extract_book(pdf_path: Path, text_dir: Path, img_dir: Path | None,
-                 combined_fh, min_img_px: int = 24):
+                 combined_fh, min_img_px: int = 24, ocr: bool = False):
     book = safe_stem(pdf_path)
     print(f'== {pdf_path.name}')
     doc = pymupdf.open(pdf_path)
     text_path = text_dir / f'{book}.md'
     n_images = 0
+    n_ocr = 0
     n_pages = len(doc)
 
     with text_path.open('w', encoding='utf-8') as out:
@@ -55,6 +78,15 @@ def extract_book(pdf_path: Path, text_dir: Path, img_dir: Path | None,
             combined_fh.write(f'\n\n{"=" * 78}\n# BOOK: {pdf_path.name}  ({n_pages} pages)\n{"=" * 78}\n\n')
         for i, page in enumerate(doc, start=1):
             text = page.get_text('text')
+            if ocr and len(re.sub(r'\W+', '', text)) < MIN_WORD_CHARS:
+                try:
+                    ocr_text = ocr_page(page).strip()
+                except Exception as exc:  # noqa: BLE001
+                    print(f'   !! OCR page {i}: {exc}', file=sys.stderr)
+                    ocr_text = ''
+                if ocr_text:
+                    n_ocr += 1
+                    text = f'**[OCR]** {ocr_text}'
             marker = f'\n\n---\n\n<!-- page {i} -->\n\n'
             out.write(marker + text.rstrip() + '\n')
             if combined_fh:
@@ -85,7 +117,7 @@ def extract_book(pdf_path: Path, text_dir: Path, img_dir: Path | None,
                 except Exception as exc:  # noqa: BLE001 - some PDFs carry broken xrefs
                     print(f'   !! image xref={xref} on page {i}: {exc}', file=sys.stderr)
 
-    print(f'   text  -> {text_path}')
+    print(f'   text  -> {text_path}' + (f'  (OCR: {n_ocr} pages)' if n_ocr else ''))
     if img_dir is not None:
         print(f'   images-> {img_dir / book}  ({n_images} imgs)')
     doc.close()
@@ -100,6 +132,8 @@ def main(argv=None):
                     help='combined text file (empty string disables)')
     ap.add_argument('--images-out', default='extracted/images', help='root dir for images')
     ap.add_argument('--no-images', action='store_true', help='text only')
+    ap.add_argument('--ocr', action='store_true',
+                    help='OCR pages that contain almost no embedded text (art pages)')
     args = ap.parse_args(argv)
 
     pdfs = iter_pdfs(args.inputs)
@@ -119,7 +153,7 @@ def main(argv=None):
     tot_pages = tot_imgs = 0
     try:
         for pdf in pdfs:
-            p, n = extract_book(pdf, text_dir, img_dir, combined_fh)
+            p, n = extract_book(pdf, text_dir, img_dir, combined_fh, ocr=args.ocr)
             tot_pages += p
             tot_imgs += n
     finally:

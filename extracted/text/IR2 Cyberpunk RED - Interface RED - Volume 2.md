@@ -6037,7 +6037,41 @@ Cyberpunk RED Jumpstart Kit
 
 <!-- page 77 -->
 
-
+**[OCR]** yrinscape
+ILITECH
+Listen up, chooms!!
+Download.Syrinscapetoday and
+explore the official soundsof
+Cyberpunk RED
+syrinscape.com
+The Dark Future Never Sounded So Good
+COMBAT ZONE
+E
+ybERpUNk
+EDGERUNNERSA
+COMB
+AbERpunk
+EDGERUNNERSB
+owpodan
+COMBAT ZONE
+3Uapcinted Minicteres
+Take control of your gang and make a name for
+Bring your adventures to the tabletop with these
+yourself in the streets of Night City's CombatZoneT
+detailed Cyberpunk RED models.These figures are
+Featuring the[RE]actionTM System:easy-to-learn skirmish
+perfect to use as player characters and NPCs. Each
+ruleswithfast-paced,high-stakestabletop action.
+modelismadefromdurableplasticand includesabase.
+Visitour site for details!
+R
+Talsorian
+MONSTER
+MONSTERFIGHTCLUB.COM
+Games
+FIGHT CLUB
+2021R.TalsorianGamesInc,Cyberpunkisaregistered trademarkofCDProjektRedS.A.Allrightsreserved.
+[RE]actionTMandMonsterFightClub2020-2021.All rightsreserved.
 
 
 ---

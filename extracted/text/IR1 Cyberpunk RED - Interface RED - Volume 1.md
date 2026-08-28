@@ -5791,7 +5791,41 @@ ALL ABOUT DRONES
 
 <!-- page 65 -->
 
-
+**[OCR]** M
+yrinscape
+ILITECH
+Listen up, chooms!!
+Download Syrinscape today and
+explore the official sounds of
+Cyberpunk RED
+syrinscape.com
+The Dark Future Never Sounded So Good
+CybERpUNK
+COMBAT ZONE
+3
+ybERpUNk
+EDGERUNNERSA
+COMBAT
+ybERpunk
+EDGERUNNERSB
+3Unp
+COMBAT ZONE
+Take control of your gang and make a name for
+Bring  your  adventures to  the tabletop  with these
+yourself in the streets of Night City's Combat ZoneTM!
+detailed Cyberpunk RED models. These figures are
+Featuring the[RE]actionM System: easy-to-learn skirmish
+perfect to use as player characters and NPCs. Each
+ruleswith fast-paced,high-stakestabletop action.
+modelismadefromdurableplasticand includesabase.
+R
+Talsorian
+Visitoursitefordetails!
+MONSTER
+MONSTERFIGHTCLUB.COM
+Games
+FIGHTCLUB
+[RE]actionMandMonster Fight Club2020-2021.Allrights reserved.
 
 
 ---

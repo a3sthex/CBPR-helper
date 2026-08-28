@@ -14,7 +14,16 @@ import pymupdf
 UPLOADS = Path('uploads')
 OUT = Path('books')
 
-CHUNK_RE = re.compile(r'^(?P<base>.+?)-страницы-(?P<n1>\d+)(?:-страницы-(?P<n2>\d+))?\.pdf$', re.IGNORECASE)
+CHUNK_PART_RE = re.compile(r'^(?P<base>.+?)(?P<chain>(?:-страницы-\d+)+)\.pdf$', re.IGNORECASE)
+
+
+def parse_chunk(name):
+    """'Book-страницы-1-страницы-2.pdf' -> ('Book', (1, 2)) ; plain pdf -> None."""
+    m = CHUNK_PART_RE.match(name)
+    if not m:
+        return None
+    order = tuple(int(x) for x in re.findall(r'-страницы-(\d+)', m.group('chain')))
+    return m.group('base'), order
 
 
 def main():
@@ -23,11 +32,10 @@ def main():
     for pdf in sorted(UPLOADS.glob('*.pdf')):
         if pdf.name == 'README.md':
             continue
-        m = CHUNK_RE.match(pdf.name)
-        if m:
-            key = m.group('base')
-            order = (int(m.group('n1')), int(m.group('n2') or 0))
-            chunks.setdefault(key, []).append((order, pdf))
+        parsed = parse_chunk(pdf.name)
+        if parsed:
+            base, order = parsed
+            chunks.setdefault(base, []).append((order, pdf))
         else:
             whole.append(pdf)
 

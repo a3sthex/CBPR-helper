@@ -2778,7 +2778,35 @@ information.
 
 <!-- page 35 -->
 
-
+**[OCR]** Carden Dating
+HIE
+Are you lonely? Hot Edgerunners
+in Night City want to meet you!!!
+Using our monopoly on NET data
+The Garden Dating makes finding
+weekend plans as simple as 1-2-3!
+1. Our algorithm matches you using your datacrawl history!
+2. Our keyword optimized profiles have minimal text for easy dating!
+ZIGGURAT
+3. Connect to your ideal input or output today!
+Ourmonopoly on data
+is your monopoly on love
+covtinendtae
+Give your body
+Brands
+what it needs
+Blue Flavor
+KIBBLE
+Now
+with
+extra blue
+A Full Meal in Every Bag
+KIBBLE
+Ultra Processed for safety
+experuence the exotic
+11 various proteins
+Disclaimer
+Filler BiProductsfor satiety
 
 
 ---
@@ -13816,7 +13844,14 @@ SovOil Bombardier (x1), Tsunami Arms Magus (x1)
 
 <!-- page 149 -->
 
-
+**[OCR]** SHADOWC
+SCAR
+开
+From the makers of Cyberpunk RED and The Witcher TRPG
+comes a roleplaying game of worlds, intrigue, and heroism
+R
+Talsorian
+Games
 
 
 ---

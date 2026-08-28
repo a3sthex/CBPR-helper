@@ -30,7 +30,13 @@ a tech & style guide for
 
 <!-- page 2 -->
 
-
+**[OCR]** LASHR
+DANGER`
+gal
+Ki
+IGHTARMS
+MONGHITARMS
+6
 
 
 ---
@@ -6355,7 +6361,8 @@ A
 
 <!-- page 136 -->
 
-1
+**[OCR]** 口
+Do
 5
 
 
@@ -6566,8 +6573,8 @@ B
 
 <!-- page 140 -->
 
-4
-7
+**[OCR]** 4
+品
 
 
 ---
@@ -6746,9 +6753,8 @@ Tech UpG Laser Light St Jacket (Body)
 
 <!-- page 143 -->
 
+**[OCR]** C
 2
-3
-C
 
 
 ---
@@ -7170,7 +7176,7 @@ REP
 
 <!-- page 151 -->
 
-E
+**[OCR]** E
 
 
 ---
@@ -7376,8 +7382,8 @@ F
 
 <!-- page 156 -->
 
+**[OCR]** 888
 3
-4
 
 
 ---

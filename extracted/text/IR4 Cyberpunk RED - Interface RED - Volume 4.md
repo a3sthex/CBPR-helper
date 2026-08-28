@@ -5425,14 +5425,34 @@ MAX-TAC Squad Commander
 
 <!-- page 70 -->
 
-
+**[OCR]** ybercamEX-1
+DynalarXtra-Dex
+SmartGrlove
+Esporma
+Environment
+Svit
+Hammered
+Industries
+GireenLight
+Cyberscanner
+GroSniffer
+DPISmartSticks
+lllustrationsnottoscale
 
 
 ---
 
 <!-- page 71 -->
 
-
+**[OCR]** OptitechMagViewer
+O
+lonCuffs
+SkidRowPackShield
+ZondaMetrocar
+Telectronics
+MasterMechanic'sToolKit
+(onlytopsegmentofkitshown)
+Illustrationsnottoscale
 
 
 ---
@@ -6726,14 +6746,56 @@ As of Q2 2025
 
 <!-- page 88 -->
 
-
+**[OCR]** M
+yrinscape
+MILITECH
+Listen up, chooms!!
+DownloadSyrinscape today and
+explore the official sounds of
+Cyberpunk RED
+syrinscape.com
+The Dark Future Never Sounded So Good
+CybeRpunk
+COMBAT ZONE
+Ebepul
+ybERPuNk
+EDGERUNNERSA
+COMBATZO
+AybERpunk
+EDGERUNNERSB
+nowpepdn
+COMBAT ZONE
+3 UepointedMinichres
+Take control of your gang and make a name for
+Bring your adventures to the tabletop with these
+yourself in thestreetsofNightCity'sCombatZoneT！
+detailed Cyberpunk RED models.These figures are
+Featuring the[RE]actionTMSystem:easy-to-learn skirmish
+perfect to use as player characters and NPCs.Each
+ruleswithfast-paced,high-stakestabletop action.
+model ismadefrom durableplasticand includesabase.
+Visit our site for details!
+Talsorian
+MONSTER
+MONSTERFIGHTCLUB.COM
+Games
+FIGHT CLUB
+2021R.TalsorianGames,Inc,CyberpunkisaregisteredtrademarkofCDProjektRedS.A.Allrightsreserved.
+[RE]action and MonsterFight Club2020-2021.Allrights reserved.
 
 
 ---
 
 <!-- page 89 -->
 
-
+**[OCR]** MOOHHS
+SCAR
+开
+From the makers of Cyberpunk RED and The Witcher TRPG
+comes a roleplaying game of worlds, intrigue, and heroism
+R
+Talsorlan
+Games
 
 
 ---
