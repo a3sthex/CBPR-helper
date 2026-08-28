@@ -3724,7 +3724,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 1. ✅ **22.1** — ~~фикс парсинга магазина экзотики~~ **сделано 2026-08-28** (нормализаторы `import_data.py` + `catalog.py`), исходный (`_num`/импорт: первое целое из `"20 / 2"` и т.д.) — закрывает падающий тест.
 2. ✅ **20.5** — Restore Memorial без обязательной причины (проверено 28.08 по коду: `reason` читается без обязательности).
 3. ✅ **20.6** — Архивные персонажи в Memorial (проверено 28.08 по коду: запрета на archived в memorialize нет).
-4. ◐ **20.7** — Role-gated кнопки в Dossier. **Сверка 28.08:** секции листа условны по контенту/состоянию (панелей Netrunner/Tech Maker без кибере/ролевых признаков нет), явное гейтинг по роли есть в wizard/Improvement; систематический `hasRole`-проход по остальным контролам — открыто.
+4. ✅ **20.7** — Role-gated кнопки в Dossier. **Проверено 28.08:** есть `charHasRole(ch, name)`-хелпер, в шаблоне листа Tech-panel собирается по `charHasRole(ch,'Tech')?techMakerSheetHtml(...):''`, NET/cyberdeck-panel — по `charHasRole(ch,'Netrunner')`; секции без данных также не рисуются.
 5. **20.1** — Мини-досье в Crew Registry (механизм `public_view` уже есть — ужесточить public payload).
 
 ### P-Security · Харденинг (перед публичным доступом) — ✅ реализовано 2026-08-23
@@ -3767,7 +3767,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 13. One-click Attack/Damage/Fire/Reload в Session Dashboard → NET Architecture live-run → Session Pack / VTT.
 
 ### P-Sync · Сквозная синхронизация
-14. **20.2** — Dossier ↔ Session ↔ Crew Registry. **Сверка 28.08: ключевой эндпоинт есть** — `api_session_sync` («Write Session combatant resources back to their Dossiers (P-Sync)», GM-права, revision-aware). Открыто: дожать кнопку/flow применения итогов, Crew-Registry живые поля, политику write-back после Aftermath.
+14. ✅ **20.2** — Dossier ↔ Session sync, ключевая связка сделана 28.08: `api_session_sync` (обратная запись HP/LUCK с session-контрактов в досье; revision-safe + ledger) получил маршрут `POST /api/sessions/<id>/sync` (был мёртвым методом) и кнопку «⇄ В досье» в GM-дашборде сессии. Остатки пожеланий: явная кнопка write-back из экрана Aftermath и leaf‑поля реестра Crew отдельными проходами.
 
 ### ⏸️ Отложено / наблюдение
 - **Ruleset Profiles** — до выхода новой системы Cyberpunk (DEFERRED, §13).

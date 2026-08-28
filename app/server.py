@@ -664,6 +664,7 @@ ROUTES = [
     ('POST', rx(r'/api/sessions'), Handler.api_session_create),
     ('GET', rx(r'/api/sessions/(\d+)'), Handler.api_session_detail),
     ('PUT', rx(r'/api/sessions/(\d+)'), Handler.api_session_update),
+    ('POST', rx(r'/api/sessions/(\d+)/sync'), Handler.api_session_sync),
     ('GET', rx(r'/api/sessions/(\d+)/player-view'), Handler.api_session_player_view),
     ('POST', rx(r'/api/sessions/(\d+)/net/floors'), Handler.api_session_net_floor_create),
     ('DELETE', rx(r'/api/sessions/(\d+)/net/floors/([a-f0-9]{32})'), Handler.api_session_net_floor_delete),
