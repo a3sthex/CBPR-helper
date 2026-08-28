@@ -3724,7 +3724,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 1. ✅ **22.1** — ~~фикс парсинга магазина экзотики~~ **сделано 2026-08-28** (нормализаторы `import_data.py` + `catalog.py`), исходный (`_num`/импорт: первое целое из `"20 / 2"` и т.д.) — закрывает падающий тест.
 2. ✅ **20.5** — Restore Memorial без обязательной причины (проверено 28.08 по коду: `reason` читается без обязательности).
 3. ✅ **20.6** — Архивные персонажи в Memorial (проверено 28.08 по коду: запрета на archived в memorialize нет).
-4. **20.7** — Role-gated кнопки в Dossier (скрывать контролы без роли).
+4. ◐ **20.7** — Role-gated кнопки в Dossier. **Сверка 28.08:** секции листа условны по контенту/состоянию (панелей Netrunner/Tech Maker без кибере/ролевых признаков нет), явное гейтинг по роли есть в wizard/Improvement; систематический `hasRole`-проход по остальным контролам — открыто.
 5. **20.1** — Мини-досье в Crew Registry (механизм `public_view` уже есть — ужесточить public payload).
 
 ### P-Security · Харденинг (перед публичным доступом) — ✅ реализовано 2026-08-23
@@ -3747,7 +3747,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 > Блок пользовательского UX, который владелец активно хочет. Малые/средние пункты — быстро; Session-реворк — крупный.
 - **23.1** Упрощение модалей (Feed/Contracts/Storyline) + **схлопывание City Feed в один тип поста**. **Проверка 28.08: НЕ сделано** — `FEED_FORMATS` всё ещё хранит 6 форматов (`short/article/blog/bulletin/statement/rumor`); статус ☐ (§24.3).
 - **23.2** ✅ Отдельная GM-only страница-подсказка (DV, боевые действия) — реализована: `gm-ref.js` + GM-only пункт навигации `⚔ GM Reference` (проверено 28.08, §24.2).
-- **23.3** **Демонтаж Session** + отдельная **«панель действий игрока»** (страница со входом из Dossier: предметы/действия, трата HP/удачи/репутации, броски кубов). Базовые функции Session (NET/Safety/roles/Recaps) → в другую вкладку; combat-трекер → VTT. Крупный, затрагивает Package 0 и B.16.
+- ◐ **23.3** Демонтаж Session + «панель действий игрока». **Сверка 28.08: панель действий РЕАЛИЗОВАНА** — маршрут `#/actions/<char_id>` (`viewActions`) + кнопка `🎮 Actions` в шапке Dossier. **Осталось собственно 23.3:** демонтаж боевого трекера Session (→ VTT) и перенос NET/Safety/roles/Recaps в отдельную вкладку.
 
 ### P4 · Мир (Пакет E + 20.4)
 6. **20.4** — Map → в City, zoom/pan, слои, **удаление seed-POI** (согласовать с read-only из B.20), плейсхолдеры картинок локаций.
@@ -3756,8 +3756,8 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 
 ### P5 · Организации и репутация (приоритет выше визуала)
 > Разблокирует reputation-гейтинг маркета (20.8 / A.2 №4) — поэтому идёт раньше P6.
-9. **Persona memberships + organization roster** (Пакет F #1–2).
-10. **Reputation / Favor / Heat** (§16.4 — каноническое описание).
+9. ◐ **Persona memberships + organization roster** (Пакет F #1–2). **Сверка 28.08: ядро реализовано** — `persona_memberships` CRUD + UI редактирования + блок Affiliations на странице персоны; ❔ проверить обратное направление (roster организации на её странице).
+10. ✅ **Reputation / Favor / Heat, ядро** (§16.4): таблицы `character_reputation` и `crew_reputation` (обе scoped по `organization_persona_id`, standing + **favor + heat** поля есть), CRUD-эндпоинты (персонаж/экипаж); ручные GM-изменения + ledger — как раз спецификация первой версии. **Разблокирует A.2 №4 (гейтинг маркета) для планирования.**
 11. Intel / Case Board · Faction Clocks · Universal Search + Entity Links · Medical Record.
 
 ### P6 · Визуал и печать (Пакет D)
@@ -3767,7 +3767,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 13. One-click Attack/Damage/Fire/Reload в Session Dashboard → NET Architecture live-run → Session Pack / VTT.
 
 ### P-Sync · Сквозная синхронизация
-14. **20.2** — Dossier ↔ Session ↔ Crew Registry (Dossier = источник правды, write-back итогов сессии). Решает конфликт №2 (snapshot vs live). Внедряется по мере стабилизации P4–P5.
+14. **20.2** — Dossier ↔ Session ↔ Crew Registry. **Сверка 28.08: ключевой эндпоинт есть** — `api_session_sync` («Write Session combatant resources back to their Dossiers (P-Sync)», GM-права, revision-aware). Открыто: дожать кнопку/flow применения итогов, Crew-Registry живые поля, политику write-back после Aftermath.
 
 ### ⏸️ Отложено / наблюдение
 - **Ruleset Profiles** — до выхода новой системы Cyberpunk (DEFERRED, §13).
