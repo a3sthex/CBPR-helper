@@ -63,7 +63,9 @@
 
 5. ~~Валидация персонажа + Tech Maker~~ → **сделано (28.08):** `app/charbuild.py` (2098 строк, 67 публичных имён).
 
-5.3.6. ~~Handler: admin-кластер~~ → **сделано (28.08):** `app/admin_api.py` (`AdminMixin`, 13 методов: юзеры/роли/бан, инвайты, бэкапы CRUD+verify, VK outbox). Тест-монопатч путей ретаргетирован на модуль-владелец через `importlib.import_module` (правило из P1-8).
+5.3.5. ~~Handler: misc-кластер~~ → **сделано (28.08):** `app/misc_api.py` (`MiscMixin`, 15 методов: рынок/каталог/писательство/календарь/фиксер/meta/stats/pdf). Осталось ядро Handler.
+
+3.6. ~~Handler: admin-кластер~~ → **сделано (28.08):** `app/admin_api.py` (`AdminMixin`, 13 методов: юзеры/роли/бан, инвайты, бэкапы CRUD+verify, VK outbox). Тест-монопатч путей ретаргетирован на модуль-владелец через `importlib.import_module` (правило из P1-8).
 
 3.7. ~~Handler: characters-кластер~~ → **сделано (28.08):** `app/characters_api.py` (`CharactersMixin`, 61 метод — самый большой кластер проекта). Монолит server.py пробил отметку 4к строк.
 
