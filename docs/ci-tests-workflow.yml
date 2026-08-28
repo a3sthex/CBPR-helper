@@ -1,0 +1,26 @@
+# Готовый GitHub Actions workflow. Чтобы включить CI:
+# скопируйте этот файл (без этой шапки-комментария) в
+# .github/workflows/tests.yml — через веб-интерфейс GitHub (Add file),
+# т.к. у бота-агента нет scope `workflows` для push в .github/.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        # PDF-книги — LFS-указатели; самих книг тестам не нужно
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Python tests (unittest, как в README)
+        run: python3 -m unittest discover -s tests -v
+      - name: JS syntax check
+        run: |
+          node --check app/static/creation-data.js
+          node --check app/static/ncnet.js
+          node --check app/static/app.js

@@ -11,7 +11,7 @@
 | Python backend | `app/server.py` — ~20 200 строк, 191 HTTP-маршрут |
 | Frontend | vanilla JS без сборки: `app.js` 4 389 + `ncnet.js` 584 + `creation-data.js` 762 + сопутствующие |
 | Тесты | 6 файлов, 260 тестов — **все зелёные** (unittest, ~20 c) |
-| CI | не было → добавлен `.github/workflows/tests.yml` (этой же ревизией) |
+| CI | не было → подготовлен рецепт `docs/ci-tests-workflow.yml`; **заблокировано правами токена** (нет scope `workflows` — GitHub не даёт пушить файлы в `.github/`). Добавить вручную: скопировать файл в `.github/workflows/tests.yml` через веб-интерфейс GitHub одним коммитом. |
 | Каталог | `app/data/items.json` — 1092 предмета из `Data Pool.xlsx` |
 | Книги | 11 PDF как LFS-указатели; полные тексты извлечены в `extracted/`, покатегорный индекс в `extracted/analysis/` |
 | `.git` (до чистки истории) | ~287 МБ — из-за частей книг в истории ветки |
@@ -28,7 +28,7 @@
 1. `uploads/` очищен от частей книг (было ~186 МБ в дереве), остался README-инструктаж.
 2. `.gitignore`: `books/`, `extracted/images/` — тяжёлые артефакты не в git.
 3. `.gitattributes`: `uploads/` исключена из LFS (иначе веб-загрузка PDF превращалась в указатели).
-4. CI: GitHub Actions — unittest-стек + `node --check` на JS.
+4. CI: подготовлен workflow (unittest-стек + `node --check` на JS) — лежит рецептом в `docs/ci-tests-workflow.yml`, в `.github/` его нужно положить вручную (см. таблицу выше).
 5. README: раздел «Книги-источники и извлечение текста».
 
 ## 3. Открытые вопросы чистки (нужно решение владельца)

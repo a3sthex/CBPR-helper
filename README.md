@@ -81,7 +81,7 @@ node --check app/static/ncnet.js
 node --check app/static/app.js
 ```
 
-CI запускает эти же команды (`.github/workflows/tests.yml`) на каждый push/PR.
+Готовый workflow для CI лежит в `docs/ci-tests-workflow.yml` — чтобы включить GitHub Actions, скопируйте его в `.github/workflows/tests.yml` через веб-интерфейс GitHub (боту не хватает scope `workflows` для такого push).
 
 ## Книги-источники и извлечение текста
 
