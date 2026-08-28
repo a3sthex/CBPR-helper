@@ -18,6 +18,7 @@ BACKUP_DIR = os.path.abspath(os.path.expanduser(
     os.environ.get('CBPR_BACKUP_DIR') or os.path.join(DATA_DIR, 'backups')))
 
 SESSION_TTL = 30 * 24 * 3600
+PBKDF_ITERS = 120_000
 ITEMS_PATH = os.path.join(DATA_DIR, 'items.json')
 EFFECTS_PATH = os.path.join(DATA_DIR, 'effects.json')
 
