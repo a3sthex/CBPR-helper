@@ -3,6 +3,36 @@
 
 Только стандартная библиотека Python. Запуск:
     python3 app/server.py [--port 8000]
+
+Этот модуль — тонкая точка входа (HTTP-диспетчер, ROUTES, main). Домены
+вынесены в модули (декомпозиция P1-2026-08, docs/repo-audit-2026-08.md):
+
+    core.py          конфиг, константы, ApiError, роли/права
+    auth.py          сессии, PBKDF-хеши, инвайты, регистрация
+    db.py            SQLite-схема, миграции, bootstrap, бэкап-глей
+    httpkit.py       локализация ошибок, atomic_endpoint, темы, rx
+    rules.py         справочники правил RED (роли, навыки, раны…)
+    catalog.py       каталог снаряжения + эффекты/взаимодействия
+    mod_engine.py    модификации оружия/брони/техники, боеприпасы
+    charbuild.py     создание/валидация персонажа, Tech Maker, ensure_progression
+    inventory.py     экземпляры предметов, состояния, стеки
+    night_market.py  ночной рынок: ротации, постоянный ассортимент, стоки
+    recap.py         рекапы, хроника, персоны, уведомления, VK-outbox helpers
+    campaign.py      часы кампании + даунтайм-планировщик
+    locations.py     точки карты Найт-Сити (POI)
+    memorial.py      Memorial / Afterlife
+    crew.py          схрон экипажа, займы, репутация
+    media.py         загрузка/проверка изображений (MediaHandlers миксин)
+    account_api.py   AccountMixin  — аккаунт, вход, профиль, VK OAuth
+    feed_api.py      FeedMixin     — NC//NET лента, новости, сюжетки
+    personas_api.py  PersonasMixin — персоны, контракты, джобы фиксера
+    world_api.py     WorldMixin    — memorial/POI/часы/рекапы/даунтайм/memberships
+    sessions_api.py  SessionsMixin — сессии, NET-действия, бой, NPC-шаблоны
+    characters_api.py CharactersMixin — листы, инвентарь, Tech Maker, IP
+    admin_api.py     AdminMixin    — админ-панель, бэкапы, инвайты
+    misc_api.py      MiscMixin     — рынок, роспись, календарь, meta/stats
+
+Handler = ядро Dispatch'а + миксины из *_api модулей.
 """
 import argparse
 import base64
@@ -20,22 +50,24 @@ import sqlite3
 import sys
 import time
 import threading
-from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, unquote, urlencode
-from urllib.request import Request, urlopen
-from urllib.error import URLError, HTTPError
+from urllib.parse import urlparse, parse_qs, unquote
 
 if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from core import (ACCOUNT_ROLES, ACTIVE_EFFECT_DURATIONS, BASE,         # noqa: E402
-                  BACKUP_DIR, CHARACTER_VISIBILITY_DEFAULTS, DATA_DIR, DB_PATH,
-                  EFFECTS_PATH, INSTANCE_ID_RE, ITEM_INSTANCE_STATES, ITEMS_PATH,
-                  SESSION_TTL, STATS, UPLOAD_DIR,
-                  ApiError, _row_value,
-                  can_edit_contract, can_edit_storyline, can_manage_persona,
-                  ensure_character_visibility, parse_json_object,
-                  MOSCOW, user_account_role, user_is_admin, user_is_gm)
+from core import (
+    BASE,
+    CHARACTER_VISIBILITY_DEFAULTS,
+    STATS,
+    ApiError,
+    _row_value,
+    can_manage_persona,
+    ensure_character_visibility,
+    parse_json_object,
+    user_account_role,
+    user_is_admin,
+    user_is_gm,
+)
 from account_api import AccountMixin                                     # noqa: E402
 from feed_api import FeedMixin                                           # noqa: E402
 from personas_api import PersonasMixin                                   # noqa: E402
@@ -45,42 +77,15 @@ from characters_api import CharactersMixin                               # noqa:
 from admin_api import AdminMixin                                         # noqa: E402
 from misc_api import MiscMixin                                           # noqa: E402
 import httpkit as _httpkit_mod                                             # noqa: E402
-from httpkit import (                                                     # noqa: E402
-    SERVER_ERROR_EN,
-    server_error_message,
-    theme_contrast,
-    validate_theme,
-    attach_network_media,
-    atomic_endpoint,
-    q1,
-    rx,
-)
+from httpkit import server_error_message, validate_theme, rx
 import auth as _auth_mod                                                    # noqa: E402
-from auth import (                                                           # noqa: E402
-    registration_mode,
-    invite_code_hash,
-    create_invite_code,
-    validate_new_password,
-    hash_password,
-    verify_password,
-    session_cookie,
-    create_session,
-    REGISTRATION_MODES,
-)
+from auth import hash_password, verify_password, session_cookie, create_session
 import db as _db_mod                                                        # noqa: E402
-from db import (                                                            # noqa: E402
+from db import (
     enforce_rate_limit,
-    _failed_login_bucket,
     account_login_locked,
     record_failed_login,
     clear_failed_logins,
-    configured_admin_usernames,
-    backup_tools_module,
-    backup_retention,
-    backup_database,
-    ensure_column,
-    cyberdeck_profile_for_host,
-    cyberdeck_program_category,
     cyberdeck_slot_usage,
     cyberdeck_item_compatibility,
     queue_defense_sequencer_trigger,
@@ -89,347 +94,144 @@ from db import (                                                            # no
     black_ice_effect_profile,
     instantiate_black_ice_stat_effects,
     roll_dice,
-    black_ice_target_type,
-    active_black_ice_entity,
     initial_black_ice_entity,
-    evaluate_effective_cyberdeck,
-    character_effective_cyberdecks,
-    vehicle_classification,
     vehicle_repair_severity,
     vehicle_repair_skill,
-    character_nomad_rank,
-    vehicle_interior_capacity_for_compatibility,
     vehicle_upgrade_compatibility,
-    validate_active_modification_references,
-    sync_weapon_states_with_modifications,
-    sync_vehicle_states_with_modifications,
-    backfill_character_item_instances,
     apply_schema_migrations,
     apply_admin_bootstrap,
-    parse_json_list,
     clean_location_id,
-    optional_timestamp,
-    session_view_config,
-    session_safety_config,
     session_net_state,
     character_interface_rank,
     net_actions_for_interface,
     session_net_path_between,
-    clean_npc_template_input,
     clean_npc_statblock,
     npc_statblock_derived,
     SCHEMA,
-    NETWORK_SCHEMA,
-    FEED_SCHEMA,
-    OPERATIONS_SCHEMA,
-    ITEM_INSTANCE_SCHEMA,
-    ACTIVE_EFFECT_SCHEMA,
-    ITEM_MODIFICATION_SCHEMA,
     CAMPAIGN_CLOCK_SCHEMA,
-    CREW_STASH_SCHEMA,
     MARKET_STOCK_SCHEMA,
-    MARKET_PERMANENT_SCHEMA,
-    ORGANIZATION_SCHEMA,
-    SESSION_RECAP_SCHEMA,
-    LOCATION_SCHEMA,
-    MEMORIAL_SCHEMA,
-    NOTIFICATION_SCHEMA,
-    MIGRATION_ACCOUNT_ROLES,
-    MIGRATION_NETWORK_CORE,
-    MIGRATION_CITY_FEED,
-    MIGRATION_OPERATIONS,
-    MIGRATION_NOTIFICATIONS,
-    MIGRATION_TACTICAL_PROFILES,
     MIGRATION_ITEM_INSTANCES,
-    MIGRATION_ACTIVE_EFFECTS,
-    MIGRATION_EFFECT_PRESETS,
-    MIGRATION_ITEM_MODIFICATIONS,
-    MIGRATION_SESSION_NET,
-    MIGRATION_CAMPAIGN_CLOCK,
-    MIGRATION_CREW_STASH,
-    MIGRATION_MARKET_STOCK,
-    MIGRATION_NPC_STATBLOCKS,
-    MIGRATION_SESSION_RECAPS,
-    MIGRATION_LOCATIONS,
-    MIGRATION_MEMORIAL,
-    MIGRATION_MEMORIAL_DRAFT,
-    MIGRATION_MARKET_PERMANENT,
     MIGRATION_ORGANIZATIONS,
-    DB_BACKUP_LIMIT,
-    _RATE_LIMIT_BUCKETS,
-    _RATE_LIMIT_LOCK,
     FAILED_LOGIN_LIMIT,
-    FAILED_LOGIN_WINDOW,
-    PROGRAM_RUNTIME_STATUSES,
-    NET_ENTITY_STATUSES,
-    BLACK_ICE_ANTI_PROGRAM_DAMAGE,
-    ATTACKER_PROGRAM_BLACK_ICE_DAMAGE,
-    BLACK_ICE_STAT_EFFECT_TARGETS,
     VEHICLE_REPAIR_RULES,
-    PERSONA_ACCESS,
-    PERSONA_KINDS,
-    PERSONA_STATUSES,
-    STORYLINE_STATUSES,
-    CONTRACT_STATUSES,
-    CONTRACT_REWARD_MODES,
-    CONTRACT_RISKS,
     NC_LOCATION_IDS,
-    FEED_FORMATS,
-    FEED_DEFAULT_FORMAT,
-    FEED_TRUTH,
-    SESSION_VIEW_DEFAULTS,
-    SESSION_ACCESS_ROLES,
-    SESSION_ROLE_CAPABILITIES,
-    SESSION_SAFETY_DEFAULTS,
-    SAFETY_SIGNAL_KINDS,
-    SAFETY_SIGNAL_STATUSES,
-    SESSION_NET_NODE_TYPES,
-    SESSION_NET_PATH_DIRECTIONS,
-    NPC_STAT_MAX,
-    NPC_SKILL_MAX,
 )
 import recap as _recap_mod                                                # noqa: E402
-from recap import (                                                       # noqa: E402
+from recap import (
     _clean_recap_text_list,
-    _clean_recap_participants,
     clean_session_recap_input,
-    recap_participants,
     recap_public_payload,
     session_recap_payload,
-    ensure_system_persona,
     migrate_legacy_network_content,
     assign_account_role,
-    persona_payload,
-    has_contract_classified_access,
-    clean_persona_input,
-    record_persona_audit,
-    record_feed_revision,
-    record_character_changes,
-    readable_change_value,
     character_change_summary,
-    record_character_change_set,
-    record_effect_change,
-    record_account_security,
-    add_notification,
-    queue_vk_event,
-    vk_public_contract_message,
     deliver_vk_outbox,
     RECAP_TEXT_LIST_LIMIT,
-    CHARACTER_DIFF_SCALARS,
 )
 import campaign as _camp_mod                                              # noqa: E402
-from campaign import (                                                    # noqa: E402
-    campaign_timezone,
+from campaign import (
     ensure_campaign_clock,
     campaign_now,
-    campaign_time_label,
     campaign_duration_seconds,
-    campaign_clock_payload,
     campaign_service_status,
     character_campaign_services,
-    campaign_pending_services,
     clean_downtime_activity,
     clean_downtime_activities,
-    downtime_state,
-    downtime_activity_payload,
     downtime_payload,
-    CAMPAIGN_CLOCK_TZ,
-    CAMPAIGN_DURATION_SECONDS,
-    CAMPAIGN_DURATION_LABELS,
     DOWNTIME_ACTIVITIES,
-    DOWNTIME_ACTIVITY_BY_ID,
-    DOWNTIME_ACTIVITY_IDS,
-    DOWNTIME_RESOLVE_KINDS,
 )
 import locations as _loc_mod                                              # noqa: E402
-from locations import (                                                   # noqa: E402
+from locations import (
     ensure_seed_locations,
     clean_location_input,
-    location_payload,
     LOCATION_KINDS,
     NC_SEED_LOCATIONS,
 )
 import memorial as _memorial_mod                                          # noqa: E402
-from memorial import (                                                    # noqa: E402
-    membership_payload,
+from memorial import (
     crew_reputation_map,
-    clean_membership_input,
-    clean_reputation_input,
     clean_memorial_input,
     clean_legacy_input,
     memorial_payload,
-    MEMORIAL_STATUSES,
-    MEMORIAL_VISIBILITIES,
-    MEMBERSHIP_STATUSES,
-    MEMBERSHIP_VISIBILITIES,
-    REPUTATION_STANDINGS,
 )
 import crew as _crew_mod                                                  # noqa: E402
-from crew import (                                                        # noqa: E402
+from crew import (
     crew_stash_payload,
     item_transfer_history,
     character_open_loans,
-    active_loan_for_instance,
-    transfer_targets,
-    _inventory_entry,
-    _character_item_name,
-    _transferable_item_error,
     _detach_runtime_state,
     _attach_runtime_state,
-    _detach_tech_maker_modifications,
-    _attach_tech_maker_modifications,
     _split_stack,
     _prepare_entry_for_holder,
-    _record_item_transfer,
-    _record_transfer_ledger,
-    _persist_transfer_side,
     db,
     init_db,
-    TRANSFER_KINDS,
-    _RUNTIME_STATE_KEYS,
 )
 import night_market as _market_mod                                        # noqa: E402
-from night_market import (                                                 # noqa: E402
-    PERMANENT_SUPPLY,
-    NM_PER_CAT,
-    NM_MULTS,
+from night_market import (
     NIGHT_MARKET_VENDORS,
-    _h,
     nm_day,
     nm_day_offset,
     nm_stock_seed,
-    permanent_offer_payload,
     ensure_market_permanent,
-    market_permanent_rows,
-    permanent_offers,
-    nm_offer_payload,
     nm_rotation,
-    market_stock_rows,
     ensure_market_stock,
     night_market,
-    nm_price_map,
 )
 import inventory as _inventory_mod                                        # noqa: E402
-from inventory import (                                                    # noqa: E402
-    new_item_instance_id,
+from inventory import (
     catalog_item_id_for_entry,
-    item_entry_stackable,
     ensure_character_item_instances,
     persist_character_item_instances,
-    item_modification_payload,
-    character_modifications,
     weapon_is_exotic,
     weapon_slot_capacity,
     weapon_upgrade_compatibility,
-    ITEM_INSTANCE_BUCKETS,
 )
 import charbuild as _charbuild_mod                                        # noqa: E402
-from charbuild import (                                                    # noqa: E402
+from charbuild import (
     ensure_progression,
     public_character_data,
-    character_author_payload,
-    clean_character_profile_patch,
     clean_character,
-    clean_item_acquisition,
-    trust_number,
-    clean_custom_effect,
-    canonical_owned_entry,
-    clean_character_trust_update,
     canonical_import_character,
     skill_base,
     creation_skill_cost,
-    armor_shield_hp,
     effective_armor_hosts,
-    validate_armor_tech_references,
-    validate_armor_repair_references,
     tech_maker_fabricable_item,
     tech_maker_host_type,
     character_maker_ranks,
     clean_tech_maker_effect,
     character_tech_maker_modifications,
     validate_tech_maker_references,
-    tech_maker_payload,
     cyberware_weapon_profile,
-    popup_weapon_binding_kind,
-    popup_shield_profile,
-    validate_popup_shield_references,
     popup_weapon_binding_compatibility,
-    bound_popup_weapon_profile,
-    cyberware_curated_payload,
-    cyberware_is_installed,
-    cyberware_is_paired_leg_foundation,
     cyberware_secondary_host_id,
     cyberware_capacity,
-    cyberware_host_assignments,
-    cyberware_host_kind,
     cyberware_installation_profile,
-    cyberware_side_required,
     validate_cyberware_sides,
     validate_cyberware_payload_conflicts,
     effective_cyberware_loadout,
     cyberware_option_compatibility,
-    validate_bound_popup_weapon_references,
-    validate_cyberware_trust_lifecycle,
     validate_cyberware_requirements,
     validate_cyberware_slots,
-    validate_role_benefits,
-    validate_creation_equipment,
-    validate_creation_budget,
-    validate_role_rank_setup,
     validate_creation,
-    MAX_CHAR_BYTES,
-    CHARACTER_PROFILE_FIELDS,
-    TRUST_EDIT_TEXT_LIMITS,
-    ITEM_ACQUISITION_SOURCES,
-    IMPORT_STRIP_KEYS,
-    TECH_MAKER_SPECIALTIES,
-    TECH_MAKER_FABRICATION_SPECIALTIES,
-    TECH_MAKER_EFFECT_TARGETS,
-    TECH_MAKER_SPECIALTY_LABELS,
-    TECH_MAKER_FABRICABLE_CATS,
-    CYBERWARE_HOST_ACCEPTED_NAMES,
-    CYBERWARE_SIDED_HOST_KINDS,
-    CYBERWARE_INSTALLATION_SITES,
-    THERAPY_PROFILES,
-    CYBERWARE_CURATED_PAYLOADS,
-    CYBERWARE_WEAPON_PROFILES,
 )
 import mod_engine as _engine_mod                                          # noqa: E402
-from mod_engine import (                                                   # noqa: E402
+from mod_engine import (
     weapon_modification_configuration_schema,
     clean_weapon_modification_choices,
     weapon_profiles_from_rules,
-    ammo_kind_for_modification_profile,
-    ammo_pack_size,
-    ammo_rounds,
-    ensure_shared_ammo_state,
     ammo_matches_requirement,
-    shared_ammo_available,
-    consume_shared_ammo,
-    clear_loaded_ammo_if_empty,
-    vehicle_action_effects_from_rules,
     vehicle_modification_configuration_schema,
     clean_vehicle_modification_choices,
     initial_vehicle_modification_state,
     normalize_vehicle_modification_state,
     evaluate_effective_weapon,
-    character_effective_weapons,
-    vehicle_base_interior,
     bound_vehicle_weapon_profile,
     evaluate_effective_vehicle,
-    character_effective_vehicles,
-    VEHICLE_COMPLEX_PURPOSE_LABELS,
 )
 import rules as _rules_mod                                                 # noqa: E402
-from rules import (                                                        # noqa: E402
-    _armor_penalties,
-    resolve_modifier_stack,
+from rules import (
     apply_modifier_pipeline,
-    effect_runtime_status,
-    effect_instance_payload,
     character_effect_instances,
-    instantiate_consumable_effects,
-    evaluate_character_effects,
     derive,
     _num,
     GENERAL_DV,
@@ -445,45 +247,23 @@ from rules import (                                                        # noq
     SKILL_MAX_CREATION,
     MUST_SKILLS,
     SPECIALIZED_SKILLS,
-    START_CASH_GEAR,
-    START_CASH_FASHION,
-    CULTURAL_LANGUAGES,
-    WOUND_STATES,
-    CRIT_BODY,
-    CRIT_HEAD,
     WOUND_STATES_EN,
     CRIT_BODY_EN,
     CRIT_HEAD_EN,
-    CUSTOM_EFFECT_DURATIONS,
-    ACTIVE_EFFECT_ACTIONS,
 )
 import catalog as _catalog_mod                                           # noqa: E402
-from catalog import (                                                    # noqa: E402
-    cyberdeck_item_metadata,
+from catalog import (
     load_catalog,
     catalog,
     item_by_id,
-    catalog_interaction_data,
-    enrich_owned_item_interactions,
-    effect_target_allowed,
     validate_effect_definition,
     load_effect_rules,
     item_effect_coverage,
-    catalog_item_payload,
     weapon_modification_rules_for_catalog,
     vehicle_modification_rules_for_catalog,
     weapon_range_table_info,
-    _catalog,
-    ITEM_INTERACTION_FIELDS,
-    ITEM_MODIFICATION_FIELDS,
-    _effect_rules,
-    EFFECT_OPERATIONS,
-    EFFECT_STACK_POLICIES,
-    CYBERDECK_PROFILES,
-    WEAPON_RANGE_FAMILIES,
 )
-from media import (MEDIA_KINDS, MEDIA_LIMIT, MediaHandlers,                   # noqa: E402
-                   attach_character_media, image_info, media_payload)
+from media import MediaHandlers, image_info
 
 STATIC_DIR = os.path.join(BASE, 'static')
 # ITEMS_PATH / EFFECTS_PATH теперь живут в core.py (итерация P1-2)
