@@ -63,7 +63,9 @@
 
 5. ~~Валидация персонажа + Tech Maker~~ → **сделано (28.08):** `app/charbuild.py` (2098 строк, 67 публичных имён).
 
-5.4.2. ~~Handler: account-кластер~~ → **сделано (28.08):** `app/account_api.py` — первый миксин-раздел `Handler` (15 методов, `AccountMixin`). Механика драйвера: AST-сегменты методов → модуль-миксин → базы класса наследованием; импорты по аудиту. Дальше кластерами: feed/news, personas/contracts, sessions, character, admin…
+5.4.1. ~~Handler: feed/news/storyline~~ → **сделано (28.08):** `app/feed_api.py` (`FeedMixin`, 21 метод: лента/комменты/модерация, новости, сюжетки). Драйвер потоковый, smoke-киллы — только по явному PID-файлу.
+
+4.2. ~~Handler: account-кластер~~ → **сделано (28.08):** `app/account_api.py` — первый миксин-раздел `Handler` (15 методов, `AccountMixin`). Механика драйвера: AST-сегменты методов → модуль-миксин → базы класса наследованием; импорты по аудиту. Дальше кластерами: feed/news, personas/contracts, sessions, character, admin…
 
 4.3. ~~HTTP-инфра~~ → **сделано (28.08):** `app/httpkit.py` (таблица локализации ошибок, theme-валидация, `attach_network_media`, `atomic_endpoint`, `q1`, `rx`). Факт поля: `Handler(MediaHandlers, ...)` — миксин-паттерн уже существует (media.py); финальный раздел Handler пойдёт миксинами по кластерам методов. Пуши explicit-refspec не двигают origin-tracking — сверка только через `git ls-remote`.
 
