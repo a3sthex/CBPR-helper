@@ -19,3 +19,8 @@
 .nc-map-zoom-wrap{position:absolute;inset:0}
 .nc-map-zoom-btn:hover{border-color:var(--cyan);color:var(--cyan)}
 .nc-map-stage{cursor:zoom-in}
+
+/* 23.3: GM session dashboard tab bar */
+.ss-tabs{display:flex;gap:.5rem;margin:.35rem 0 .8rem;border-bottom:1px solid var(--line,rgba(0,229,255,.18));padding-bottom:.35rem}
+.ss-tabs button{opacity:.65}
+.ss-tabs button.active{opacity:1;border-color:var(--neon-cyan,#00e5ff)}
