@@ -6,6 +6,7 @@ docs/repo-audit-2026-08.md, P1). Импортируется и server.py, и д�
 """
 import json
 import os
+import re
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE, 'data')
@@ -18,6 +19,7 @@ ACTIVE_EFFECT_DURATIONS = {'manual', 'real_time', 'rounds', 'campaign_time'}
 ITEM_INSTANCE_STATES = {
     'carried', 'stored', 'equipped', 'installed', 'consumed', 'broken',
 }
+INSTANCE_ID_RE = re.compile(r'^[a-f0-9]{32}$')
 ACCOUNT_ROLES = {'player', 'gm', 'admin'}
 
 
