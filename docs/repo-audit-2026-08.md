@@ -63,7 +63,9 @@
 
 5. ~~Валидация персонажа + Tech Maker~~ → **сделано (28.08):** `app/charbuild.py` (2098 строк, 67 публичных имён).
 
-5.4.3. ~~HTTP-инфра~~ → **сделано (28.08):** `app/httpkit.py` (таблица локализации ошибок, theme-валидация, `attach_network_media`, `atomic_endpoint`, `q1`, `rx`). Факт поля: `Handler(MediaHandlers, ...)` — миксин-паттерн уже существует (media.py); финальный раздел Handler пойдёт миксинами по кластерам методов. Пуши explicit-refspec не двигают origin-tracking — сверка только через `git ls-remote`.
+5.4.2. ~~Handler: account-кластер~~ → **сделано (28.08):** `app/account_api.py` — первый миксин-раздел `Handler` (15 методов, `AccountMixin`). Механика драйвера: AST-сегменты методов → модуль-миксин → базы класса наследованием; импорты по аудиту. Дальше кластерами: feed/news, personas/contracts, sessions, character, admin…
+
+4.3. ~~HTTP-инфра~~ → **сделано (28.08):** `app/httpkit.py` (таблица локализации ошибок, theme-валидация, `attach_network_media`, `atomic_endpoint`, `q1`, `rx`). Факт поля: `Handler(MediaHandlers, ...)` — миксин-паттерн уже существует (media.py); финальный раздел Handler пойдёт миксинами по кластерам методов. Пуши explicit-refspec не двигают origin-tracking — сверка только через `git ls-remote`.
 
 4.4. ~~Auth-слой~~ → **сделано (28.08):** `app/auth.py` (9 имён, `PBKDF_ITERS` в core). Всё до-баннерное (бд…auth) извлечено; в server.py остаётся только http-хвост.
 
