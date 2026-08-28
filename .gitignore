@@ -18,3 +18,7 @@ nohup.out
 *.log
 .tmp-*
 *.db-journal
+
+# локальные артефакты извлечения (тяжёлые бинарники — не в git)
+books/
+extracted/images/
