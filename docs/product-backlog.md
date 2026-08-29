@@ -2691,7 +2691,7 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 
 ### P3 — технический долг
 
-1. ◐ Разделить `server.py`, `app.js`, `ncnet.js`, CSS. **Backend — ✅ 2026-08-28** (`server.py` 20 217 → 805 строк, 21 модуль app/, 260/260 тестов на каждом шаге; см. §24.1 и `docs/architecture.md`). **Frontend — ◐ 2026-08-29, срезы S1–S2:** S1 — `viewCalc` (Quick Reference/калькулятор, 211 строк) → `app/static/views-quickref.js`; S2 — кластер досье (лист персонажа + «мои персонажи», 644 строки, 40 функций) → `app/static/views-dossiers.js`. `app.js` 4 389 → **3 538** строк (−19 %). Принятая механика срезов, порядок загрузки и тестовые контракты — §24.5. Осталось: редактор персонажа, мастер, остальные вью `app.js` и CSS.
+1. ◐ Разделить `server.py`, `app.js`, `ncnet.js`, CSS. **Backend — ✅ 2026-08-28** (`server.py` 20 217 → 805 строк, 21 модуль app/, 260/260 тестов на каждом шаге; см. §24.1 и `docs/architecture.md`). **Frontend — ◐ 2026-08-29, срезы S1–S3:** S1 — `viewCalc` (Quick Reference/калькулятор, 211 строк) → `app/static/views-quickref.js`; S2 — кластер досье (лист персонажа + «мои персонажи», 644 строки, 40 функций) → `app/static/views-dossiers.js`; S3 — редактор персонажа (472 строки, 15 функций) → `app/static/views-editor.js`. `app.js` 4 389 → **3 068** строк (−30 %). Принятая механика срезов, порядок загрузки и тестовые контракты — §24.5. Осталось: мастер создания персонажа (1 702 строки — крупнейший остаток), чёрный рынок, мастер-панель, CSS.
 2. Убрать N+1 queries.
 3. Pagination/summary endpoints.
 4. Browser E2E и visual regression по темам.
@@ -3882,7 +3882,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 | P1.1 / §22.1 | план | ✅ нормализация magazine выполнена (`import_data.py` + `catalog.py`) |
 | P-UX 23.2 | план | ✅ GM Reference реализована (`gm-ref.js`, GM-only навигация) |
 | §22.0 | «252 теста» | актуально **260** |
-| §17 P3 #1 | не начато | backend ✅; frontend ◐ (срезы S1–S2, 2026-08-29) |
+| §17 P3 #1 | не начато | backend ✅; frontend ◐ (срезы S1–S3, 2026-08-29) |
 | Классификация книжных страниц | не упомянута | выполнена: `analysis/categories.json` + `CATEGORIES.md` (10 категорий, 1092 items_gear — 43 %), смещения глав по всем 11 книгам — подложка для A.1 (теги/i18n) и качества Data Pool |
 
 ### 24.3 Новые пометки к открытым пунктам (по проверке кода)
@@ -3908,8 +3908,10 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 - **Срез S1 (✅):** `viewCalc` → `app/static/views-quickref.js` (211 строк). Инфра-хелперы (`rollDice`, `critTableHtml`, `woundStatesHtml`, `tableHtml`, `esc`, `num`) остаются в `app.js` до собственного среза.
 - **Срез S2 (✅):** кластер досье — секции «лист персонажа (просмотр)» и «мои персонажи» → `app/static/views-dossiers.js` (644 строки, 40 функций: `viewSheet`, `viewCharacters`, `openItemTransferModal`, `openWeaponUpgradeManager`, `openVehicleUpgradeManager`, `openCyberdeckManager`, `performSheetItemAction`, эффекты и кредиты). Граница среза чистая: ни одной top-level константы, вне `app.js` функции не использовались.
 - **Урок среза S2:** контентные тесты, читавшие только `app.js`, ломаются при любом переносе кода. В `test_frontend_v3.py` добавлены `frontend_source()` / `frontend_text()` (чтение одного файла / всего бандла), в `test_access_roles.py` — чтение `app.js` + `views-*.js`. Страж порядка загрузки теперь проверяет **каждый** модуль вида, а не только первый.
+- **Срез S3 (✅):** редактор персонажа → `app/static/views-editor.js` (472 строки, 15 функций: `viewEditor`, `renderEditorTab`, `saveEditor`, `openCatalogAcquisitionModal`, `openOwnedItemEditor`, инвентарь/хром/броня). Обе top-level константы блока (`EDITOR_TABS`, `ACQUISITION_SOURCES`) использовались только внутри него — прослойка не понадобилась.
+- **Страж обобщён:** `test_frontend_bundle_covers_every_index_html_script` теперь требует, чтобы **любой** `views-*.js` шёл в `index.html` раньше `app.js`, — новые срезы не могут сломать загрузку молча.
 - **Тестовый контракт:** рантайм-тест `test_frontend_v3.py` больше не держит жёсткий список файлов — бандл собирается по порядку тегов `<script>` из `index.html` (`frontend_bundle_sources()`), поэтому новый файл достаточно добавить в разметку. Добавлены стражи: `test_index_html_script_tags_are_well_formed` (незакрытый `<script src=…>` без `</script>` молча съедает следующий тег — именно так срез S1 один раз сломал загрузку) и `test_frontend_bundle_covers_every_index_html_script`.
-- **Следующие кандидаты на срезы S3+:** редактор персонажа (`renderEditorTab`, 205 строк + helper'ы вкладок), мастер (`viewAdmin`), чёрный рынок / ростер / новости / доска заказов — резать по одному, с проверкой `node --check` и HTTP-смоука.
+- **Следующие кандидаты на срезы S4+:** мастер создания персонажа (1 702 строки: «мастер создания персонажа (7 шагов)» + «мастер: состояние» — крупнейший остаток, резать на 2–3 среза по шагам), чёрный рынок (302), мастер-панель `viewAdmin`, ростер / новости / доска заказов / вход-профиль, затем CSS (`style.css` 765, `ncnet.css`).
 
 ### 24.6 Находка: боевые искусства и формы Martial Arts (☐, новый пункт)
 

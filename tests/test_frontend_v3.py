@@ -98,8 +98,9 @@ class FrontendV3Contracts(unittest.TestCase):
         html = (ROOT / 'app/static/index.html').read_text(encoding='utf-8')
         scripts = re.findall(r'<script src="(/[^"]+\.js)"', html)
         self.assertIn('/app.js', scripts)
-        for module in ('/views-quickref.js', '/views-dossiers.js'):
-            self.assertIn(module, scripts)
+        view_modules = [src for src in scripts if src.startswith('/views-')]
+        self.assertTrue(view_modules, 'ожидался хотя бы один модуль вида views-*.js')
+        for module in view_modules:
             self.assertLess(scripts.index(module), scripts.index('/app.js'),
                             'app.js ссылается на view*-функции при загрузке — модуль вида должен идти раньше')
         self.assertEqual(len(frontend_bundle_sources()), len(scripts))
