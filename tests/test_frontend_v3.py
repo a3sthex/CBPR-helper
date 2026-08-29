@@ -252,6 +252,22 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('AUTOMATED EFFECT', ncnet)
         self.assertIn('SKUNK SLIDE', ncnet)
 
+    def test_city_page_owns_the_map_and_gm_places_pois_by_click(self):
+        """20.4: карта — часть раздела City; GM/Admin ставят custom POI кликом по карте."""
+        app = frontend_text()
+        ncnet = frontend_source('ncnet.js')
+        css = frontend_source('ncnet.css')
+        self.assertIn('GEOSPATIAL RELAY', app)
+        self.assertIn('<a href="#/map">', app, 'у консоли City должен быть вход в карту')
+        self.assertIn("activeRoute === 'map' ? '' : activeRoute", app,
+                      'маршрут /map подсвечает City, а не отдельный раздел')
+        self.assertIn('async function openLocationEditor(existing,preset)', ncnet,
+                      'редактор локации должен принимать предустановленные координаты')
+        self.assertIn('function ncBindMapPlacement', ncnet)
+        self.assertIn('openLocationEditor(null,{x:clamp(mapped.x),y:clamp(mapped.y)})', ncnet)
+        self.assertIn('NC//NET CITY // GEOSPATIAL RELAY', ncnet, 'у карты должна быть крошка City')
+        self.assertIn('gm-place-poi', css)
+
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
         source = frontend_text()
         self.assertIn('created_effects', source)

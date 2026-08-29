@@ -485,7 +485,7 @@ async function viewMap(view){
   view.innerHTML=spinner();
   const data=await api('/api/locations');
   const kinds=data.kinds||[];
-  view.innerHTML=`<div class="page-head"><div><h1>🗺️ ${T('Night City Map','Карта Найт-Сити')}</h1><div class="sub">${T('Points of interest and key locations.','Точки интереса и ключевые места.')} · ${data.locations.length} ${T('locations','локаций')}</div></div>${state.me?.is_gm?`<button class="btn-primary" id="map-loc-new">＋ ${T('New Location','Новая локация')}</button>`:''}</div><div class="nc-contract-layout"><aside class="panel nc-map-filters"><h3>${T('Filters','Фильтры')}</h3><label class="f"><span>${T('District','Район')}</span><select id="map-district"><option value="">${T('All Night City','Весь Найт-Сити')}</option>${ncLocationOptions('')}</select></label><label class="f"><span>${T('Kind','Тип')}</span><select id="map-kind"><option value="">${T('All kinds','Все типы')}</option>${kinds.map(kind=>`<option value="${esc(kind)}">${locationKindIcon(kind)} ${esc(locationKindLabel(kind))}</option>`).join('')}</select></label><label class="f"><span>${T('Search','Поиск')}</span><input id="map-q" placeholder="${T('Search locations…','Поиск локаций…')}"></label></aside><section id="map-stage">${ncPoiMapHtml(data.locations)}</section><section class="nc-contract-list" id="map-list">${renderLocationList(data.locations)}</section></div>`;
+  view.innerHTML=`<div class="page-head"><div><div class="small muted">NC//NET CITY // GEOSPATIAL RELAY</div><h1>🗺️ ${T('Night City Map','Карта Найт-Сити')}</h1><div class="sub">${T('Points of interest and key locations.','Точки интереса и ключевые места.')} · ${data.locations.length} ${T('locations','локаций')}${state.me?.is_gm?` · ${T('Click the map to place a new POI.','Клик по карте ставит новую POI.')}`:''}</div></div><div class="row"><a class="btn-sm" href="#/">← ${T('City','Город')}</a>${state.me?.is_gm?`<button class="btn-primary" id="map-loc-new">＋ ${T('New Location','Новая локация')}</button>`:''}</div></div><div class="nc-contract-layout"><aside class="panel nc-map-filters"><h3>${T('Filters','Фильтры')}</h3><label class="f"><span>${T('District','Район')}</span><select id="map-district"><option value="">${T('All Night City','Весь Найт-Сити')}</option>${ncLocationOptions('')}</select></label><label class="f"><span>${T('Kind','Тип')}</span><select id="map-kind"><option value="">${T('All kinds','Все типы')}</option>${kinds.map(kind=>`<option value="${esc(kind)}">${locationKindIcon(kind)} ${esc(locationKindLabel(kind))}</option>`).join('')}</select></label><label class="f"><span>${T('Search','Поиск')}</span><input id="map-q" placeholder="${T('Search locations…','Поиск локаций…')}"></label></aside><section id="map-stage">${ncPoiMapHtml(data.locations)}</section><section class="nc-contract-list" id="map-list">${renderLocationList(data.locations)}</section></div>`;
   const apply=()=>{
     const district=$('#map-district',view).value,kind=$('#map-kind',view).value,q=$('#map-q',view).value.trim().toLowerCase();
     const filtered=data.locations.filter(location=>(!district||location.district_id===district)&&(!kind||location.kind===kind)&&(!q||`${location.name_en} ${location.name_ru} ${location.description_en} ${location.description_ru}`.toLowerCase().includes(q)));
@@ -493,7 +493,7 @@ async function viewMap(view){
     $('#map-list',view).innerHTML=renderLocationList(filtered);
     bindMapPoi(view);
   };
-  const bindMapPoi=root=>{ncBindActivation('[data-poi-open]',root,element=>go(`/map/${element.dataset.poiOpen}`));ncBindMapControls(root);$$('[data-loc-open]',root).forEach(el=>el.onclick=()=>go(`/map/${el.dataset.locOpen}`));};
+  const bindMapPoi=root=>{ncBindActivation('[data-poi-open]',root,element=>go(`/map/${element.dataset.poiOpen}`));ncBindMapControls(root);$$('[data-loc-open]',root).forEach(el=>el.onclick=()=>go(`/map/${el.dataset.locOpen}`));if(state.me&&state.me.is_gm)ncBindMapPlacement(root);};
   bindMapPoi(view);
   ['map-district','map-kind'].forEach(id=>{const el=$('#'+id,view);if(el)el.onchange=apply;});
   const search=$('#map-q',view);if(search){search.oninput=apply;}
@@ -517,14 +517,32 @@ async function viewLocationDetail(view,id){
   }
 }
 
-async function openLocationEditor(existing){
-  const location=existing||{};
-  const modal=openModal(`<h2>${existing?T('Edit Location','Изменить локацию'):T('New Location','Новая локация')}</h2><div class="grid cols-2"><label class="f"><span>${T('Name (EN) *','Название (EN) *')}</span><input id="lc-name-en" maxlength="120" value="${esc(location.name_en||'')}"></label><label class="f"><span>${T('Name (RU)','Название (RU)')}</span><input id="lc-name-ru" maxlength="120" value="${esc(location.name_ru||'')}"></label><label class="f"><span>${T('Type','Тип')}</span><select id="lc-kind">${Object.keys(LOCATION_KIND_LABELS).map(kind=>`<option value="${kind}" ${location.kind===kind?'selected':''}>${locationKindIcon(kind)} ${esc(locationKindLabel(kind))}</option>`).join('')}</select></label><label class="f"><span>${T('District','Район')}</span><select id="lc-district">${ncLocationOptions(location.district_id||'',T('None','Нет'))}</select></label><label class="f"><span>${T('Map X (0–1000)','X на карте (0–1000)')}</span><input id="lc-x" type="number" min="0" max="1000" value="${location.x??500}"></label><label class="f"><span>${T('Map Y (0–1000)','Y на карте (0–1000)')}</span><input id="lc-y" type="number" min="0" max="1000" value="${location.y??500}"></label><label class="f"><span>${T('Source','Источник')}</span><input id="lc-source" maxlength="160" value="${esc(location.source||'Campaign')}" placeholder="Campaign / Cyberpunk 2077"></label></div><label class="f"><span>${T('Description (EN)','Описание (EN)')}</span><textarea id="lc-desc-en" rows="3">${esc(location.description_en||'')}</textarea></label><label class="f"><span>${T('Description (RU)','Описание (RU)')}</span><textarea id="lc-desc-ru" rows="3">${esc(location.description_ru||'')}</textarea></label>${!existing?`<label class="f"><span>${T('Identifier (optional)','Идентификатор (необязательно)')}</span><input id="lc-id" maxlength="80" placeholder="crew-hideout"></label>`:''}<div class="row"><button id="lc-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="lc-save">${existing?T('Save Location','Сохранить локацию'):T('Create Location','Создать локацию')}</button></div>`,true);
+function ncBindMapPlacement(root){
+  $$('.nc-map-overlay',root).forEach(svg=>{
+    if(svg.dataset.poiPlacement==='1')return;
+    svg.dataset.poiPlacement='1';
+    svg.classList.add('gm-place-poi');
+    svg.addEventListener('click',event=>{
+      if(event.target.closest&&event.target.closest('[data-poi-open]'))return;
+      if(typeof svg.createSVGPoint!=='function')return;
+      const ctm=svg.getScreenCTM();if(!ctm)return;
+      const point=svg.createSVGPoint();point.x=event.clientX;point.y=event.clientY;
+      const mapped=point.matrixTransform(ctm.inverse());
+      const clamp=value=>Math.max(0,Math.min(1000,Math.round(value)));
+      openLocationEditor(null,{x:clamp(mapped.x),y:clamp(mapped.y)});
+    });
+  });
+}
+
+async function openLocationEditor(existing,preset){
+  const location=Object.assign({},preset||{},existing||{});
+  const editing=!!existing;
+  const modal=openModal(`<h2>${editing?T('Edit Location','Изменить локацию'):T('New Location','Новая локация')}</h2><div class="grid cols-2"><label class="f"><span>${T('Name (EN) *','Название (EN) *')}</span><input id="lc-name-en" maxlength="120" value="${esc(location.name_en||'')}"></label><label class="f"><span>${T('Name (RU)','Название (RU)')}</span><input id="lc-name-ru" maxlength="120" value="${esc(location.name_ru||'')}"></label><label class="f"><span>${T('Type','Тип')}</span><select id="lc-kind">${Object.keys(LOCATION_KIND_LABELS).map(kind=>`<option value="${kind}" ${location.kind===kind?'selected':''}>${locationKindIcon(kind)} ${esc(locationKindLabel(kind))}</option>`).join('')}</select></label><label class="f"><span>${T('District','Район')}</span><select id="lc-district">${ncLocationOptions(location.district_id||'',T('None','Нет'))}</select></label><label class="f"><span>${T('Map X (0–1000)','X на карте (0–1000)')}</span><input id="lc-x" type="number" min="0" max="1000" value="${location.x??500}"></label><label class="f"><span>${T('Map Y (0–1000)','Y на карте (0–1000)')}</span><input id="lc-y" type="number" min="0" max="1000" value="${location.y??500}"></label><label class="f"><span>${T('Source','Источник')}</span><input id="lc-source" maxlength="160" value="${esc(location.source||'Campaign')}" placeholder="Campaign / Cyberpunk 2077"></label></div><label class="f"><span>${T('Description (EN)','Описание (EN)')}</span><textarea id="lc-desc-en" rows="3">${esc(location.description_en||'')}</textarea></label><label class="f"><span>${T('Description (RU)','Описание (RU)')}</span><textarea id="lc-desc-ru" rows="3">${esc(location.description_ru||'')}</textarea></label>${!editing?`<label class="f"><span>${T('Identifier (optional)','Идентификатор (необязательно)')}</span><input id="lc-id" maxlength="80" placeholder="crew-hideout"></label>`:''}<div class="row"><button id="lc-cancel">${T('Cancel','Отмена')}</button><button class="btn-primary" id="lc-save">${editing?T('Save Location','Сохранить локацию'):T('Create Location','Создать локацию')}</button></div>`,true);
   $('#lc-cancel',modal).onclick=closeModal;
   $('#lc-save',modal).onclick=async()=>{
     const body={name_en:$('#lc-name-en',modal).value.trim(),name_ru:$('#lc-name-ru',modal).value.trim(),kind:$('#lc-kind',modal).value,district_id:$('#lc-district',modal).value,x:Number($('#lc-x',modal).value)||500,y:Number($('#lc-y',modal).value)||500,description_en:$('#lc-desc-en',modal).value.trim(),description_ru:$('#lc-desc-ru',modal).value.trim(),source:$('#lc-source',modal).value.trim()};
-    if(!existing){const id=$('#lc-id',modal).value.trim();if(id)body.id=id;}
-    try{await api(existing?`/api/locations/${encodeURIComponent(existing.id)}`:'/api/locations',{method:existing?'PUT':'POST',body});closeModal();toast(existing?T('Location saved.','Локация сохранена.'):T('Location created.','Локация создана.'));route();}catch(e){toast(e.message,true);}
+    if(!editing){const id=$('#lc-id',modal).value.trim();if(id)body.id=id;}
+    try{await api(editing?`/api/locations/${encodeURIComponent(location.id)}`:'/api/locations',{method:editing?'PUT':'POST',body});closeModal();toast(editing?T('Location saved.','Локация сохранена.'):T('Location created.','Локация создана.'));route();}catch(e){toast(e.message,true);}
   };
 }
 
