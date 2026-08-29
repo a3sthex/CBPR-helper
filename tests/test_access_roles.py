@@ -236,7 +236,10 @@ class AccessRoleMigrationTests(unittest.TestCase):
             self.assertEqual(server.Handler.client_ip(handler), '127.0.0.1')
 
     def test_frontend_has_no_self_assign_gm_controls(self):
-        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        # P3-frontend: app.js режется на модули вида — читаем весь кластер, а не один файл.
+        source = '\n'.join([(ROOT / 'app/static/app.js').read_text(encoding='utf-8')]
+                           + [(ROOT / 'app/static' / path.name).read_text(encoding='utf-8')
+                              for path in sorted((ROOT / 'app/static').glob('views-*.js'))])
         self.assertNotIn('id="rg-gm"', source)
         self.assertNotIn('id="pf-gm"', source)
         self.assertIn("admin: viewAdmin", source)

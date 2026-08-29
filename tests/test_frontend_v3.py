@@ -29,19 +29,29 @@ def frontend_bundle_sources():
     return sources
 
 
+def frontend_source(name='app.js'):
+    """Исходник одного файла фронтенда (по умолчанию app.js)."""
+    return (ROOT / 'app/static' / name).read_text(encoding='utf-8')
+
+
+def frontend_text():
+    """Весь фронтенд одним текстом: P3-frontend режет app.js на файлы, поэтому
+    контентные проверки не должны зависеть от того, в каком файле лежит код."""
+    return '\n'.join(frontend_bundle_sources())
+
+
 @unittest.skipUnless(shutil.which('node'), 'Node.js is required for frontend runtime contracts')
 class FrontendV3Contracts(unittest.TestCase):
     def test_dossier_loading_placeholder_is_replaced(self):
-        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
-        view_characters = source.split('async function viewCharacters(view) {', 1)[1].split(
-            '/* ============================== редактор персонажа', 1)[0]
+        source = frontend_source('views-dossiers.js')
+        view_characters = source.split('async function viewCharacters(view) {', 1)[1]
         self.assertIn('view.innerHTML = spinner();', view_characters)
         self.assertIn("const data = await api('/api/characters');", view_characters)
         self.assertIn('view.innerHTML = `', view_characters)
         self.assertNotIn("view.insertAdjacentHTML('afterbegin'", view_characters)
 
     def test_trust_editor_supports_custom_and_found_item_provenance(self):
-        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        source = frontend_text()
         self.assertIn('id="add-custom-item"', source)
         self.assertIn('function openCatalogAcquisitionModal', source)
         self.assertIn('function openOwnedItemEditor', source)
@@ -50,7 +60,7 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn("it.cat!=='cyberware'", source)
 
     def test_character_sheet_has_consumable_and_active_gear_actions(self):
-        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        source = frontend_text()
         self.assertIn('Active Gear / Loadout', source)
         self.assertIn('function chooseEquipMode', source)
         self.assertIn('performSheetItemAction', source)
@@ -59,7 +69,7 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn("'deactivate':'activate'", source)
 
     def test_character_sheet_uses_structured_effect_breakdowns(self):
-        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        source = frontend_text()
         self.assertIn('Structured Effects & Synergies', source)
         self.assertIn('derived.effects?.skills?.[name]', source)
         self.assertIn('effective_check_base', source)
@@ -67,7 +77,7 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('effect-bonus', source)
 
     def test_catalog_and_sheet_distinguish_automated_and_manual_item_rules(self):
-        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        source = frontend_text()
         self.assertIn('AUTOMATED EFFECT', source)
         self.assertIn('MANUAL RULE', source)
         self.assertIn('Curated Item Effects', source)
@@ -88,13 +98,14 @@ class FrontendV3Contracts(unittest.TestCase):
         html = (ROOT / 'app/static/index.html').read_text(encoding='utf-8')
         scripts = re.findall(r'<script src="(/[^"]+\.js)"', html)
         self.assertIn('/app.js', scripts)
-        self.assertIn('/views-quickref.js', scripts)
-        self.assertLess(scripts.index('/views-quickref.js'), scripts.index('/app.js'),
-                        'app.js ссылается на viewCalc при загрузке — модуль вида должен идти раньше')
+        for module in ('/views-quickref.js', '/views-dossiers.js'):
+            self.assertIn(module, scripts)
+            self.assertLess(scripts.index(module), scripts.index('/app.js'),
+                            'app.js ссылается на view*-функции при загрузке — модуль вида должен идти раньше')
         self.assertEqual(len(frontend_bundle_sources()), len(scripts))
 
     def test_weapon_hosts_have_instance_bound_upgrade_management(self):
-        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        source = frontend_text()
         self.assertIn('function openWeaponUpgradeManager', source)
         self.assertIn('data-manage-upgrades', source)
         self.assertIn('host_instance_id', source)
@@ -120,7 +131,7 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('effect-manual-text', source)
 
     def test_character_sheet_has_vehicle_garage_and_access_aware_upgrades(self):
-        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        source = frontend_text()
         self.assertIn('Vehicle Garage', source)
         self.assertIn('function openVehicleUpgradeManager', source)
         self.assertIn('vehicle_hosts', source)
@@ -148,7 +159,7 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('shared_ammo_available', source)
 
     def test_character_sheet_has_cyberdeck_host_loadout_management(self):
-        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        source = frontend_text()
         self.assertIn('Cyberdeck Loadout', source)
         self.assertIn('function openCyberdeckManager', source)
         self.assertIn('cyberdeck_hosts', source)
@@ -169,7 +180,7 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('Deploy in Combat', source)
 
     def test_character_sheet_has_concrete_cyberware_host_lifecycle(self):
-        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        source = frontend_text()
         self.assertIn('cyberwareLifecycleHtml', source)
         self.assertIn('effective_cyberware', source)
         self.assertIn('data-cyberware-action', source)
@@ -211,7 +222,7 @@ class FrontendV3Contracts(unittest.TestCase):
 
     def test_live_session_has_validated_net_context_and_queue_controls(self):
         ncnet = (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8')
-        app = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        app = frontend_text()
         self.assertIn('LIVE NET', ncnet)
         self.assertIn('ss-net-floor-add', ncnet)
         self.assertIn('data-session-net-action', ncnet)
@@ -241,14 +252,14 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('SKUNK SLIDE', ncnet)
 
     def test_consumable_use_distinguishes_automated_preset_and_manual_rules(self):
-        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        source = frontend_text()
         self.assertIn('created_effects', source)
         self.assertIn('manual_rules', source)
         self.assertIn('Use Resolution', source)
         self.assertIn('Full item description', source)
 
     def test_character_sheet_manages_temporary_custom_effects(self):
-        source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
+        source = frontend_text()
         self.assertIn('function openCustomEffectModal', source)
         self.assertIn('Active Effect Instances', source)
         self.assertIn('data-effect-action', source)
