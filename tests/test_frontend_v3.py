@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -10,6 +11,22 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('cbpr_frontend_server', ROOT / 'app/server.py')
 server = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(server)
+
+
+def frontend_bundle_sources():
+    """Исходники фронтенда в порядке загрузки тегов <script> из index.html.
+
+    P3-frontend: app.js делится на несколько файлов, поэтому рантайм-бандл
+    собирается по разметке, а не жёстким списком. Из app.js отрезается блок запуска.
+    """
+    html = (ROOT / 'app/static/index.html').read_text(encoding='utf-8')
+    sources = []
+    for src in re.findall(r'<script src="(/[^"]+\.js)"', html):
+        text = (ROOT / 'app/static' / src.lstrip('/')).read_text(encoding='utf-8')
+        if src == '/app.js':
+            text = text.split('/* ============================== запуск ============================== */')[0]
+        sources.append(text)
+    return sources
 
 
 @unittest.skipUnless(shutil.which('node'), 'Node.js is required for frontend runtime contracts')
@@ -56,6 +73,25 @@ class FrontendV3Contracts(unittest.TestCase):
         self.assertIn('Curated Item Effects', source)
         self.assertIn('item_sources', source)
         self.assertIn('effect_coverage', source)
+
+    def test_index_html_script_tags_are_well_formed(self):
+        """P3-frontend: каждый <script src=...> закрыт, иначе браузер съедает следующий тег."""
+        html = (ROOT / 'app/static/index.html').read_text(encoding='utf-8')
+        self.assertFalse(re.search(r'<script[^>]*src=[^>]*>[^<]*<script', html),
+                         'незакрытый <script src=...> поглощает следующий тег')
+        for src in re.findall(r'<script src="(/[^"]+\.js)"', html):
+            self.assertTrue((ROOT / 'app/static' / src.lstrip('/')).exists(),
+                            f'скрипт {src} указан в index.html, но файла нет')
+
+    def test_frontend_bundle_covers_every_index_html_script(self):
+        """P3-frontend: рантайм-контракт запускается ровно на тех скриптах, что грузит браузер."""
+        html = (ROOT / 'app/static/index.html').read_text(encoding='utf-8')
+        scripts = re.findall(r'<script src="(/[^"]+\.js)"', html)
+        self.assertIn('/app.js', scripts)
+        self.assertIn('/views-quickref.js', scripts)
+        self.assertLess(scripts.index('/views-quickref.js'), scripts.index('/app.js'),
+                        'app.js ссылается на viewCalc при загрузке — модуль вида должен идти раньше')
+        self.assertEqual(len(frontend_bundle_sources()), len(scripts))
 
     def test_weapon_hosts_have_instance_bound_upgrade_management(self):
         source = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
@@ -256,8 +292,8 @@ global.fetch = async () => { throw new Error('fetch not expected'); };
 global.URL = { createObjectURL: () => '', revokeObjectURL: () => {} };
 global.Blob = function () {};
 """
-        app = (ROOT / 'app/static/app.js').read_text(encoding='utf-8')
-        app = app.split('/* ============================== запуск ============================== */')[0]
+        # P3-frontend: список скриптов берётся из index.html, чтобы дальнейшие срезы
+        # разделения app.js не ломали рантайм-контракт (порядок загрузки = порядок в HTML).
         test = f"""
 state.meta = {json.dumps(meta, ensure_ascii=False)};
 state.me = {{ id: 9, display_name: 'Player' }};
@@ -330,15 +366,11 @@ saveWizardDraft(); state.wizard = null;
 if (!loadWizardDraft() || state.wizard.skills.Language !== 3) throw new Error('v3 draft restore failed');
 console.log('ok');
 """
+        # P3-frontend: бандл собирается по порядку тегов <script> из index.html, поэтому
+        # при выносе кода из app.js в новый файл достаточно добавить тег в разметку.
         script = '\n'.join([
             stub,
-            (ROOT / 'app/static/i18n.js').read_text(encoding='utf-8'),
-            (ROOT / 'app/static/theme.js').read_text(encoding='utf-8'),
-            (ROOT / 'app/static/creation-data.js').read_text(encoding='utf-8'),
-            (ROOT / 'app/static/ncnet.js').read_text(encoding='utf-8'),
-            (ROOT / 'app/static/gm-ref.js').read_text(encoding='utf-8'),
-            (ROOT / 'app/static/player-actions.js').read_text(encoding='utf-8'),
-            app,
+            *frontend_bundle_sources(),
             test,
         ])
         with tempfile.NamedTemporaryFile('w', suffix='.js', encoding='utf-8') as handle:

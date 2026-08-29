@@ -2691,7 +2691,7 @@ VTT-6   Walls/vision/lighting and extension API if still needed
 
 ### P3 — технический долг
 
-1. ◐ Разделить `server.py`, `app.js`, `ncnet.js`, CSS. **Backend — ✅ 2026-08-28** (`server.py` 20 217 → 805 строк, 21 модуль app/, 260/260 тестов на каждом шаге; см. §24.1 и `docs/architecture.md`). Осталась frontend-часть: `app.js` (4 389 строк) и CSS.
+1. ◐ Разделить `server.py`, `app.js`, `ncnet.js`, CSS. **Backend — ✅ 2026-08-28** (`server.py` 20 217 → 805 строк, 21 модуль app/, 260/260 тестов на каждом шаге; см. §24.1 и `docs/architecture.md`). **Frontend — ◐ 2026-08-29, срез S1:** `viewCalc` (Quick Reference/калькулятор, 211 строк) вынесена в `app/static/views-quickref.js`; `app.js` 4 389 → 4 180 строк. Принятая механика срезов, порядок загрузки и тестовые контракты — §24.6. Осталось: остальные кластеры вью `app.js` и CSS.
 2. Убрать N+1 queries.
 3. Pagination/summary endpoints.
 4. Browser E2E и visual regression по темам.
@@ -3882,7 +3882,7 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 | P1.1 / §22.1 | план | ✅ нормализация magazine выполнена (`import_data.py` + `catalog.py`) |
 | P-UX 23.2 | план | ✅ GM Reference реализована (`gm-ref.js`, GM-only навигация) |
 | §22.0 | «252 теста» | актуально **260** |
-| §17 P3 #1 | не начато | backend ✅; frontend ☐ |
+| §17 P3 #1 | не начато | backend ✅; frontend ◐ (срез S1, 2026-08-29) |
 | Классификация книжных страниц | не упомянута | выполнена: `analysis/categories.json` + `CATEGORIES.md` (10 категорий, 1092 items_gear — 43 %), смещения глав по всем 11 книгам — подложка для A.1 (теги/i18n) и качества Data Pool |
 
 ### 24.3 Новые пометки к открытым пунктам (по проверке кода)
@@ -3901,7 +3901,21 @@ Ruleset Profiles, House Rules UI и конвертация под новую с�
 3. **Быстрые правки:** 20.7 (role-gated кнопки), 20.11 (плейсхолдеры изображений в Database/Market/detail), сверка 20.5/20.6 по коду.
 4. **P5 Организации** после P-UX/тех-чистки — как ключ к A.2 №4 и E-локационным связям.
 
-### 24.5 Решения, которые сохраняются без изменений
+### 24.5 P3-frontend: механика срезов (начато 2026-08-29)
+
+- **Принцип:** `app.js` режется по кластерам вью (как backend — по доменам), логика не меняется ни в одной строке; каждый срез = отдельный коммит с зелёными тестами.
+- **Порядок загрузки (важно и легко сломать):** классические `<script>` делят глобальную область, а карта роутов в `app.js` ссылается на `view*`-функции **в момент загрузки**. Поэтому модули вида (`views-*.js`) должны стоять в `index.html` **до** `app.js`, а инфраструктура (`i18n`, `theme`, `*-data`, `ncnet`, `gm-ref`, `player-actions`) — до них.
+- **Срез S1 (✅):** `viewCalc` → `app/static/views-quickref.js` (211 строк). Инфра-хелперы (`rollDice`, `critTableHtml`, `woundStatesHtml`, `tableHtml`, `esc`, `num`) остаются в `app.js` до собственного среза.
+- **Тестовый контракт:** рантайм-тест `test_frontend_v3.py` больше не держит жёсткий список файлов — бандл собирается по порядку тегов `<script>` из `index.html` (`frontend_bundle_sources()`), поэтому новый файл достаточно добавить в разметку. Добавлены стражи: `test_index_html_script_tags_are_well_formed` (незакрытый `<script src=…>` без `</script>` молча съедает следующий тег — именно так срез S1 один раз сломал загрузку) и `test_frontend_bundle_covers_every_index_html_script`.
+- **Следующие кандидаты на срезы S2+:** кластер досье (`viewCharacters`/`viewSheet`), редактор персонажа (`renderEditorTab`), мастер (`viewAdmin`) — резать по одному, с проверкой `node --check` и HTTP-смоука.
+
+### 24.6 Находка: боевые искусства и формы Martial Arts (☐, новый пункт)
+
+- В проекте формы Martial Arts урезаны до четырёх базовых: `app/static/creation-data.js:282` → `['Karate','Judo','Taekwondo','Aikido']` (Corebook, pg. 178).
+- В библиотеке проекта (`extracted/text/IR4…md`, раздел «Cyberfists of Fury») есть ещё **15 форм**: Arasaka-te, Arnis, Capoeira, Choy Li Fut, Gun Fu, Kendo, Krav Maga, Kung Fu, Kyudo, Muay Thai, Silat, Sumo, Tai Chi, Thrash Sambo, Wrestling; в IR5 — шуточная форма **Cyberbear**. Плюс лор-опоры: Arasaka-te как франшиза додзё в стрип-моллах, Deravaja Dojo у Tyger Claws (CEMK).
+- **Пункт в работу (☐):** расширить список форм (источник в подсказке: `Core 178` / `IR4 76`), добавить в `guides-data.js` раздел «Боевые искусства» (урон по BODY: 1d6/2d6/3d6/4d6; ROF 2; игнор половины SP; Resolution `DEX + форма + 1d10`; отличие от Brawling), после чего — приёмы форм в комбат-трекере и NPC-пресетах.
+
+### 24.7 Решения, которые сохраняются без изменений
 
 - Ruleset Profiles / House Rules — DEFERRED до официального релиза новой системы Cyberpunk (§13, §19 №30/56/57).
 - Chat/Calendar/Dice Log/PWA/Campaign Bundle — низкий приоритет, ⏸️.
