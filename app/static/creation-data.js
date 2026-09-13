@@ -276,6 +276,173 @@ const ROLE_LIFEPATHS = {
   ],
 };
 
+/* ============ Книжный Role-Based Lifepath (CP:R pp. 54–69) ============
+   Структура вопросов «точь-в-точь по книге»: у каждого вопроса свой кубик
+   книги (1d10/1d6/2d6/choose), условные ветки (show_if) и вариантные
+   таблицы (variants). Опции без собственного списка берутся из
+   ROLE_LIFEPATHS[role] по ключу. Свой текст игрока разрешён везде,
+   кроме region (от него механически зависит культурный язык). */
+const ROLE_LIFEPATH_BOOK = {
+  Rockerboy: [
+    { key: 'kind', dice: '1d10' },
+    { key: 'current_act', dice: 'choose', label_ru: 'Группа или соло сейчас?',
+      options: ['Состоишь в группе', 'Сольный проект'], en: ['In a group', 'A solo act'] },
+    { key: 'once_group', dice: 'choose', label_ru: 'Раньше состоял в группе?',
+      show_if: { all: [{ key: 'current_act', equals: ['Сольный проект'] }] },
+      options: ['Раньше состоял в группе', 'Всегда выступал соло'],
+      en: ['Once part of a group', 'Always a solo act'] },
+    { key: 'leave_reason', dice: '1d6', label_ru: 'Почему ты ушёл?',
+      show_if: { all: [{ key: 'current_act', equals: ['Сольный проект'] },
+                       { key: 'once_group', equals: ['Раньше состоял в группе'] }] },
+      options: [
+        'Ты был мудаком, и группа проголосовала за то, чтобы тебя выгнали.',
+        'Тебя застали за романом с мейнлайном другого участника.',
+        'Остальные члены группы погибли в трагической «случайности».',
+        'Остальные члены группы были убиты, а группа разрушена внешними врагами.',
+        'Группа распалась из-за «творческих разногласий».',
+        'Ты решил идти соло.',
+      ],
+      en: [
+        'You were a jerk and the rest of the group voted you out.',
+        'You got caught sleeping around with another member’s mainline.',
+        'The rest of the group was killed in a tragic "accident."',
+        'The rest of the group was murdered or otherwise broken up by external enemies.',
+        'The group broke up over "creative differences."',
+        'You decided to go solo.',
+      ] },
+    { key: 'venue', dice: '1d6' },
+    { key: 'enemy', dice: '1d6' },
+  ],
+  Solo: [
+    { key: 'kind', dice: '1d6' }, { key: 'moral', dice: '1d6' },
+    { key: 'enemy', dice: '1d6' }, { key: 'territory', dice: '1d6' },
+  ],
+  Netrunner: [
+    { key: 'kind', dice: '1d6' },
+    { key: 'partner', dice: 'choose', label_ru: 'Партнёр или одиночка?',
+      options: ['Работаешь один', 'Есть партнёр'], en: ['Work alone', 'Have a partner'] },
+    { key: 'partner_who', dice: '1d6', label_ru: 'Кто твой партнёр?',
+      show_if: { all: [{ key: 'partner', equals: ['Есть партнёр'] }] },
+      options: ['Партнёр — родственник', 'Партнёр — старый друг', 'Партнёр и возможная любовь',
+                'Секретный партнёр — возможно, ИИ', 'Партнёр со связями в банде',
+                'Партнёр с корпоративными связями'],
+      en: ['Your partner is family', 'Your partner is an old friend', 'Your partner may become a lover',
+           'A secret partner, possibly an AI', 'A partner with gang connections', 'A partner with corporate connections'] },
+    { key: 'workspace', dice: '1d6' }, { key: 'clients', dice: '1d6' },
+    { key: 'supplies', dice: '1d6' }, { key: 'enemy', dice: '1d6' },
+  ],
+  Tech: [
+    { key: 'kind', dice: '1d10' },
+    { key: 'partner', dice: 'choose', label_ru: 'Партнёр или одиночка?',
+      options: ['Работаешь один', 'Есть партнёр'], en: ['Work alone', 'Have a partner'] },
+    { key: 'partner_who', dice: '1d6', label_ru: 'Кто твой партнёр?',
+      show_if: { all: [{ key: 'partner', equals: ['Есть партнёр'] }] },
+      options: ['Партнёр — родственник', 'Партнёр — старый друг', 'Партнёр и возможная любовь',
+                'Партнёр — наставник', 'Партнёр со связями в банде', 'Партнёр с корпоративными связями'],
+      en: ['Your partner is family', 'Your partner is an old friend', 'Your partner may become a lover',
+           'Your partner is a mentor', 'A partner with gang connections', 'A partner with corporate connections'] },
+    { key: 'workspace', dice: '1d6' }, { key: 'clients', dice: '1d6' },
+    { key: 'supplies', dice: '1d6' }, { key: 'enemy', dice: '1d6' },
+  ],
+  Medtech: [
+    { key: 'kind', dice: '1d10' },
+    { key: 'partner', dice: 'choose', label_ru: 'Партнёр или одиночка?',
+      options: ['Работаешь один', 'Есть партнёр'], en: ['Work alone', 'Have a partner'] },
+    { key: 'partner_who', dice: '1d6', label_ru: 'Кто твой партнёр?',
+      show_if: { all: [{ key: 'partner', equals: ['Есть партнёр'] }] },
+      options: ['Команда Trauma Team', 'Старый друг', 'Партнёр и возможная любовь',
+                'Родственник', 'Партнёр со связями в банде', 'Партнёр с корпоративными связями'],
+      en: ['A Trauma Team crew', 'An old friend', 'A partner and possible lover',
+           'A relative', 'A partner with gang connections', 'A partner with corporate connections'] },
+    { key: 'workspace', dice: '1d6' }, { key: 'clients', dice: '1d6' }, { key: 'supplies', dice: '1d6' },
+  ],
+  Media: [
+    { key: 'kind', dice: '1d6' }, { key: 'channel', dice: '1d6' },
+    { key: 'ethics', dice: '1d6' }, { key: 'stories', dice: '1d6' },
+  ],
+  Exec: [
+    { key: 'kind', dice: '1d10' }, { key: 'division', dice: '1d6' }, { key: 'ethics', dice: '1d6' },
+    { key: 'base', dice: '1d6' }, { key: 'enemy', dice: '1d6' }, { key: 'boss', dice: '1d6' },
+  ],
+  Lawman: [
+    { key: 'position', dice: '1d6' }, { key: 'jurisdiction', dice: '1d6' },
+    { key: 'corruption', dice: '1d6' }, { key: 'enemy', dice: '1d6' }, { key: 'target', dice: '1d6' },
+  ],
+  Fixer: [
+    { key: 'kind', dice: '1d10' },
+    { key: 'partner', dice: 'choose', label_ru: 'Партнёр или одиночка?',
+      options: ['Работаешь один', 'Есть партнёр'], en: ['Work alone', 'Have a partner'] },
+    { key: 'partner_who', dice: '1d6', label_ru: 'Кто твой партнёр?',
+      show_if: { all: [{ key: 'partner', equals: ['Есть партнёр'] }] },
+      options: ['Партнёр — родственник', 'Партнёр — старый друг', 'Партнёр и возможная любовь',
+                'Партнёр — наставник', 'Партнёр с криминальными связями', 'Партнёр с корпоративными связями'],
+      en: ['Your partner is family', 'Your partner is an old friend', 'Your partner may become a lover',
+           'Your partner is a mentor', 'A partner with criminal connections', 'A partner with corporate connections'] },
+    { key: 'office', dice: '1d6' }, { key: 'clients', dice: '1d6' }, { key: 'enemy', dice: '1d6' },
+  ],
+  Nomad: [
+    { key: 'size', dice: '1d6' },
+    { key: 'domain', dice: 'choose' },
+    { key: 'activity', dice: 'variant', variants: {
+      'На суше': { dice: '1d10', options: [
+        'Мотобанда', 'Пассажирские перевозки', 'Кочующая школа', 'Передвижной цирк', 'Сезонные рабочие',
+        'Грузовые перевозки', 'Охрана грузов', 'Контрабанда', 'Наёмная армия', 'Строительная бригада'],
+        en: ['Gogang', 'Passenger transport', 'Chautauqua/school', 'Traveling show/carnival', 'Migrant farmers',
+             'Cargo transport', 'Shipment protection', 'Smuggling', 'Mercenary army', 'Construction work gang'] },
+      'В воздухе': { dice: '1d6', options: [
+        'Воздушное пиратство', 'Грузовые перевозки', 'Пассажирские перевозки',
+        'Защита авиации', 'Контрабанда', 'Боевая поддержка'],
+        en: ['Air piracy', 'Cargo transport', 'Passenger transport', 'Aircraft protection', 'Smuggling', 'Combat support'] },
+      'На море': { dice: '1d6', options: [
+        'Морское пиратство', 'Грузовые перевозки', 'Пассажирские перевозки',
+        'Контрабанда', 'Боевая поддержка', 'Подводная война'],
+        en: ['Piracy', 'Cargo transport', 'Passenger transport', 'Smuggling', 'Combat support', 'Submarine warfare'] },
+    } },
+    { key: 'duty', dice: '1d6' }, { key: 'philosophy', dice: '1d6' }, { key: 'enemy', dice: '1d6' },
+  ],
+};
+
+/* Миграция старых ролевых Lifepath (слитые act/partner) к книжной схеме. */
+const ROLE_LIFEPATH_ACT_MIGRATION = {
+  'Состоишь в группе': { current_act: 'Состоишь в группе' },
+  'Всегда выступал соло': { current_act: 'Сольный проект', once_group: 'Всегда выступал соло' },
+  'Ушёл из группы по своей воле': { current_act: 'Сольный проект', once_group: 'Раньше состоял в группе', leave_reason: 'Ты решил идти соло.' },
+  'Тебя выгнали из группы': { current_act: 'Сольный проект', once_group: 'Раньше состоял в группе', leave_reason: 'Ты был мудаком, и группа проголосовала за то, чтобы тебя выгнали.' },
+  'Группа распалась из-за творческих разногласий': { current_act: 'Сольный проект', once_group: 'Раньше состоял в группе', leave_reason: 'Группа распалась из-за «творческих разногласий».' },
+  'Группу уничтожили внешние враги': { current_act: 'Сольный проект', once_group: 'Раньше состоял в группе', leave_reason: 'Остальные члены группы были убиты, а группа разрушена внешними врагами.' },
+};
+
+function migrateRoleLifepath(role, raw) {
+  const rl = Object.assign({}, raw || {});
+  if (role === 'Rockerboy' && rl.act && !rl.current_act) {
+    const mapped = ROLE_LIFEPATH_ACT_MIGRATION[rl.act];
+    delete rl.act;
+    if (mapped) Object.assign(rl, mapped);
+  }
+  const book = ROLE_LIFEPATH_BOOK[role] || [];
+  const partnerQ = book.find(q => q.key === 'partner_who');
+  if (partnerQ && rl.partner && !rl.partner_who && partnerQ.options.includes(rl.partner)) {
+    rl.partner_who = rl.partner;
+    rl.partner = 'Есть партнёр';
+  }
+  if (partnerQ && rl.partner === 'Работаешь один') delete rl.partner_who;
+  if (role === 'Rockerboy') {
+    if (rl.current_act !== 'Сольный проект') { delete rl.once_group; delete rl.leave_reason; }
+    if (rl.once_group !== 'Раньше состоял в группе') delete rl.leave_reason;
+  }
+  return rl;
+}
+
+function lifepathBookQuestion(role, key) {
+  return (ROLE_LIFEPATH_BOOK[role] || []).find(q => q.key === key) || null;
+}
+
+function lifepathBookVisible(role, key, values) {
+  const q = lifepathBookQuestion(role, key);
+  if (!q || !q.show_if) return true;
+  return (q.show_if.all || []).every(cond => (cond.equals || []).includes((values || {})[cond.key]));
+}
+
 const SPECIALIZED_SKILL_BASES = [
   ['Language', 'Языки', ['Streetslang', 'Английский', 'Русский', 'Испанский', 'Японский', 'Китайский', 'Немецкий', 'Французский', 'Арабский', 'Корейский', 'Португальский', 'Хинди', 'Иврит', 'Польский', 'Итальянский', 'Суахили', 'Тагальский', 'Вьетнамский', 'Турецкий', 'Навахо']],
   ['Local Expert', 'Локальные эксперты', ['Свой район', 'Уотсон', 'Сити-центр', 'Боевая Зона', 'Мегабашня H4', 'Пустоши', 'Пасифика', 'Хейвуд', 'Санто-Доминго', 'Норт-Оук']],
@@ -398,6 +565,10 @@ const ROLE_LIFEPATH_QUESTION_INFO = {
   division: 'Определяет подразделение корпорации и тип повседневных задач Exec.',
   base: 'Показывает географический масштаб организации и доступность её ресурсов.',
   boss: 'Описывает отношения Exec с непосредственным начальником.',
+  current_act: 'Текущий формат карьеры: группа или сольный проект. Вопрос книги CP:R p. 54.',
+  once_group: 'Уточняет, был ли у персонажа групповой опыт до текущего статуса. Вопрос книги CP:R p. 54.',
+  leave_reason: 'Причина расставания с прежней группой. Бросается 1d6, только если персонаж был в группе и ушёл. Вопрос книги CP:R p. 54.',
+  partner_who: 'Кто именно является постоянным партнёром персонажа. Бросается 1d6, только если персонаж работает не один. Вопросы книги CP:R pp. 57, 59, 61, 67.',
   position: 'Определяет должность Законника и тип его полномочий.',
   jurisdiction: 'Показывает территорию, где подразделение Законника имеет власть.',
   corruption: 'Определяет этические стандарты подразделения Законника.',
@@ -408,6 +579,39 @@ const ROLE_LIFEPATH_QUESTION_INFO = {
   activity: 'Определяет главное ремесло, на котором клан зарабатывает и строит репутацию.',
   duty: 'Показывает личную обязанность Номада перед семьёй.',
   philosophy: 'Определяет общую этику и отношение к посторонним внутри клана.',
+};
+
+const ROLE_LIFEPATH_QUESTION_EN = {
+  kind: 'Specifies the profession, specialization, or public image inside the Role.',
+  act: 'Describes the Rockerboy’s relationship with a group and the reason for the solo career.',
+  venue: 'Defines the usual stage, audience, and level of public exposure.',
+  moral: 'Shows the Solo’s personal limits when choosing jobs and methods.',
+  enemy: 'Defines the main force creating professional trouble for the Role.',
+  territory: 'Shows the Solo’s usual operating territory and client circle.',
+  partner: 'Defines whether the character works alone or shares the risk with a permanent partner.',
+  workspace: 'Describes the workspace and professional habits of the character.',
+  clients: 'Defines the main circle of clients, contacts, and people who bring work.',
+  supplies: 'Shows where the character gets programs, parts, or medical supplies.',
+  channel: 'Defines the main channel through which the Media’s materials reach the audience.',
+  ethics: 'Shows the willingness to break professional rules for results, money, or beliefs.',
+  stories: 'Defines the themes the Media specializes in.',
+  division: 'Defines the corporate division and the type of daily tasks of the Exec.',
+  base: 'Shows the geographic scale of the organization and the availability of its resources.',
+  boss: 'Describes the Exec’s relationship with their direct superior.',
+  current_act: 'Current career format: a group or a solo act. CP:R p. 54.',
+  once_group: 'Whether the character had group experience before the current status. CP:R p. 54.',
+  leave_reason: 'Why the old group ended. Roll 1d6 only if the character was in a group and left. CP:R p. 54.',
+  partner_who: 'Who the permanent partner is. Roll 1d6 only if the character does not work alone. CP:R pp. 57, 59, 61, 67.',
+  position: 'Specifies the Lawman’s position and the type of authority.',
+  jurisdiction: 'Shows the territory where the Lawman’s unit holds power.',
+  corruption: 'Defines the ethical standards of the Lawman’s unit.',
+  target: 'Shows the primary target of the unit’s operations.',
+  office: 'Describes where the Fixer meets clients and closes deals.',
+  size: 'Defines the size and structure of the Nomad family or pack.',
+  domain: 'Shows the pack’s main travel environment: land, air, or sea.',
+  activity: 'Defines the main trade the pack earns its living and reputation from.',
+  duty: 'Shows the Nomad’s personal duty toward the family.',
+  philosophy: 'Defines the pack’s overall ethics and attitude toward outsiders.',
 };
 
 const ROLE_LONG_DESCRIPTIONS = {
@@ -582,6 +786,7 @@ const LIFEPATH_LABEL_EN = {
   office:'Office', size:'Family Size', domain:'Transport Domain', activity:'Family Work', duty:'Family Duty', philosophy:'Family Philosophy',
   friends:'Friends', friend_role:'Friend’s Role', friend_circle:'Friend’s Circle', enemies:'Enemies', enemy_role:'Enemy’s Role', enemy_circle:'Enemy’s Circle',
   enemy_cause:'Cause of Enmity', enemy_wronged:'Who Was Wronged?', enemy_resources:'Enemy Resources', enemy_revenge:'What Happens When You Meet?', love:'Tragic Love Affair',
+  current_act:'In a Group or a Solo Act?', once_group:'Were You Once in a Group?', leave_reason:'Why Did You Leave?', partner_who:'If You Have a Partner, Who are They?',
 };
 const LIFEPATH_QUESTION_EN = {
   region:'Defines cultural roots and the list available for the free Cultural Language at Level 4.',
@@ -722,6 +927,17 @@ function buildLifepathDisplayEn() {
     for (const [key,, options] of fields) {
       const translated = (ROLE_LIFEPATH_OPTION_EN[role] || {})[key] || [];
       options.forEach((option, index) => { if (translated[index]) out[option] = translated[index]; });
+    }
+  }
+  // Книжные вопросы Role-Based Lifepath: собственные списки опций с EN-текстом книги.
+  for (const questions of Object.values(ROLE_LIFEPATH_BOOK)) {
+    for (const q of questions) {
+      const lists = q.variants ? Object.values(q.variants) : [q];
+      for (const list of lists) {
+        (list.options || []).forEach((option, index) => {
+          if ((list.en || [])[index]) out[option] = list.en[index];
+        });
+      }
     }
   }
   for (const field of MERGED_LIFEPATH_FIELDS) {

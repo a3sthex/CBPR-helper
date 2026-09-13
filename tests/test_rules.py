@@ -38,15 +38,15 @@ def valid_character(role='Solo'):
     elif role == 'Nomad':
         setup = {'moto_choices': ['Roadbike', 'Bulletproof Glass', 'Heavy Chassis', 'Housing Capacity']}
     role_fields = {
-        'Rockerboy': ('kind', 'act', 'venue', 'enemy'),
+        'Rockerboy': ('kind', 'current_act', 'once_group', 'leave_reason', 'venue', 'enemy'),
         'Solo': ('kind', 'moral', 'enemy', 'territory'),
-        'Netrunner': ('kind', 'partner', 'workspace', 'clients', 'supplies', 'enemy'),
-        'Tech': ('kind', 'partner', 'workspace', 'clients', 'supplies', 'enemy'),
-        'Medtech': ('kind', 'partner', 'workspace', 'clients', 'supplies'),
+        'Netrunner': ('kind', 'partner', 'partner_who', 'workspace', 'clients', 'supplies', 'enemy'),
+        'Tech': ('kind', 'partner', 'partner_who', 'workspace', 'clients', 'supplies', 'enemy'),
+        'Medtech': ('kind', 'partner', 'partner_who', 'workspace', 'clients', 'supplies'),
         'Media': ('kind', 'channel', 'ethics', 'stories'),
         'Exec': ('kind', 'division', 'ethics', 'base', 'enemy', 'boss'),
         'Lawman': ('position', 'jurisdiction', 'corruption', 'enemy', 'target'),
-        'Fixer': ('kind', 'partner', 'office', 'clients', 'enemy'),
+        'Fixer': ('kind', 'partner', 'partner_who', 'office', 'clients', 'enemy'),
         'Nomad': ('size', 'domain', 'activity', 'duty', 'philosophy', 'enemy'),
     }[role]
     return {
@@ -1181,6 +1181,69 @@ class CreationValidationTests(unittest.TestCase):
         char = valid_merged_character()
         self.assertFalse({'friends', 'enemies', 'love'} & set(char['lifepath']))
         server.validate_creation(char)
+
+    def test_rockerboy_leave_reason_required_only_after_leaving_group(self):
+        char = valid_merged_character('Rockerboy')
+        char['role_lifepath'] = {
+            'kind': 'Музыкант', 'current_act': 'Сольный проект',
+            'once_group': 'Раньше состоял в группе', 'venue': 'Альтернативные кафе',
+            'enemy': 'Конкурирующий артист'}
+        with self.assertRaisesRegex(server.ApiError, 'Lifepath'):
+            server.validate_creation(char)
+        char['role_lifepath']['leave_reason'] = 'Ты решил идти соло.'
+        server.validate_creation(char)
+        # В группе вопрос книги не бросается: условные поля убираются нормализацией.
+        char['role_lifepath'].update({'current_act': 'Состоишь в группе',
+                                      'once_group': 'Раньше состоял в группе',
+                                      'leave_reason': 'Ты решил идти соло.'})
+        server.validate_creation(char)
+        self.assertNotIn('once_group', char['role_lifepath'])
+        self.assertNotIn('leave_reason', char['role_lifepath'])
+
+    def test_legacy_act_role_lifepath_migrates_to_book_scheme(self):
+        char = valid_merged_character('Rockerboy')
+        char['role_lifepath'] = {'kind': 'Музыкант', 'act': 'Тебя выгнали из группы',
+                                 'venue': 'Альтернативные кафе', 'enemy': 'Конкурирующий артист'}
+        server.validate_creation(char)
+        self.assertEqual(char['role_lifepath']['current_act'], 'Сольный проект')
+        self.assertEqual(char['role_lifepath']['once_group'], 'Раньше состоял в группе')
+        self.assertIn('выгнали', char['role_lifepath']['leave_reason'])
+
+    def test_partner_who_required_only_with_partner(self):
+        char = valid_merged_character('Netrunner')
+        char['role_lifepath'] = {
+            'kind': 'Фрилансер по найму', 'partner': 'Есть партнёр',
+            'workspace': 'Экраны повсюду', 'clients': 'Местные Фиксеры',
+            'supplies': 'Ищешь в заброшенных городских сетях',
+            'enemy': 'Конкурирующие Нетраннеры'}
+        with self.assertRaisesRegex(server.ApiError, 'Lifepath'):
+            server.validate_creation(char)
+        char['role_lifepath']['partner_who'] = 'Партнёр — старый друг'
+        server.validate_creation(char)
+        char['role_lifepath']['partner'] = 'Работаешь один'
+        server.validate_creation(char)
+        self.assertNotIn('partner_who', char['role_lifepath'])
+
+    def test_legacy_merged_partner_splits_into_pair(self):
+        char = valid_merged_character('Tech')
+        char['role_lifepath'] = {
+            'kind': 'Кибертехник', 'partner': 'Партнёр — наставник',
+            'workspace': 'Чертежи разбросаны повсюду', 'clients': 'Местные Фиксеры',
+            'supplies': 'Разбираешь руины', 'enemy': 'Гангеры хотят эксклюзивности'}
+        server.validate_creation(char)
+        self.assertEqual(char['role_lifepath']['partner'], 'Есть партнёр')
+        self.assertEqual(char['role_lifepath']['partner_who'], 'Партнёр — наставник')
+
+    def test_custom_lifepath_text_is_allowed(self):
+        char = valid_merged_character('Rockerboy')
+        char['role_lifepath'] = {
+            'kind': 'Музыкант', 'current_act': 'Сольный проект',
+            'once_group': 'Раньше состоял в группе',
+            'leave_reason': 'Группа ушла в монастырь молчания.',
+            'venue': 'Крыша мегабашни H4', 'enemy': 'Конкурирующий артист'}
+        server.validate_creation(char)
+        self.assertEqual(char['role_lifepath']['leave_reason'],
+                         'Группа ушла в монастырь молчания.')
 
     def test_parent_pool_rejects_child_overallocation(self):
         char = valid_merged_character()

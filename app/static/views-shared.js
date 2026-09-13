@@ -82,29 +82,53 @@ function lpFields() {
   return MERGED_LIFEPATH_FIELDS.map(field => [field.key, APP_I18N.current() === 'en' ? (LIFEPATH_LABEL_EN[field.key] || field.label) : field.label, field.options]);
 }
 
-function lpRoleField(role) {
-  return (ROLE_LIFEPATHS[role] || []).map(([key, label, options]) => [key, APP_I18N.current() === 'en' ? (LIFEPATH_LABEL_EN[key] || label) : label, options]);
+function lpRoleField(role, values) {
+  const book = ROLE_LIFEPATH_BOOK[role] || [];
+  const vals = values || {};
+  const out = [];
+  for (const q of book) {
+    if (!lifepathBookVisible(role, q.key, vals)) continue;
+    const legacy = (ROLE_LIFEPATHS[role] || []).find(row => row[0] === q.key);
+    let options = q.options || (legacy ? legacy[2] : []);
+    let meta = q;
+    if (q.variants) {
+      const variant = q.variants[vals[q.variants_key || 'domain']] || null;
+      meta = Object.assign({}, q, variant || {});
+      options = variant ? variant.options : [];
+    }
+    const labelRu = q.label_ru || (legacy ? legacy[1] : q.key);
+    const label = APP_I18N.current() === 'en' ? (LIFEPATH_LABEL_EN[q.key] || labelRu) : labelRu;
+    out.push([q.key, label, options, meta]);
+  }
+  return out;
 }
 
 function lpAllFields() {
   return lpFields();
 }
 
-function lifepathNarrative(lp, role, roleLp) {
+function lifepathNarrative(lp, role, roleLpRaw) {
   const out = [];
   const values = Object.assign({}, lp || {});
   if (!values.clothing && values.wardrobe) values.clothing = values.wardrobe;
   if (!values.hair && values.hair_style) values.hair = values.hair_style;
   const shown = new Set();
   for (const [key, label] of lpAllFields()) {
-    if (values[key]) { out.push([label, values[key]]); shown.add(key); }
+    if (values[key]) { out.push([label, displayKnownValue(values[key])]); shown.add(key); }
   }
   // Старые персонажи сохраняют социальные поля прежних схем, хотя новый мастер их больше не требует.
   for (const [key, label] of [...CORE_LIFEPATH_FIELDS, ...CEMK_LIFEPATH_FIELDS]) {
-    if (lp && lp[key] && !shown.has(key) && !LIFEPATH_KEY_ALIASES[key]) { out.push([APP_I18N.current()==='en' ? (LIFEPATH_LABEL_EN[key] || APP_I18N.translate(label)) : label, lp[key]]); shown.add(key); }
+    if (lp && lp[key] && !shown.has(key) && !LIFEPATH_KEY_ALIASES[key]) { out.push([APP_I18N.current()==='en' ? (LIFEPATH_LABEL_EN[key] || APP_I18N.translate(label)) : label, displayKnownValue(lp[key])]); shown.add(key); }
   }
-  for (const [key, label] of lpRoleField(role)) {
-    if (roleLp && roleLp[key]) out.push([T('Role · ','Роль · ') + label, roleLp[key]]);
+  const roleLp = migrateRoleLifepath(role, roleLpRaw);  for (const [key, label] of lpRoleField(role, roleLp)) {
+    if (roleLp && roleLp[key]) { out.push([T('Role · ','Роль · ') + label, displayKnownValue(roleLp[key])]); shown.add('role:' + key); }
+  }
+  // Ролевые ключи старых схем, которых нет в книжной структуре (например, слитый act).
+  for (const key of Object.keys(roleLp || {})) {
+    if (roleLp[key] && !shown.has('role:' + key)) {
+      const label = LIFEPATH_LABEL_EN[key] || key;
+      out.push([T('Role · ','Роль · ') + (APP_I18N.current() === 'en' ? label : (ROLE_LIFEPATH_QUESTION_INFO[key] ? label : label)), displayKnownValue(roleLp[key])]);
+    }
   }
   if ((!roleLp || !Object.keys(roleLp).length) && lp && lp.rolebg) out.push([T('Role Background','Ролевая предыстория'), lp.rolebg]);
   return out;
@@ -554,35 +578,70 @@ function syncNativeLanguage() {
 
 function wizRollLifepath(key, roleSpecific) {
   const wiz = state.wizard;
-  const fields = roleSpecific ? lpRoleField(wiz.role) : lpAllFields();
+  const fields = roleSpecific ? lpRoleField(wiz.role, wiz.roleLifepath) : lpAllFields();
   const field = fields.find(f => f[0] === key);
   if (!field || !field[2].length) return;
-  const picked = field[2][Math.floor(Math.random() * field[2].length)];
+  const meta = field[3] || null;
+  const dice = meta ? (meta.dice || '1d6') : '1d6';
+  if (dice === 'choose') return;
+  const n = field[2].length;
+  let index;
+  if (dice === '2d6') index = (1 + Math.floor(Math.random() * 6)) + (1 + Math.floor(Math.random() * 6)) - 2;
+  else if (dice === '1d10') index = Math.floor(Math.random() * 10);
+  else index = Math.floor(Math.random() * 6);
+  const picked = field[2][Math.min(index, n - 1)];
   (roleSpecific ? wiz.roleLifepath : wiz.lifepath)[key] = typeof picked === 'object' ? picked.value : picked;
+  if (roleSpecific) clearHiddenRoleLifepath();
   if (!roleSpecific && key === 'region') syncNativeLanguage();
 }
 
+function setRoleLifepathValue(key, value) {
+  const wiz = state.wizard;
+  wiz.roleLifepath = wiz.roleLifepath || {};
+  wiz.roleLifepath[key] = value;
+  clearHiddenRoleLifepath();
+}
+
+function clearHiddenRoleLifepath() {
+  const wiz = state.wizard;
+  for (const q of (ROLE_LIFEPATH_BOOK[wiz.role] || [])) {
+    if (q.show_if && !lifepathBookVisible(wiz.role, q.key, wiz.roleLifepath)) delete wiz.roleLifepath[q.key];
+  }
+}
+
 function lifepathFieldsHtml(fields, values, attr, diceAttr, roleSpecific) {
-  return fields.map(([key, label, opts]) => {
+  return fields.map(field => {
+    const [key, label, opts] = field;
+    const meta = field[3] || null;
+    const dice = meta ? (meta.dice || '1d6') : '1d6';
     const selected = values[key] || '';
     const selectedOpt = opts.find(o => (typeof o === 'object' ? o.value : o) === selected);
     const sources = selectedOpt && typeof selectedOpt === 'object' ? selectedOpt.sources : (roleSpecific ? ['CP:R'] : []);
     const info = APP_I18N.current() === 'en'
-      ? (roleSpecific ? 'This question refines the Role’s professional history, habits, and connections.' : (LIFEPATH_QUESTION_EN[key] || 'This question establishes an important part of the character’s history.'))
+      ? (roleSpecific ? (ROLE_LIFEPATH_QUESTION_EN[key] || 'This question refines the Role’s professional history, habits, and connections.') : (LIFEPATH_QUESTION_EN[key] || 'This question establishes an important part of the character’s history.'))
       : (roleSpecific ? (ROLE_LIFEPATH_QUESTION_INFO[key] || 'Этот вопрос уточняет профессиональную историю, связи и привычки роли.') : (LIFEPATH_QUESTION_INFO[key] || 'Этот вопрос задаёт важную деталь предыстории персонажа.'));
-    return `<div class="lp-item">
-      <div class="lp-label">${esc(label)}</div>
-      <div class="small muted lp-question-info">${esc(info)}</div>
-      <div class="row" style="align-items:center;gap:6px;flex-wrap:nowrap">
-        <select ${attr}="${key}" style="flex:1;min-width:0">
-          <option value="">— не выбрано —</option>
+    const wiz = state.wizard || {};
+    const customAllowed = key !== 'region';
+    const customMode = customAllowed && (!!((wiz.lpCustom || {})[key]) || (!!selected && !selectedOpt));
+    const rollable = dice !== 'choose' && opts.length > 0;
+    const control = customMode
+      ? `<input ${attr}-customof="${key}" style="flex:1;min-width:0" maxlength="240" value="${esc(selected)}" placeholder="${esc(T('Your own answer…', 'Свой вариант…'))}">
+         <button class="btn-sm" ${attr}-list="${key}" title="${esc(T('Back to the book list', 'Вернуться к списку книги'))}">↩</button>`
+      : `<select ${attr}="${key}" style="flex:1;min-width:0">
+          <option value="">— ${esc(T('not chosen', 'не выбрано'))} —</option>
           ${opts.map(raw => {
             const value = typeof raw === 'object' ? raw.value : raw;
             const tag = typeof raw === 'object' ? ` · ${raw.sources.join('+')}` : '';
             return `<option value="${esc(value)}" ${selected === value ? 'selected' : ''}>${esc(displayKnownValue(value) + tag)}</option>`;
           }).join('')}
         </select>
-        <button class="btn-sm" ${diceAttr}="${key}" title="Случайный результат">🎲</button>
+        ${rollable ? `<button class="btn-sm" ${diceAttr}="${key}" title="${esc(T('Roll ' + dice + ' (book dice)', 'Бросок ' + dice + ' (кубик книги)'))}">🎲</button>` : ''}
+        ${customAllowed ? `<button class="btn-sm" ${attr}-custom="${key}" title="${esc(T('Write your own answer', 'Написать свой вариант'))}">✎</button>` : ''}`;
+    return `<div class="lp-item">
+      <div class="lp-label">${esc(label)}${meta && meta.dice === 'choose' ? ` <span class="small muted">${esc(T('(choose)', '(выбор)'))}</span>` : ''}</div>
+      <div class="small muted lp-question-info">${esc(info)}</div>
+      <div class="row" style="align-items:center;gap:6px;flex-wrap:nowrap">
+        ${control}
       </div>
       ${lifepathResultInfo(key, selected, sources, roleSpecific)}
     </div>`;
@@ -642,7 +701,7 @@ function lifepathSectionHtml(id, en, ru, keys, fields, values, roleSpecific) {
 }
 
 function wizStepLifepathHtml() {
-  const wiz = state.wizard, fields = lpAllFields(), roleFields = wiz.role ? lpRoleField(wiz.role) : [];
+  const wiz = state.wizard, fields = lpAllFields(), roleFields = wiz.role ? lpRoleField(wiz.role, wiz.roleLifepath) : [];
   const langs = languagesForRegion(wiz.lifepath.region);
   const commonDone = lifepathProgress(fields, wiz.lifepath), roleDone = lifepathProgress(roleFields, wiz.roleLifepath);
   wiz.nameGender = wiz.nameGender || 'neutral';
@@ -1211,7 +1270,7 @@ function wizValidationErrors() {
   if(!w.nativeLanguage)errors.push(T('Lifepath: choose a Cultural Language','Lifepath: выберите культурный язык'));
   if(!String(w.handle||'').trim())errors.push('Identity: Handle');
   const commonMissing=lpAllFields().filter(([key])=>!w.lifepath[key]).length;if(commonMissing)errors.push(`${T('Common Lifepath missing','Не заполнен общий Lifepath')}: ${commonMissing}`);
-  if(w.role){const missing=lpRoleField(w.role).filter(([key])=>!w.roleLifepath[key]).length;if(missing)errors.push(`${w.role} Role-Based Lifepath: ${missing}`);}
+  if(w.role){const missing=lpRoleField(w.role, w.roleLifepath).filter(([key])=>!w.roleLifepath[key]).length;if(missing)errors.push(`${w.role} Role-Based Lifepath: ${missing}`);}
   if(creationMainRemaining(w)<0)errors.push(T('Shopping: Main Budget exceeded','Закупка: превышен основной бюджет'));
   if(w.fashionCost>FASHION_BUDGET)errors.push(T('Shopping: Style Budget exceeded','Закупка: превышен Style Budget'));
   for(const [base] of SUB_SKILL_BASES){const children=w.subSkills.filter(sub=>sub.base===base&&!sub.native&&(sub.lvl||0)>0);if(children.some(sub=>!String(sub.name||'').trim()))errors.push(`${base}: ${T('a non-zero specialization needs a name','ненулевой специализации нужно название')}`);const names=children.map(sub=>String(sub.name).trim().toLowerCase());if(new Set(names).size!==names.length)errors.push(`${base}: ${T('duplicate specialization','дублирующаяся специализация')}`);if(wizSubAllocated(base)>(num(w.skills[base])||0))errors.push(`${base}: children > parent pool`);}
@@ -1604,11 +1663,17 @@ function bindWizStep() {
     $$('[data-name-gender]',body).forEach(button=>button.onclick=()=>{wiz.nameGender=button.dataset.nameGender;renderWizard();});
     $$('[data-generate-name]',body).forEach(button=>button.onclick=()=>{generateWizardName(button.dataset.generateName);renderWizard();});
     $$('[data-lp]',body).forEach(select=>select.onchange=()=>{setLifepathValue(select.dataset.lp,select.value);renderWizard();});
-    $$('[data-role-lp]',body).forEach(select=>select.onchange=()=>{wiz.roleLifepath[select.dataset.roleLp]=select.value;renderWizard();});
+    $$('[data-role-lp]',body).forEach(select=>select.onchange=()=>{setRoleLifepathValue(select.dataset.roleLp,select.value);renderWizard();});
     $$('[data-lp-dice]',body).forEach(button=>button.onclick=()=>{wizRollHybrid(button.dataset.lpDice,false);renderWizard();});
     $$('[data-role-lp-dice]',body).forEach(button=>button.onclick=()=>{wizRollHybrid(button.dataset.roleLpDice,true);renderWizard();});
+    $$('[data-lp-custom]',body).forEach(button=>button.onclick=()=>{wiz.lpCustom=wiz.lpCustom||{};wiz.lpCustom[button.dataset.lpCustom]=!wiz.lpCustom[button.dataset.lpCustom];renderWizard();});
+    $$('[data-role-lp-custom]',body).forEach(button=>button.onclick=()=>{wiz.lpCustom=wiz.lpCustom||{};wiz.lpCustom[button.dataset.roleLpCustom]=!wiz.lpCustom[button.dataset.roleLpCustom];renderWizard();});
+    $$('[data-lp-customof]',body).forEach(input=>{input.oninput=()=>{setLifepathValue(input.dataset.lpCustomof,input.value);};input.onchange=()=>renderWizard();});
+    $$('[data-role-lp-customof]',body).forEach(input=>{input.oninput=()=>{setRoleLifepathValue(input.dataset.roleLpCustomof,input.value);};input.onchange=()=>renderWizard();});
+    $$('[data-lp-list]',body).forEach(button=>button.onclick=()=>{wiz.lpCustom=wiz.lpCustom||{};wiz.lpCustom[button.dataset.lpList]=false;setLifepathValue(button.dataset.lpList,'');renderWizard();});
+    $$('[data-role-lp-list]',body).forEach(button=>button.onclick=()=>{wiz.lpCustom=wiz.lpCustom||{};wiz.lpCustom[button.dataset.roleLpList]=false;setRoleLifepathValue(button.dataset.roleLpList,'');renderWizard();});
     const native=$('#lp-native');if(native)native.onchange=()=>{wiz.nativeLanguage=native.value;syncNativeLanguage();renderWizard();};
-    $('#lp-fill-missing').onclick=()=>{lpAllFields().forEach(([key])=>{if(!wiz.lifepath[key])wizRollHybrid(key,false);});if(wiz.role)lpRoleField(wiz.role).forEach(([key])=>{if(!wiz.roleLifepath[key])wizRollHybrid(key,true);});syncNativeLanguage();renderWizard();toast(T('Missing Lifepath fields filled.','Пустые поля Lifepath заполнены.'));};$('#lp-gen-all').onclick=()=>{if(Object.keys(wiz.lifepath||{}).length&&!window.confirm(T('Replace every Lifepath result?','Заменить все результаты Lifepath?')))return;lpAllFields().forEach(([key])=>wizRollHybrid(key,false));if(wiz.role)lpRoleField(wiz.role).forEach(([key])=>wizRollHybrid(key,true));syncNativeLanguage();renderWizard();toast(T('Hybrid Lifepath generated.','Hybrid Lifepath сгенерирован.'));};
+    $('#lp-fill-missing').onclick=()=>{lpAllFields().forEach(([key])=>{if(!wiz.lifepath[key])wizRollHybrid(key,false);});if(wiz.role)(ROLE_LIFEPATH_BOOK[wiz.role]||[]).forEach(q=>{if(lifepathBookVisible(wiz.role,q.key,wiz.roleLifepath)&&!wiz.roleLifepath[q.key])wizRollHybrid(q.key,true);});syncNativeLanguage();renderWizard();toast(T('Missing Lifepath fields filled.','Пустые поля Lifepath заполнены.'));};$('#lp-gen-all').onclick=()=>{if(Object.keys(wiz.lifepath||{}).length&&!window.confirm(T('Replace every Lifepath result?','Заменить все результаты Lifepath?')))return;lpAllFields().forEach(([key])=>wizRollHybrid(key,false));if(wiz.role)(ROLE_LIFEPATH_BOOK[wiz.role]||[]).forEach(q=>{if(lifepathBookVisible(wiz.role,q.key,wiz.roleLifepath))wizRollHybrid(q.key,true);});syncNativeLanguage();renderWizard();toast(T('Hybrid Lifepath generated.','Hybrid Lifepath сгенерирован.'));};
   }
   if(step===3){
     $$('[data-stat-step]',body).forEach(button=>button.onclick=()=>{const [stat,raw]=button.dataset.statStep.split('|'),delta=Number(raw),current=num(wiz.stats[stat])||5;if(delta>0&&wizStatSpent()>=62)return;wiz.stats[stat]=Math.max(2,Math.min(8,current+delta));renderWizard();});

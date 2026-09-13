@@ -188,6 +188,11 @@ def clean_character(data):
     out['handle'] = str(out.get('handle') or '').strip()[:60]
     if not out['handle']:
         raise ApiError(400, 'Нужен псевдоним (Handle) персонажа')
+    if out.get('role_lifepath') is not None:
+        if not isinstance(out.get('role_lifepath'), dict):
+            raise ApiError(400, 'role_lifepath должен быть объектом')
+        out['role_lifepath'] = normalize_role_lifepath(
+            str(out.get('role') or ''), out['role_lifepath'])
     out['first_name'] = str(out.get('first_name') or '').strip()[:60]
     out['last_name'] = str(out.get('last_name') or '').strip()[:60]
     for k in ('notes', 'appearance', 'background', 'player'):
@@ -235,6 +240,95 @@ TRUST_EDIT_TEXT_LIMITS = {
     'appearance': 4000, 'background': 4000, 'languages': 500,
     'lifestyle': 200, 'housing': 200, 'notes': 20000,
 }
+# Книжный Role-Based Lifepath (CP:R pp. 54–69): обязательные поля с условиями.
+# cond=None — поле обязательно всегда; иначе вызывается с текущим role_lifepath.
+_ROLE_LP_SOLO_ACT = lambda rl: rl.get('current_act') == 'Сольный проект'  # noqa: E731
+_ROLE_LP_LEFT_GROUP = lambda rl: (  # noqa: E731
+    rl.get('current_act') == 'Сольный проект'
+    and rl.get('once_group') == 'Раньше состоял в группе')
+_ROLE_LP_HAS_PARTNER = lambda rl: rl.get('partner') == 'Есть партнёр'  # noqa: E731
+
+ROLE_LIFEPATH_RULES = {
+    'Rockerboy': (('kind', None), ('current_act', None), ('venue', None), ('enemy', None),
+                  ('once_group', _ROLE_LP_SOLO_ACT), ('leave_reason', _ROLE_LP_LEFT_GROUP)),
+    'Solo': (('kind', None), ('moral', None), ('enemy', None), ('territory', None)),
+    'Netrunner': (('kind', None), ('partner', None), ('partner_who', _ROLE_LP_HAS_PARTNER),
+                  ('workspace', None), ('clients', None), ('supplies', None), ('enemy', None)),
+    'Tech': (('kind', None), ('partner', None), ('partner_who', _ROLE_LP_HAS_PARTNER),
+             ('workspace', None), ('clients', None), ('supplies', None), ('enemy', None)),
+    'Medtech': (('kind', None), ('partner', None), ('partner_who', _ROLE_LP_HAS_PARTNER),
+                ('workspace', None), ('clients', None), ('supplies', None)),
+    'Media': (('kind', None), ('channel', None), ('ethics', None), ('stories', None)),
+    'Exec': (('kind', None), ('division', None), ('ethics', None),
+             ('base', None), ('enemy', None), ('boss', None)),
+    'Lawman': (('position', None), ('jurisdiction', None), ('corruption', None),
+               ('enemy', None), ('target', None)),
+    'Fixer': (('kind', None), ('partner', None), ('partner_who', _ROLE_LP_HAS_PARTNER),
+              ('office', None), ('clients', None), ('enemy', None)),
+    'Nomad': (('size', None), ('domain', None), ('activity', None),
+              ('duty', None), ('philosophy', None), ('enemy', None)),
+}
+
+ROLE_LIFEPATH_ACT_MIGRATION = {
+    'Состоишь в группе': {'current_act': 'Состоишь в группе'},
+    'Всегда выступал соло': {'current_act': 'Сольный проект', 'once_group': 'Всегда выступал соло'},
+    'Ушёл из группы по своей воле': {
+        'current_act': 'Сольный проект', 'once_group': 'Раньше состоял в группе',
+        'leave_reason': 'Ты решил идти соло.'},
+    'Тебя выгнали из группы': {
+        'current_act': 'Сольный проект', 'once_group': 'Раньше состоял в группе',
+        'leave_reason': 'Ты был мудаком, и группа проголосовала за то, чтобы тебя выгнали.'},
+    'Группа распалась из-за творческих разногласий': {
+        'current_act': 'Сольный проект', 'once_group': 'Раньше состоял в группе',
+        'leave_reason': 'Группа распалась из-за «творческих разногласий».'},
+    'Группу уничтожили внешние враги': {
+        'current_act': 'Сольный проект', 'once_group': 'Раньше состоял в группе',
+        'leave_reason': 'Остальные члены группы были убиты, а группа разрушена внешними врагами.'},
+}
+
+ROLE_LIFEPATH_PARTNER_WHO = {
+    'Netrunner': ('Партнёр — родственник', 'Партнёр — старый друг', 'Партнёр и возможная любовь',
+                  'Секретный партнёр — возможно, ИИ', 'Партнёр со связями в банде',
+                  'Партнёр с корпоративными связями'),
+    'Tech': ('Партнёр — родственник', 'Партнёр — старый друг', 'Партнёр и возможная любовь',
+             'Партнёр — наставник', 'Партнёр со связями в банде', 'Партнёр с корпоративными связями'),
+    'Medtech': ('Команда Trauma Team', 'Старый друг', 'Партнёр и возможная любовь',
+                'Родственник', 'Партнёр со связями в банде', 'Партнёр с корпоративными связями'),
+    'Fixer': ('Партнёр — родственник', 'Партнёр — старый друг', 'Партнёр и возможная любовь',
+              'Партнёр — наставник', 'Партнёр с криминальными связями',
+              'Партнёр с корпоративными связями'),
+}
+
+
+def normalize_role_lifepath(role, raw):
+    """Приводит role_lifepath к книжной схеме: миграция слитых act/partner,
+    очистка условных полей, ограничение длины своего текста."""
+    rl = dict(raw or {})
+    if role == 'Rockerboy':
+        act = rl.pop('act', None)
+        if act and not rl.get('current_act'):
+            mapped = ROLE_LIFEPATH_ACT_MIGRATION.get(str(act))
+            if mapped:
+                rl.update(mapped)
+    who = ROLE_LIFEPATH_PARTNER_WHO.get(role)
+    if who:
+        partner = str(rl.get('partner') or '')
+        if partner and not rl.get('partner_who') and partner in who:
+            rl['partner_who'] = partner
+            rl['partner'] = 'Есть партнёр'
+        if rl.get('partner') == 'Работаешь один':
+            rl.pop('partner_who', None)
+    if role == 'Rockerboy':
+        if rl.get('current_act') != 'Сольный проект':
+            rl.pop('once_group', None)
+            rl.pop('leave_reason', None)
+        if rl.get('once_group') != 'Раньше состоял в группе':
+            rl.pop('leave_reason', None)
+    for key, value in list(rl.items()):
+        rl[key] = str(value)[:240]
+    return rl
+
+
 ITEM_ACQUISITION_SOURCES = {
     'loot', 'gift', 'crafted', 'role_access', 'gm_award', 'custom', 'other',
     'fixer',
@@ -2075,21 +2169,11 @@ def validate_creation(data):
     region_key = next((key for key in CULTURAL_LANGUAGES if region.startswith(key)), None)
     if not region_key or native not in CULTURAL_LANGUAGES[region_key]:
         raise ApiError(400, 'Культурный язык должен соответствовать происхождению Lifepath')
-    role_lifepath = data.get('role_lifepath') or {}
-    role_required = {
-        'Rockerboy': ('kind', 'act', 'venue', 'enemy'),
-        'Solo': ('kind', 'moral', 'enemy', 'territory'),
-        'Netrunner': ('kind', 'partner', 'workspace', 'clients', 'supplies', 'enemy'),
-        'Tech': ('kind', 'partner', 'workspace', 'clients', 'supplies', 'enemy'),
-        'Medtech': ('kind', 'partner', 'workspace', 'clients', 'supplies'),
-        'Media': ('kind', 'channel', 'ethics', 'stories'),
-        'Exec': ('kind', 'division', 'ethics', 'base', 'enemy', 'boss'),
-        'Lawman': ('position', 'jurisdiction', 'corruption', 'enemy', 'target'),
-        'Fixer': ('kind', 'partner', 'office', 'clients', 'enemy'),
-        'Nomad': ('size', 'domain', 'activity', 'duty', 'philosophy', 'enemy'),
-    }[role]
-    if not isinstance(role_lifepath, dict) or any(
-            not str(role_lifepath.get(key) or '').strip() for key in role_required):
+    role_lifepath = normalize_role_lifepath(role, data.get('role_lifepath') or {})
+    data['role_lifepath'] = role_lifepath
+    role_rules = ROLE_LIFEPATH_RULES[role]
+    if any(not str(role_lifepath.get(key) or '').strip()
+           for key, cond in role_rules if cond is None or cond(role_lifepath)):
         raise ApiError(400, 'Заполните все поля Lifepath выбранной роли')
 
     setup = data.get('role_setup') or {}

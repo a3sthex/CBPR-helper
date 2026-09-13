@@ -48,6 +48,279 @@ const NC_MAP_COORDS = {
   badlands:[900,315],'badlands-near-westbrook':[905,410],'badlands-near-santo-domingo':[910,650],'badlands-near-pacifica':[650,875],
   'orbital-air-space-center':[245,395],
 };
+// P-Map: собственная векторная геометрия Найт-Сити (viewBox 0..1000, совпадает
+// с координатами маркеров). Полигоны районов содержат якоря NC_MAP_COORDS и
+// сид-точки NC_SEED_LOCATIONS — это проверяется контрактом в tests/test_frontend_v3.py.
+const NC_MAP_GEOMETRY_RAW = {
+  watson:[[430,92],[560,60],[700,75],[720,150],[700,220],[690,300],[640,330],[430,330],[410,250],[400,180]],
+  westbrook:[[690,300],[700,220],[760,240],[830,290],[880,420],[870,560],[750,585],[660,470],[640,380],[640,330]],
+  'city-center':[[430,330],[640,330],[660,470],[640,520],[430,520],[410,430]],
+  heywood:[[430,520],[640,520],[660,600],[620,700],[470,700],[420,600],[410,560]],
+  'santo-domingo':[[660,560],[870,560],[880,700],[830,800],[700,810],[660,760],[640,700],[620,700],[660,600]],
+  pacifica:[[470,700],[620,700],[600,740],[580,860],[560,880],[450,890],[390,800],[370,760],[400,700]],
+  badlands:[[860,200],[1000,112],[1000,910],[640,910],[620,870],[660,830],[680,840],[700,810],[660,760],[640,730],[640,700],[660,660],[660,560],[750,585],[870,560],[880,420],[830,290]],
+  'orbital-air-space-center':[[150,300],[260,268],[330,330],[345,395],[300,470],[190,470],[128,380]],
+};
+const NC_MAP_LAND_RAW = [[560,60],[700,75],[720,150],[760,240],[830,290],[860,200],[1000,112],[1000,910],[640,910],[620,870],[660,830],[680,840],[700,810],[660,760],[640,730],[600,740],[580,860],[560,880],[450,890],[390,800],[370,760],[400,700],[420,600],[410,560],[430,520],[410,430],[430,330],[410,250],[400,180],[430,92]];
+const NC_MAP_ISLANDS = [
+  'M150,300 L300,275 L345,395 L300,470 L170,470 L128,380 Z', // Орбитал-Эйр
+];
+const NC_MAP_ROADS = [
+  'M545,75 C520,190 505,300 508,420 C512,560 522,700 505,865',          // магистраль N-S
+  'M468,332 C428,382 428,468 468,514 C518,546 598,546 638,510 C674,464 674,376 638,336 C598,306 508,306 468,332 Z', // кольцо Центра
+  'M402,432 C560,412 700,436 862,470',                                    // магистраль W-E
+  'M642,522 C700,600 762,682 832,762',                                    // диагональ на ЮВ
+  'M432,702 C462,782 522,842 602,862',                                    // прибрежная
+  'M452,182 C540,168 620,176 688,208',                                    // дуга Уотсона
+  'M345,400 L402,412',                                                    // мост в Орбитал-Эйр
+];
+const NC_MAP_STREETS = [
+  'M560,332 L560,518', 'M470,340 L470,510', 'M600,340 L600,510',
+  'M440,600 L640,600', 'M450,240 L660,240', 'M700,360 L840,360',
+  'M700,480 L840,480', 'M680,640 L850,640', 'M700,720 L840,720',
+  'M440,780 L600,780',
+];
+// P-Map: цвета районов в духе эталонной карты Night City (каждому району — свой
+// контур и цвет подписи). В режиме «ЦВЕТА ТЕМЫ» переопределяются CSS-переменными.
+const NC_MAP_DISTRICT_COLORS = {
+  watson: '#ff4655',
+  westbrook: '#ff8a3d',
+  'city-center': '#ffb347',
+  heywood: '#52e07a',
+  pacifica: '#e05cff',
+  'santo-domingo': '#6d7dff',
+  badlands: '#8fa0b0',
+  'orbital-air-space-center': '#7fd4e0',
+};
+// Декоративные мелочи: причалы, терминал аэропорта, дороги и поселения Пустошей,
+// солнечная ферма, развязки. Всё — оригинальная векторная графика NC//NET.
+const NC_MAP_PIERS_RAW = [
+  'M408,150 L360,140', 'M410,180 L362,172', 'M414,215 L368,208', 'M416,250 L372,244', // набережная Арасаки
+  'M415,470 L372,462', 'M418,498 L378,492', 'M422,516 L384,512',                       // порт Даунтауна
+  'M592,780 L634,776', 'M588,820 L630,816',                                           // доки канала Коронадо
+  'M700,812 L694,846', 'M740,810 L736,844',                                           // причалы Коронадо
+  'M445,888 L432,918',                                                                 // пристань Пасифики
+];
+// Корни причалов утоплены в сушу: берег теперь «дышит», стык не разъезжается.
+const NC_MAP_PIERS = NC_MAP_PIERS_RAW.map(d => {
+  const m = d.match(/M([\d.]+),([\d.]+) L([\d.]+),([\d.]+)/);
+  let rx = +m[1], ry = +m[2]; const tx = +m[3], ty = +m[4];
+  const dx = rx - tx, dy = ry - ty, l = Math.hypot(dx, dy) || 1;
+  rx = Math.round((rx + dx / l * 16) * 10) / 10; ry = Math.round((ry + dy / l * 16) * 10) / 10;
+  return `M${rx},${ry} L${tx},${ty}`;
+});
+const NC_MAP_AIRPORT = {
+  apron: 'M210,360 L282,352 L302,412 L240,432 Z',
+  terminal: [232, 384, 30, 14],
+  taxiways: ['M246,392 L246,362', 'M262,400 L300,382', 'M228,404 L204,420'],
+};
+const NC_MAP_BADLANDS_ROADS = [
+  'M880,180 C900,260 892,340 908,420 C924,500 900,560 916,640 C930,700 908,760 920,840',
+  'M700,860 C760,846 820,868 880,852',
+  'M860,420 C900,440 940,430 990,450',
+  'M680,800 C720,820 760,810 800,830',
+];
+const NC_MAP_BADLANDS_TRAILS = [
+  'M900,140 C905,220 895,300 902,380',
+  'M700,900 C760,890 820,898 880,890',
+];
+const NC_MAP_BADLANDS_PATCHES = [
+  [934, 252, 16, 8], [948, 262, 10, 6], [926, 266, 8, 5],
+  [922, 692, 14, 7], [938, 700, 9, 5],
+  [700, 780, 15, 7], [716, 790, 9, 5],
+];
+const NC_MAP_SOLAR = { x: 760, y: 838, w: 132, h: 58, skew: -18 };
+const NC_MAP_INTERCHANGES = [[508, 332], [508, 514], [640, 470], [430, 432], [662, 560]];
+// P-Map: «ткань города» — детерминированные контуры домов вместо ровной сетки.
+// У каждого района свой угол застройки, поэтому кварталы выглядят органично.
+function ncMapMulberry(seed){return function(){seed|=0;seed=seed+0x6D2B79F5|0;let t=Math.imul(seed^seed>>>15,1|seed);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+function ncMapPointInPoly(poly, x, y){
+  let ok=false;
+  for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+    const xi=poly[i][0],yi=poly[i][1],xj=poly[j][0],yj=poly[j][1];
+    if((yi>y)!==(yj>y)&&x<((xj-xi)*(y-yi))/(yj-yi)+xi)ok=!ok;
+  }
+  return ok;
+}
+// P-Map: «живая» береговая линия. Детерминированное шумовое поле смещает точки
+// контуров так, что берег становится изрезанным, как настоящий, а общие границы
+// районов и суши совпадают без швов (смещение зависит только от координат).
+function ncMapNoise(x,y){const h=Math.sin(x*127.1+y*311.7)*43758.5453;return h-Math.floor(h);}
+function ncMapSmoothNoise(x,y){
+  const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi;
+  const u=xf*xf*(3-2*xf),v=yf*yf*(3-2*yf);
+  const a=ncMapNoise(xi,yi),b=ncMapNoise(xi+1,yi),c=ncMapNoise(xi,yi+1),d=ncMapNoise(xi+1,yi+1);
+  return (a+(b-a)*u+(c-a)*v+(a-b-c+d)*u*v)*2-1;
+}
+function ncMapFractal(x,y){
+  return ncMapSmoothNoise(x/70+3.7,y/70+8.1)*0.35+ncMapSmoothNoise(x/30,y/30)*0.45+ncMapSmoothNoise(x/11+7.3,y/11+3.1)*0.45+ncMapSmoothNoise(x/4.5+19.7,y/4.5+11.3)*0.18;
+}
+function ncMapOrganic(points,amp){
+  const out=[];
+  for(let i=0;i<points.length;i++){
+    const a=points[i],b=points[(i+1)%points.length];
+    const len=Math.hypot(b[0]-a[0],b[1]-a[1]);
+    const segs=Math.max(1,Math.round(len/5));
+    for(let k=0;k<segs;k++){
+      const t=k/segs;
+      const x=a[0]+(b[0]-a[0])*t,y=a[1]+(b[1]-a[1])*t;
+      const nx=ncMapFractal(x,y),ny=ncMapFractal(x+91.7,y+47.3);
+      out.push([Math.round((x+nx*amp)*10)/10,Math.round((y+ny*amp)*10)/10]);
+    }
+  }
+  return out;
+}
+const NC_MAP_GEOMETRY = Object.fromEntries(Object.entries(NC_MAP_GEOMETRY_RAW).map(([id,pts])=>[id,ncMapOrganic(pts,id==='orbital-air-space-center'?5:12)]));
+const NC_MAP_LAND = ncMapPolygon(ncMapOrganic(NC_MAP_LAND_RAW,12));
+const NC_MAP_DISTRICT_ANGLE={watson:-6,westbrook:8,'city-center':0,heywood:-4,'santo-domingo':-10,pacifica:14};
+const NC_MAP_BUILDINGS=(()=>{
+  const out={};
+  for(const id of Object.keys(NC_MAP_DISTRICT_ANGLE)){
+    const poly=NC_MAP_GEOMETRY[id];
+    const xs=poly.map(p=>p[0]),ys=poly.map(p=>p[1]);
+    const cx=(Math.min(...xs)+Math.max(...xs))/2, cy=(Math.min(...ys)+Math.max(...ys))/2;
+    const a=(NC_MAP_DISTRICT_ANGLE[id]||0)*Math.PI/180, ca=Math.cos(a), sa=Math.sin(a);
+    const rnd=ncMapMulberry(1000+id.length*77+id.charCodeAt(0)*13);
+    const list=[];
+    for(let u=-260;u<=260;u+=17){
+      for(let v=-260;v<=260;v+=15){
+        const jx=(rnd()-0.5)*5, jy=(rnd()-0.5)*5;
+        const px=cx+ca*u-sa*v+jx, py=cy+sa*u+ca*v+jy;
+        if(!ncMapPointInPoly(poly,px,py))continue;
+        if(rnd()<0.42)continue;
+        const w=8+rnd()*10, h=6+rnd()*7;
+        const corners=[];
+        for(const [du,dv] of [[-w/2,-h/2],[w/2,-h/2],[w/2,h/2],[-w/2,h/2]]){
+          corners.push(Math.round((px+ca*du-sa*dv)*10)/10, Math.round((py+sa*du+ca*dv)*10)/10);
+        }
+        corners.push(Math.round((4+rnd()*((id==='city-center'||id==='watson')?26:16)))*10/10); // высота для 3D
+        list.push(corners);
+      }
+    }
+    out[id]=list;
+  }
+  return out;
+})();
+// Проспекты вдоль осей застройки (обрезаются по контуру района через clip-path).
+const NC_MAP_AVENUES=(()=>{
+  const out={};
+  for(const id of Object.keys(NC_MAP_DISTRICT_ANGLE)){
+    const poly=NC_MAP_GEOMETRY[id];
+    const xs=poly.map(p=>p[0]),ys=poly.map(p=>p[1]);
+    const cx=(Math.min(...xs)+Math.max(...xs))/2, cy=(Math.min(...ys)+Math.max(...ys))/2;
+    const a=(NC_MAP_DISTRICT_ANGLE[id]||0)*Math.PI/180, ca=Math.cos(a), sa=Math.sin(a);
+    const line=(u1,v1,u2,v2)=>[Math.round(cx+ca*u1-sa*v1),Math.round(cy+sa*u1+ca*v1),Math.round(cx+ca*u2-sa*v2),Math.round(cy+sa*u2+ca*v2)];
+    out[id]=[line(-260,-45,260,-45),line(-260,0,260,0),line(-260,45,260,45),line(0,-260,0,260),line(-90,-260,-90,260),line(90,-260,90,260)];
+  }
+  return out;
+})();
+const NC_MAP_PARKS=[
+  [[800,352],[850,344],[864,392],[820,410]],   // Норт-Оукс
+  [[520,636],[562,632],[568,672],[528,678]],   // Глен
+  [[768,486],[812,482],[820,520],[778,528]],   // Чартер-Хилл
+];
+const NC_MAP_CONTOURS=[
+  'M800,350 C830,340 860,352 866,382 C860,410 820,418 796,404 C782,384 786,360 800,350 Z',
+  'M810,368 C828,362 846,370 850,388 C846,404 822,408 808,398 C800,386 802,374 810,368 Z',
+  'M770,486 C800,478 826,492 828,516 C820,536 786,540 768,524 C760,508 762,494 770,486 Z',
+  'M870,140 C860,220 880,300 862,380 C850,440 872,520 858,600',
+];
+// Внутренние границы подрайонов (сугубо схематичные, как в оригинальной разметке).
+const NC_MAP_SUBDIVISIONS = [
+  'M470,92 L455,300', 'M560,80 L560,330', 'M610,150 L690,180',           // Watson
+  'M660,380 L860,380', 'M750,440 L750,585',                              // Westbrook
+  'M520,330 L520,520', 'M430,470 L640,470',                              // City Center
+  'M530,520 L530,700', 'M430,600 L650,600',                              // Heywood
+  'M760,560 L760,790', 'M660,660 L872,660',                              // Santo Domingo
+  'M500,700 L500,880', 'M420,780 L620,780',                              // Pacifica
+  'M880,360 L1000,360', 'M880,560 L1000,560', 'M760,800 L760,910',       // Badlands
+];
+// P-Map: ручные сдвиги подписей подрайонов, которые иначе наезжали бы на имя района.
+const NC_MAP_LABEL_NUDGE = {
+  'watson-arasaka-waterfront': [445, 232],
+  'heywood-vista-del-rey': [615, 588],
+};
+let NC_MAP_BASE_CACHE = {};
+function ncMapPolygon(points){return 'M' + points.map(p => p[0] + ',' + p[1]).join(' L') + ' Z';}
+// P-Map: длинные названия (например, РУ-имя Орбитал-Эйр) переносим на две строки,
+// чтобы подпись не выпадала за пределы своего района.
+function ncMapLabelLines(name, x, size){
+  const wide = name.length * size * 0.62;
+  const words = name.split(' ');
+  if(wide <= 240 || words.length < 2) return esc(name);
+  let best = 1, bestDiff = Infinity;
+  for(let i = 1; i < words.length; i++){
+    const a = words.slice(0, i).join(' ').length, b = words.slice(i).join(' ').length;
+    const diff = Math.abs(a - b);
+    if(diff < bestDiff){ bestDiff = diff; best = i; }
+  }
+  return `<tspan x="${x}" dy="-0.35em">${esc(words.slice(0, best).join(' '))}</tspan>` +
+         `<tspan x="${x}" dy="1.15em">${esc(words.slice(best).join(' '))}</tspan>`;
+}
+function ncMapBaseSvg(){
+  const lang = APP_I18N.current();
+  if(NC_MAP_BASE_CACHE[lang]) return NC_MAP_BASE_CACHE[lang];
+  const districts = Object.keys(NC_MAP_GEOMETRY).map(id => {
+    const d = ncMapPolygon(NC_MAP_GEOMETRY[id]);
+    const texture = id === 'badlands' ? 'url(#ncScrub)' : (id === 'orbital-air-space-center' ? '' : 'url(#ncBlocks)');
+    return `<path class="nc-md-base nc-mdf-${id}" d="${d}"></path>` + (texture ? `<path class="nc-md-tex" d="${d}" fill="${texture}"></path>` : '');
+  }).join('');
+  const borders = Object.entries(NC_MAP_GEOMETRY).map(([id, pts]) => `<path class="nc-mbd-${id}" d="${ncMapPolygon(pts)}"></path>`).join('');
+  const solar = (() => {
+    const lines = [];
+    for(let x = 0; x <= NC_MAP_SOLAR.w; x += 12) lines.push(`M${x},0 L${x},${NC_MAP_SOLAR.h}`);
+    for(let y = 0; y <= NC_MAP_SOLAR.h; y += 14) lines.push(`M0,${y} L${NC_MAP_SOLAR.w},${y}`);
+    return lines.map(d => `<path d="${d}"></path>`).join('');
+  })();
+  const labels = NC_DISTRICTS.map(district => {
+    const anchor = NC_MAP_COORDS[district.id] || [500, 500];
+    const big = district.children.length === 0 ? 13 : 26;
+    const parts = [`<text class="nc-ml-district nc-mlc-${district.id}" x="${anchor[0]}" y="${anchor[1]}" font-size="${big}" text-anchor="middle">${ncMapLabelLines(T(district.en, district.ru), anchor[0], big)}</text>`];
+    for(const child of district.children){
+      const ca = NC_MAP_LABEL_NUDGE[child.id] || NC_MAP_COORDS[child.id];
+      if(ca) parts.push(`<text class="nc-ml-sub nc-mlc-${district.id}" x="${ca[0]}" y="${ca[1] + 16}" text-anchor="middle">${esc(T(child.en, child.ru))}</text>`);
+    }
+    return parts.join('');
+  }).join('');
+  const svg = `<svg class="nc-map-base" viewBox="0 0 1000 1000" role="img" aria-label="${esc(T('Stylized vector map of Night City', 'Стилизованная векторная карта Найт-Сити'))}">
+    <defs>
+      <pattern id="ncWater" width="18" height="18" patternUnits="userSpaceOnUse"><path d="M0,18 L18,0" stroke="var(--map-waterline)" stroke-width="1"></path></pattern>
+      <pattern id="ncBlocks" width="26" height="20" patternUnits="userSpaceOnUse"><rect x="4" y="4" width="14" height="9" fill="var(--map-block)"></rect><rect x="20" y="13" width="4" height="5" fill="var(--map-block)"></rect></pattern>
+      <pattern id="ncScrub" width="36" height="30" patternUnits="userSpaceOnUse"><path d="M6,22 L18,16" stroke="var(--map-block)" stroke-width="2"></path><path d="M24,8 L30,6" stroke="var(--map-block)" stroke-width="1.5"></path></pattern>
+      ${Object.keys(NC_MAP_DISTRICT_ANGLE).map(id => `<clipPath id="ncc-${id}"><path d="${ncMapPolygon(NC_MAP_GEOMETRY[id])}"></path></clipPath>`).join('')}
+    </defs>
+    <rect class="nc-m-water" width="1000" height="1000"></rect>
+    <rect width="1000" height="1000" fill="url(#ncWater)" opacity=".5"></rect>
+    <path class="nc-m-shallow-2" d="${NC_MAP_LAND}"></path>
+    <path class="nc-m-shallow" d="${NC_MAP_LAND}"></path>
+    <path class="nc-m-land" d="${NC_MAP_LAND}"></path>
+    ${NC_MAP_ISLANDS.map(d => `<path class="nc-m-land" d="${d}"></path>`).join('')}
+    <g class="nc-m-piers">${NC_MAP_PIERS.map(d => `<path d="${d}"></path>`).join('')}</g>
+    <g class="nc-m-districts">${districts}</g>
+    <g class="nc-m-parks">${NC_MAP_PARKS.map(p => `<path d="${ncMapPolygon(p)}"></path>`).join('')}</g>
+    <g class="nc-m-fabric">${Object.values(NC_MAP_BUILDINGS).map(bs => `<path d="${bs.map(b => `M${b[0]},${b[1]} L${b[2]},${b[3]} L${b[4]},${b[5]} L${b[6]},${b[7]} Z`).join('')}"></path>`).join('')}</g>
+    <g class="nc-m-avenues">${Object.entries(NC_MAP_AVENUES).map(([id, lines]) => `<g clip-path="url(#ncc-${id})">${lines.map(l => `<path d="M${l[0]},${l[1]} L${l[2]},${l[3]}"></path>`).join('')}</g>`).join('')}</g>
+    <g class="nc-m-contours">${NC_MAP_CONTOURS.map(d => `<path d="${d}"></path>`).join('')}</g>
+    <g class="nc-m-airport"><path class="nc-apron" d="${NC_MAP_AIRPORT.apron}"></path><rect class="nc-terminal" x="${NC_MAP_AIRPORT.terminal[0]}" y="${NC_MAP_AIRPORT.terminal[1]}" width="${NC_MAP_AIRPORT.terminal[2]}" height="${NC_MAP_AIRPORT.terminal[3]}"></rect>${NC_MAP_AIRPORT.taxiways.map(d => `<path d="${d}"></path>`).join('')}</g>
+    <g class="nc-m-subdiv">${NC_MAP_SUBDIVISIONS.map(d => `<path d="${d}"></path>`).join('')}</g>
+    <g class="nc-m-borders">${borders}</g>
+    <path class="nc-m-coast" d="${NC_MAP_LAND}"></path>
+    <g class="nc-m-roads">${NC_MAP_ROADS.map(d => `<path d="${d}"></path>`).join('')}</g>
+    <g class="nc-m-roads-core">${NC_MAP_ROADS.map(d => `<path d="${d}"></path>`).join('')}</g>
+    <g class="nc-m-interchanges">${NC_MAP_INTERCHANGES.map(p => `<circle cx="${p[0]}" cy="${p[1]}" r="5"></circle>`).join('')}</g>
+    <g class="nc-m-streets">${NC_MAP_STREETS.map(d => `<path d="${d}"></path>`).join('')}</g>
+    <g class="nc-m-broads">${NC_MAP_BADLANDS_ROADS.map(d => `<path d="${d}"></path>`).join('')}</g>
+    <g class="nc-m-btrails">${NC_MAP_BADLANDS_TRAILS.map(d => `<path d="${d}"></path>`).join('')}</g>
+    <g class="nc-m-bpatches">${NC_MAP_BADLANDS_PATCHES.map(r => `<rect x="${r[0]}" y="${r[1]}" width="${r[2]}" height="${r[3]}"></rect>`).join('')}</g>
+    <g class="nc-m-solar" transform="translate(${NC_MAP_SOLAR.x} ${NC_MAP_SOLAR.y}) skewX(${NC_MAP_SOLAR.skew})">${solar}</g>
+    <g class="nc-m-runways">
+      <path d="M170,330 L320,430"></path><path d="M200,440 L300,310"></path><path d="M150,395 L340,395"></path>
+    </g>
+    <g class="nc-m-labels">${labels}</g>
+  </svg>`;
+  NC_MAP_BASE_CACHE[lang] = svg;
+  return svg;
+}
 const NC_PERSONA_KINDS = ['person','organization','outlet','gang','corporation','government','anonymous'];
 const NC_FEED_FORMATS = ['post']; // 23.1: единый тип публикации
 const NC_RU_LABELS = {
@@ -103,12 +376,13 @@ function ncDistrictFilters(){return NC_DISTRICTS.map(district=>district.children
 function ncLocationMatches(filter,locationId){if(!filter)return true;if(filter===locationId)return true;const location=ncLocation(locationId);return Boolean(location&&location.parent_id===filter);}
 function ncMapThemeMode(){return localStorage.getItem('ncnet:map-palette')!=='original';}
 function ncSetupZoomPan(stage){
+  if(stage.classList.contains('mode-3d'))return;
   if(stage.querySelector('.nc-map-zoom-in'))return;
   var scale=1,panX=0,panY=0,minScale=1,maxScale=4;
   var wrap=document.createElement('div');
   wrap.className='nc-map-zoom-wrap';
   wrap.style.cssText='position:absolute;inset:0;transform-origin:0 0;transition:transform .12s ease-out;will-change:transform';
-  var img=stage.querySelector('.nc-map-image');
+  var img=stage.querySelector('.nc-map-base')||stage.querySelector('.nc-map-image');
   var tint=stage.querySelector('.nc-map-tint');
   var ov=stage.querySelector('.nc-map-overlay');
   if(img)wrap.appendChild(img);
@@ -120,9 +394,9 @@ function ncSetupZoomPan(stage){
   var addBtn=function(cls,label,fn){var b=document.createElement('button');b.className='nc-map-zoom-btn '+cls;b.type='button';b.textContent=label;b.style.cssText='position:absolute;z-index:4;right:10px;width:32px;height:32px;font:bold 16px Orbitron;background:color-mix(in srgb,var(--panel) 88%,transparent);backdrop-filter:blur(6px);border:1px solid var(--line);color:var(--text);cursor:pointer';b.style.top=pos+'px';pos+=36;b.onclick=fn;stage.appendChild(b);return b;};
   addBtn('nc-map-zoom-in','+',function(){scale=Math.min(maxScale,scale*1.3);apply();});
   addBtn('nc-map-zoom-out','\u2212',function(){scale=Math.max(minScale,scale/1.3);if(scale<=1.01){panX=0;panY=0;}apply();});
-  stage.addEventListener('wheel',function(e){e.preventDefault();var rect=stage.getBoundingClientRect();var mx=e.clientX-rect.left,my=e.clientY-rect.top;var old=scale;scale=e.deltaY<0?Math.min(maxScale,scale*1.12):Math.max(minScale,scale/1.12);panX=mx-(mx-panX)*(scale/old);panY=my-(my-panY)*(scale/old);if(scale<=1.01){panX=0;panY=0;}apply();},{passive:false});
+  stage.addEventListener('wheel',function(e){if(stage.classList.contains('mode-3d'))return;e.preventDefault();var rect=stage.getBoundingClientRect();var mx=e.clientX-rect.left,my=e.clientY-rect.top;var old=scale;scale=e.deltaY<0?Math.min(maxScale,scale*1.12):Math.max(minScale,scale/1.12);panX=mx-(mx-panX)*(scale/old);panY=my-(my-panY)*(scale/old);if(scale<=1.01){panX=0;panY=0;}apply();},{passive:false});
   var drag=false,sx=0,sy=0,px=0,py=0;
-  stage.addEventListener('mousedown',function(e){if(scale<=1)return;drag=true;sx=e.clientX;sy=e.clientY;px=panX;py=panY;stage.style.cursor='grabbing';});
+  stage.addEventListener('mousedown',function(e){if(stage.classList.contains('mode-3d'))return;if(scale<=1)return;drag=true;sx=e.clientX;sy=e.clientY;px=panX;py=panY;stage.style.cursor='grabbing';});
   window.addEventListener('mousemove',function(e){if(!drag)return;panX=px+(e.clientX-sx);panY=py+(e.clientY-sy);apply();});
   window.addEventListener('mouseup',function(){drag=false;stage.style.cursor='';});
   // Touch pinch
@@ -131,8 +405,37 @@ function ncSetupZoomPan(stage){
   stage.addEventListener('touchmove',function(e){if(e.touches.length===2&&pinchDist>0){e.preventDefault();var dx=e.touches[0].clientX-e.touches[1].clientX,dy=e.touches[0].clientY-e.touches[1].clientY;var d=Math.sqrt(dx*dx+dy*dy);scale=Math.max(minScale,Math.min(maxScale,pinchScale*(d/pinchDist)));if(scale<=1.01){panX=0;panY=0;}apply();}},{passive:false});
   apply();
 }
-function ncBindMapControls(root){$$('.nc-map-stage',root).forEach(function(stage){ncSetupZoomPan(stage);});
-$$('[data-map-palette]',root).forEach(button=>button.onclick=()=>{const themed=!button.closest('.nc-map-stage').classList.contains('theme-map');localStorage.setItem('ncnet:map-palette',themed?'theme':'original');$$('.nc-map-stage',root).forEach(stage=>stage.classList.toggle('theme-map',themed));$$('[data-map-palette]',root).forEach(control=>{control.setAttribute('aria-pressed',themed?'true':'false');control.textContent=themed?T('THEME MAP','ЦВЕТА ТЕМЫ'):T('ORIGINAL MAP','ОРИГИНАЛ');});});}
+function ncMap3dMode(){return localStorage.getItem('ncnet:map-3d')==='1';}
+function ncEnsureMap3d(stage){
+  let button=stage.querySelector('.nc-map-3d-toggle');
+  if(!button){
+    button=document.createElement('button');
+    button.type='button';button.className='nc-map-palette nc-map-3d-toggle';
+    button.style.right='118px';
+    stage.appendChild(button);
+    button.onclick=()=>{
+      const on=!stage.classList.contains('mode-3d');
+      localStorage.setItem('ncnet:map-3d',on?'1':'0');
+      stage.classList.toggle('mode-3d',on);
+      button.textContent=on?'3D ✓':'3D';
+      button.setAttribute('aria-pressed',on?'true':'false');
+      if(on){if(window.NCMap3D)window.NCMap3D.mount(stage);}
+      else{
+        if(window.NCMap3D)window.NCMap3D.unmount(stage);
+        stage.querySelectorAll('.nc-map-zoom-btn:not(.nc-map-3d-btn)').forEach(b=>b.remove());
+        ncSetupZoomPan(stage);
+      }
+      NC_AUDIO.tone(on?740:520,.05);
+    };
+  }
+  const on=ncMap3dMode();
+  stage.classList.toggle('mode-3d',on);
+  button.textContent=on?'3D ✓':'3D';
+  button.setAttribute('aria-pressed',on?'true':'false');
+  if(on&&window.NCMap3D)window.NCMap3D.mount(stage);
+}
+function ncBindMapControls(root){$$('.nc-map-stage',root).forEach(function(stage){ncEnsureMap3d(stage);if(!stage.classList.contains('mode-3d'))ncSetupZoomPan(stage);});
+$$('[data-map-palette]',root).forEach(button=>button.onclick=()=>{const themed=!button.closest('.nc-map-stage').classList.contains('theme-map');localStorage.setItem('ncnet:map-palette',themed?'theme':'original');$$('.nc-map-stage',root).forEach(stage=>stage.classList.toggle('theme-map',themed));$$('[data-map-palette]',root).forEach(control=>{control.setAttribute('aria-pressed',themed?'true':'false');control.textContent=themed?T('THEME MAP','ЦВЕТА ТЕМЫ'):T('ORIGINAL MAP','ОРИГИНАЛ');});if(window.NCMap3D)window.NCMap3D.refreshColors();});}
 function ncDate(ts){return ts?new Date(Number(ts)*1000).toLocaleString(APP_I18N.current()==='ru'?'ru-RU':'en-US',{dateStyle:'medium',timeStyle:'short'}):T('Unscheduled','Время не назначено');}
 function ncDateTimeInput(ts){if(!ts)return '';const date=new Date(Number(ts)*1000-new Date().getTimezoneOffset()*60000);return date.toISOString().slice(0,16);}
 function ncReward(contract){if(contract.reward_mode==='exact')return money(contract.reward_exact);if(contract.reward_mode==='range')return `${money(contract.reward_min)}–${money(contract.reward_max)}`;if(contract.reward_mode==='negotiable')return contract.reward_text||T('Negotiable','Договорная');return T('Classified','Скрыто');}
@@ -165,7 +468,7 @@ function ncLayeredMapHtml(contracts, locations, vendors) {
     layerBtns += '<button class="btn-sm nc-layer-btn ' + (NC_MAP_LAYERS[key] ? 'active' : '') + '" data-layer="' + key + '" style="font:600 9px Orbitron;padding:3px 8px">' + T(L[0], L[1]) + '</button>';
   });
   layerBtns += '</div>';
-  return '<figure class="nc-map-wrap"><div class="nc-map-stage ' + (themed ? 'theme-map' : '') + '"><img class="nc-map-image" src="/maps/night-city-v04-nightcityio.jpg" alt="' + T('Night City Map', 'Карта Найт-Сити') + '"><div class="nc-map-tint" aria-hidden="true"></div>' + layerBtns + '<button class="nc-map-palette" type="button" data-map-palette>' + (themed ? T('THEME MAP', 'ЦВЕТА ТЕМЫ') : T('ORIGINAL MAP', 'ОРИГИНАЛ')) + '</button><svg class="nc-map-overlay" viewBox="0 0 1000 1000" role="group"><defs><filter id="mapGlow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>' + contractMarkers + poiMarkers + vendorMarkers + '</svg></div><figcaption class="small muted nc-map-source">' + T('NightCity.io v0.04 · layered overlay by NC//NET', 'NightCity.io v0.04 · слоистый оверлей NC//NET') + '</figcaption></figure>';
+  return '<figure class="nc-map-wrap"><div class="nc-map-stage ' + (themed ? 'theme-map' : '') + '">' + ncMapBaseSvg() + layerBtns + '<button class="nc-map-palette" type="button" data-map-palette>' + (themed ? T('THEME MAP', 'ЦВЕТА ТЕМЫ') : T('ORIGINAL MAP', 'ОРИГИНАЛ')) + '</button><svg class="nc-map-overlay" viewBox="0 0 1000 1000" role="group"><defs><filter id="mapGlow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>' + contractMarkers + poiMarkers + vendorMarkers + '</svg></div><figcaption class="small muted nc-map-source">' + T('NC//NET original vector map · interactive layers', 'Оригинальная векторная карта NC//NET · интерактивные слои') + '</figcaption></figure>';
 }
 
 function ncBindLayerToggles(root) {
@@ -185,7 +488,7 @@ function ncBindLayerToggles(root) {
 
 function ncMapHtml(contracts){
   const markers=contracts.map((contract,index)=>{const anchor=NC_MAP_COORDS[contract.district_id]||[535,470],jitter=((contract.id*37)%46)-23,jitterY=((contract.id*19)%38)-19,x=Math.max(28,Math.min(972,anchor[0]+jitter)),y=Math.max(28,Math.min(972,anchor[1]+jitterY));return `<g class="nc-marker" data-contract-open="${contract.id}" role="button" tabindex="0" aria-label="${esc(T('Open Contract: ','Открыть Contract: ')+contract.title)}" transform="translate(${x} ${y})" filter="url(#mapGlow)"><circle class="pulse" r="17"></circle><circle r="11"></circle><text y="4" text-anchor="middle">${index+1}</text><title>${esc(contract.title)}</title></g>`;}).join('');
-  const themed=ncMapThemeMode();return `<figure class="nc-map-wrap"><div class="nc-map-stage ${themed?'theme-map':''}"><img class="nc-map-image" src="/maps/night-city-v04-nightcityio.jpg" alt="${T('Detailed district map of Night City','Подробная карта районов Найт-Сити')}"><div class="nc-map-tint" aria-hidden="true"></div><button class="nc-map-palette" type="button" data-map-palette aria-pressed="${themed?'true':'false'}">${themed?T('THEME MAP','ЦВЕТА ТЕМЫ'):T('ORIGINAL MAP','ОРИГИНАЛ')}</button><svg class="nc-map-overlay" viewBox="0 0 1000 1000" role="group" aria-label="${T('Active Contract markers','Маркеры активных Contracts')}"><defs><filter id="mapGlow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${markers}</svg></div><figcaption class="small muted nc-map-source">${T('NightCity.io v0.04 district artwork · supplied by the campaign owner · interactive Contract overlay by NC//NET','Карта районов NightCity.io v0.04 · предоставлена владельцем кампании · интерактивный слой Contracts — NC//NET')} · <a href="https://nightcity.io/" target="_blank" rel="noopener">NightCity.io ↗</a></figcaption></figure>`;
+  const themed=ncMapThemeMode();return `<figure class="nc-map-wrap"><div class="nc-map-stage ${themed?'theme-map':''}">${ncMapBaseSvg()}<button class="nc-map-palette" type="button" data-map-palette aria-pressed="${themed?'true':'false'}">${themed?T('THEME MAP','ЦВЕТА ТЕМЫ'):T('ORIGINAL MAP','ОРИГИНАЛ')}</button><svg class="nc-map-overlay" viewBox="0 0 1000 1000" role="group" aria-label="${T('Active Contract markers','Маркеры активных Contracts')}"><defs><filter id="mapGlow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${markers}</svg></div><figcaption class="small muted nc-map-source">${T('NC//NET original vector map · interactive Contract overlay','Оригинальная векторная карта NC//NET · интерактивный слой Contracts')}</figcaption></figure>`;
 }
 
 async function viewContracts(view){
@@ -478,7 +781,7 @@ function locationKindIcon(kind){return LOCATION_KIND_ICONS[kind]||'📌';}
 
 function ncPoiMapHtml(locations){
   const markers=locations.map((location,index)=>{const x=Math.max(24,Math.min(976,Number(location.x)||500)),y=Math.max(24,Math.min(976,Number(location.y)||500));return `<g class="nc-poi-marker poi-${esc(location.kind)}" data-poi-open="${esc(location.id)}" role="button" tabindex="0" aria-label="${esc(T('Open Location: ','Открыть локацию: ')+locationName(location))}" transform="translate(${x} ${y})" filter="url(#mapGlow)"><circle r="13"></circle><text y="5" text-anchor="middle" font-size="15">${locationKindIcon(location.kind)}</text><title>${esc(locationName(location))}</title></g>`;}).join('');
-  const themed=ncMapThemeMode();return `<figure class="nc-map-wrap"><div class="nc-map-stage ${themed?'theme-map':''}"><img class="nc-map-image" src="/maps/night-city-v04-nightcityio.jpg" alt="${T('Detailed district map of Night City','Подробная карта районов Найт-Сити')}"><div class="nc-map-tint" aria-hidden="true"></div><button class="nc-map-palette" type="button" data-map-palette aria-pressed="${themed?'true':'false'}">${themed?T('THEME MAP','ЦВЕТА ТЕМЫ'):T('ORIGINAL MAP','ОРИГИНАЛ')}</button><svg class="nc-map-overlay" viewBox="0 0 1000 1000" role="group" aria-label="${T('Points of interest','Точки интереса')}"><defs><filter id="mapGlow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${markers}</svg></div><figcaption class="small muted nc-map-source">${T('NightCity.io v0.04 district artwork · supplied by the campaign owner · POI overlay by NC//NET','Карта районов NightCity.io v0.04 · предоставлена владельцем кампании · слой точек интереса — NC//NET')} · <a href="https://nightcity.io/" target="_blank" rel="noopener">NightCity.io ↗</a></figcaption></figure>`;
+  const themed=ncMapThemeMode();return `<figure class="nc-map-wrap"><div class="nc-map-stage ${themed?'theme-map':''}">${ncMapBaseSvg()}<button class="nc-map-palette" type="button" data-map-palette aria-pressed="${themed?'true':'false'}">${themed?T('THEME MAP','ЦВЕТА ТЕМЫ'):T('ORIGINAL MAP','ОРИГИНАЛ')}</button><svg class="nc-map-overlay" viewBox="0 0 1000 1000" role="group" aria-label="${T('Points of interest','Точки интереса')}"><defs><filter id="mapGlow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>${markers}</svg></div><figcaption class="small muted nc-map-source">${T('NC//NET original vector map · points of interest overlay','Оригинальная векторная карта NC//NET · слой точек интереса')}</figcaption></figure>`;
 }
 
 async function viewMap(view){

@@ -408,6 +408,184 @@ console.log('ok');
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('ok', result.stdout)
 
+    def test_book_lifepath_data_has_conditions_variants_and_custom_controls(self):
+        source = frontend_source('creation-data.js')
+        for token in ('const ROLE_LIFEPATH_BOOK = {', 'show_if', 'variants',
+                      "key: 'leave_reason'", "key: 'partner_who'",
+                      'function migrateRoleLifepath', 'function lifepathBookVisible'):
+            self.assertIn(token, source)
+        shared = frontend_source('views-shared.js')
+        for token in ('data-lp-custom', 'data-role-lp-custom', 'data-lp-customof',
+                      'data-role-lp-customof', 'data-lp-list', 'data-role-lp-list'):
+            self.assertIn(token, shared)
+
+    def test_book_lifepath_runtime_conditions_migration_and_custom_input(self):
+        meta = {
+            'stats': server.STATS,
+            'roles': server.ROLES,
+            'role_ru': server.ROLE_RU,
+            'role_desc': server.ROLE_DESC,
+            'role_desc_en': server.ROLE_DESC_EN,
+            'skills': server.SKILLS,
+            'must_skills': server.MUST_SKILLS,
+            'stat_points': server.STAT_POINTS,
+            'skill_points': server.SKILL_POINTS,
+            'skill_max': server.SKILL_MAX_CREATION,
+            'cats': [],
+        }
+        stub = r"""
+global.__store = new Map();
+global.document = {
+  querySelector: () => null, querySelectorAll: () => [], addEventListener: () => {},
+  documentElement: { style: { setProperty() {} }, classList: { toggle() {} } }, createElement: () => ({ click() {} }),
+};
+global.window = { addEventListener: () => {}, dispatchEvent: () => {}, scrollTo: () => {}, confirm: () => true, print: () => {}, prompt: () => '1' };
+global.CustomEvent = function () {};
+global.location = { hash: '' };
+global.localStorage = {
+  getItem: key => __store.get(key) || null,
+  setItem: (key, value) => __store.set(key, value),
+  removeItem: key => __store.delete(key),
+};
+global.history = { replaceState: () => {} };
+global.fetch = async () => { throw new Error('fetch not expected'); };
+global.URL = { createObjectURL: () => '', revokeObjectURL: () => {} };
+global.Blob = function () {};
+"""
+        test = """
+state.meta = """ + json.dumps(meta, ensure_ascii=False) + """;
+initWizard();
+const leaver = { current_act: 'Сольный проект', once_group: 'Раньше состоял в группе' };
+if (!lifepathBookVisible('Rockerboy', 'leave_reason', leaver)) throw new Error('leave_reason hidden for a leaver');
+if (lifepathBookVisible('Rockerboy', 'leave_reason', { current_act: 'Состоишь в группе' })) throw new Error('leave_reason visible inside a group');
+const keys = lpRoleField('Rockerboy', leaver).map(f => f[0]);
+for (const key of ['kind', 'current_act', 'once_group', 'leave_reason', 'venue', 'enemy'])
+  if (!keys.includes(key)) throw new Error('missing book question ' + key);
+if (lpRoleField('Rockerboy', { current_act: 'Состоишь в группе' }).some(f => f[0] === 'leave_reason')) throw new Error('conditional question leaked');
+const migrated = migrateRoleLifepath('Rockerboy', { kind: 'x', act: 'Тебя выгнали из группы', venue: 'y', enemy: 'z' });
+if (migrated.current_act !== 'Сольный проект' || migrated.once_group !== 'Раньше состоял в группе' || !migrated.leave_reason) throw new Error('legacy act migration broken');
+const split = migrateRoleLifepath('Tech', { partner: 'Партнёр — наставник' });
+if (split.partner !== 'Есть партнёр' || split.partner_who !== 'Партнёр — наставник') throw new Error('legacy partner split broken');
+const land = lpRoleField('Nomad', { domain: 'На суше' }).find(f => f[0] === 'activity');
+const sea = lpRoleField('Nomad', { domain: 'На море' }).find(f => f[0] === 'activity');
+if (!land || land[2].length !== 10 || !sea || sea[2].length !== 6) throw new Error('Nomad domain tables broken');
+state.wizard.role = 'Rockerboy';
+state.wizard.roleLifepath = Object.assign({ kind: 'Музыкант', venue: 'Альтернативные кафе', enemy: 'Критик или инфлюенсер' }, leaver);
+state.wizard.lpCustom = { leave_reason: true };
+const html = wizStepLifepathHtml();
+if (!html.includes('data-role-lp-customof="leave_reason"')) throw new Error('custom text input missing');
+if (html.includes('data-role-lp-dice="leave_reason"')) throw new Error('dice button must hide in custom mode');
+state.wizard.lpCustom = {};
+const listHtml = wizStepLifepathHtml();
+if (!listHtml.includes('data-role-lp="leave_reason"')) throw new Error('book list select missing');
+if (!listHtml.includes('data-role-lp-dice="leave_reason"')) throw new Error('book dice button missing');
+if (listHtml.includes('data-role-lp-customof="leave_reason"')) throw new Error('custom input stuck after toggle off');
+console.log('ok');
+"""
+        script = '\n'.join([stub, *frontend_bundle_sources(), test])
+        with tempfile.NamedTemporaryFile('w', suffix='.js', encoding='utf-8') as handle:
+            handle.write(script)
+            handle.flush()
+            result = subprocess.run(['node', handle.name], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('ok', result.stdout)
+
+
+    def test_vector_map_is_self_made_and_covers_seeds(self):
+        source = frontend_source('ncnet.js')
+        self.assertIn('function ncMapBaseSvg', source)
+        self.assertIn('const NC_MAP_GEOMETRY', source)
+        self.assertNotIn('nightcityio', source.lower())
+        self.assertNotIn('/maps/', source)
+        for token in ('NC_MAP_DISTRICT_COLORS', 'nc-m-piers', 'nc-m-solar',
+                      'nc-m-broads', 'nc-m-interchanges', 'nc-m-airport'):
+            self.assertIn(token, source)
+        seeds = [{'district_id': loc['district_id'], 'x': loc['x'], 'y': loc['y']}
+                 for loc in server.NC_SEED_LOCATIONS]
+        test = """
+const seeds = """ + json.dumps(seeds, ensure_ascii=False) + """;
+function inside(poly, x, y) {
+  let ok = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) ok = !ok;
+  }
+  return ok;
+}
+function topDistrict(id) {
+  if (NC_MAP_GEOMETRY[id]) return id;
+  const parent = Object.keys(NC_MAP_GEOMETRY).find(key => id.startsWith(key + '-'));
+  if (!parent) throw new Error('no polygon for location ' + id);
+  return parent;
+}
+for (const [id, anchor] of Object.entries(NC_MAP_COORDS)) {
+  if (!inside(NC_MAP_GEOMETRY[topDistrict(id)], anchor[0], anchor[1]))
+    throw new Error('anchor outside its district polygon: ' + id);
+}
+for (const seed of seeds) {
+  if (!inside(NC_MAP_GEOMETRY[topDistrict(seed.district_id)], seed.x, seed.y))
+    throw new Error('seed POI outside its district polygon: ' + seed.district_id);
+}
+const html = ncMapHtml([]);
+const layered = ncLayeredMapHtml([], [], []);
+const poi = ncPoiMapHtml([]);
+for (const [name, chunk] of [['ncMapHtml', html], ['ncLayeredMapHtml', layered], ['ncPoiMapHtml', poi]]) {
+  if (!chunk.includes('nc-map-base')) throw new Error(name + ': vector base missing');
+  if (chunk.includes('/maps/') || chunk.includes('.jpg')) throw new Error(name + ': external raster map referenced');
+  if (!chunk.includes('>Watson<')) throw new Error(name + ': EN district label missing');
+  if (!chunk.includes('nc-mbd-watson') || !chunk.includes('nc-mlc-heywood')) throw new Error(name + ': per-district colors missing');
+}
+if (html.includes('NightCity.io')) throw new Error('third-party map credit still shown');
+if (typeof window.NCMap3D === 'undefined' || typeof window.NCMap3DDebug === 'undefined') throw new Error('3D engine missing from bundle');
+const NCMap3DDebug = window.NCMap3DDebug;
+for (const [id, poly] of Object.entries(NC_MAP_GEOMETRY)) {
+  const tris = NCMap3DDebug.earClip(poly);
+  if (tris.length !== poly.length - 2) throw new Error('earClip wrong triangle count for ' + id);
+  for (const t of tris) for (const i of t) if (!(i >= 0 && i < poly.length)) throw new Error('earClip bad index for ' + id);
+}
+for (const poly of NCMap3DDebug.samplePath(NC_MAP_LAND)) {
+  const tris = NCMap3DDebug.earClip(poly);
+  if (tris.length !== poly.length - 2) throw new Error('land earClip wrong count');
+}
+for (const road of NC_MAP_ROADS) if (!NCMap3DDebug.samplePath(road).length) throw new Error('road sampling empty');
+let bCount = 0;
+for (const [id, bs] of Object.entries(NC_MAP_BUILDINGS)) {
+  bCount += bs.length;
+  for (const b of bs) {
+    const cx = (b[0] + b[2] + b[4] + b[6]) / 4, cy = (b[1] + b[3] + b[5] + b[7]) / 4;
+    if (!NCMap3DDebug.pointInPoly(NC_MAP_GEOMETRY[id], cx, cy)) throw new Error('building outside district ' + id);
+  }
+}
+if (bCount < 300) throw new Error('city fabric too sparse: ' + bCount);
+console.log('ok');
+"""
+        stub = r"""
+global.__store = new Map();
+global.document = {
+  querySelector: () => null, querySelectorAll: () => [], addEventListener: () => {},
+  documentElement: { style: { setProperty() {} }, classList: { toggle() {} } }, createElement: () => ({ click() {} }),
+};
+global.window = { addEventListener: () => {}, dispatchEvent: () => {}, scrollTo: () => {}, confirm: () => true, print: () => {}, prompt: () => '1' };
+global.CustomEvent = function () {};
+global.location = { hash: '' };
+global.localStorage = {
+  getItem: key => __store.get(key) || null,
+  setItem: (key, value) => __store.set(key, value),
+  removeItem: key => __store.delete(key),
+};
+global.history = { replaceState: () => {} };
+global.fetch = async () => { throw new Error('fetch not expected'); };
+global.URL = { createObjectURL: () => '', revokeObjectURL: () => {} };
+global.Blob = function () {};
+"""
+        script = '\n'.join([stub, *frontend_bundle_sources(), test])
+        with tempfile.NamedTemporaryFile('w', suffix='.js', encoding='utf-8') as handle:
+            handle.write(script)
+            handle.flush()
+            result = subprocess.run(['node', handle.name], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('ok', result.stdout)
+
 
 if __name__ == '__main__':
     unittest.main()

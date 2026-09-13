@@ -290,7 +290,10 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertNotIn('.nc-contract-cover{width:100%;height:120px;object-fit:cover', network_css)
         self.assertIn('ncBindMapControls', network)
         self.assertIn('theme-map', network)
-        self.assertIn('mix-blend-mode:color', network_css)
+        # P-Map: тема карты теперь нативная (SVG-переменные), без blend-поверх старой картинки.
+        self.assertIn('.nc-map-stage.theme-map{--map-water:', network_css)
+        self.assertIn('--map-bd-watson:var(--yellow', network_css)
+        self.assertIn('--map-bd-heywood:#52e07a', network_css)
         self.assertIn('object-fit:contain', network_css)
         self.assertNotIn('.nc-feed-image{width:100%;max-height:380px;object-fit:cover', network_css)
         self.assertIn('publish immediately', network)
@@ -315,16 +318,17 @@ class AccessRoleMigrationTests(unittest.TestCase):
         self.assertIn('data-comment-hide', network)
         self.assertIn('Contract Image (optional)', network)
         self.assertIn('Attach Image (optional)', network)
-        self.assertIn('/maps/night-city-v04-nightcityio.jpg', network)
+        self.assertIn('ncMapBaseSvg', network)
+        self.assertNotIn('nightcityio', network.lower())
         self.assertIn('gm-ops-search', network)
         self.assertIn('sl-collab-search', network)
         self.assertIn('admin-user-search', source)
         self.assertIn('openCommandPalette', source)
         self.assertIn('city-network-grid', source)
         self.assertIn('refreshShellDossiers', source)
-        map_path = ROOT / 'app/static/maps/night-city-v04-nightcityio.jpg'
-        self.assertTrue(map_path.is_file())
-        self.assertEqual(server.image_info(map_path.read_bytes())[2:], (1920, 1920))
+        # P-Map: чужая растровая карта удалена — вместо неё собственная векторная.
+        self.assertFalse((ROOT / 'app/static/maps/night-city-v04-nightcityio.jpg').exists())
+        self.assertIn('NC_MAP_GEOMETRY', network)
 
 
 if __name__ == '__main__':
