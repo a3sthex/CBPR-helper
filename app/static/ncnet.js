@@ -75,12 +75,6 @@ const NC_MAP_ROADS = [
   'M452,182 C540,168 620,176 688,208',                                    // дуга Уотсона
   'M345,400 L402,412',                                                    // мост в Орбитал-Эйр
 ];
-const NC_MAP_STREETS = [
-  'M560,332 L560,518', 'M470,340 L470,510', 'M600,340 L600,510',
-  'M440,600 L640,600', 'M450,240 L660,240', 'M700,360 L840,360',
-  'M700,480 L840,480', 'M680,640 L850,640', 'M700,720 L840,720',
-  'M440,780 L600,780', 'M660,760 L830,760',
-];
 // P-Map: цвета районов в духе эталонной карты Night City (каждому району — свой
 // контур и цвет подписи). В режиме «ЦВЕТА ТЕМЫ» переопределяются CSS-переменными.
 const NC_MAP_DISTRICT_COLORS = {
@@ -180,6 +174,33 @@ function ncMapOrganic(points,amp){
 const NC_MAP_GEOMETRY = Object.fromEntries(Object.entries(NC_MAP_GEOMETRY_RAW).map(([id,pts])=>[id,ncMapOrganic(pts,id==='orbital-air-space-center'?5:12)]));
 const NC_MAP_LAND = ncMapPolygon(ncMapOrganic(NC_MAP_LAND_RAW,12));
 const NC_MAP_DISTRICT_ANGLE={watson:-6,westbrook:8,'city-center':0,heywood:-4,'santo-domingo':-10,pacifica:14};
+// Плотная уличная сеть: линии генерируются вдоль осей застройки каждого района
+// и обрезаются по его контуру, как кварталы на внутриигровой карте.
+const NC_MAP_STREETS = (() => {
+  const out = [];
+  for (const id of Object.keys(NC_MAP_DISTRICT_ANGLE)) {
+    const poly = NC_MAP_GEOMETRY[id];
+    const xs = poly.map(p => p[0]), ys = poly.map(p => p[1]);
+    const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const a = (NC_MAP_DISTRICT_ANGLE[id] || 0) * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+    const rnd = ncMapMulberry(500 + id.length * 31 + id.charCodeAt(0) * 7);
+    const run = (fixed, isU) => {
+      let prev = null;
+      for (let t = -260; t <= 260; t += 9) {
+        const u = isU ? fixed : t, v = isU ? t : fixed;
+        const px = Math.round(cx + ca * u - sa * v + (rnd() - 0.5) * 2);
+        const py = Math.round(cy + sa * u + ca * v + (rnd() - 0.5) * 2);
+        if (ncMapPointInPoly(poly, px, py)) {
+          if (prev) out.push(`M${prev[0]},${prev[1]} L${px},${py}`);
+          prev = [px, py];
+        } else prev = null;
+      }
+    };
+    for (let u = -260; u <= 260; u += 13) run(u, true);
+    for (let v = -260; v <= 260; v += 13) run(v, false);
+  }
+  return out;
+})();
 const NC_MAP_BUILDINGS=(()=>{
   const out={};
   for(const id of Object.keys(NC_MAP_DISTRICT_ANGLE)){
@@ -331,6 +352,7 @@ function ncMapBaseSvg(){
     <g class="nc-m-subdiv">${NC_MAP_SUBDIVISIONS.map(d => `<path d="${d}"></path>`).join('')}</g>
     <g class="nc-m-borders">${borders}</g>
     <path class="nc-m-coast" d="${NC_MAP_LAND}"></path>
+    <g class="nc-m-roads-case">${NC_MAP_ROADS.map(d => `<path d="${d}"></path>`).join('')}</g>
     <g class="nc-m-roads">${NC_MAP_ROADS.map(d => `<path d="${d}"></path>`).join('')}</g>
     <g class="nc-m-roads-core">${NC_MAP_ROADS.map(d => `<path d="${d}"></path>`).join('')}</g>
     <g class="nc-m-interchanges">${NC_MAP_INTERCHANGES.map(p => `<circle cx="${p[0]}" cy="${p[1]}" r="5"></circle>`).join('')}</g>
