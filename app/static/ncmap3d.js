@@ -301,6 +301,26 @@
         for (let i = 0; i < segs.length; i += 2) B.ribbon([segs[i], segs[i + 1]], 1.0, 2.4, pal.street, 0.3);
       }
     }
+    // каналы, мосты, уникальные постройки, арена, взлётки Орбитала
+    const circ = (x, y, r) => { const a = []; for (let i = 0; i < 26; i++) { const t = i / 26 * Math.PI * 2; a.push([x + Math.cos(t) * r, y + Math.sin(t) * r]); } return a; };
+    if (typeof NC_MAP_CANALS !== 'undefined') for (const c of NC_MAP_CANALS) for (const poly of samplePath(c)) B.ribbon(poly, 1.0, 13, pal.water, 0.4);
+    if (typeof NC_MAP_BRIDGES !== 'undefined') for (const b of NC_MAP_BRIDGES) for (const poly of samplePath(b)) B.ribbon(poly, 1.9, 6, pal.street, 0.6);
+    if (typeof NC_MAP_LANDMARKS !== 'undefined') for (const lm of NC_MAP_LANDMARKS) {
+      if (lm.kind === 'plaza') {
+        const ring = circ(lm.x, lm.y, lm.r);
+        for (const t of earClip(ring)) B.tri([ring[t[0]][0], 1.0, ring[t[0]][1]], [ring[t[1]][0], 1.0, ring[t[1]][1]], [ring[t[2]][0], 1.0, ring[t[2]][1]], mixc(pal.district, pal.road, 0.25), 0.4, [0, 1, 0]);
+        B.ribbon(ring.concat([ring[0]]), 1.3, 2.2, pal.road, 1);
+      } else {
+        const side = [pal.block[0] * 0.45, pal.block[1] * 0.45, pal.block[2] * 0.45];
+        const top = lm.kind === 'tower' ? [0.85, 0.95, 1] : [pal.block[0] * 0.9, pal.block[1] * 0.9, pal.block[2] * 0.9];
+        B.box(lm.x - lm.w / 2, lm.y - lm.h / 2, lm.x + lm.w / 2, lm.y + lm.h / 2, 0.6, lm.height, side, top);
+      }
+    }
+    if (typeof NC_MAP_STADIUM !== 'undefined') {
+      B.ribbon(circ(NC_MAP_STADIUM[0], NC_MAP_STADIUM[1], NC_MAP_STADIUM[2]).concat([[NC_MAP_STADIUM[0] + NC_MAP_STADIUM[2], NC_MAP_STADIUM[1]]]), 1.6, 3, pal.street, 0.7);
+      B.ribbon(circ(NC_MAP_STADIUM[0], NC_MAP_STADIUM[1], NC_MAP_STADIUM[3]).concat([[NC_MAP_STADIUM[0] + NC_MAP_STADIUM[3], NC_MAP_STADIUM[1]]]), 1.6, 2, pal.street, 0.5);
+    }
+    for (const d of ['M170,330 L320,430', 'M200,440 L300,310', 'M150,395 L340,395']) for (const poly of samplePath(d)) B.ribbon(poly, 1.5, 7, pal.street, 0.5);
     // дороги
     for (const d of NC_MAP_STREETS) for (const poly of samplePath(d)) B.ribbon(poly, 1.1, 1.6, pal.street, 0.25);
     for (const d of NC_MAP_ROADS) for (const poly of samplePath(d)) B.ribbon(poly, 1.3, 5, pal.road, 1);
