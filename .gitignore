@@ -25,3 +25,4 @@ books/
 extracted/images/
 # локальный лист персонажа (собирается tools/build_character_sheet_xlsx.py)
 NC-NET_CharSheet_*.xlsx
+!sheets/NC-NET_CharSheet_2070.xlsx
