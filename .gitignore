@@ -8,6 +8,7 @@ app/data/backups/
 
 __pycache__/
 *.pyc
+.build-deps/
 .venv/
 nohup.out
 
@@ -22,3 +23,5 @@ nohup.out
 # локальные артефакты извлечения (тяжёлые бинарники — не в git)
 books/
 extracted/images/
+# локальный лист персонажа (собирается tools/build_character_sheet_xlsx.py)
+NC-NET_CharSheet_*.xlsx

@@ -159,6 +159,19 @@ MUST_SKILLS = [           # минимум 2 очка в каждом (итог�
     'Evasion', 'First Aid', 'Human Perception', 'Language',
     'Local Expert', 'Perception', 'Persuasion', 'Stealth',
 ]
+# Обязательные пакеты ролей (минимум 2 очка в каждом), синхронно с app/static/creation-data.js
+ROLE_MUST_SKILLS = {
+    'Rockerboy': ['Composition', 'Handgun', 'Melee Weapon', 'Personal Grooming', 'Play Instrument', 'Streetwise', 'Wardrobe & Style'],
+    'Solo': ['Autofire', 'Handgun', 'Interrogation', 'Melee Weapon', 'Resist Torture/Drugs', 'Shoulder Arms', 'Tactics'],
+    'Netrunner': ['Basic Tech', 'Conceal/Reveal Object', 'Cryptography', 'Cybertech', 'Electronics/Security Tech', 'Handgun', 'Library Search'],
+    'Tech': ['Basic Tech', 'Cybertech', 'Electronics/Security Tech', 'Land Vehicle Tech', 'Shoulder Arms', 'Science', 'Weaponstech'],
+    'Medtech': ['Basic Tech', 'Cybertech', 'Deduction', 'Paramedic', 'Resist Torture/Drugs', 'Science', 'Shoulder Arms'],
+    'Media': ['Bribery', 'Composition', 'Deduction', 'Handgun', 'Library Search', 'Lip Reading', 'Photography/Film'],
+    'Lawman': ['Autofire', 'Criminology', 'Deduction', 'Handgun', 'Interrogation', 'Shoulder Arms', 'Tracking'],
+    'Exec': ['Accounting', 'Bureaucracy', 'Business', 'Deduction', 'Handgun', 'Lip Reading', 'Personal Grooming'],
+    'Fixer': ['Bribery', 'Business', 'Forgery', 'Handgun', 'Pick Lock', 'Streetwise', 'Trading'],
+    'Nomad': ['Animal Handling', 'Drive Land Vehicle', 'Handgun', 'Melee Weapon', 'Tracking', 'Trading', 'Wilderness Survival'],
+}
 SPECIALIZED_SKILLS = {'Language', 'Local Expert', 'Martial Arts', 'Science', 'Play Instrument'}
 START_CASH_GEAR = 2550    # стартовые €$ на оружие/броню/снаряжение/хром
 START_CASH_FASHION = 800  # отдельный бюджет на Fashion и Fashionware
