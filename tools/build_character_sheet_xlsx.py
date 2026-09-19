@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """NC//NET · генератор «необычного» листа персонажа для Cyberpunk RED / CEMK (2070-е).
 
-Собирает .xlsx для загрузки в Google Таблицы / Excel Online:
-  01 ДОСЬЕ      — первый лист-досье (стиль дела NCPD), только для чтения глазами
-  02 ОСНОВА     — характеристики, производные, Combat Awareness (Solo) и Backup (Lawman), оружие/броня
-  03 НАВЫКИ     — 66 навыков, 86 очков, обязательные 13 + пакет роли, авторасчёт баз
-  04 ХРОМ       — импланты, HL, срез максимума Humanity, терапия
+Собирает .xlsx для загрузки в Google Таблицы / Excel Online. Оформление — HUD Night City:
+чёрный фон, красный #FF003C, белый текст и оранжево-жёлтый #FFB100 для наведения/ввода.
+Шрифты: Oswald (заголовки), Roboto (текст), Roboto Mono (цифры). Все листы альбомные.
+  01 ДОСЬЕ      — дело объекта в две колонки: личность, служба, прошлое, связи, сводка
+  02 ОСНОВА     — характеристики, производные, Backup (Lawman), оружие/броня, памятка
+  03 НАВЫКИ     — 66 навыков, 86 очков, панель проверок справа (13 обязательных + пакет роли)
+  04 ХРОМ       — импланты, HL, срез максимума Humanity, терапия, жизнь и Humanity
   05 СНАРЯЖЕНИЕ — бюджеты 2550/800, оружие, броня, инвентарь, касса
-  06 СОСТОЯНИЕ  — раны, крит-травмы, зависимости, IP, репутация, лог сессий
+  06 СОСТОЯНИЕ  — трекер крит-травм, зависимости, IP, лог дел
   КАТАЛОГ       — выжимка из app/data/items.json (Data Pool) для автоподстановки
-  СПРАВКА       — DV, раны, крит-травмы, терапия, хром-правила 2070
+  СПРАВКА       — DV, укрытия, раны, IP, 2070-е и таблицы крит-травм (на них ссылается лист 06)
   ПРАВИЛА       — как пользоваться таблицей
 
 Правила и цены берутся из репозитория: app/rules.py, app/data/items.json,
@@ -37,39 +39,32 @@ sys.path.insert(0, os.path.join(ROOT, 'app'))
 import rules as RULES  # noqa: E402  (проектные правила: статы, навыки, крит-травмы)
 
 # ---------------------------------------------------------------- палитра ----
-# Два оформления: 'ncpd' — бумажное дело (штамп-красный по бумаге), 'dark' — тёмный
-# протокол с красными акцентами (игровые листы 02–06).
-PAL_NCPD = dict(
-    ink='17191D', muted='7A7364', accent='B3181F',
-    st_title='17191D', st_banner_bg='1B2430', st_banner2_bg='2B3440',
-    st_h1_bg='2B3440', st_h2_bg='E4DECB', st_head_bg='1B2430', st_head_fg='FFFFFF',
-    st_label_bg='F3EFE1', st_label_fg='7A7364', st_text_bg='F3EFE1', st_text_fg='17191D',
-    st_input_bg='FFF7D6', st_input_fg='12303F', st_auto_bg='E8EDF0', st_auto_fg='17191D',
-    st_cell_bg='FFFFFF', st_cell_fg='17191D', st_note_fg='7A7364',
-    st_kvlabel_bg='E4DECB', st_stamp_fg='B3181F', st_big_fg='17191D',
-    st_border='17191D', st_border2='7A7364', st_input_edge='17191D',
-    banner_fg='FFFFFF', h1_fg='FFFFFF', head_fg='FFFFFF', h2_fg='17191D', title_fg='17191D',
-    cf_ok_bg='DCE9D3', cf_ok_fg='205020', cf_warn_bg='F7D2CC', cf_warn_fg='7C1015',
-    tab='1B2430', cyan='0F6E7C', gold='E0A81C',
+# Единое оформление «HUD Night City»: чёрный фон + красный (сигнатура CP2077)
+# + оранжево-жёлтый как цвет наведения/полей ввода и белый как основной текст.
+PAL_HUD = dict(
+    ink='FFFFFF', muted='A6ABB2', accent='FF003C',
+    st_title='FFFFFF', st_banner_bg='0A0A0C', st_banner2_bg='141419',
+    st_h1_bg='3A0512', st_h2_bg='141419', st_head_bg='0A0A0C', st_head_fg='FFB100',
+    st_label_bg='141419', st_label_fg='A6ABB2', st_text_bg='0B0B0E', st_text_fg='FFFFFF',
+    st_input_bg='1F1706', st_input_fg='FFD24A', st_auto_bg='101017', st_auto_fg='FFFFFF',
+    st_cell_bg='0B0B0E', st_cell_fg='FFFFFF', st_note_fg='8F959C',
+    st_kvlabel_bg='1B1B22', st_stamp_fg='FF003C', st_big_fg='FFFFFF',
+    st_border='2E2E38', st_border2='4A4A56', st_input_edge='FFB100',
+    banner_fg='FFFFFF', h1_fg='FFFFFF', head_fg='FFB100', h2_fg='FFB100', title_fg='FFFFFF',
+    cf_ok_bg='241C00', cf_ok_fg='FFC94D', cf_warn_bg='3A0512', cf_warn_fg='FF5C78',
+    tab='FF003C', cyan='FFB100', gold='FFB100',
 )
-PAL_DARK = dict(
-    ink='E8E6E3', muted='9A9AA4', accent='FF2A3C',
-    st_title='FF2A3C', st_banner_bg='2A1016', st_banner2_bg='17171C',
-    st_h1_bg='3A1218', st_h2_bg='1B1B22', st_head_bg='26131A', st_head_fg='F2C9CE',
-    st_label_bg='14141A', st_label_fg='9A9AA4', st_text_bg='14141A', st_text_fg='E8E6E3',
-    st_input_bg='241A10', st_input_fg='FFD9A0', st_auto_bg='0F0F15', st_auto_fg='E8E6E3',
-    st_cell_bg='14141A', st_cell_fg='E8E6E3', st_note_fg='9A9AA4',
-    st_kvlabel_bg='1A1A22', st_stamp_fg='FF2A3C', st_big_fg='E8E6E3',
-    st_border='33333C', st_border2='5A5A66', st_input_edge='FF2A3C',
-    banner_fg='FFFFFF', h1_fg='FFFFFF', head_fg='F2C9CE', h2_fg='FF9AA2', title_fg='FF2A3C',
-    cf_ok_bg='10231A', cf_ok_fg='6BE39A', cf_warn_bg='2A1013', cf_warn_fg='FF6B76',
-    tab='FF2A3C', cyan='3AA0B0', gold='FFB84D',
-)
-PALETTES = {'ncpd': PAL_NCPD, 'dark': PAL_DARK}
-THEME = 'ncpd'
+PAL_NCPD = PAL_HUD          # совместимость со старыми вызовами
+PAL_DARK = PAL_HUD
+PALETTES = {'hud': PAL_HUD, 'ncpd': PAL_HUD, 'dark': PAL_HUD}
+THEME = 'hud'
 
-MONO = 'Courier New'
-SANS = 'Arial'
+# Шрифты: Oswald (крупные технические заголовки, HUD-стиль), Roboto (текст),
+# Roboto Mono (цифры, метки, служебные значения). Все три есть в Google Таблицах;
+# Excel без них подставит свой системный шрифт — читаемость не страдает.
+DISPLAY = 'Oswald'
+MONO = 'Roboto Mono'
+SANS = 'Roboto'
 CASH_FMT = '#,##0" €$"'
 
 
@@ -79,78 +74,82 @@ def make_styles(p):
     med = Side(style='medium', color=p['st_border'])
     dot = Side(style='dotted', color=p['st_border2'])
     cell_edge = Border(left=thin, right=thin, top=thin, bottom=thin)
-    input_edge = Border(left=Side(style='thin', color=p['st_input_edge']),
-                        right=thin, top=thin, bottom=thin)
+    input_edge = Border(bottom=Side(style='thin', color=p['st_input_edge']),
+                        left=Side(style='medium', color=p['st_input_edge']),
+                        right=thin, top=thin)
     return {
-        'banner': dict(font=Font(name=MONO, size=10, bold=True, color=p['banner_fg']),
+        'banner': dict(font=Font(name=DISPLAY, size=15, bold=True, color=p['banner_fg']),
                        fill=PatternFill('solid', start_color=p['st_banner_bg']),
-                       align=Alignment(horizontal='center', vertical='center', wrap_text=True)),
-        'banner2': dict(font=Font(name=MONO, size=8, color=p['banner_fg']),
+                       align=Alignment(horizontal='center', vertical='center', wrap_text=True),
+                       border=Border(bottom=Side(style='medium', color=p['accent']))),
+        'banner2': dict(font=Font(name=DISPLAY, size=11, color=p['banner_fg']),
                         fill=PatternFill('solid', start_color=p['st_banner2_bg']),
                         align=Alignment(horizontal='center', vertical='center', wrap_text=True)),
-        'title': dict(font=Font(name=MONO, size=24, bold=True, color=p['title_fg']),
+        'title': dict(font=Font(name=DISPLAY, size=26, bold=True, color=p['title_fg']),
                       align=Alignment(horizontal='left', vertical='center')),
-        'h1': dict(font=Font(name=MONO, size=11, bold=True, color=p['h1_fg']),
+        'h1': dict(font=Font(name=DISPLAY, size=14, bold=True, color=p['h1_fg']),
                    fill=PatternFill('solid', start_color=p['st_h1_bg']),
-                   align=Alignment(horizontal='left', vertical='center')),
-        'h2': dict(font=Font(name=MONO, size=9, bold=True, color=p['h2_fg']),
+                   align=Alignment(horizontal='left', vertical='center'),
+                   border=Border(left=Side(style='medium', color=p['accent']))),
+        'h2': dict(font=Font(name=DISPLAY, size=11, bold=True, color=p['h2_fg']),
                    fill=PatternFill('solid', start_color=p['st_h2_bg']),
                    align=Alignment(horizontal='left', vertical='center')),
-        'head': dict(font=Font(name=MONO, size=8, bold=True, color=p['st_head_fg']),
+        'head': dict(font=Font(name=DISPLAY, size=11, bold=True, color=p['st_head_fg']),
                      fill=PatternFill('solid', start_color=p['st_head_bg']),
-                     align=Alignment(horizontal='center', vertical='center', wrap_text=True)),
-        'label': dict(font=Font(name=MONO, size=8, bold=True, color=p['st_label_fg']),
+                     align=Alignment(horizontal='center', vertical='center', wrap_text=True),
+                     border=Border(bottom=Side(style='thin', color=p['accent']))),
+        'label': dict(font=Font(name=MONO, size=11, bold=True, color=p['st_label_fg']),
                       fill=PatternFill('solid', start_color=p['st_label_bg']),
                       align=Alignment(horizontal='left', vertical='center', wrap_text=True)),
-        'text': dict(font=Font(name=SANS, size=10, color=p['st_text_fg']),
+        'text': dict(font=Font(name=SANS, size=12, color=p['st_text_fg']),
                      fill=PatternFill('solid', start_color=p['st_text_bg']),
                      align=Alignment(horizontal='left', vertical='top', wrap_text=True)),
-        'input': dict(font=Font(name=SANS, size=10, color=p['st_input_fg']),
+        'input': dict(font=Font(name=SANS, size=12, color=p['st_input_fg']),
                       fill=PatternFill('solid', start_color=p['st_input_bg']),
                       align=Alignment(horizontal='left', vertical='center', wrap_text=True),
                       border=input_edge),
-        'inputc': dict(font=Font(name=MONO, size=10, bold=True, color=p['st_input_fg']),
+        'inputc': dict(font=Font(name=MONO, size=12, bold=True, color=p['st_input_fg']),
                        fill=PatternFill('solid', start_color=p['st_input_bg']),
                        align=Alignment(horizontal='center', vertical='center'),
                        border=input_edge),
-        'auto': dict(font=Font(name=MONO, size=10, bold=True, color=p['st_auto_fg']),
+        'auto': dict(font=Font(name=MONO, size=12, bold=True, color=p['st_auto_fg']),
                      fill=PatternFill('solid', start_color=p['st_auto_bg']),
                      align=Alignment(horizontal='center', vertical='center'),
                      border=cell_edge),
-        'auto_l': dict(font=Font(name=MONO, size=10, color=p['st_auto_fg']),
+        'auto_l': dict(font=Font(name=MONO, size=11, color=p['st_auto_fg']),
                        fill=PatternFill('solid', start_color=p['st_auto_bg']),
                        align=Alignment(horizontal='left', vertical='center', wrap_text=True),
                        border=cell_edge),
-        'cell': dict(font=Font(name=SANS, size=10, color=p['st_cell_fg']),
+        'cell': dict(font=Font(name=SANS, size=11, color=p['st_cell_fg']),
                      fill=PatternFill('solid', start_color=p['st_cell_bg']),
                      align=Alignment(horizontal='left', vertical='center', wrap_text=True),
                      border=cell_edge),
-        'cellc': dict(font=Font(name=MONO, size=9, color=p['st_cell_fg']),
+        'cellc': dict(font=Font(name=MONO, size=11, color=p['st_cell_fg']),
                       fill=PatternFill('solid', start_color=p['st_cell_bg']),
                       align=Alignment(horizontal='center', vertical='center'),
                       border=cell_edge),
-        'note': dict(font=Font(name=SANS, size=9, italic=True, color=p['st_note_fg']),
+        'note': dict(font=Font(name=SANS, size=11, italic=True, color=p['st_note_fg']),
                      fill=PatternFill('solid', start_color=p['st_text_bg']),
                      align=Alignment(horizontal='left', vertical='center', wrap_text=True)),
-        'stamp': dict(font=Font(name=MONO, size=11, bold=True, color=p['st_stamp_fg']),
+        'stamp': dict(font=Font(name=DISPLAY, size=13, bold=True, color=p['st_stamp_fg']),
                       fill=PatternFill('solid', start_color=p['st_text_bg']),
                       align=Alignment(horizontal='center', vertical='center', wrap_text=True)),
-        'big': dict(font=Font(name=MONO, size=12, bold=True, color=p['st_big_fg']),
+        'big': dict(font=Font(name=DISPLAY, size=16, bold=True, color=p['st_big_fg']),
                     align=Alignment(horizontal='center', vertical='center')),
-        'kv_label': dict(font=Font(name=MONO, size=8, bold=True, color=p['st_text_fg']),
+        'kv_label': dict(font=Font(name=MONO, size=11, bold=True, color=p['st_text_fg']),
                          fill=PatternFill('solid', start_color=p['st_kvlabel_bg']),
                          align=Alignment(horizontal='left', vertical='center', wrap_text=True),
                          border=cell_edge),
     }
 
 
-def use_theme(name):
-    """Переключить палитру: 'ncpd' (бумага) или 'dark' (тёмный протокол)."""
+def use_theme(name='hud'):
+    """Переключить палитру (сейчас одна — 'hud': чёрный/красный/янтарный)."""
     global THEME, STYLES, INK, ACCENT, MUTED, PAPER, PAPER_D, INPUT, AUTO, BAND, BAND2, WHITE, CYAN, GOLD
     global THIN, MED, DOT, OK_BG, BAD_BG, WARN_BG, ACCENT_D
     global CF_OK_BG, CF_OK_FG, CF_WARN_BG, CF_WARN_FG
-    p = PALETTES[name]
-    THEME = name
+    p = PALETTES.get(name, PAL_HUD)
+    THEME = 'hud'
     STYLES = make_styles(p)
     INK = p['ink']
     MUTED = p['muted']
@@ -173,7 +172,7 @@ def use_theme(name):
     DOT = Side(style='dotted', color=p['st_border2'])
 
 
-use_theme('ncpd')
+use_theme('hud')
 
 
 def put(ws, ref, value=None, *, kind='cell', fmt=None, border=None, align=None,
@@ -283,7 +282,8 @@ def cf_ok(ws, rng, formula, bg=None, color=None):
         font=Font(name=MONO, bold=True, color=color or CF_OK_FG), stopIfTrue=False))
 
 
-def sheet_setup(ws, tab_color, freeze=None, cols=None, landscape=False):
+def sheet_setup(ws, tab_color, freeze=None, cols=None, landscape=True):
+    """Оформление листа: без сетки, альбомная ориентация, всё по ширине страницы."""
     ws.sheet_view.showGridLines = False
     ws.sheet_properties.tabColor = tab_color
     if freeze:
@@ -292,10 +292,18 @@ def sheet_setup(ws, tab_color, freeze=None, cols=None, landscape=False):
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 0
+    ws.sheet_view.zoomScale = 100
 
 
 # ------------------------------------------------------------- ссылки листов --
 S_DOC = "'01 ДОСЬЕ'"
+# ключевые ячейки досье, на которые ссылаются игровые листы
+DOC_HANDLE = '$C$4'
+DOC_ROLE = '$C$5'
+DOC_PLAYER = '$C$6'
+DOC_CONTACT = '$C$11'
+DOC_STATUS = '$E$3'
+DOC_CASE = '$G$3'
 S_BASE = "'02 ОСНОВА'"
 S_SKL = "'03 НАВЫКИ'"
 S_CHR = "'04 ХРОМ'"
@@ -310,28 +318,28 @@ NAMES = {'doc': '01 ДОСЬЕ', 'base': '02 ОСНОВА', 'skl': '03 НАВЫ�
          'ref': 'СПРАВКА', 'rul': 'ПРАВИЛА'}
 
 # --- адреса, на которые ссылаются формулы с других листов (менять только вместе с вёрсткой) ---
-BASE_HP_MAX = '$D$24'
-BASE_HP_CUR = '$D$25'
-BASE_SW = '$D$26'
-BASE_DS = '$D$27'
-BASE_DS_PEN = '$D$28'
-BASE_INIT = '$D$29'
-BASE_MOVE = '$D$30'
-BASE_HUM_BASE = '$D$31'
-BASE_HUM_CUT = '$D$32'
-BASE_HUM_MAX = '$D$33'
-BASE_HL = '$D$34'
-BASE_HUM_RESTORED = '$D$35'
-BASE_HUM_CUR = '$D$36'
-BASE_EMP_CUR = '$D$37'
-BASE_HUM_STATE = '$D$38'
+BASE_HP_MAX = '$D$22'
+BASE_HP_CUR = '$D$23'
+BASE_SW = '$D$24'
+BASE_DS = '$D$25'
+BASE_DS_PEN = '$D$26'
+BASE_INIT = '$D$27'
+BASE_MOVE = '$D$28'
+BASE_HUM_BASE = '$D$29'
+BASE_HUM_CUT = '$D$30'
+BASE_HUM_MAX = '$D$31'
+BASE_HL = '$D$32'
+BASE_HUM_RESTORED = '$D$33'
+BASE_HUM_CUR = '$D$34'
+BASE_EMP_CUR = '$D$35'
+BASE_HUM_STATE = '$D$36'
 BASE_WOUND = '$G$3'
 BASE_PSY = '$G$4'
 BASE_RANK = '$G$2'
 BASE_STAT_FIRST, BASE_STAT_LAST = 8, 17
 
-CHR_HL_TOTAL = '$H$25'
-CHR_HUM_CUT = '$I$25'
+CHR_HL_TOTAL = '$H$19'
+CHR_HUM_CUT = '$I$19'
 
 GEAR_CASH = '$D$5'
 GEAR_W_NAME = '$C$9:$C$16'
@@ -342,10 +350,10 @@ GEAR_SP_BODY = '$D$28'
 GEAR_SP_SHIELD = '$D$29'
 GEAR_PEN = {'REF': '$D$30', 'DEX': '$E$30', 'MOVE': '$F$30'}
 
-STA_CRIT_STATUS = '$I$8:$I$17'
-STA_IP_FREE = '$D$63'
-STA_IP_SPENT = '$D$62'
-STA_IP_EARNED = '$D$61'
+STA_CRIT_STATUS = '$I$7:$I$16'
+STA_IP_FREE = '$D$32'
+STA_IP_SPENT = '$D$31'
+STA_IP_EARNED = '$D$30'
 
 
 CAT_LAST = 1
@@ -477,30 +485,27 @@ def dedupe_names(rows):
 
 # ============================================================== 01 ДОСЬЕ ====
 def build_dossier(wb):
+    """01 ДОСЬЕ — альбомная папка дела: личность, служба, прошлое, связи, сводка."""
     ws = wb.create_sheet(NAMES['doc'])
-    widths(ws, {'A': 2, 'B': 30, 'C': 34, 'D': 30, 'E': 34, 'F': 30, 'G': 34, 'H': 2})
-    heights(ws, {3: 34, 4: 16, 14: 22})
-    sheet_setup(ws, ACCENT)
+    widths(ws, {'A': 2, 'B': 24, 'C': 40, 'D': 24, 'E': 40, 'F': 26, 'G': 46, 'H': 2})
+    sheet_setup(ws, ACCENT, landscape=True)
 
-    mput(ws, 'B1:G1', 'NCPD  ▚  NIGHT CITY POLICE DEPARTMENT  ▚  УПРАВЛЕНИЕ BORDER SECURITY  ▚  2070',
-         kind='banner')
-    heights(ws, {1: 20})
-    mput(ws, 'B2:G2', 'ФОРМА NCPD-77/Б · ДЕЛО ОБЪЕКТА · ДОСТУП: ОГРАНИЧЕННЫЙ · КОПИРОВАНИЕ БЕЗ ШТАМПА НЕДОПУСТИМО',
-         kind='banner2')
-    heights(ws, {2: 15})
-    mput(ws, 'B3:E3', 'Д О С Ь Е', kind='title')
-    put(ws, 'F3', 'СТАТУС:', kind='label')
-    put(ws, 'G3', 'АКТИВЕН', kind='inputc')
-    dv_list(ws, 'G3', ['АКТИВЕН', 'НАБЛЮДЕНИЕ', 'РАЗЫСКИВАЕТСЯ', 'АРХИВ', 'МЁРТВ'])
-    ws['G3'].font = Font(name=MONO, size=11, bold=True, color=ACCENT)
-    mput(ws, 'B4:E4', '▍▎▍▎▎▍▍▎▍▎▎▍▍▎▎▍▎▍▍▎▎▍▎▍▌▎▍▎▌▍▎▎▍▎▍▌▎▍▎▎▍▎▍▎▎▍▎▍▎▎▍▎▎▌▎▍▍',
-         kind='note')
-    put(ws, 'F4', 'ДЕЛО №', kind='label')
-    put(ws, 'G4', 'NC-2070-', kind='inputc')
+    mput(ws, 'B1:G1', 'NCPD  ▚  NIGHT CITY POLICE DEPARTMENT  ▚  ДЕЛО ОБЪЕКТА  ▚  2070', kind='banner')
+    heights(ws, {1: 32})
+    mput(ws, 'B2:G2', 'ФОРМА NCPD-77/Б · ДОСТУП: ОГРАНИЧЕННЫЙ · КОПИРОВАНИЕ БЕЗ ШТАМПА НЕДОПУСТИМО', kind='banner2')
+    heights(ws, {2: 20})
 
-    # --- фото объекта ---
-    mput(ws, 'F6:G13', 'ФОТО ОБЪЕКТА\n\n(вставить изображение)', kind='note')
-    box(ws, 'F6:G13', color=INK, weight='medium')
+    mput(ws, 'B3:C3', 'Д О С Ь Е', kind='title')
+    put(ws, 'D3', 'СТАТУС:', kind='kv_label')
+    put(ws, 'E3', 'АКТИВЕН', kind='inputc')
+    dv_list(ws, 'E3', ['АКТИВЕН', 'НАБЛЮДЕНИЕ', 'РАЗЫСКИВАЕТСЯ', 'АРХИВ', 'МЁРТВ'])
+    put(ws, 'F3', 'ДЕЛО №', kind='kv_label')
+    put(ws, 'G3', 'NC-2070-', kind='input')
+    heights(ws, {3: 36})
+
+    # фото объекта — правый верхний угол, рядом с блоком данных
+    mput(ws, 'F4:G13', 'ФОТО ОБЪЕКТА\n\n(правый клик → «Заменить изображение»)', kind='note')
+    box(ws, 'F4:G13', color=ACCENT, weight='medium')
 
     ident = [
         ('ПОЗЫВНОЙ (HANDLE)', 'ИМЯ / ФАМИЛИЯ'),
@@ -512,37 +517,36 @@ def build_dossier(wb):
         ('ОСОБЫЕ ПРИМЕТЫ', 'ГОЛОС / МАНЕРА'),
         ('СВЯЗЬ / HOLOPHONE', 'ЖИЛЬЁ / LIFESTYLE'),
     ]
-    row = 6
-    for left, right in ident:
-        put(ws, f'B{row}', left, kind='kv_label')
-        put(ws, f'C{row}', None, kind='input')
-        put(ws, f'D{row}', right, kind='kv_label')
-        put(ws, f'E{row}', None, kind='input')
-        ws.row_dimensions[row].height = 30
-        row += 1
-    mput(ws, 'B14:E14', 'СТАТУС ОБЪЕКТА: АКТИВЕН · КОНТАКТ ЧЕРЕЗ ФИКСЕРА · ДЕЛО ВЕДЁТ GM', kind='h2')
-
-    r = 16
-    mput(ws, f'B{r}:G{r}', 'Ⅰ · ЛИЧНОСТЬ И МОТИВАЦИЯ  ·  БЛОК ПСИХОПРОФИЛЯ', kind='h1')
-    r += 1
-    psyc = [
-        ('ЛИЧНОСТЬ (PERSONALITY)', 34),
-        ('ЧТО ЦЕНИТ БОЛЬШЕ ВСЕГО', 30),
-        ('КАК ОТНОСИТСЯ К ЛЮДЯМ', 30),
-        ('МОРАЛЬНЫЙ КОМПАС (ПО ЛАЙФПАТУ)', 30),
-        ('ЦЕЛЬ ЖИЗНИ / ЗАЧЕМ ОН В ЭТОМ', 30),
-        ('ЧЕГО НИКОГДА НЕ СДЕЛАЕТ', 30),
-        ('СЛАБОСТЬ / НА ЧЁМ ЕГО ВЗЯТЬ', 30),
-    ]
-    for label, h in psyc:
-        put(ws, f'B{r}', label, kind='kv_label')
-        cp = mput(ws, f'C{r}:G{r}', None, kind='input')
-        ws.row_dimensions[r].height = h
+    r = 4
+    for idx, (left, right) in enumerate(ident):
+        put(ws, f'B{r}', left, kind='kv_label')
+        put(ws, f'C{r}', None, kind='input')
+        put(ws, f'D{r}', right, kind='kv_label')
+        put(ws, f'E{r}', None, kind='input')
+        heights(ws, {r: 28})
         r += 1
 
+    # Ⅰ личность и Ⅲ прошлое — в две колонки, чтобы не тянуть лист вниз
+    r = 15
+    mput(ws, f'B{r}:D{r}', 'Ⅰ · ЛИЧНОСТЬ И МОТИВАЦИЯ', kind='h1')
+    mput(ws, f'E{r}:G{r}', 'Ⅲ · ПРОШЛОЕ  ·  GENERAL LIFEPATH', kind='h1')
+    left_items = ['ЛИЧНОСТЬ (PERSONALITY)', 'ЧТО ЦЕНИТ БОЛЬШЕ ВСЕГО', 'КАК ОТНОСИТСЯ К ЛЮДЯМ',
+                  'МОРАЛЬНЫЙ КОМПАС (ПО ЛАЙФПАТУ)', 'ЦЕЛЬ ЖИЗНИ / ЗАЧЕМ ОН В ЭТОМ',
+                  'ЧЕГО НИКОГДА НЕ СДЕЛАЕТ', 'СЛАБОСТЬ / НА ЧЁМ ЕГО ВЗЯТЬ']
+    right_items = ['СЕМЬЯ / ДЕТСТВО', 'СЕМЕЙНЫЙ КРИЗИС', 'ДРУЗЬЯ', 'РОМАНТИЧЕСКИЕ СВЯЗИ',
+                   'ВРАГИ', 'ПЕРЕЛОМНЫЙ МОМЕНТ']
+    for idx in range(max(len(left_items), len(right_items))):
+        rr = r + 1 + idx
+        put(ws, f'B{rr}', left_items[idx] if idx < len(left_items) else '', kind='kv_label')
+        mput(ws, f'C{rr}:D{rr}', None, kind='input' if idx < len(left_items) else 'cell')
+        put(ws, f'E{rr}', right_items[idx] if idx < len(right_items) else '', kind='kv_label')
+        mput(ws, f'F{rr}:G{rr}', None, kind='input' if idx < len(right_items) else 'cell')
+        heights(ws, {rr: 30})
+    r += 1 + max(len(left_items), len(right_items))
+
+    # Ⅱ служба: пять дропдаунов в две колонки + восемь текстов по два в ряд
     r += 1
     mput(ws, f'B{r}:G{r}', 'Ⅱ · СЛУЖБА  ·  ROLE LIFEPATH (LAWMAN / NCPD — В ОТСТАВКЕ)', kind='h1')
-    r += 1
     lawman = [
         ('ДОЛЖНОСТЬ В ПОДРАЗДЕЛЕНИИ', 'Охранник', 'Патрульный', 'Уголовный следователь',
          'Спецназ', 'Мотопатруль', 'Внутренняя безопасность'),
@@ -556,58 +560,61 @@ def build_dossier(wb):
         ('ГЛАВНАЯ ЦЕЛЬ ПОДРАЗДЕЛЕНИЯ', 'Организованная преступность', 'Бустерганги',
          'Наркоторговцы', 'Грязные политики', 'Контрабандисты', 'Уличная преступность'),
     ]
-    for label, *options in lawman:
-        put(ws, f'B{r}', label, kind='kv_label')
-        mput(ws, f'C{r}:G{r}', options[0], kind='input')
-        dv_list(ws, f'C{r}', options)
-        ws.row_dimensions[r].height = 18
-        r += 1
-    for label, h in [('ЗА ЧТО УШЁЛ СО СЛУЖБЫ / ЧТО СЛУЧИЛОСЬ (ЕГО ВЕРСИЯ)', 30),
-                     ('ЧТО ОН НА САМОМ ДЕЛЕ СКРЫВАЕТ О ТОМ ДЕЛЕ', 30),
-                     ('КАКИЕ СВЯЗИ В УПРАВЛЕНИИ ОСТАЛИСЬ (ЗВОНИТЬ МОЖНО КОМУ)', 24),
-                     ('ПОДПИСКИ И РЕГУЛЯРНЫЕ ТРАТЫ (TRAUMA TEAM, ЖИЛЬЁ, ДОЛГИ)', 24),
-                     ('КТО НА НЕГО ОХОТИТСЯ (WHO\'S GUNNING FOR YOU)', 30),
-                     ('РЕПУТАЦИЯ НА УЛИЦАХ / ЧЕМ ИЗВЕСТЕН', 30),
-                     ('ТЕКУЩИЙ РАБОТОДАТЕЛЬ / ФИКСЕР', 24),
-                     ('ПРАВИЛА РАБОТЫ (КАК БЕРЁТ КОНТРАКТЫ)', 30)]:
-        put(ws, f'B{r}', label, kind='kv_label')
-        mput(ws, f'C{r}:G{r}', None, kind='input')
-        ws.row_dimensions[r].height = h
-        r += 1
+    for idx, (label, *options) in enumerate(lawman):
+        rr = r + 1 + idx // 2
+        col = 'B' if idx % 2 == 0 else 'D'
+        vcol = 'C' if idx % 2 == 0 else ('E' if idx % 2 == 0 else 'E')
+        put(ws, f'{col}{rr}', label, kind='kv_label')
+        vref = f'C{rr}' if idx % 2 == 0 else f'E{rr}'
+        mput(ws, f'{vref}' if idx % 2 else f'C{rr}', options[0], kind='input')
+        dv_list(ws, vref if idx % 2 else f'C{rr}', options)
+        heights(ws, {rr: 26})
+    r += 1 + (len(lawman) + 1) // 2
+    texts = ['ЗА ЧТО УШЁЛ СО СЛУЖБЫ / ЧТО СЛУЧИЛОСЬ (ЕГО ВЕРСИЯ)',
+             'ЧТО ОН НА САМОМ ДЕЛЕ СКРЫВАЕТ О ТОМ ДЕЛЕ',
+             'КАКИЕ СВЯЗИ В УПРАВЛЕНИИ ОСТАЛИСЬ (ЗВОНИТЬ МОЖНО КОМУ)',
+             'ПОДПИСКИ И РЕГУЛЯРНЫЕ ТРАТЫ (TRAUMA TEAM, ЖИЛЬЁ, ДОЛГИ)',
+             'КТО НА НЕГО ОХОТИТСЯ (WHO\'S GUNNING FOR YOU)',
+             'РЕПУТАЦИЯ НА УЛИЦАХ / ЧЕМ ИЗВЕСТЕН',
+             'ТЕКУЩИЙ РАБОТОДАТЕЛЬ / ФИКСЕР',
+             'ПРАВИЛА РАБОТЫ (КАК БЕРЁТ КОНТРАКТЫ)']
+    for idx, label in enumerate(texts):
+        rr = r + 1 + idx // 2
+        if idx % 2 == 0:
+            put(ws, f'B{rr}', label, kind='kv_label')
+            mput(ws, f'C{rr}:D{rr}', None, kind='input')
+        else:
+            put(ws, f'E{rr}', label, kind='kv_label')
+            mput(ws, f'F{rr}:G{rr}', None, kind='input')
+        heights(ws, {rr: 32})
+    r += 1 + (len(texts) + 1) // 2
 
-    r += 1
-    mput(ws, f'B{r}:G{r}', 'Ⅲ · ПРОШЛОЕ  ·  GENERAL LIFEPATH', kind='h1')
-    r += 1
-    past = [
-        ('СЕМЬЯ / ДЕТСТВО', 30), ('СЕМЕЙНЫЙ КРИЗИС', 30), ('ДРУЗЬЯ', 30),
-        ('РОМАНТИЧЕСКИЕ СВЯЗИ', 30), ('ВРАГИ', 30), ('ПЕРЕЛОМНЫЙ МОМЕНТ', 30),
-    ]
-    for label, h in past:
-        put(ws, f'B{r}', label, kind='kv_label')
-        mput(ws, f'C{r}:G{r}', None, kind='input')
-        ws.row_dimensions[r].height = h
-        r += 1
-
+    # Ⅳ связи — компактная таблица из четырёх колонок
     r += 1
     mput(ws, f'B{r}:G{r}', 'Ⅳ · СВЯЗИ  ·  КТО МОЖЕТ ПОМОЧЬ ИЛИ ПОДСТАВИТЬ', kind='h1')
-    r += 1
     heads = [('B', 'КТО'), ('C', 'РОЛЬ В ЖИЗНИ'), ('D:E', 'КАК НАЙТИ / КОНТАКТ'),
-             ('F', 'ЧЕМ ПОЛЕЗЕН'), ('G', 'ЧЕМ ОПАСЕН')]
+             ('F:G', 'ЧЕМ ПОЛЕЗЕН / ЧЕМ ОПАСЕН')]
     for col, text in heads:
-        rng = f'{col}{r}' if ':' not in col else f'{col[0]}{r}:{col[2]}{r}'
-        mput(ws, rng, text, kind='head')
-    contacts_start = r + 1
+        rng = col if ':' not in col else f'{col[0]}{r + 1}:{col[2]}{r + 1}'
+        pass
+    for col, text in heads:
+        rr = r + 1
+        if ':' in col:
+            mput(ws, f'{col.split(":")[0]}{rr}:{col.split(":")[1]}{rr}', text, kind='head')
+        else:
+            put(ws, f'{col}{rr}', text, kind='head')
     for i in range(6):
-        rr = contacts_start + i
-        for col in ('B', 'C', 'D:E', 'F', 'G'):
-            rng = f'{col}{rr}' if ':' not in col else f'{col[0]}{rr}:{col[2]}{rr}'
-            mput(ws, rng, None, kind='cell')
-        ws.row_dimensions[rr].height = 20
-    r = contacts_start + 6
+        rr = r + 2 + i
+        put(ws, f'B{rr}', None, kind='input')
+        put(ws, f'C{rr}', None, kind='input')
+        mput(ws, f'D{rr}:E{rr}', None, kind='input')
+        mput(ws, f'F{rr}:G{rr}', None, kind='input')
+        heights(ws, {rr: 24})
+    r += 2 + 6
 
+    # Ⅴ сводка — тянется с игровых листов, по два показателя в ряд
     r += 1
     mput(ws, f'B{r}:G{r}', 'Ⅴ · СЛУЖЕБНАЯ СВОДКА  ·  СЧИТАЕТСЯ АВТОМАТИЧЕСКИ', kind='h1')
-    r += 1
     summary = [
         ('HP (ТЕКУЩИЕ / МАКСИМУМ)', f'={S_BASE}!{BASE_HP_CUR}&" / "&{S_BASE}!{BASE_HP_MAX}'),
         ('ПОРОГ «СЕРЬЁЗНО РАНЕН»', f'={S_BASE}!{BASE_SW}'),
@@ -630,39 +637,37 @@ def build_dossier(wb):
          f'IF({S_BASE}!$G$2=8,"8 · маршал зоны восстановления",'
          f'IF({S_BASE}!$G$2=9,"9 · C-SWAT","10 · национальные силы")))))'),
     ]
-    for label, formula in summary:
-        mput(ws, f'B{r}:C{r}', label, kind='kv_label')
-        mput(ws, f'D{r}:G{r}', formula, kind='auto_l')
-        ws.row_dimensions[r].height = 18
-        r += 1
+    for idx, (label, formula) in enumerate(summary):
+        rr = r + 1 + idx // 2
+        if idx % 2 == 0:
+            mput(ws, f'B{rr}:C{rr}', label, kind='kv_label')
+            mput(ws, f'D{rr}', formula, kind='auto_l')
+        else:
+            mput(ws, f'E{rr}:F{rr}', label, kind='kv_label')
+            mput(ws, f'G{rr}', formula, kind='auto_l')
+        heights(ws, {rr: 24})
+    r += 1 + (len(summary) + 1) // 2
 
+    # Ⅵ заметки и Ⅶ границы безопасности
     r += 1
     mput(ws, f'B{r}:G{r}', 'Ⅵ · ЗАМЕТКИ ОТДЕЛА  ·  СВОБОДНАЯ ЗАПИСЬ GM И ИГРОКА', kind='h1')
-    r += 1
-    mput(ws, f'B{r}:G{r+5}', None, kind='input')
-    ws.row_dimensions[r].height = 22
-    for rr in range(r + 1, r + 6):
-        ws.row_dimensions[rr].height = 22
-    r += 6
-
+    mput(ws, f'B{r + 1}:G{r + 3}', None, kind='input')
+    for rr in range(r + 1, r + 4):
+        heights(ws, {rr: 26})
+    r += 4
     mput(ws, f'B{r}:G{r}', 'Ⅶ · ГРАНИЦЫ БЕЗОПАСНОСТИ (LINES / VEILS / X-CARD)', kind='h1')
     r += 1
-    mput(ws, f'B{r}:C{r}', 'СТОП-ТЕМЫ (LINES)', kind='kv_label')
-    mput(ws, f'D{r}:G{r}', None, kind='input')
-    ws.row_dimensions[r].height = 22
-    r += 1
-    mput(ws, f'B{r}:C{r}', 'УВОДИМ БЕЗ ДЕТАЛЕЙ (VEILS)', kind='kv_label')
-    mput(ws, f'D{r}:G{r}', None, kind='input')
-    ws.row_dimensions[r].height = 22
+    put(ws, f'B{r}', 'СТОП-ТЕМЫ (LINES)', kind='kv_label')
+    mput(ws, f'C{r}:D{r}', None, kind='input')
+    put(ws, f'E{r}', 'УВОДИМ БЕЗ ДЕТАЛЕЙ (VEILS)', kind='kv_label')
+    mput(ws, f'F{r}:G{r}', None, kind='input')
+    heights(ws, {r: 28})
     r += 2
-    mput(ws, f'B{r}:G{r}', 'ЗАПИСЬ ВЁЛ: ________________     ПЕЧАТЬ: NC//NET · 2070     ПОДПИСЬ GM: ________________',
-         kind='note')
-    mput(ws, f'B{r+1}:G{r+1}', f'ФАЙЛ: {NAMES["doc"]} · ИСТОЧНИКИ: Cyberpunk RED Corebook, CEMK (2070-е), гайд «Spes Desperata»',
-         kind='note')
-    cf_ok(ws, 'G3', '$G$3="АКТИВЕН"', bg=WARN_BG, color=ACCENT_D)
-    cf_warn(ws, 'G3', 'OR($G$3="АРХИВ",$G$3="МЁРТВ",$G$3="РАЗЫСКИВАЕТСЯ")')
+    mput(ws, f'B{r}:G{r}', 'ЗАПИСЬ ВЁЛ: ________________     ПЕЧАТЬ: NC//NET · 2070     ПОДПИСЬ GM: ________________', kind='note')
+    mput(ws, f'B{r + 1}:G{r + 1}', 'ИСТОЧНИКИ: Cyberpunk RED Corebook · CEMK (2070-е) · гайд «Spes Desperata»', kind='note')
+    cf_ok(ws, 'E3', '$E$3="АКТИВЕН"', bg=WARN_BG, color=ACCENT_D)
+    cf_warn(ws, 'E3', 'OR($E$3="АРХИВ",$E$3="МЁРТВ",$E$3="РАЗЫСКИВАЕТСЯ")')
     return ws
-
 
 # ============================================================== 02 ОСНОВА ===
 STAT_ROWS = {'INT': 8, 'WILL': 9, 'COOL': 10, 'EMP': 11, 'TECH': 12,
@@ -683,34 +688,34 @@ STAT_INFO = [
 
 
 def build_base(wb):
+    """02 ОСНОВА — характеристики, производные, Backup (Lawman), оружие, броня, памятка."""
     ws = wb.create_sheet(NAMES['base'])
-    widths(ws, {'A': 2, 'B': 8, 'C': 15, 'D': 11, 'E': 11, 'F': 11, 'G': 62, 'H': 2})
+    widths(ws, {'A': 2, 'B': 9, 'C': 17, 'D': 10, 'E': 10, 'F': 10, 'G': 78, 'H': 2})
     sheet_setup(ws, BAND, freeze='A8')
-    # B — код статы, C — название, D — значение, E — штраф брони, F — итог,
-    # G — широкая колонка «что это даёт / правило».
+    # B — код статы, C — название, D — значение, E — штраф брони, F — итог, G — правила.
 
     mput(ws, 'B1:G1', 'ЛИСТ ПЕРСОНАЖА  ▚  ОСНОВА  ▚  CYBERPUNK RED / CEMK · НАЙТ-СИТИ, 2070-е', kind='banner')
-    heights(ws, {1: 20})
+    heights(ws, {1: 32})
     mput(ws, 'B2:D2', 'ПОЗЫВНОЙ / РОЛЬ  ·  РАНГ РОЛИ →', kind='kv_label')
-    mput(ws, 'E2:F2', f'={S_DOC}!C6&" · "&{S_DOC}!C7', kind='auto_l')
+    mput(ws, 'E2:F2', f'={S_DOC}!{DOC_HANDLE}&" · "&{S_DOC}!{DOC_ROLE}', kind='auto_l')
     put(ws, 'G2', 4, kind='inputc')
     ws['G2'].number_format = '"РАНГ "0'   # значение остаётся числом для формулы Backup
     dv_num(ws, 'G2', 1, 10)
     mput(ws, 'B3:D3', 'ИГРОК / СТАТУС ДЕЛА', kind='kv_label')
-    mput(ws, 'E3:F3', f'={S_DOC}!C8&" · "&{S_DOC}!G3', kind='auto_l')
-    put(ws, 'G3', '="СОСТОЯНИЕ: "&IF(D25="","—",IF(D25<1,"СМЕРТЕЛЬНО РАНЕН",IF(D25<=D26,"СЕРЬЁЗНО РАНЕН",'
-                  'IF(D25<D24,"ЛЁГКОЕ РАНЕНИЕ","В НОРМЕ"))))', kind='auto')
+    mput(ws, 'E3:F3', f'={S_DOC}!{DOC_PLAYER}&" · "&{S_DOC}!{DOC_STATUS}', kind='auto_l')
+    put(ws, 'G3', '="СОСТОЯНИЕ: "&IF(D23="","—",IF(D23<1,"СМЕРТЕЛЬНО РАНЕН",IF(D23<=D24,"СЕРЬЁЗНО РАНЕН",'
+                  'IF(D23<D22,"ЛЁГКОЕ РАНЕНИЕ","В НОРМЕ"))))', kind='auto')
     mput(ws, 'B4:D4', 'КОНТАКТ / HOLOPHONE', kind='kv_label')
-    mput(ws, 'E4:F4', f'={S_DOC}!C13', kind='auto_l')
-    put(ws, 'G4', '="КИБЕРПСИХОЗ: "&IF(AND($D$37=0,$D$36<0),"⚠ ЭКСТРЕМАЛЬНЫЙ — лист забирает GM",'
-                   'IF($D$37=0,"⚠ КИБЕРПСИХОЗ",IF($D$37=1,"⚠ диссоциативное расстройство",'
-                   'IF($D$37=2,"⚠ пограничное состояние","—"))))', kind='auto')
-    mput(ws, 'B5:G5', ('ЯНТАРНЫЕ ПОЛЯ — ВВОД · ТЁМНЫЕ — СЧИТАЕТСЯ АВТОМАТИЧЕСКИ · ' if THEME == 'dark'
-                       else 'ЖЁЛТЫЕ ПОЛЯ — ВВОД · СЕРО-СИНИЕ — СЧИТАЕТСЯ АВТОМАТИЧЕСКИ · ')
-                      + 'СТАТЫ ДАЮТ ИТОГ С УЧЁТОМ ШТРАФА БРОНИ (ЛИСТ 05)', kind='note')
-    heights(ws, {2: 30, 3: 30, 4: 30})
+    mput(ws, 'E4:F4', f'={S_DOC}!{DOC_CONTACT}', kind='auto_l')
+    put(ws, 'G4', '="КИБЕРПСИХОЗ: "&IF(AND($D$35=0,$D$34<0),"⚠ ЭКСТРЕМАЛЬНЫЙ — лист забирает GM",'
+                   'IF($D$35=0,"⚠ КИБЕРПСИХОЗ",IF($D$35=1,"⚠ диссоциативное расстройство",'
+                   'IF($D$35=2,"⚠ пограничное состояние","—"))))', kind='auto')
+    mput(ws, 'B5:G5', 'ЯНТАРНЫЕ ПОЛЯ — ВВОД · ТЁМНЫЕ — СЧИТАЕТСЯ АВТОМАТИЧЕСКИ · '
+                      'СТАТЫ ДАЮТ ИТОГ С УЧЁТОМ ШТРАФА БРОНИ (ЛИСТ 05)', kind='note')
+    heights(ws, {2: 26, 3: 26, 4: 26, 5: 20})
 
     mput(ws, 'B6:G6', 'Ⅰ · ХАРАКТЕРИСТИКИ  ·  62 ОЧКА НА 10 СТАТ  ·  КАЖДАЯ ОТ 2 ДО 8', kind='h1')
+    heights(ws, {6: 26})
     for col, text in (('B', 'КОД'), ('C', 'СТАТА'), ('D', 'ЗНАЧ.'), ('E', 'БРОНЯ'),
                       ('F', 'ИТОГ'), ('G', 'НА ЧТО ВЛИЯЕТ')):
         put(ws, f'{col}7', text, kind='head')
@@ -724,60 +729,58 @@ def build_base(wb):
         else:
             put(ws, f'E{r}', 0, kind='auto')
         if code == 'EMP':
-            put(ws, f'F{r}', f'=IF(D{r}="",0,MIN(MAX(0,D{r}-E{r}),$D$37))', kind='auto')
+            put(ws, f'F{r}', f'=IF(D{r}="",0,MIN(MAX(0,D{r}-E{r}),$D$35))', kind='auto')
         else:
             put(ws, f'F{r}', f'=IF(D{r}="",0,MAX(0,D{r}-E{r}))', kind='auto')
-        put(ws, f'G{r}', effect, kind='cell')      # полный текст, без обрыва на полуслове
-        ws.row_dimensions[r].height = max(26, 15 * math.ceil(len(effect) / 56))
+        put(ws, f'G{r}', effect, kind='cell')
+        ws.row_dimensions[r].height = 22
     dv_num(ws, 'D8:D17', 2, 8)
     mput(ws, 'B18:C18', 'РАСКИДАНО / НОРМА 62', kind='kv_label')
     put(ws, 'D18', '=SUM(D8:D17)', kind='auto')
     put(ws, 'E18', 'ОСТАТОК', kind='kv_label')
     put(ws, 'F18', '=62-SUM(D8:D17)', kind='auto')
-    put(ws, 'G18', '=IF(F18=0,"✔ ровно 62 очка","свободно: "&F18&"  (нужно раздать все 62)")', kind='auto_l')
-    mput(ws, 'B19:C19', 'ПРОВЕРКА', kind='kv_label')
-    mput(ws, 'D19:G19', '=IF(AND(SUM(D8:D17)=62,MIN(D8:D17)>=2,MAX(D8:D17)<=8),'
-                        '"✔ 62 очка, диапазон 2–8 соблюдён","✖ ПРОВЕРЬ: сумма должна быть 62, каждая стата 2–8")',
-         kind='auto_l')
-    mput(ws, 'B20:G20', 'Штраф брони вычитается из REF, DEX и MOVE — он берётся один раз, самый строгий из надетого (лист 05). '
+    put(ws, 'G18', '=IF(AND(SUM(D8:D17)=62,MIN(D8:D17)>=2,MAX(D8:D17)<=8),'
+                   '"✔ 62 очка, диапазон 2–8 соблюдён","✖ ПРОВЕРЬ: сумма должна быть 62, каждая стата 2–8")',
+        kind='auto_l')
+    mput(ws, 'B19:G19', 'Штраф брони вычитается из REF, DEX и MOVE один раз — берётся самый строгий из надетого (лист 05). '
                         'Броня режет и навыки на этих статах автоматически (лист 03).', kind='note')
+    heights(ws, {18: 24, 19: 22})
 
-    mput(ws, 'B22:G22', 'Ⅱ · ПРОИЗВОДНЫЕ  ·  HP, ЧЕЛОВЕЧНОСТЬ, ИНИЦИАТИВА', kind='h1')
-    mput(ws, 'B23:C23', 'ПОКАЗАТЕЛЬ', kind='head')
-    put(ws, 'D23', 'ЗНАЧЕНИЕ', kind='head')
-    mput(ws, 'E23:G23', 'ФОРМУЛА / ПРАВИЛО', kind='head')
-
+    mput(ws, 'B20:G20', 'Ⅱ · ПРОИЗВОДНЫЕ  ·  HP, ЧЕЛОВЕЧНОСТЬ, ИНИЦИАТИВА', kind='h1')
+    mput(ws, 'B21:C21', 'ПОКАЗАТЕЛЬ', kind='head')
+    put(ws, 'D21', 'ЗНАЧЕНИЕ', kind='head')
+    mput(ws, 'E21:G21', 'ФОРМУЛА / ПРАВИЛО', kind='head')
     rows = [
-        (24, 'HP МАКСИМУМ', '=10+5*ROUNDUP((F15+F9)/2,0)', None,
-         'HP = 10 + 5 × ⌈(BODY+WILL)/2⌉. Считается по ИТОГОВЫМ статам, но броня на них не влияет.'),
-        (25, 'HP ТЕКУЩИЕ (ВВОД)', None, 'input',
+        (22, 'HP МАКСИМУМ', '=10+5*ROUNDUP((F15+F9)/2,0)', None,
+         'HP = 10 + 5 × ⌈(BODY+WILL)/2⌉. Считается по итоговым статам; броня на них не влияет.'),
+        (23, 'HP ТЕКУЩИЕ (ВВОД)', None, 'input',
          'Просто вписывай текущие HP. Ноль и ниже — смертельное состояние.'),
-        (26, 'ПОРОГ «СЕРЬЁЗНО РАНЕН»', '=ROUNDUP(D24/2,0)', None,
+        (24, 'ПОРОГ «СЕРЬЁЗНО РАНЕН»', '=ROUNDUP(D22/2,0)', None,
          'Половина максимума, округление вверх → −2 ко всем действиям.'),
-        (27, 'СПАСБРОСОК СМЕРТИ (BODY)', '=F15', None,
+        (25, 'СПАСБРОСОК СМЕРТИ (BODY)', '=F15', None,
          '1d10 ≤ BODY − штраф. Выпало 10 — провал. Провал = смерть.'),
-        (28, 'ШТРАФ К СПАСБРОСКАМ (ВВОД)', None, 'input',
-         'Складывается с крит-травм (+1 за каждую такую травму) и урона.'),
-        (29, 'ИНИЦИАТИВА (REF + 1D10)', '=F13', None,
-         'Бросок 1d10 + это число. Combat Awareness: +1 за каждое вложенное очко в Initiative Reaction.'),
-        (30, 'MOVE ACTION (МЕТРЫ)', '=F17*2', None,
+        (26, 'ШТРАФ К СПАСБРОСКАМ (ВВОД)', None, 'input',
+         'Складывается с крит-травмами (+1 за каждую такую травму) и уроном.'),
+        (27, 'ИНИЦИАТИВА (REF + 1D10)', '=F13', None,
+         'Бросок 1d10 + это число.'),
+        (28, 'MOVE ACTION (МЕТРЫ)', '=F17*2', None,
          'За Move Action персонаж двигается на MOVE × 2 м. Ход = Move Action + одно действие.'),
-        (31, 'HUMANITY: БАЗА (EMP × 10)', '=D11*10', None,
+        (29, 'HUMANITY: БАЗА (EMP × 10)', '=D11*10', None,
          'Считается от исходной EMP (колонка «ЗНАЧ.»), не от текущей.'),
-        (32, 'СРЕЗ МАКСИМУМА ЗА ХРОМ', f'={S_CHR}!$I$25', None,
-         '−2 за каждый обычный имплант, −4 за боргвар, Fashionware не режет максимум (лист 04).'),
-        (33, 'HUMANITY МАКСИМУМ', '=D31-D32', None,
+        (30, 'СРЕЗ МАКСИМУМА ЗА ХРОМ', f'={S_CHR}!$I$19', None,
+         '−2 за обычный имплант, −4 за боргвар; Fashionware и стартовый Neuroport не режут максимум (лист 04).'),
+        (31, 'HUMANITY МАКСИМУМ', '=D29-D30', None,
          'Максимум Humanity = база − срез. Полностью вернуть можно только сняв хром.'),
-        (34, 'HL ВСЕГО (СРЕДНЕЕ)', f'={S_CHR}!$H$25', None,
-         'Среднее значение HL каждого установленного импланта (дом-правило кампании: «7 (2d6)» = −7).'),
-        (35, 'ВОССТАНОВЛЕНО (ТЕРАПИЯ/ОПЫТ)', None, 'input',
+        (32, 'HL ВСЕГО (СРЕДНЕЕ)', f'={S_CHR}!$H$19', None,
+         'Среднее значение HL каждого установленного импланта (дом-правило: «7 (2d6)» = −7).'),
+        (33, 'ВОССТАНОВЛЕНО (ТЕРАПИЯ/ОПЫТ)', None, 'input',
          'Сколько Humanity вернули терапией, опытом или событиями кампании (CEMK: Humanity Gain).'),
-        (36, 'HUMANITY ТЕКУЩАЯ', '=MIN(D33,D31-D34+D35)', None,
+        (34, 'HUMANITY ТЕКУЩАЯ', '=MIN(D31,D29-D32+D33)', None,
          'Не может превышать максимум. Ниже 0 — киберпсихоз, лист уходит GM.'),
-        (37, 'EMP ТЕКУЩАЯ', '=MAX(0,ROUNDDOWN(D36/10,0))', None,
+        (35, 'EMP ТЕКУЩАЯ', '=MAX(0,ROUNDDOWN(D34/10,0))', None,
          'Каждый раз, когда десяток Humanity падает, падает и EMP.'),
-        (38, 'СТАТУС HUMANITY', '=IF(AND($D$37=0,$D$36<0),"⚠ ЭКСТРЕМАЛЬНЫЙ — лист забирает GM",IF($D$37=0,"⚠ КИБЕРПСИХОЗ",'
-                               'IF(D36<20,"ПОНИЖЕННАЯ","В НОРМЕ")))', None,
+        (36, 'СТАТУС HUMANITY', '=IF(AND($D$35=0,$D$34<0),"⚠ ЭКСТРЕМАЛЬНЫЙ — лист забирает GM",'
+                               'IF($D$35=0,"⚠ КИБЕРПСИХОЗ",IF(D34<20,"ПОНИЖЕННАЯ","В НОРМЕ")))', None,
          'Порог киберпсихоза: 0 Humanity. EMP 0 = отстранённость, диссоциация, «люди — детали».'),
     ]
     for r, label, formula, kind, note in rows:
@@ -787,130 +790,90 @@ def build_base(wb):
         else:
             put(ws, f'D{r}', formula, kind='auto')
         mput(ws, f'E{r}:G{r}', note, kind='cell')
-        ws.row_dimensions[r].height = 20
+        ws.row_dimensions[r].height = 24
 
-    mput(ws, 'B40:G40', 'Ⅲ · РОЛЕВАЯ СПОСОБНОСТЬ  ·  A: SOLO — COMBAT AWARENESS  ·  B: LAWMAN — BACKUP', kind='h1')
-    for col, text in (('B', 'СПОСОБНОСТЬ'), ('C', 'ЦЕНА ЗА ЭФФЕКТ'), ('D', 'ВЛОЖЕНО ОЧКОВ')):
-        put(ws, f'{col}41', text, kind='head')
-    mput(ws, 'E41:G41', 'ЧТО ЭТО ДАЁТ', kind='head')
-    ca_rows = [
-        ('Damage Deflection', '2 очка за −1 урона', 'Уменьшает первый урон раунда: 2/4/6/8/10 очков = −1…−5.'),
-        ('Fumble Recovery', '4 очка', 'Игнорируешь критический провал (1) на атаках — но 1 всё равно 1.'),
-        ('Initiative Reaction', '1 очко = +1', 'Каждое очко даёт +1 к инициативе.'),
-        ('Precision Attack', '3 очка за +1', '3/6/9 очков = +1/+2/+3 ко всем атакам.'),
-        ('Spot Weakness', '1 очко = +1 урона', '+1 к урону первого успешного попадания в раунде (до брони).'),
-        ('Threat Detection', '1 очко = +1', '+1 ко всем проверкам Perception.'),
-    ]
-    r = 42
-    for name, cost, effect in ca_rows:
-        put(ws, f'B{r}', name, kind='cell')
-        put(ws, f'C{r}', cost, kind='cellc')
-        put(ws, f'D{r}', 0, kind='inputc')
-        mput(ws, f'E{r}:G{r}', effect, kind='cell')
-        ws.row_dimensions[r].height = 20
-        r += 1
-    mput(ws, 'B48:C48', 'ВЛОЖЕНО / РАНГ РОЛИ (SOLO)', kind='kv_label')
-    put(ws, 'D48', '=SUM(D42:D47)', kind='auto')
-    put(ws, 'E48', '=IF(OR(ISNUMBER(SEARCH("awman",$E$2)),ISNUMBER(SEARCH("законник",$E$2))),'
-                   '"Lawman: Combat Awareness не используется — твоя способность Backup (блок Ⅳ)",'
-                   'IF(SUM(D42:D47)=$G$2,"✔ распределено ровно по рангу",'
-                   'IF(SUM(D42:D47)<$G$2,"осталось очков: "&($G$2-SUM(D42:D47)),'
-                   '"✖ вложено больше ранга на "&(SUM(D42:D47)-$G$2))))', kind='auto_l')
-    mput(ws, 'F48:G48', 'Расклад можно менять до боя, вне боя и в бою — но в бою это Действие. '
-                        'Если не меняешь — держится прежний.', kind='note')
-
-    # ---- LAWMAN: Backup
-    mput(ws, 'B50:G50', 'Ⅳ · LAWMAN · BACKUP  ·  ВЫЗОВ ПОДКРЕПЛЕНИЯ (РАНГ = РАНГ РОЛИ)', kind='h1')
-    mput(ws, 'B51:C51', 'РАНГ BACKUP', kind='head')
-    put(ws, 'D51', 'БОЕВОЙ № · SP · HP', kind='head')
-    mput(ws, 'E51:G51', 'КТО ПРИЕДЕТ И НА ЧЁМ', kind='head')
+    mput(ws, 'B37:G37', 'Ⅲ · LAWMAN · BACKUP  ·  ВЫЗОВ ПОДКРЕПЛЕНИЯ (РАНГ = РАНГ РОЛИ)', kind='h1')
+    mput(ws, 'B38:C38', 'РАНГ BACKUP', kind='head')
+    put(ws, 'D38', 'БОЕВОЙ № · SP · HP', kind='head')
+    mput(ws, 'E38:G38', 'КТО ПРИЕДЕТ И НА ЧЁМ', kind='head')
     backup_rows = [
-        ('1–2', '8 · 7 · 20', 'Корпоративная охрана: 4 местных прокат-копа, приходят пешком. Heavy Pistols, Kevlar.'),
+        ('1–2', '8 · 7 · 20', 'Корпоративная охрана: 4 местных прокат-копа пешком. Heavy Pistols, Kevlar.'),
         ('3–4', '10 · 7 · 25', 'Патрульные: 4 копа с района на двух Compact Groundcar. Heavy Pistols, Kevlar.'),
         ('5–7', '14 · 13 · 35', 'Департамент шерифа: 2 «маунти» на High Performance Groundcar. Heavy Pistols + Assault Rifles, Heavy Armorjack.'),
         ('8', '16 · 15 · 50', 'Маршал зоны восстановления: один, на Superbike. Very Heavy Pistol, Assault Rifle, Grenade Launcher, Flak.'),
         ('9', '15 · 18 · 35', 'C-SWAT: 2 бойца Psycho Squad с воздуха, на AV-4. Assault Rifles + Rocket Launchers, Metalgear.'),
         ('10', '14 · 11 · 35', 'Национальные силы / Интерпол / Netwatch: 2 агента с AV-4. Very Heavy Pistols + Assault Rifles, Light Armorjack. '
-                               'Остаются до закрытия дела и считают по боевому номеру навыки Criminology, Deduction, Interrogation, Paramedic, Perception, Stealth, Tracking и др.'),
+                               'Считают по боевому номеру навыки Criminology, Deduction, Interrogation, Paramedic, Perception, Stealth, Tracking.'),
     ]
-    r = 52
+    r = 39
     for rank, stats, who in backup_rows:
         mput(ws, f'B{r}:C{r}', rank, kind='cellc')
         put(ws, f'D{r}', stats, kind='cellc')
         mput(ws, f'E{r}:G{r}', who, kind='cell')
         ws.row_dimensions[r].height = 24
         r += 1
-    mput(ws, 'B58:G58', '▪ ВЫЗОВ: Действие → бросок 1d10, успех при результате ≤ ранга Backup. Приезд — через 1d6 раундов; '
-                        'выпало 6 — приезжает тир на уровень выше (на 10-м ранге — две группы). Не ответили — зови в следующем ходу. '
-                        'Злоупотребление вызовом = разжалование или штраф от начальства.', kind='cell')
-    ws.row_dimensions[58].height = 34
-    mput(ws, 'B59:G59', '▪ Backup атакует и защищается боевым номером (стат + навык), но НЕ уклоняется от пуль. '
-                        'Отставной коп (вне службы) может звать только тех, с кем сохранил отношения, — решает GM.', kind='cell')
-    ws.row_dimensions[59].height = 34
+    mput(ws, 'B45:G45', '▪ ВЫЗОВ: Действие → 1d10 ≤ ранга Backup. Приезд — через 1d6 раундов; выпало 6 — тир на уровень выше '
+                        '(на 10-м ранге — две группы). Не ответили — зови в следующем ходу. Злоупотребление = штраф или разжалование.', kind='cell')
+    mput(ws, 'B46:G46', '▪ Backup атакует и защищается боевым номером (стат + навык), но НЕ уклоняется от пуль. Отставной коп зовёт только тех, '
+                        'с кем сохранил отношения, — решает GM.', kind='cell')
+    heights(ws, {45: 26, 46: 26})
 
-    mput(ws, 'B61:G61', 'Ⅴ · ОРУЖИЕ В РУКАХ  ·  АВТО ИЗ ЛИСТА 05 (СЛОТ 1–4)', kind='h1')
+    mput(ws, 'B48:G48', 'Ⅳ · ОРУЖИЕ В РУКАХ  ·  АВТО ИЗ ЛИСТА 05 (СЛОТ 1–4)', kind='h1')
     for col, text in (('B', 'ОРУЖИЕ'), ('C', 'УРОН'), ('D', 'ROF'), ('E', 'МАГ.'),
                       ('F', 'НАВЫК'), ('G', 'БАЗА АТАКИ (+1D10)')):
-        put(ws, f'{col}62', text, kind='head')
+        put(ws, f'{col}49', text, kind='head')
     for i in range(4):
-        r = 63 + i
+        r = 50 + i
         put(ws, f'B{r}', f'=IFERROR(INDEX({S_GEAR}!{GEAR_W_NAME},MATCH({i+1},{S_GEAR}!{GEAR_W_SLOT},0)),"—")', kind='auto_l')
         for col, src in (('C', 'F'), ('D', 'G'), ('E', 'H'), ('F', 'E')):
             put(ws, f'{col}{r}', f'=IFERROR(INDEX({S_GEAR}!${src}$9:${src}$16,MATCH({i+1},{S_GEAR}!{GEAR_W_SLOT},0)),"—")',
                 kind='auto')
         put(ws, f'G{r}', f'=IFERROR(INDEX({S_GEAR}!{GEAR_W_ATTACK},MATCH({i+1},{S_GEAR}!{GEAR_W_SLOT},0)),"—")', kind='auto')
-        ws.row_dimensions[r].height = 18
-    mput(ws, 'B68:G68', 'Ⅵ · БРОНЯ И ЗАЩИТА  ·  АВТО ИЗ ЛИСТА 05', kind='h1')
+        ws.row_dimensions[r].height = 22
+
+    mput(ws, 'B54:G54', 'Ⅴ · БРОНЯ И ЗАЩИТА  ·  АВТО ИЗ ЛИСТА 05', kind='h1')
     for i, (label, formula, note) in enumerate([
-        ('SP ГОЛОВЫ (НАДЕТОЕ)', f'={S_GEAR}!$C$27', 'В локации работает только лучший SP — он не складывается.'),
-        ('SP ТЕЛА (НАДЕТОЕ)', f'={S_GEAR}!$C$28', 'При попадании вся надетая броня в локации аблейтится одновременно.'),
-        ('ЩИТ (HP)', f'={S_GEAR}!$C$29', 'Щит держится на HP: 10 HP у обычного, 15 у усиленного.'),
+        ('SP ГОЛОВЫ (НАДЕТОЕ)', f'={S_GEAR}!$D$27', 'В локации работает только лучший SP — он не складывается.'),
+        ('SP ТЕЛА (НАДЕТОЕ)', f'={S_GEAR}!$D$28', 'При попадании вся надетая броня в локации аблейтится одновременно.'),
+        ('ЩИТ (HP)', f'={S_GEAR}!$D$29', 'Щит держится на HP: 10 HP у обычного, 15 у усиленного.'),
     ]):
-        r = 69 + i
+        r = 55 + i
         mput(ws, f'B{r}:C{r}', label, kind='kv_label')
         put(ws, f'D{r}', formula, kind='auto')
         mput(ws, f'E{r}:G{r}', note, kind='cell')
-    mput(ws, 'B72:C72', 'ШТРАФ БРОНИ REF / DEX / MOVE', kind='kv_label')
+        ws.row_dimensions[r].height = 22
+    mput(ws, 'B58:C58', 'ШТРАФ БРОНИ REF / DEX / MOVE', kind='kv_label')
     for col, key in (('D', 'REF'), ('E', 'DEX'), ('F', 'MOVE')):
-        put(ws, f'{col}72', f'={S_GEAR}!{GEAR_PEN[key]}', kind='auto')
-    mput(ws, 'G72:G72', 'применяется один раз, самый строгий', kind='note')
-
-    mput(ws, 'B73:C73', 'УКЛОНЕНИЕ ОТ ВЫСТРЕЛОВ (REF ≥ 8)', kind='kv_label')
-    put(ws, 'D73', f'=IF($F$13<8,"✖ нельзя: REF "&$F$13&" < 8 после штрафа брони",'
-                   f'"✔ можно: Evasion "&IFERROR(INDEX({S_SKL}!$I$5:$I$76,MATCH(\"Evasion\",{S_SKL}!$C$5:$C$76,0)),'
+        put(ws, f'{col}58', f'={S_GEAR}!{GEAR_PEN[key]}', kind='auto')
+    mput(ws, 'G58:G58', 'применяется один раз, самый строгий', kind='note')
+    mput(ws, 'B59:C59', 'УКЛОНЕНИЕ ОТ ВЫСТРЕЛОВ (REF ≥ 8)', kind='kv_label')
+    put(ws, 'D59', f'=IF($F$13<8,"✖ нельзя: REF "&$F$13&" < 8 после штрафа брони",'
+                   f'"✔ можно: Evasion "&IFERROR(INDEX({S_SKL}!$I$5:$I$76,MATCH("Evasion",{S_SKL}!$C$5:$C$76,0)),'
                    f'$F$16)&" + 1d10")', kind='auto_l')
-    mput(ws, 'E73:G73', 'Уклонение от дальних атак доступно только при REF 8+ ПОСЛЕ штрафа брони: '
-                        'бросок DEX + Evasion + 1d10 против атаки. Тяжёлая броня (−4) лишает этой возможности — '
-                        'сравни цену SP и цену уклонения.', kind='note')
-    ws.row_dimensions[73].height = 30
+    mput(ws, 'E59:G59', 'Уклонение от дальних атак — только при REF 8+ ПОСЛЕ штрафа брони: DEX + Evasion + 1d10 против атаки.', kind='note')
+    heights(ws, {59: 24})
 
-    mput(ws, 'B74:G74', 'Ⅶ · ПАМЯТКА БОЙЦА  ·  2070', kind='h1')
+    mput(ws, 'B61:G61', 'Ⅵ · ПАМЯТКА БОЙЦА  ·  2070', kind='h1')
     memo = [
         'Ход: 1 Move Action (MOVE × 2 м) + 1 действие. Инициатива = REF + 1d10.',
         'Серьёзно ранен (HP ≤ ½): −2 ко всем действиям. Смертельно ранен (HP < 1): −4 ко всем действиям, −6 MOVE, спасбросок смерти в начале хода.',
-        'Крит-травма: два и более «6» на кубах урона. Даёт +5 урона НАПРЯМУЮ в HP (SP не гасит) и эффект с листа 06.',
-        'Смертельно раненый получает крит-травму от каждой атаки ближнего/дальнего боя и +1 к штрафу спасброска.',
-        'REF 8+ — можно уклоняться (Evasion) от дальних атак. REF ниже — только от ближних.',
-        'Прицельный выстрел в голову: −8 к атаке, урон ×2; при треснувшем черепе ×3. Прицельный в оружие/ногу: −4 (см. СПРАВКА).',
-        'Укрытие бинарно: либо ты полностью за тем, что держит пулю и по тебе не попасть (урон уходит в укрытие), '
-        'либо тебя видно — и тогда ты не в укрытии. Щит — подвижное укрытие: принимает весь урон в свои HP, но уклоняться с ним нельзя.',
-        'Броня аблейтится (−1 SP) только когда урон ПРОШЁЛ: если SP погасил всё, броня не портится (CP:R стр. 186).',
-        'LAWMAN: ранг Backup = ранг роли. Вызов подкрепления — Действие, 1d10 ≤ ранг. Отставной коп зовёт только «своих».',
+        'Крит-травма (два и более «6» на кубах урона): +5 урона НАПРЯМУЮ в HP — SP не гасит — и эффект с листа 06.',
+        'Прицельный выстрел в голову: −8 к атаке, урон ×2 (при треснувшем черепе ×3). Прицельный в оружие/ногу: −4 (см. СПРАВКА).',
+        'Укрытие бинарно: либо урон уходит в укрытие, либо тебя видно. Щит — подвижное укрытие: принимает урон в свои HP, но уклоняться с ним нельзя.',
+        'Броня аблейтится (−1 SP) только когда урон ПРОШЁЛ: если SP погасил всё, броня не портится (CP:R стр. 186). '
+        'LAWMAN: ранг Backup = ранг роли, вызов — Действие.',
     ]
-    r = 75
+    r = 62
     for text in memo:
         mput(ws, f'B{r}:G{r}', '▪ ' + text, kind='text')
         ws.row_dimensions[r].height = 26
         r += 1
-    cf_ok(ws, 'D19', 'LEFT($D$19,1)="✔"')
-    cf_warn(ws, 'D19', 'LEFT($D$19,1)="✖"')
-    cf_warn(ws, 'G18', 'LEFT($G$18,1)<>"✔"')
-    cf_warn(ws, 'D38', 'LEFT($D$38,1)="⚠"')
+    cf_ok(ws, 'G18', 'LEFT($G$18,1)="✔"')
+    cf_warn(ws, 'G18', 'LEFT($G$18,1)="✖"')
+    cf_warn(ws, 'D36', 'LEFT($D$36,1)="⚠"')
     cf_warn(ws, 'G4', 'LEFT($G$4,1)="⚠"')
-    cf_warn(ws, 'D36', 'OR($D$37=0,$D$36<0)')
-    cf_warn(ws, 'E48', 'LEFT($E$48,1)="✖"')
+    cf_warn(ws, 'D34', 'OR($D$35=0,$D$34<0)')
     return ws
-
 
 # ============================================================== 03 НАВЫКИ ===
 SOLO_SKILLS = ['Athletics', 'Brawling', 'Concentration', 'Conversation', 'Education',
@@ -922,27 +885,24 @@ SOLO_SKILLS = ['Athletics', 'Brawling', 'Concentration', 'Conversation', 'Educat
 
 def build_skills(wb):
     ws = wb.create_sheet(NAMES['skl'])
-    widths(ws, {'A': 2, 'B': 17, 'C': 30, 'D': 7, 'E': 6, 'F': 7, 'G': 8, 'H': 8,
-                'I': 8, 'J': 8, 'K': 30, 'L': 40, 'M': 2})
+    widths(ws, {'A': 2, 'B': 18, 'C': 30, 'D': 7, 'E': 6, 'F': 6, 'G': 8, 'H': 7,
+                'I': 8, 'J': 8, 'K': 20, 'L': 42, 'M': 2, 'N': 26, 'O': 7, 'P': 7, 'Q': 54})
     sheet_setup(ws, CYAN, freeze='A5', landscape=True)
     first, last = 5, 70
     custom_first, custom_last = 71, 76
 
     mput(ws, 'B1:L1', 'НАВЫКИ  ▚  86 ОЧКОВ  ▚  МАКСИМУМ 6 ПРИ СОЗДАНИИ  ▚  МИН. 2 В 13 ОБЯЗАТЕЛЬНЫХ', kind='banner')
-    heights(ws, {1: 20})
-    mput(ws, 'B2:E2', 'РАБОЧАЯ ТАБЛИЦА НАВЫКОВ · ЗАПОЛНЯЙ ТОЛЬКО СТОЛБЕЦ «УР.»', kind='kv_label')
+    heights(ws, {1: 32})
+    mput(ws, 'B2:E2', 'ЗАПОЛНЯЙ ТОЛЬКО СТОЛБЕЦ «УР.» — СТАТА, БАЗА И ОЧКИ ПОСЧИТАЮТСЯ САМИ', kind='kv_label')
     put(ws, 'F2', 'РАСКИДАНО', kind='head')
     put(ws, 'G2', f'=SUM($J${first}:$J${custom_last})', kind='auto')
     put(ws, 'H2', 'ОСТАТОК', kind='head')
     put(ws, 'I2', f'=86-$G$2', kind='auto')
     mput(ws, 'J2:L2', f'=IF($I$2=0,"✔ 86 очков распределены полностью",IF($I$2>0,"свободно: "&$I$2&" очков","✖ перебор на "&-$I$2&" очков"))',
          kind='auto_l')
-    mput(ws, 'B3:L3', '★ — обязательный пакет роли LAWMAN (мин. 2 каждому): Autofire (×2), Criminology, Deduction, Handgun, '
-                      'Interrogation, Shoulder Arms, Tracking. ☆ — пакет Solo на случай смены роли. '
-                      '13 обязательных для всех: Athletics, Brawling, Concentration, Conversation, Education, Evasion, First Aid, '
-                      'Human Perception, Language (Streetslang), Local Expert (твой район), Perception, Persuasion, Stealth. '
-                      'Навыки с ×2 стоят 2 очка за уровень.', kind='note')
-    heights(ws, {3: 26})
+    mput(ws, 'B3:L3', '★ — обязательный пакет роли LAWMAN (мин. 2 каждому) · ☆ — пакет Solo на случай смены роли · '
+                      '×2 — навык стоит 2 очка за уровень · список проверок — в панели справа.', kind='note')
+    heights(ws, {3: 22})
     for col, text in (('B', 'ГРУППА'), ('C', 'НАВЫК'), ('D', 'СТАТА'), ('E', '×2'),
                       ('F', 'РОЛЬ'), ('G', 'УР.'), ('H', 'СТАТА'), ('I', 'БАЗА'),
                       ('J', 'ОЧКИ'), ('K', 'СПЕЦИАЛИЗАЦИЯ'), ('L', 'ЧТО ЭТО / ЗАМЕТКА')):
@@ -977,7 +937,7 @@ def build_skills(wb):
         put(ws, f'L{r}',
             ('ОБЯЗАТЕЛЬНЫЙ: минимум 2. ' if is_must else '') + SKILL_NOTES.get(name, sp_note),
             kind='cell')
-        ws.row_dimensions[r].height = 18
+        ws.row_dimensions[r].height = 20
         r += 1
     for i in range(custom_last - custom_first + 1):
         rr = custom_first + i
@@ -995,110 +955,127 @@ def build_skills(wb):
         put(ws, f'L{rr}', 'свободная строка: домашние навыки, арт-скиллы, хобби', kind='note')
     dv_num(ws, f'G{first}:G{custom_last}', 0, 10)
 
-    chk = custom_last + 2
-    mput(ws, f'B{chk}:L{chk}', 'Ⅰ · БАЗОВЫЕ ОБЯЗАТЕЛЬНЫЕ НАВЫКИ — 13 ШТУК, МИНИМУМ 2 КАЖДОМУ (ОБЩИЕ ДЛЯ ВСЕХ РОЛЕЙ)', kind='h1')
-    heads = [(f'B{chk+1}:C{chk+1}', 'ОБЯЗАТЕЛЬНЫЙ НАВЫК'), (f'D{chk+1}', 'УР.'),
-             (f'E{chk+1}', 'СТАТУС'), (f'F{chk+1}:L{chk+1}', 'ЧТО ДАЁТ / НАПОМИНАНИЕ')]
-    for rng, text in heads:
-        mput(ws, rng, text, kind='head')
+    # --- панель проверок: справа от таблицы, чтобы лист не уезжал вниз ----------
+    mput(ws, 'N5:Q5', 'ПРОВЕРКИ', kind='h1')
+    checks = [
+        ('РАСПРЕДЕЛЕНО ОЧКОВ', f'=$G$2', 'норма — ровно 86'),
+        ('ОСТАТОК ОЧКОВ', f'=$I$2', '0 = всё раздано'),
+        ('МАКСИМУМ НАВЫКА', f'=MAX($G${first}:$G${custom_last})', 'на старте — не выше 6'),
+    ]
+    r = 6
+    for label, formula, note in checks:
+        mput(ws, f'N{r}:O{r}', label, kind='kv_label')
+        put(ws, f'P{r}', formula, kind='auto')
+        mput(ws, f'Q{r}', note, kind='note')
+        ws.row_dimensions[r].height = 22
+        r += 1
+    cf_ok(ws, 'P6', '$P$6=86')
+    cf_warn(ws, 'P6', '$P$6<>86')
+    cf_warn(ws, 'P8', '$P$8>6')
+
+    r += 1
+    mput(ws, f'N{r}:Q{r}', '13 ОБЯЗАТЕЛЬНЫХ НАВЫКОВ (МИН. 2)', kind='h2')
+    r += 1
+    put(ws, f'N{r}', 'НАВЫК', kind='head')
+    put(ws, f'O{r}', 'УР.', kind='head')
+    put(ws, f'P{r}', 'ГОДЕН', kind='head')
+    mput(ws, f'Q{r}', 'ЧТО ДАЁТ / НАПОМИНАНИЕ', kind='head')
     must_notes = {
-        'Athletics': 'Прыжки, лазание, броски, плавание — Move Action вне боя и половина трюков.',
-        'Brawling': 'Драка руками/ногами, Grab, Choke. Нужен, даже если ты «стрелок».',
-        'Concentration': 'Фокус, память, сопротивление отвлечению и подавлению.',
-        'Conversation': 'Вытягивать информацию из людей, не выдавая себя.',
-        'Education': 'Эрудиция: чтение, письмо, история, базовые вычисления.',
-        'Evasion': 'Уклонение. С REF 8+ — от дальних атак тоже.',
-        'First Aid': 'Стабилизация ран, купирование простых крит-травм.',
-        'Human Perception': 'Читать лица, ловить ложь. Ключевой социальный навык: и в допросе, и на переговорах.',
-        'Language': 'Streetslang — минимум 2. Родной язык обычно 4 (бесплатно от Lifepath).',
-        'Local Expert': 'Свой район: кто держит улицу, где можно спрятаться и пересидеть.',
-        'Perception': 'Замечать засады, скрытое, слежку. Твой главный рабочий навык.',
-        'Persuasion': 'Убеждать, договариваться, выкручиваться на переговорах.',
+        'Athletics': 'Прыжки, лазание, броски, плавание — половина трюков вне боя.',
+        'Brawling': 'Драка руками и ногами, Grab, Choke. Нужен даже «стрелку».',
+        'Concentration': 'Фокус, память, сопротивление подавлению.',
+        'Conversation': 'Вытягивать информацию, не выдавая себя.',
+        'Education': 'Эрудиция: чтение, письмо, история, счёт.',
+        'Evasion': 'Уклонение. С REF 8+ — и от дальних атак.',
+        'First Aid': 'Стабилизация ран, простые крит-травмы.',
+        'Human Perception': 'Читать лица, ловить ложь — рабочий навык копа.',
+        'Language': 'Streetslang — минимум 2. Родной язык обычно 4 бесплатно.',
+        'Local Expert': 'Свой район: кто держит улицу, где пересидеть.',
+        'Perception': 'Замечать засады, скрытое, слежку.',
+        'Persuasion': 'Убеждать, договариваться, выкручиваться.',
         'Stealth': 'Подход, засада, уход с места работы.',
     }
-    r = chk + 2
-    for name in RULES.MUST_SKILLS:
-        mput(ws, f'B{r}:C{r}', name, kind='cell')
-        put(ws, f'D{r}', f'=IFERROR(INDEX($G${first}:$G${custom_last},MATCH("{name}",$C${first}:$C${custom_last},0)),0)',
-            kind='auto')
-        put(ws, f'E{r}', f'=IF($D{r}>=2,"✔","✖ мало")', kind='auto')
-        mput(ws, f'F{r}:L{r}', must_notes.get(name, ''), kind='cell')
-        ws.row_dimensions[r].height = 18
-        r += 1
-    mput(ws, f'B{r}:C{r}', 'ВЫПОЛНЕНО', kind='kv_label')
-    put(ws, f'D{r}', f'=COUNTIF($E${chk+2}:$E${r-1},"✔")', kind='auto')
-    put(ws, f'E{r}', 'из 13', kind='note')
-    mput(ws, f'F{r}:L{r}', '=IF($D$' + str(r) + '=13,"✔ все обязательные навыки закрыты","✖ не закрыто обязательных: "&(13-$D$' + str(r) + '))',
-         kind='auto_l')
-    r += 1
-    mput(ws, f'B{r}:L{r}', 'Ⅱ · ОБЯЗАТЕЛЬНЫЙ ПАКЕТ РОЛИ LAWMAN — МИНИМУМ 2 КАЖДОМУ (BACKUP ДЕРЖИТСЯ НА ЭТИХ НАВЫКАХ)', kind='h1')
-    r += 1
-    for rng, text in ((f'B{r}:C{r}', 'НАВЫК РОЛИ'), (f'D{r}', 'УР.'), (f'E{r}', 'СТАТУС'), (f'F{r}:L{r}', 'ЗАЧЕМ КОПУ')):
-        mput(ws, rng, text, kind='head')
-    role_start = r + 1
+    must_first = r + 1
+    for idx, name in enumerate(RULES.MUST_SKILLS):
+        rr = must_first + idx
+        put(ws, f'N{rr}', name, kind='cell')
+        put(ws, f'O{rr}', f'=IFERROR(INDEX($G${first}:$G${custom_last},MATCH("{name}",$C${first}:$C${custom_last},0)),0)', kind='auto')
+        put(ws, f'P{rr}', f'=IF($O{rr}>=2,"✔","✖ мал")', kind='auto')
+        put(ws, f'Q{rr}', must_notes.get(name, ''), kind='note')
+        ws.row_dimensions[rr].height = 20
+    must_last = must_first + len(RULES.MUST_SKILLS) - 1
+    rr = must_last + 1
+    mput(ws, f'N{rr}:O{rr}', 'ИТОГО ОБЯЗАТЕЛЬНЫХ', kind='kv_label')
+    put(ws, f'P{rr}', f'=COUNTIF($P${must_first}:$P${must_last},"✔")', kind='auto')
+    put(ws, f'Q{rr}', f'=IF($P${rr}=13,"✔ все 13 закрыты","✖ не закрыто: "&(13-$P${rr}))', kind='auto_l')
+    cf_warn(ws, f'P{must_first}:P{must_last}', f'$P{must_first}="✖ мал"')
+
+    role_start = rr + 3
+    mput(ws, f'N{role_start - 2}:Q{role_start - 2}', 'ПАКЕТ РОЛИ LAWMAN (МИН. 2)', kind='h2')
+    put(ws, f'N{role_start - 1}', 'НАВЫК РОЛИ', kind='head')
+    put(ws, f'O{role_start - 1}', 'УР.', kind='head')
+    put(ws, f'P{role_start - 1}', 'ГОДЕН', kind='head')
+    mput(ws, f'Q{role_start - 1}', 'ЗАЧЕМ КОПУ', kind='head')
     role_notes = {
-        'Autofire (×2)': 'Очереди: 10 патронов, 2d6 × превышение DV. Стоит 2 очка за уровень — дорогой, но коп без него не коп.',
-        'Criminology': 'Читать место преступления, вязать улики с известными бандами и «почерками».',
-        'Deduction': 'Собирать выводы из мелочей: допросы, логи, камеры, опись изъятого.',
-        'Handgun': 'Табельный пистолет — то, что всегда с собой, даже вне службы.',
-        'Interrogation': 'Разговорить задержанного: запугать, припереть к фактам, вытянуть имена.',
-        'Shoulder Arms': 'Винтовки, дробовики, пулемёты — ствол, который коп берёт из оружейки.',
-        'Tracking': 'Идти по следу: от камер и свидетелей до отпечатков ботинок в сточной воде.',
+        'Autofire (×2)': 'Очереди: 10 патронов, 2d6 × превышение DV.',
+        'Criminology': 'Место преступления, улики, «почерки» банд.',
+        'Deduction': 'Выводы из мелочей: допросы, логи, камеры.',
+        'Handgun': 'Табельный пистолет — всегда с собой.',
+        'Interrogation': 'Разговорить задержанного: запугать, припереть к фактам.',
+        'Shoulder Arms': 'Винтовки, дробовики, пулемёты — ствол из оружейки.',
+        'Tracking': 'Идти по следу: камеры, свидетели, отпечатки.',
     }
-    r = role_start
-    for name in RULES.ROLE_MUST_SKILLS.get('Lawman', []):
-        mput(ws, f'B{r}:C{r}', name, kind='cell')
-        put(ws, f'D{r}', f'=IFERROR(INDEX($G${first}:$G${custom_last},MATCH("{name}",$C${first}:$C${custom_last},0)),0)', kind='auto')
-        put(ws, f'E{r}', f'=IF($D{r}>=2,"✔","✖ мало")', kind='auto')
-        mput(ws, f'F{r}:L{r}', role_notes.get(name, ''), kind='cell')
-        ws.row_dimensions[r].height = 18
-        r += 1
-    role_last = r - 1
-    mput(ws, f'B{r}:C{r}', 'ВЫПОЛНЕНО', kind='kv_label')
-    put(ws, f'D{r}', f'=COUNTIF($E${role_start}:$E${role_last},"✔")', kind='auto')
-    put(ws, f'E{r}', f'из {len(RULES.ROLE_MUST_SKILLS.get("Lawman", []))}', kind='note')
-    mput(ws, f'F{r}:L{r}', f'=IF($D${r}=7,"✔ пакет законника закрыт","✖ не закрыто: "&(7-$D${r}))', kind='auto_l')
-    r += 1
-    mput(ws, f'B{r}:C{r}', 'МАКСИМУМ 6 ПРИ СОЗДАНИИ', kind='kv_label')
-    put(ws, f'D{r}', f'=MAX($G${first}:$G${custom_last})', kind='auto')
-    mput(ws, f'E{r}:L{r}', f'=IF(MAX($G${first}:$G${custom_last})>6,"✖ есть навык выше 6 — на старте нельзя","✔ выше 6 ничего нет. '
-                           f'Повышать можно за IP (см. лист 06).")', kind='auto_l')
-    r += 2
-    mput(ws, f'B{r}:L{r}', 'ШТРАФ БРОНИ: REF/DEX/MOVE уже вычтены в колонке «СТАТА» — база навыка (УР. + СТАТА) считается как надо. '
-                           'Навыки с ×2 (Martial Arts, Autofire, Heavy Weapons, Demolitions, Electronics/Security Tech, Paramedic, Pilot Air Vehicle) '
-                           'стоят 2 очка за уровень и при подъёме за IP — дороже.', kind='note')
-    ws.row_dimensions[r].height = 30
+    role_names = RULES.ROLE_MUST_SKILLS.get('Lawman', [])
+    for idx, name in enumerate(role_names):
+        rr2 = role_start + idx
+        put(ws, f'N{rr2}', name, kind='cell')
+        put(ws, f'O{rr2}', f'=IFERROR(INDEX($G${first}:$G${custom_last},MATCH("{name}",$C${first}:$C${custom_last},0)),0)', kind='auto')
+        put(ws, f'P{rr2}', f'=IF($O{rr2}>=2,"✔","✖ мал")', kind='auto')
+        put(ws, f'Q{rr2}', role_notes.get(name, ''), kind='note')
+        ws.row_dimensions[rr2].height = 20
+    role_last = role_start + len(role_names) - 1
+    rr2 = role_last + 1
+    mput(ws, f'N{rr2}:O{rr2}', 'ИТОГО ПО РОЛИ', kind='kv_label')
+    put(ws, f'P{rr2}', f'=COUNTIF($P${role_start}:$P${role_last},"✔")', kind='auto')
+    put(ws, f'Q{rr2}', f'=IF($P${rr2}={len(role_names)},"✔ пакет законника закрыт","✖ не закрыто: "&({len(role_names)}-$P${rr2}))', kind='auto_l')
+    cf_warn(ws, f'P{role_start}:P{role_last}', f'$P${role_start}="✖ мал"')
+
+    r = rr2 + 2
+    mput(ws, f'N{r}:Q{r}', '▪ ★ — пакет LAWMAN (мин. 2 каждому): Autofire (×2), Criminology, Deduction, Handgun, Interrogation, '
+                           'Shoulder Arms, Tracking.', kind='note')
+    mput(ws, f'N{r + 1}:Q{r + 1}', '▪ ☆ — пакет Solo на случай смены роли. Навыки с ×2 стоят 2 очка за уровень — и при подъёме за IP тоже.',
+         kind='note')
+    mput(ws, f'N{r + 2}:Q{r + 2}', '▪ Штраф брони уже вычтен в колонке «СТАТА»: база = УР. + СТАТА, считать вручную не нужно.',
+         kind='note')
+    for k in range(3):
+        heights(ws, {r + k: 22})
     cf_ok(ws, 'J2', 'LEFT($J$2,1)="✔"')
     cf_warn(ws, 'J2', 'LEFT($J$2,1)="✖"')
     cf_warn(ws, f'G{first}:G{custom_last}', f'$G{first}>6')
-    cf_warn(ws, f'E{chk+2}:E{chk+14}', '$E' + str(chk + 2) + '="✖ мало"')
-    cf_warn(ws, f'E{chk+18}:E{chk+24}', '$E' + str(chk + 18) + '="✖ мало"')
     return ws
 
 
 # ================================================================ 04 ХРОМ ===
 def build_chrome(wb):
+    """04 ХРОМ — импланты, HL, срез максимума Humanity, терапия, жизнь и Humanity."""
     ws = wb.create_sheet(NAMES['chr'])
-    widths(ws, {'A': 2, 'B': 4, 'C': 34, 'D': 22, 'E': 18, 'F': 22, 'G': 11, 'H': 8,
-                'I': 8, 'J': 12, 'K': 12, 'L': 46, 'M': 14, 'N': 13, 'O': 2})
+    widths(ws, {'A': 2, 'B': 4, 'C': 34, 'D': 20, 'E': 16, 'F': 20, 'G': 11, 'H': 8,
+                'I': 8, 'J': 12, 'K': 12, 'L': 60, 'M': 12, 'N': 12, 'O': 2})
     sheet_setup(ws, ACCENT, freeze='A5', landscape=True)
-    first, last = 5, 24
+    first, last = 5, 18
 
     mput(ws, 'B1:N1', 'КИБЕРНЕТИКА  ▚  ЮГАС / ХРОМ  ▚  2070: ВЕСЬ НЕМЕДИЦИНСКИЙ ХРОМ ТРЕБУЕТ NEUROPORT', kind='banner')
-    heights(ws, {1: 20})
-    mput(ws, 'B2:F2', 'HL СЧИТАЕТСЯ ПО СРЕДНЕМУ ЗНАЧЕНИЮ (7 (2D6) → 7) · СРЕЗ МАКСИМУМА: −2 ОБЫЧНЫЙ, −4 БОРГВАР',
-         kind='kv_label')
+    heights(ws, {1: 32})
+    mput(ws, 'B2:F2', 'СРЕДНИЙ HL (7 (2D6) → 7) · СРЕЗ: −2 ОБЫЧНЫЙ, −4 БОРГВАР', kind='kv_label')
     put(ws, 'G2', 'HL:', kind='kv_label')
     put(ws, 'H2', f'=$H${last+1}', kind='auto')
     put(ws, 'I2', 'СРЕЗ:', kind='kv_label')
     put(ws, 'J2', f'=$I${last+1}', kind='auto')
-    put(ws, 'K2', '€$ В БЮДЖЕТ:', kind='kv_label')
+    put(ws, 'K2', '€$:', kind='kv_label')
     put(ws, 'L2', f'=SUM($M${first}:$M${last})+SUM($N${first}:$N${last})', kind='auto', fmt=CASH_FMT)
-    mput(ws, 'B3:N3', 'Пиши название как в КАТАЛОГЕ — категория, цена, HL, срез и клиника подтянутся сами. '
-                      'Столбец «СЛОТ» — куда ставится: нейролинк, правый киберарм, опция 1 и т.п. '
-                      'В бюджет листа 05 попадают только отмеченные «Да» и только то, чего ещё нет в инвентаре: '
-                      '«В БЮДЖЕТ €$» — в стартовые 2550, «СТИЛЬ €$» — Fashionware в 800. '
-                      'Neuroport при создании: 0 €$ и 0 HL.', kind='note')
+    mput(ws, 'B3:N3', 'Пиши название как в КАТАЛОГЕ — категория, цена, HL, срез и клиника подтянутся сами. «СЛОТ» — куда ставится. '
+                      'В бюджет листа 05 попадают только отмеченные «Да»: «В БЮДЖЕТ €$» — в стартовые 2550, «СТИЛЬ €$» — в 800 на моду.', kind='note')
+    heights(ws, {3: 24})
     heads = [('B', '№'), ('C', 'НАЗВАНИЕ (КАК В КАТАЛОГЕ)'), ('D', 'КАТЕГОРИЯ'),
              ('E', 'ПОДТИП'), ('F', 'СЛОТ / КУДА'), ('G', 'ЦЕНА €$'), ('H', 'HL'),
              ('I', 'СРЕЗ'), ('J', 'УСТАНОВЛЕН'), ('K', 'КЛИНИКА'), ('L', 'ЭФФЕКТ / ЗАМЕТКА'),
@@ -1122,12 +1099,12 @@ def build_chrome(wb):
         put(ws, f'J{r}', 'Нет', kind='inputc')
         dv_list(ws, f'J{r}', ['Да', 'Нет'])
         put(ws, f'K{r}', f'=IFERROR(INDEX({CATN},MATCH($C{r},{CATA},0)),"")', kind='auto_l')
-        put(ws, f'L{r}', f'=IFERROR(LEFT(INDEX({CATT},MATCH($C{r},{CATA},0)),70),"")', kind='cell')
+        put(ws, f'L{r}', f'=IFERROR(LEFT(INDEX({CATT},MATCH($C{r},{CATA},0)),80),"")', kind='cell')
         put(ws, f'M{r}', f'=IF($C{r}="",0,IF($J{r}<>"Да",0,IF(ISNUMBER(SEARCH("Fashionware",$E{r})),0,'
                          f'IF(COUNTIF({S_GEAR}!$C$34:$C$53,$C{r})>0,0,$G{r}))))', kind='auto', fmt=CASH_FMT)
         put(ws, f'N{r}', f'=IF($C{r}="",0,IF($J{r}<>"Да",0,IF(ISNUMBER(SEARCH("Fashionware",$E{r})),$G{r},0)))',
             kind='auto', fmt=CASH_FMT)
-        ws.row_dimensions[r].height = 18
+        ws.row_dimensions[r].height = 20
     mput(ws, f'B{last+1}:F{last+1}', 'ИТОГО (ТОЛЬКО ОТМЕЧЕННЫЕ «ДА»)', kind='kv_label')
     put(ws, f'G{last+1}', f'=SUM($M${first}:$M${last})+SUM($N${first}:$N${last})', kind='auto', fmt=CASH_FMT)
     put(ws, f'M{last+1}', f'=SUM($M${first}:$M${last})', kind='auto', fmt=CASH_FMT)
@@ -1135,7 +1112,7 @@ def build_chrome(wb):
     put(ws, f'H{last+1}', f'=SUMIF($J${first}:$J${last},"Да",$H${first}:$H${last})', kind='auto')
     put(ws, f'I{last+1}', f'=SUMIF($J${first}:$J${last},"Да",$I${first}:$I${last})', kind='auto')
     put(ws, f'J{last+1}', 'HL / срез', kind='note')
-    mput(ws, f'K{last+1}:L{last+1}', '→ переносится в HUMANITY на листе 02', kind='note')
+    mput(ws, f'K{last+1}:L{last+1}', '→ переносится в Humanity на листе 02', kind='note')
 
     r = last + 2
     mput(ws, f'B{r}:D{r}', 'NEUROPORT УСТАНОВЛЕН (2070)', kind='kv_label')
@@ -1143,44 +1120,46 @@ def build_chrome(wb):
     dv_list(ws, f'E{r}', ['Да', 'Нет'])
     mput(ws, f'F{r}:L{r}', f'=IF(AND($E${r}="Нет",COUNTIF($J${first}:$J${last},"Да")>0),'
                            f'"⚠ По правилам 2070-х любой немедицинский хром требует Neuroport (CEMK стр. 26)",'
-                           f'"✔ ок. Neuroport при создании: 0 €$, 0 HL, максимум Humanity не режется '
-                           f'(в игре установка — 1000 €$ и 7 HL в среднем)")', kind='auto_l')
+                           f'"✔ ок. При создании: 0 €$, 0 HL, максимум Humanity не режется (в игре — 1000 €$ и 7 HL)")', kind='auto_l')
+    heights(ws, {r: 22})
     r += 1
-    mput(ws, f'B{r}:L{r}', 'NEUROPORT ДАЁТ: Neural Link (5 слотов Neuralware Options) · Holophone · Biomonitor · Virtu · '
-                           'HUD/Chyron (перевод и субтитры на ходу) · 2 чип-слота под шарды · Personal Link (Interface Plug). '
-                           'Порт под кибердеку — 100 €$ и 3 (1d6) HL; диапазон сети 20 м, до нейропортов — 50 м.', kind='cell')
-    ws.row_dimensions[r].height = 30
+    mput(ws, f'B{r}:L{r}', 'NEUROPORT ДАЁТ: Neural Link (5 слотов Neuralware Options) · Holophone · Biomonitor · Virtu · HUD/Chyron · '
+                           '2 чип-слота · Personal Link. Порт под кибердеку — 100 €$ и 3 (1d6) HL. Диапазон сети 20 м, между нейропортами — 50 м.', kind='cell')
+    heights(ws, {r: 22})
     r += 1
-    mput(ws, f'B{r}:L{r}', 'ЖЁСТКИЕ ЛИМИТЫ: одно Speedware на пользователя · один Cyberdeck подключён за раз · '
-                           'цибер-оружие в руке считается имплантом и требует слот(ы) киберруки. Эффекты смотри в КАТАЛОГЕ.', kind='note')
-    ws.row_dimensions[r].height = 26
+    mput(ws, f'B{r}:L{r}', 'ЛИМИТЫ: одно Speedware на пользователя · один Cyberdeck за раз · кибер-оружие в руке требует слот(ы) киберруки.', kind='note')
+    heights(ws, {r: 22})
 
     r += 2
-    mput(ws, f'B{r}:L{r}', 'Ⅰ · HUMANITY  ·  ЧЕЛОВЕЧНОСТЬ, ХЛ, ТЕРАПИЯ', kind='h1')
+    mput(ws, f'B{r}:L{r}', 'Ⅰ · HUMANITY  ·  ЧЕЛОВЕЧНОСТЬ, HL, ТЕРАПИЯ', kind='h1')
     r += 1
     mput(ws, f'B{r}:C{r}', 'ПОКАЗАТЕЛЬ', kind='head')
     put(ws, f'D{r}', 'ЗНАЧЕНИЕ', kind='head')
     mput(ws, f'E{r}:L{r}', 'КАК СЧИТАЕТСЯ / ПРАВИЛО', kind='head')
     human_rows = [
-        ('БАЗА (EMP × 10)', f'={S_BASE}!$D$31', 'От исходной EMP (лист 02, колонка «ЗНАЧ.»).', False),
-        ('СРЕЗ МАКСИМУМА ЗА ХРОМ', f'={S_BASE}!$D$32', 'Этот же срез стоит в колонке «СРЕЗ» выше. Fashionware и стартовый Neuroport не режут максимум.', False),
-        ('HUMANITY МАКСИМУМ', f'={S_BASE}!$D$33', 'База минус срез. Вернуть выше максимума нельзя — только снимать хром.', False),
-        ('HL ВСЕГО (СРЕДНЕЕ)', f'={S_BASE}!$D$34', 'Сумма средних HL установленного хрома. Твоё дом-правило: 7 (2d6) = −7.', False),
-        ('ВОССТАНОВЛЕНО (ТЕРАПИЯ/ОПЫТ)', f'={S_BASE}!$D$35', 'Правится на листе 02, ячейка D35: терапия + Humanity Gain по CEMK.', False),
-        ('HUMANITY ТЕКУЩАЯ', f'={S_BASE}!$D$36', 'База − HL + восстановленное, но не выше максимума.', False),
-        ('EMP ТЕКУЩАЯ', f'={S_BASE}!$D$37', 'Каждый раз, когда десяток Humanity падает — падает и EMP.', False),
-        ('СТАТУС', f'={S_BASE}!$D$38', 'Humanity < 0 = киберпсихоз: лист забирает GM.', False),
+        ('БАЗА (EMP × 10)', f'={S_BASE}!$D$29', 'От исходной EMP (лист 02, колонка «ЗНАЧ.»).'),
+        ('СРЕЗ МАКСИМУМА ЗА ХРОМ', f'={S_BASE}!$D$30', 'Сумма среза отмеченных «Да». Fashionware и стартовый Neuroport не режут максимум.'),
+        ('HUMANITY МАКСИМУМ', f'={S_BASE}!$D$31', 'База минус срез. Вернуть выше максимума нельзя — только снимать хром.'),
+        ('HL ВСЕГО (СРЕДНЕЕ)', f'={S_BASE}!$D$32', 'Сумма средних HL установленного хрома. Дом-правило: 7 (2d6) = −7.'),
+        ('ВОССТАНОВЛЕНО (ТЕРАПИЯ/ОПЫТ)', f'={S_BASE}!$D$33', 'Правится на листе 02, ячейка D33: терапия + Humanity Gain по CEMK.'),
+        ('HUMANITY ТЕКУЩАЯ', f'={S_BASE}!$D$34', 'База − HL + восстановленное, но не выше максимума.'),
+        ('EMP ТЕКУЩАЯ', f'={S_BASE}!$D$35', 'Каждый раз, когда десяток Humanity падает — падает и EMP.'),
+        ('СТАТУС', f'={S_BASE}!$D$36', 'Humanity < 0 = киберпсихоз: лист забирает GM.'),
     ]
-    for label, formula, note, _ in human_rows:
+    for label, formula, note in human_rows:
         mput(ws, f'B{r}:C{r}', label, kind='kv_label')
+        if r == last + 9:
+            label = label
         put(ws, f'D{r}', formula, kind='auto')
         mput(ws, f'E{r}:L{r}', note, kind='cell')
-        ws.row_dimensions[r].height = 18
+        ws.row_dimensions[r].height = 22
         r += 1
+    # ввод «восстановлено» дублируем здесь, чтобы не уходить на 02
     mput(ws, f'B{r}:C{r}', 'ШКАЛА HUMANITY', kind='kv_label')
-    put(ws, f'D{r}', f'={S_BASE}!$D$36', kind='auto')
+    put(ws, f'D{r}', f'={S_BASE}!$D$34', kind='auto')
     mput(ws, f'E{r}:L{r}', f'=REPT("█",MAX(0,MIN(40,ROUND($D${r}/2,0))))&REPT("░",MAX(0,40-MIN(40,ROUND($D${r}/2,0))))',
          kind='auto_l')
+    ws.row_dimensions[r].height = 22
     r += 2
     mput(ws, f'B{r}:L{r}', 'Ⅱ · ТЕРАПИЯ  ·  1 НЕДЕЛЯ ЗА СЕАНС (CP:R СТР. 229) · MEDTECH НЕ ЛЕЧИТ СЕБЯ САМ', kind='h1')
     r += 1
@@ -1201,69 +1180,35 @@ def build_chrome(wb):
         put(ws, f'D{r}', cost, kind='cellc')
         mput(ws, f'E{r}:F{r}', dv, kind='cell')
         mput(ws, f'G{r}:L{r}', effect, kind='cell')
-        ws.row_dimensions[r].height = 18
-    r += 2
-    mput(ws, f'B{r}:L{r}', 'Ⅲ · МЕНТАЛЬНАЯ ТРАВМА ПО 2070-М (CEMK): HUMANITY LOSS / GAIN СОБЫТИЯМИ', kind='h1')
-    r += 1
-    trauma = [
-        ('1d6', 'Свидетель или участник пыток · угроза смерти · несправедливость системы · ограбление дома/на улице'),
-        ('2d6', 'Зверское убийство на глазах · первое убийство · тяжёлая физическая или ментальная травма · близкий умер вдали от тебя'),
-        ('3d6', 'Участие в убийстве невиновного · смерть близкого на твоих глазах · жизнь в зоне хуже Боевой больше недели'),
-        ('GAIN 1d6', 'Победа над личным врагом · катарсис от символической победы · примирение с семьёй · настоящий друг'),
-        ('GAIN 2d6', 'Ты спас чью-то жизнь · вечеринка с друзьями (≥1 000 €$ общей траты) · месяц жизни по Fresh Food'),
-        ('GAIN 3d6', 'Помолвка, свадьба, усыновление, рождение ребёнка, исполнение мечты · большой праздник (≥10 000 €$)'),
-    ]
-    mput(ws, f'B{r}:C{r}', 'БРОСОК', kind='head')
-    mput(ws, f'D{r}:L{r}', 'ПРИМЕРЫ СОБЫТИЙ', kind='head')
-    for roll, text in trauma:
-        r += 1
-        mput(ws, f'B{r}:C{r}', roll, kind='cellc')
-        mput(ws, f'D{r}:L{r}', text, kind='cell')
-        ws.row_dimensions[r].height = 18
-    r += 2
-    mput(ws, f'B{r}:L{r}', 'Ⅳ · КИБЕРПСИХОЗ: ЧТО ЭТО ЗНАЧИТ ЗА СТОЛОМ', kind='h1')
-    r += 1
-    mput(ws, f'B{r}:L{r}', 'Humanity — это не «здоровье психики», а способность считать других живыми. На низкой Humanity персонаж '
-                           'начинает видеть в людях наборы деталей: он отстранён, диссоциирован, «люди — запчасти». При Humanity ниже 0 '
-                           'киберпсихоз переходит в крайнюю стадию, и GM играет персонажа по его худшим наклонностям, пока команда '
-                           '(или Medtech) не вытащат его терапией. Держи запас Humanity и не пихай хром «на всякий случай».', kind='cell')
-    ws.row_dimensions[r].height = 60
+        ws.row_dimensions[r].height = 22
 
     r += 2
-    mput(ws, f'B{r}:L{r}', 'Ⅴ · ЖИЗНЬ РЕЖЕТ HUMANITY: ДОЛГОСРОЧНЫЕ ЭФФЕКТЫ (CEMK СТР. 29–30)', kind='h1')
-    r += 1
-    mput(ws, f'B{r}:L{r}', 'В начале каждого месяца — после оплаты Lifestyle и жилья — GM смотрит, как ты жил. Это независимо от хрома: '
-                           'Humanity режет и сама жизнь. Броски суммируются; прибавка не поднимает Humanity выше максимума '
-                           '(лечение и терапия — лист 02, блок Ⅱ).', kind='cell')
-    ws.row_dimensions[r].height = 30
+    mput(ws, f'B{r}:L{r}', 'Ⅲ · ЧТО РЕЖЕТ HUMANITY И ЧТО ВОЗВРАЩАЕТ  ·  ХРОМ, СОБЫТИЯ, ЖИЗНЬ (CEMK СТР. 28–30)', kind='h1')
     r += 1
     mput(ws, f'B{r}:C{r}', 'БРОСОК', kind='head')
-    mput(ws, f'D{r}:L{r}', 'ЗА ЧТО — ПРИМЕРЫ', kind='head')
+    mput(ws, f'D{r}:L{r}', 'ЗА ЧТО — ПРИМЕРЫ (ПОТЕРИ — В КОНЦЕ СЕССИИ И КАЖДЫЙ МЕСЯЦ, ПРИБАВКИ — ТАМ ЖЕ)', kind='head')
     for roll, text in [
-        ('ПОТЕРЯ 1d6', 'Месяц на Kibble Lifestyle · месяц в Cube Hotel · месяц работы на корпорацию (прямо или косвенно) · месяц в мегаполисе '
-                       'на Prepak-еде'),
-        ('ПОТЕРЯ 2d6', 'Смерть близкого, по которой не провели церемонию · за месяц побывал «смертельно ранен» · три и более раз «серьёзно ранен» · '
-                       'больше недели в тюрьме · голодал'),
-        ('ПОТЕРЯ 3d6', 'Больше недели в зоне боевых действий или в районе затяжной катастрофы'),
-        ('ПРИБАВКА 1d6', 'Виделся с настоящим другом · виделся с семьёй · неделя отдыха без дел, лечения и травм · месяц вдали от мегаполиса без лишений'),
-        ('ПРИБАВКА 2d6', 'Месяц на Fresh Food Lifestyle · месяц в Corporate Conapt или лучше'),
-        ('ПРИБАВКА 3d6', 'За месяц набралось 4+ условия на прибавку и меньше 3 условий на потерю — «живёшь хорошо»'),
+        ('ПОТЕРЯ 1d6', 'Пытки, угроза смерти, несправедливость системы · месяц на Kibble и Prepak-еде · месяц на корпорацию · смерть близкого без церемонии.'),
+        ('ПОТЕРЯ 2d6', 'Зверское убийство на глазах · первое убийство · месяц побывал «смертельно ранен» · больше недели в тюрьме · голодал.'),
+        ('ПОТЕРЯ 3d6', 'Участие в убийстве невиновного · смерть близкого на твоих глазах · больше недели в зоне боевых действий.'),
+        ('ПРИБАВКА 1d6', 'Виделся с настоящим другом или семьёй · неделя отдыха без дел и травм · месяц вдали от мегаполиса без лишений.'),
+        ('ПРИБАВКА 2d6', 'Месяц на Fresh Food Lifestyle · месяц в Corporate Conapt или лучше · спас чью-то жизнь.'),
+        ('ПРИБАВКА 3d6', 'Свадьба, усыновление, рождение ребёнка, исполнение мечты · месяц, где прибавок больше, чем потерь.'),
     ]:
         r += 1
         mput(ws, f'B{r}:C{r}', roll, kind='cellc')
         mput(ws, f'D{r}:L{r}', text, kind='cell')
-        ws.row_dimensions[r].height = 26
+        ws.row_dimensions[r].height = 24
     r += 1
     mput(ws, f'B{r}:L{r}', 'ДЛЯ ЭТОГО ПЕРСОНАЖА: стартовое жильё — контейнер + Kibble, то есть 1d6 потери Humanity каждый месяц, пока не поднимешь '
-                           'уровень жизни. Компенсировать помогают настоящий друг, семья и неделя отдыха (по 1d6 прибавки). Следи за этим так же, '
-                           'как за патронами.', kind='cell')
+                           'уровень жизни (лист СПРАВКА). Компенсируют настоящий друг, семья и неделя отдыха. Humanity ниже 0 — киберпсихоз: '
+                           'в людях остались только детали, и GM играет персонажа по его худшим наклонностям.', kind='cell')
     ws.row_dimensions[r].height = 44
 
-    cf_warn(ws, 'F26', 'LEFT($F$26,1)="⚠"')
-    cf_warn(ws, 'D37', '$D$37=0')
-    cf_warn(ws, 'D36', 'OR($D$37=0,$D$36<0)')
+    for rng, formula in [(f'F{last+2}', f'LEFT($F${last+2},1)="⚠"'), ('D' + str(last + 10), f'$D${last+10}=0')]:
+        cf_warn(ws, rng, formula)
+    cf_warn(ws, f'D{last+11}', f'OR($D${last+10}=0,$D${last+11}<0)')
     return ws
-
 
 # ========================================================= 05 СНАРЯЖЕНИЕ ===
 W_FIRST, W_LAST = 9, 16      # оружие
@@ -1280,16 +1225,15 @@ def build_gear(wb):
 
     mput(ws, 'B1:M1', 'СНАРЯЖЕНИЕ  ▚  БЮДЖЕТ 2550 €$ + 800 €$ НА СТИЛЬ  ▚  ОРУЖИЕ · БРОНЯ · ИНВЕНТАРЬ · КАССА', kind='banner')
     heights(ws, {1: 20})
-    mput(ws, 'B2:M2', 'НАЗВАНИЯ БЕРУТСЯ ИЗ КАТАЛОГА — ЦЕНА, УРОН И ШТРАФЫ ПОДТЯНУТСЯ АВТОМАТИЧЕСКИ. '
-                      'ЕСЛИ ВЕЩИ В КАТАЛОГЕ НЕТ — ВПИШИ СВОЮ ЦЕНУ В СТОЛБЕЦ «ЦЕНА СВОЯ».', kind='note')
+    mput(ws, 'B2:M2', 'НАЗВАНИЯ БЕРУТСЯ ИЗ КАТАЛОГА — ЦЕНА, УРОН И ШТРАФЫ ПОДТЯНУТСЯ САМИ. НЕТ В КАТАЛОГЕ — ВПИШИ СВОЮ ЦЕНУ В «ЦЕНА СВОЯ».', kind='note')
 
     mput(ws, 'B3:D3', 'СТАРТ: ОРУЖИЕ, БРОНЯ, СНАРЯЖЕНИЕ, ХРОМ (€$)', kind='kv_label')
     put(ws, 'E3', 2550, kind='inputc', fmt=CASH_FMT)
     put(ws, 'F3', 'ПОТРАЧЕНО', kind='kv_label')
     # из инвентаря вычитается только его собственная «модная» часть: Fashionware с листа 04
     # сидит в бюджете стиля и второй раз из снаряжения не вычитается
-    put(ws, 'G3', f'=$H${I_LAST+1}+SUM({S_CHR}!$M$5:$M$24)+SUM($O${A_FIRST}:$O${A_LAST})'
-                  f'-($G$4-SUM({S_CHR}!$N$5:$N$24))',
+    put(ws, 'G3', f'=$H${I_LAST+1}+SUM({S_CHR}!$M$5:$M$18)+SUM($O${A_FIRST}:$O${A_LAST})'
+                  f'-($G$4-SUM({S_CHR}!$N$5:$N$18))',
         kind='auto', fmt=CASH_FMT)
     put(ws, 'H3', 'ОСТАТОК', kind='kv_label')
     put(ws, 'I3', '=$E$3-$G$3', kind='auto', fmt=CASH_FMT)
@@ -1301,7 +1245,7 @@ def build_gear(wb):
     put(ws, 'F4', 'ПОТРАЧЕНО', kind='kv_label')
     put(ws, 'G4', f'=SUMPRODUCT(($D${I_FIRST}:$D${I_LAST}="Мода")*$I${I_FIRST}:$I${I_LAST})'
                   f'+SUMPRODUCT(($E${I_FIRST}:$E${I_LAST}="Fashionware")*$I${I_FIRST}:$I${I_LAST})'
-                  f'+SUM({S_CHR}!$N$5:$N$24)', kind='auto', fmt=CASH_FMT)
+                  f'+SUM({S_CHR}!$N$5:$N$18)', kind='auto', fmt=CASH_FMT)
     put(ws, 'H4', 'ОСТАТОК', kind='kv_label')
     put(ws, 'I4', '=$E$4-$G$4', kind='auto', fmt=CASH_FMT)
     mput(ws, 'J4:M4', 'Одежда (категория «Мода»), Fashionware из инвентаря и Fashionware-хром с листа 04.', kind='note')
@@ -1339,12 +1283,9 @@ def build_gear(wb):
                          f'+IF($J{r}="Excellent",1,IF($J{r}="Poor",-1,0)),0))', kind='auto')
         put(ws, f'M{r}', None, kind='input')
         ws.row_dimensions[r].height = 18
-    mput(ws, f'B{W_LAST+1}:M{W_LAST+1}', 'Атака = 1d10 + «БАЗА АТАКИ» (это уровень навыка + стата с учётом штрафа брони). '
-                                        'Патроны пиши прямо тут: «AP ×24», «Basic ×30».', kind='note')
-    mput(ws, f'B{W_LAST+2}:M{W_LAST+2}', 'УЧЁТ ДЕНЕГ: траты считаются из блока Ⅲ «ИНВЕНТАРЬ» — оружие, патроны и снаряжение впиши '
-                                        'и сюда (для игры), и туда (для бюджета). Броня считается из блока Ⅱ (цена в колонке N, '
-                                        'в бюджет — O), хром — с листа 04. Броню и хром в инвентарь дублировать НЕ надо: '
-                                        'иначе они посчитаются дважды.', kind='note')
+    mput(ws, f'B{W_LAST+1}:M{W_LAST+1}', 'Атака = 1d10 + «БАЗА АТАКИ» (навык + стата со штрафом брони). Патроны пиши тут же: «AP ×24».', kind='note')
+    mput(ws, f'B{W_LAST+2}:M{W_LAST+2}', 'УЧЁТ ДЕНЕГ: траты — из блока Ⅲ «ИНВЕНТАРЬ» (оружие и снаряжение впиши и сюда, и туда), '
+                                        'броня — из блока Ⅱ (цена N, в бюджет O), хром — с листа 04. Броню и хром в инвентарь НЕ дублируй.', kind='note')
 
     mput(ws, 'B19:O19', 'Ⅱ · БРОНЯ И ЩИТ  ·  В ЛОКАЦИИ РАБОТАЕТ ТОЛЬКО ЛУЧШИЙ SP, ШТРАФ БЕРЁТСЯ ОДИН РАЗ  ·  '
                         'ЦЕНА И УЧЁТ В БЮДЖЕТЕ — КОЛОНКИ N И O', kind='h1')
@@ -1446,12 +1387,10 @@ def build_gear(wb):
     put(ws, f'F{tr}', f'=$I$3+SUM($E${C_FIRST}:$E${C_LAST})', kind='auto', fmt=CASH_FMT)
     mput(ws, f'G{tr}:M{tr}', 'Наличные = стартовый остаток + оборот. Хочешь вести наличные вручную — перебей «БАЛАНС» цифрой.', kind='note')
     rr = tr + 2
-    mput(ws, f'B{rr}:M{rr}', 'ПАМЯТКА ПО ДЕНЬГАМ: 2550 €$ — оружие/броня/снаряжение/хром; 800 €$ — только Fashion + Fashionware; '
-                             'жильё (1 000 €$) + Kibble Lifestyle (100 €$/мес) = 1 100 €$ к 1-му числу, первый месяц покрыт; '
-                             '+1500 €$ «от корпорации» — только на импланты '
-                             'и вместе с обязательным Neural Link. В 2070-х можно купить почти всё '
-                             'напрямую у производителя, но по двойной цене (CEMK: расширенная доступность).', kind='note')
-    ws.row_dimensions[rr].height = 46
+    mput(ws, f'B{rr}:M{rr}', 'ДЕНЬГИ: 2550 €$ — оружие/броня/снаряжение/хром; 800 €$ — только Fashion + Fashionware; жильё 1 000 €$ + Kibble '
+                             '100 €$/мес = 1 100 €$ к 1-му числу (первый месяц покрыт). В 2070-х почти всё можно купить напрямую у '
+                             'производителя, но по двойной цене (CEMK: расширенная доступность).', kind='note')
+    ws.row_dimensions[rr].height = 30
     cf_ok(ws, 'F5', 'LEFT($F$5,1)="✔"')
     cf_warn(ws, 'F5', 'LEFT($F$5,1)="✖"')
     cf_warn(ws, 'I3:I4', 'OR($I$3<0,$I$4<0)')
@@ -1460,43 +1399,44 @@ def build_gear(wb):
 
 
 # ============================================================ 06 СОСТОЯНИЕ ===
-CRIT_BODY_FIRST, CRIT_HEAD_FIRST = 22, 37
+CRIT_BODY_FIRST, CRIT_HEAD_FIRST = 22, 37  # пересчитываются при сборке СПРАВКИ (таблицы живут там)
 
 
 def build_state(wb):
+    """06 СОСТОЯНИЕ — раны, крит-травмы, зависимости, IP и лог дел."""
     ws = wb.create_sheet(NAMES['sta'])
-    widths(ws, {'A': 2, 'B': 4, 'C': 18, 'D': 26, 'E': 30, 'F': 16, 'G': 16, 'H': 18,
+    widths(ws, {'A': 2, 'B': 4, 'C': 16, 'D': 24, 'E': 30, 'F': 16, 'G': 16, 'H': 16,
                 'I': 13, 'J': 22, 'K': 20, 'L': 20, 'M': 2})
-    sheet_setup(ws, BAND, freeze='A8', landscape=True)
-    body_last = CRIT_BODY_FIRST + 11
-    head_last = CRIT_HEAD_FIRST + 11
+    sheet_setup(ws, BAND, freeze='A7', landscape=True)
+    body_last = CRIT_BODY_FIRST + len(RULES.CRIT_BODY) - 1
+    head_last = CRIT_HEAD_FIRST + len(RULES.CRIT_HEAD) - 1
 
     mput(ws, 'B1:M1', 'СОСТОЯНИЕ  ▚  РАНЫ · КРИТ-ТРАВМЫ · ЗАВИСИМОСТИ · IP · ЛОГ ДЕЛ', kind='banner')
-    heights(ws, {1: 20})
+    heights(ws, {1: 32})
     mput(ws, 'B2:E2', 'ТЕКУЩЕЕ СОСТОЯНИЕ ОБЪЕКТА', kind='kv_label')
     put(ws, 'F2', 'HP', kind='kv_label')
     put(ws, 'G2', f'={S_BASE}!{BASE_HP_CUR}&" / "&{S_BASE}!{BASE_HP_MAX}', kind='auto')
     put(ws, 'H2', 'СОСТОЯНИЕ', kind='kv_label')
     put(ws, 'I2', f'={S_BASE}!{BASE_WOUND}', kind='auto')
-    mput(ws, 'J2:M2', 'HP правится на листе 02 (ячейка D25) — здесь всё пересчитается.', kind='note')
+    mput(ws, 'J2:M2', 'HP правится на листе 02 (ячейка D23) — здесь всё пересчитается.', kind='note')
     mput(ws, 'B3:C3', 'СПАСБРОСОК СМЕРТИ (BODY)', kind='kv_label')
     put(ws, 'D3', f'={S_BASE}!{BASE_DS}', kind='auto')
     put(ws, 'E3', 'ШТРАФ К СПАСБРОСКАМ', kind='kv_label')
     put(ws, 'F3', f'={S_BASE}!{BASE_DS_PEN}', kind='auto')
-    put(ws, 'G3', 'ОТМЕТКИ ПРОВАЛОВ', kind='kv_label')
+    put(ws, 'G3', 'ПРОВАЛЫ', kind='kv_label')
     mput(ws, 'H3:M3', None, kind='input')
-    mput(ws, 'B4:M4', 'Смертельное состояние: HP < 1 → −4 ко всем действиям, −6 MOVE, спасбросок смерти в начале каждого хода. '
-                      'Крит-травма даёт +5 урона напрямую в HP (+1 к штрафу спасброска за такие травмы). Стабилизация: DV10 (лёгкое), '
-                      'DV13 (серьёзное), DV15 (смертельное → 1 HP и минута без сознания).', kind='note')
-    heights(ws, {4: 30})
+    mput(ws, 'B4:M4', 'Смертельное состояние: HP < 1 → −4 ко всем действиям, −6 MOVE, спасбросок смерти каждый ход. Крит-травма даёт +5 урона '
+                      'напрямую в HP (+1 к штрафу спасброска). Стабилизация: DV10 (лёгкое), DV13 (серьёзное), DV15 (смертельное → 1 HP).', kind='note')
+    heights(ws, {2: 24, 3: 24, 4: 24})
 
-    mput(ws, 'B6:M6', 'Ⅰ · КРИТ-ТРАВМЫ  ·  ВЫБЕРИ ЛОКАЦИЮ И БРОСОК 2D6 — ОСТАЛЬНОЕ ПОДТЯНЕТСЯ', kind='h1')
+    mput(ws, 'B5:M5', 'Ⅰ · КРИТ-ТРАВМЫ  ·  ВЫБЕРИ ЛОКАЦИЮ И БРОСОК 2D6 — ОСТАЛЬНОЕ ПОДТЯНЕТСЯ', kind='h1')
+    heights(ws, {5: 26})
     for col, text in (('B', '№'), ('C', 'ЛОКАЦИЯ'), ('D', '2D6'), ('E', 'ТРАВМА (АВТО)'),
                       ('F', 'ЭФФЕКТ (АВТО)'), ('G', 'БЫСТРЫЙ ФИКС'), ('H', 'ЛЕЧЕНИЕ'), ('I', 'СТАТУС')):
-        put(ws, f'{col}7', text, kind='head')
-    mput(ws, 'J7:M7', 'ЗАМЕТКИ', kind='head')
+        put(ws, f'{col}6', text, kind='head')
+    mput(ws, 'J6:M6', 'ЗАМЕТКИ', kind='head')
     for i in range(10):
-        r = 8 + i
+        r = 7 + i
         put(ws, f'B{r}', i + 1, kind='cellc')
         put(ws, f'C{r}', 'Тело', kind='inputc')
         dv_list(ws, f'C{r}', ['Тело', 'Голова'])
@@ -1506,47 +1446,20 @@ def build_state(wb):
                          f'IF($C{r}="Голова",IFERROR(INDEX($C${CRIT_HEAD_FIRST}:$C${head_last},MATCH($D{r},$B${CRIT_HEAD_FIRST}:$B${head_last},0)),"—"),"—")))', kind='auto_l')
         put(ws, f'F{r}', f'=IF($D{r}="","",IF($C{r}="Тело",IFERROR(INDEX($D${CRIT_BODY_FIRST}:$D${body_last},MATCH($D{r},$B${CRIT_BODY_FIRST}:$B${body_last},0)),"—"),'
                          f'IF($C{r}="Голова",IFERROR(INDEX($D${CRIT_HEAD_FIRST}:$D${head_last},MATCH($D{r},$B${CRIT_HEAD_FIRST}:$B${head_last},0)),"—"),"—")))', kind='cell')
-        put(ws, f'G{r}', f'=IF($D{r}="","",IF($C{r}="Тело",IFERROR(INDEX($E${CRIT_BODY_FIRST}:$E${body_last},MATCH($D{r},$B${CRIT_BODY_FIRST}:$B${body_last},0)),"—"),'
-                         f'IF($C{r}="Голова",IFERROR(INDEX($E${CRIT_HEAD_FIRST}:$E${head_last},MATCH($D{r},$B${CRIT_HEAD_FIRST}:$B${head_last},0)),"—"),"—")))', kind='cellc')
-        put(ws, f'H{r}', f'=IF($D{r}="","",IF($C{r}="Тело",IFERROR(INDEX($F${CRIT_BODY_FIRST}:$F${body_last},MATCH($D{r},$B${CRIT_BODY_FIRST}:$B${body_last},0)),"—"),'
-                         f'IF($C{r}="Голова",IFERROR(INDEX($F${CRIT_HEAD_FIRST}:$F${head_last},MATCH($D{r},$B${CRIT_HEAD_FIRST}:$B${head_last},0)),"—"),"—")))', kind='cellc')
+        put(ws, f'G{r}', f'=IF($D{r}="","",IF($C{r}="Тело",IFERROR(INDEX($I${CRIT_BODY_FIRST}:$I${body_last},MATCH($D{r},$B${CRIT_BODY_FIRST}:$B${body_last},0)),"—"),'
+                         f'IF($C{r}="Голова",IFERROR(INDEX($I${CRIT_HEAD_FIRST}:$I${head_last},MATCH($D{r},$B${CRIT_HEAD_FIRST}:$B${head_last},0)),"—"),"—")))', kind='cellc')
+        put(ws, f'H{r}', f'=IF($D{r}="","",IF($C{r}="Тело",IFERROR(INDEX($L${CRIT_BODY_FIRST}:$L${body_last},MATCH($D{r},$B${CRIT_BODY_FIRST}:$B${body_last},0)),"—"),'
+                         f'IF($C{r}="Голова",IFERROR(INDEX($L${CRIT_HEAD_FIRST}:$L${head_last},MATCH($D{r},$B${CRIT_HEAD_FIRST}:$B${head_last},0)),"—"),"—")))', kind='cellc')
         put(ws, f'I{r}', 'Нет', kind='inputc')
         dv_list(ws, f'I{r}', ['Активна', 'Вылечена', 'Нет'])
         mput(ws, f'J{r}:M{r}', None, kind='input')
-        ws.row_dimensions[r].height = 20
-    mput(ws, 'B18:M18', 'Крит = два и более «6» на кубах урона ближней/дальней атаки: +5 урона напрямую в HP (SP не гасит). '
-                        'Без прицельного выстрела в голову — таблица тела. Если травма уже есть, перебрасывай, пока не выпадет новая. '
-                        'Quick Fix лечит эффект, но не саму травму.', kind='note')
-    heights(ws, {18: 30})
+        heights(ws, {r: 24})
+    mput(ws, 'B17:M17', 'Крит = два и более «6» на кубах урона: +5 урона напрямую в HP (SP не гасит). Без прицельного выстрела в голову — таблица тела. '
+                        'Полные таблицы крит-травм — на листе СПРАВКА. Quick Fix лечит эффект, но не саму травму.', kind='note')
+    heights(ws, {17: 24})
 
-    mput(ws, 'B20:M20', 'ТАБЛИЦА 2D6 · КРИТИЧЕСКИЕ ТРАВМЫ ТЕЛА (СПРАВОЧНИК ДЛЯ СТОЛА)', kind='h1')
-    put(ws, 'B21', '2D6', kind='head')
-    put(ws, 'C21', 'ТРАВМА', kind='head')
-    mput(ws, 'D21:F21', 'ЭФФЕКТ · БЫСТРЫЙ ФИКС · ЛЕЧЕНИЕ', kind='head')
-    mput(ws, 'G21:M21', 'ДЛЯ СТОЛА', kind='head')
-    for idx, row in enumerate(RULES.CRIT_BODY):
-        r = CRIT_BODY_FIRST + idx
-        put(ws, f'B{r}', row[0], kind='cellc')
-        put(ws, f'C{r}', row[1], kind='cell')
-        mput(ws, f'D{r}:F{r}', f'{row[2]}  ·  Quick Fix: {row[3]}  ·  Лечение: {row[4]}', kind='cell')
-        mput(ws, f'G{r}:M{r}', '+5 урона в HP.', kind='note')
-        ws.row_dimensions[r].height = 26
-
-    mput(ws, 'B35:M35', 'ТАБЛИЦА 2D6 · КРИТИЧЕСКИЕ ТРАВМЫ ГОЛОВЫ (ТОЛЬКО ПРИЦЕЛЬНЫЙ В ГОЛОВУ)', kind='h1')
-    put(ws, 'B36', '2D6', kind='head')
-    put(ws, 'C36', 'ТРАВМА', kind='head')
-    mput(ws, 'D36:F36', 'ЭФФЕКТ · БЫСТРЫЙ ФИКС · ЛЕЧЕНИЕ', kind='head')
-    mput(ws, 'G36:M36', 'ДЛЯ СТОЛА', kind='head')
-    for idx, row in enumerate(RULES.CRIT_HEAD):
-        r = CRIT_HEAD_FIRST + idx
-        put(ws, f'B{r}', row[0], kind='cellc')
-        put(ws, f'C{r}', row[1], kind='cell')
-        mput(ws, f'D{r}:F{r}', f'{row[2]}  ·  Quick Fix: {row[3]}  ·  Лечение: {row[4]}', kind='cell')
-        mput(ws, f'G{r}:M{r}', '+5 урона в HP.', kind='note')
-        ws.row_dimensions[r].height = 26
-
-    mput(ws, 'B50:M50', 'Ⅱ · СМЕРТЬ, СТАБИЛИЗАЦИЯ, ЗАВИСИМОСТИ', kind='h1')
-    r = 50
+    mput(ws, 'B19:M19', 'Ⅱ · СМЕРТЬ, СТАБИЛИЗАЦИЯ, ЗАВИСИМОСТИ', kind='h1')
+    r = 19
     for label, value in [
         ('СТАБИЛИЗАЦИЯ: DV', 'Лёгкое DV10 · Серьёзное DV13 · Смертельное DV15 (успех → 1 HP и минута без сознания)'),
         ('СПАСБРОСОК СМЕРТИ', 'В начале каждого хода при HP < 1: 1d10 ≤ BODY − штраф. Выпало 10 = провал = смерть.'),
@@ -1558,38 +1471,38 @@ def build_state(wb):
         r += 1
         mput(ws, f'B{r}:C{r}', label, kind='kv_label')
         mput(ws, f'D{r}:M{r}', value, kind='cell' if value else 'input')
-        ws.row_dimensions[r].height = 20 if value else 26
+        heights(ws, {r: 24 if value else 28})
 
-    mput(ws, 'B58:M58', 'Ⅲ · РЕПУТАЦИЯ И УЛУЧШЕНИЯ (IP)', kind='h1')
-    mput(ws, 'B59:C59', 'ПОКАЗАТЕЛЬ', kind='head')
-    put(ws, 'D59', 'ЗНАЧЕНИЕ', kind='head')
-    mput(ws, 'E59:M59', 'ПРАВИЛО', kind='head')
+    mput(ws, 'B27:M27', 'Ⅲ · РЕПУТАЦИЯ И УЛУЧШЕНИЯ (IP)', kind='h1')
+    mput(ws, 'B28:C28', 'ПОКАЗАТЕЛЬ', kind='head')
+    put(ws, 'D28', 'ЗНАЧЕНИЕ', kind='head')
+    mput(ws, 'E28:M28', 'ПРАВИЛО', kind='head')
     ip_notes = [
         ('РЕПУТАЦИЯ', 'input', 'Растёт за громкие дела: реакция улиц, кто берёт твой звонок, кто хочет тебя снять.'),
         ('IP ЗАРАБОТАНО', 'input', 'GM выдаёт после сессии: 10–50 за стиль игры, больше — за выполненное дело (лист СПРАВКА).'),
-        ('IP ПОТРАЧЕНО (АВТО)', 'auto', 'Сумма по таблице Ⅳ ниже.'),
+        ('IP ПОТРАЧЕНО (АВТО)', 'auto_sum', 'Сумма по таблице Ⅳ ниже.'),
         ('IP СВОБОДНО', 'auto', 'Заработано минус потрачено.'),
     ]
     for idx, (label, kind, note) in enumerate(ip_notes):
-        r = 60 + idx
+        r = 29 + idx
         mput(ws, f'B{r}:C{r}', label, kind='kv_label')
         if kind == 'input':
             put(ws, f'D{r}', None, kind='inputc')
-        elif label.startswith('IP ПОТРАЧЕНО'):
-            put(ws, f'D{r}', '=SUM($F$67:$F$76)', kind='auto')
+        elif kind == 'auto_sum':
+            put(ws, f'D{r}', '=SUM($F$36:$F$45)', kind='auto')
         else:
-            put(ws, f'D{r}', '=$D$61-$D$62', kind='auto')
+            put(ws, f'D{r}', '=$D$30-$D$31', kind='auto')
         mput(ws, f'E{r}:M{r}', note, kind='cell')
-        ws.row_dimensions[r].height = 18
+        heights(ws, {r: 24})
 
-    mput(ws, 'B65:M65', 'Ⅳ · ЧТО УЛУЧШИЛИ ЗА IP  ·  СТОИМОСТЬ СЧИТАЕТСЯ АВТОМАТИЧЕСКИ', kind='h1')
-    put(ws, 'B66', 'ДАТА', kind='head')
-    put(ws, 'C66', 'ЧТО УЛУЧШИЛИ', kind='head')
-    put(ws, 'D66', 'ТИП', kind='head')
-    put(ws, 'E66', 'НОВЫЙ УР.', kind='head')
-    put(ws, 'F66', 'СТОИМОСТЬ IP', kind='head')
-    mput(ws, 'G66:M66', 'ЗАМЕТКА', kind='head')
-    for r in range(67, 77):
+    mput(ws, 'B34:M34', 'Ⅳ · ЧТО УЛУЧШИЛИ ЗА IP  ·  СТОИМОСТЬ СЧИТАЕТСЯ АВТОМАТИЧЕСКИ', kind='h1')
+    put(ws, 'B35', 'ДАТА', kind='head')
+    put(ws, 'C35', 'ЧТО УЛУЧШИЛИ', kind='head')
+    put(ws, 'D35', 'ТИП', kind='head')
+    put(ws, 'E35', 'НОВЫЙ УР.', kind='head')
+    put(ws, 'F35', 'СТОИМОСТЬ IP', kind='head')
+    mput(ws, 'G35:M35', 'ЗАМЕТКА', kind='head')
+    for r in range(36, 46):
         put(ws, f'B{r}', None, kind='input')
         put(ws, f'C{r}', None, kind='input')
         put(ws, f'D{r}', 'НАВЫК', kind='inputc')
@@ -1598,52 +1511,50 @@ def build_state(wb):
         put(ws, f'F{r}', f'=IF(OR($E{r}="",$D{r}=""),"",IF($D{r}="РОЛЬ",60*$E{r},'
                          f'IF($D{r}="НАВЫК ×2",40*$E{r},IF($D{r}="НАВЫК",20*$E{r},""))))', kind='auto')
         mput(ws, f'G{r}:M{r}', None, kind='input')
-        ws.row_dimensions[r].height = 18
-    mput(ws, 'B77:E77', 'ИТОГО ПОТРАЧЕНО IP', kind='kv_label')
-    put(ws, 'F77', '=SUM($F$67:$F$76)', kind='auto')
-    mput(ws, 'G77:M77', '20 × уровень — обычный навык · 40 × уровень — навык (×2) · 60 × ранг — ролевая способность. '
-                        'Уровни не перескакивают.', kind='note')
+        heights(ws, {r: 22})
+    mput(ws, 'B46:E46', 'ИТОГО ПОТРАЧЕНО IP', kind='kv_label')
+    put(ws, 'F46', '=SUM($F$36:$F$45)', kind='auto')
+    mput(ws, 'G46:M46', '20 × уровень — обычный навык · 40 × уровень — навык (×2) · 60 × ранг — ролевая способность. Уровни не перескакивают.', kind='note')
+    heights(ws, {46: 24})
 
-    mput(ws, 'B79:M79', 'Ⅴ · ЛОГ ДЕЛ (СЕССИИ)  ·  ЧТО БЫЛО И ЗА ЧТО ЗАПЛАТИЛИ', kind='h1')
-    put(ws, 'B80', 'ДАТА', kind='head')
-    mput(ws, 'C80:D80', 'ДЕЛО / СЕССИЯ', kind='head')
-    put(ws, 'E80', 'РОЛЬ В ДЕЛЕ', kind='head')
-    put(ws, 'F80', 'НАГРАДА €$', kind='head')
-    put(ws, 'G80', 'IP', kind='head')
-    mput(ws, 'H80:M80', 'ИТОГ / ЗАМЕТКА', kind='head')
-    for r in range(81, 101):
+    mput(ws, 'B48:M48', 'Ⅴ · ЛОГ ДЕЛ (СЕССИИ)  ·  ЧТО БЫЛО И ЗА ЧТО ЗАПЛАТИЛИ', kind='h1')
+    put(ws, 'B49', 'ДАТА', kind='head')
+    mput(ws, 'C49:D49', 'ДЕЛО / СЕССИЯ', kind='head')
+    put(ws, 'E49', 'РОЛЬ В ДЕЛЕ', kind='head')
+    put(ws, 'F49', 'НАГРАДА €$', kind='head')
+    put(ws, 'G49', 'IP', kind='head')
+    mput(ws, 'H49:M49', 'ИТОГ / ЗАМЕТКА', kind='head')
+    for r in range(50, 64):
         put(ws, f'B{r}', None, kind='input')
         mput(ws, f'C{r}:D{r}', None, kind='input')
         put(ws, f'E{r}', None, kind='input')
         put(ws, f'F{r}', None, kind='inputc', fmt=CASH_FMT)
         put(ws, f'G{r}', None, kind='inputc')
         mput(ws, f'H{r}:M{r}', None, kind='input')
-        ws.row_dimensions[r].height = 18
-    mput(ws, 'B101:E101', 'ИТОГО ЗА КАМПАНИЮ', kind='kv_label')
-    put(ws, 'F101', '=SUM($F$81:$F$100)', kind='auto', fmt=CASH_FMT)
-    put(ws, 'G101', '=SUM($G$81:$G$100)', kind='auto')
-    mput(ws, 'H101:M101', 'Сверь IP с полем «IP заработано» выше.', kind='note')
+        heights(ws, {r: 22})
+    mput(ws, 'B64:E64', 'ИТОГО ЗА КАМПАНИЮ', kind='kv_label')
+    put(ws, 'F64', '=SUM($F$50:$F$63)', kind='auto', fmt=CASH_FMT)
+    put(ws, 'G64', '=SUM($G$50:$G$63)', kind='auto')
+    mput(ws, 'H64:M64', 'Сверь IP с полем «IP заработано» выше.', kind='note')
 
-    mput(ws, 'B103:M103', 'Ⅵ · ДОЛГИ, ЦЕЛИ И КРЮЧКИ', kind='h1')
-    r = 103
+    mput(ws, 'B66:M66', 'Ⅵ · ДОЛГИ, ЦЕЛИ И КРЮЧКИ', kind='h1')
+    r = 66
     for label in ('ДОЛГИ И ОБЯЗАТЕЛЬСТВА (КОМУ, ЧТО, КОГДА)',
                   'ЖИЗНЕННЫЕ ЦЕЛИ / КРЮЧКИ ДЛЯ GM',
                   'ТАБУ И ТРИГГЕРЫ (ОТ ИГРОКА)'):
         r += 1
         mput(ws, f'B{r}:C{r}', label, kind='kv_label')
         mput(ws, f'D{r}:M{r+1}', None, kind='input')
-        ws.row_dimensions[r].height = 22
-        ws.row_dimensions[r + 1].height = 22
+        heights(ws, {r: 24, r + 1: 24})
         r += 1
     r += 2
     mput(ws, f'B{r}:M{r}', 'Источники: Cyberpunk RED Corebook (стр. 79, 129, 186–190, 223, 229, 408), '
-                           'CEMK Rule Book (2070-е: стр. 26–30), гайд «Spes Desperata». Лист — домашний инструмент кампании.',
-         kind='note')
+                           'CEMK Rule Book (2070-е: стр. 26–30), гайд «Spes Desperata». Лист — домашний инструмент кампании.', kind='note')
+    heights(ws, {r: 22})
     cf_warn(ws, 'I2', 'OR(LEFT($I$2,1)="С",LEFT($I$2,1)="М")')
-    cf_warn(ws, 'D63', '$D$63<0')
-    cf_warn(ws, 'I8:I17', '$I8="Активна"')
+    cf_warn(ws, 'D32', '$D$32<0')
+    cf_warn(ws, 'I7:I16', '$I7="Активна"')
     return ws
-
 
 # ============================================================== КАТАЛОГ ====
 def build_catalog(wb, rows):
@@ -1948,82 +1859,125 @@ def build_reference(wb, data):
         put(ws, f'B{r}', q, kind='cell')
         mput(ws, f'C{r}:N{r}', a, kind='cell')
         ws.row_dimensions[r].height = 26
+
+    # Ⅻ · таблицы крит-травм для стола (на них ссылается трекер листа 06)
+    global CRIT_BODY_FIRST, CRIT_HEAD_FIRST
+    r += 2
+    mput(ws, f'B{r}:N{r}', 'Ⅻ · КРИТИЧЕСКИЕ ТРАВМЫ  ·  2D6  ·  CP:R СТР. 187–188', kind='h1')
+    r += 1
+    CRIT_BODY_FIRST = r + 1
+    put(ws, f'B{r}', '2D6', kind='head')
+    put(ws, f'C{r}', 'ТРАВМА ТЕЛА', kind='head')
+    mput(ws, f'D{r}:H{r}', 'ЭФФЕКТ', kind='head')
+    mput(ws, f'I{r}:K{r}', 'БЫСТРЫЙ ФИКС', kind='head')
+    mput(ws, f'L{r}:N{r}', 'ЛЕЧЕНИЕ', kind='head')
+    for idx, row in enumerate(RULES.CRIT_BODY):
+        rr = CRIT_BODY_FIRST + idx
+        put(ws, f'B{rr}', row[0], kind='cellc')
+        put(ws, f'C{rr}', row[1], kind='cell')
+        mput(ws, f'D{rr}:H{rr}', row[2], kind='cell')
+        mput(ws, f'I{rr}:K{rr}', row[3], kind='cellc')
+        mput(ws, f'L{rr}:N{rr}', row[4], kind='cellc')
+        ws.row_dimensions[rr].height = 30
+    r = CRIT_BODY_FIRST + len(RULES.CRIT_BODY)
+    mput(ws, f'B{r}:N{r}', 'Крит-травма даёт +5 урона напрямую в HP (SP не гасит). Без прицельного выстрела в голову — таблица тела. '
+                           'Повторную травму того же вида перебрасывай. Quick Fix лечит эффект, но не саму травму.', kind='note')
+    ws.row_dimensions[r].height = 26
+
+    r += 2
+    mput(ws, f'B{r}:N{r}', 'ⅩⅢ · КРИТИЧЕСКИЕ ТРАВМЫ ГОЛОВЫ  ·  ТОЛЬКО ПРИЦЕЛЬНЫЙ ВЫСТРЕЛ (−8, УРОН ×2)', kind='h1')
+    r += 1
+    CRIT_HEAD_FIRST = r + 1
+    put(ws, f'B{r}', '2D6', kind='head')
+    put(ws, f'C{r}', 'ТРАВМА ГОЛОВЫ', kind='head')
+    mput(ws, f'D{r}:H{r}', 'ЭФФЕКТ', kind='head')
+    mput(ws, f'I{r}:K{r}', 'БЫСТРЫЙ ФИКС', kind='head')
+    mput(ws, f'L{r}:N{r}', 'ЛЕЧЕНИЕ', kind='head')
+    for idx, row in enumerate(RULES.CRIT_HEAD):
+        rr = CRIT_HEAD_FIRST + idx
+        put(ws, f'B{rr}', row[0], kind='cellc')
+        put(ws, f'C{rr}', row[1], kind='cell')
+        mput(ws, f'D{rr}:H{rr}', row[2], kind='cell')
+        mput(ws, f'I{rr}:K{rr}', row[3], kind='cellc')
+        mput(ws, f'L{rr}:N{rr}', row[4], kind='cellc')
+        ws.row_dimensions[rr].height = 30
+    r = CRIT_HEAD_FIRST + len(RULES.CRIT_HEAD)
+    mput(ws, f'B{r}:N{r}', 'В голову попадают только прицельным выстрелом (−8 к атаке). Урон ×2 (при треснувшем черепе ×3). '
+                           'Трекер травм персонажа — на листе 06.', kind='note')
+    ws.row_dimensions[r].height = 26
     return ws
 
 
 # ================================================================ ПРАВИЛА ===
 def build_rules(wb):
+    """ПРАВИЛА — короткая инструкция: цвета, шаги создания, Lawman в 2070-х, где что лежит."""
     ws = wb.create_sheet(NAMES['rul'])
-    widths(ws, {'A': 2, 'B': 34, 'C': 120, 'D': 2})
-    sheet_setup(ws, BAND, landscape=False)
-    mput(ws, 'B1:C1', 'КАК ПОЛЬЗОВАТЬСЯ ЭТИМ ЛИСТОМ  ▚  NC//NET · НАЙТ-СИТИ 2070', kind='banner')
-    heights(ws, {1: 20})
+    widths(ws, {'A': 2, 'B': 30, 'C': 130, 'D': 2})
+    sheet_setup(ws, BAND, landscape=True)
+    mput(ws, 'B1:C1', 'КАК ПОЛЬЗОВАТЬСЯ ЭТИМ ЛИСТОМ  ▚  NC//NET · НАЙТ-СИТИ 2070  ▚  HUD-ОФОРМЛЕНИЕ', kind='banner')
+    heights(ws, {1: 32})
     r = 3
     blocks = [
-        ('Ⅰ · ГЛАВНОЕ ПРО ЦВЕТА И ЛОГИКУ', [
-            ('Жёлтые поля', 'Сюда пишешь ты. Свободный ввод: имена, отыгрыш, отряды оружия, патроны, даты.'),
-            ('Серо-синие поля', 'Считается само. Можно перебить своим значением — формула заменится цифрой.'),
-            ('Красные и «⚠»', 'Проверки: перерасход бюджета, лишние очки, киберпсихоз, превышение ранга роли.'),
-            ('Лист 01 ДОСЬЕ', 'Первый лист — история персонажа: имя, роль, психопрофиль, связи, работа соло. Служебная сводка внизу '
-                              'тянет цифры с остальных листов. Это то, что читает GM.'),
-            ('Лист 02 ОСНОВА', 'Характеристики (62 очка), производные (HP, Humanity, инициатива), ролевая способность — Combat Awareness '
-                               '(Solo) и таблица Backup (Lawman), оружие в руках, броня и памятка бойца.'),
-            ('Лист 03 НАВЫКИ', '66 навыков из гайда + 6 свободных строк. Пишешь только уровень — база (уровень + стата с учётом '
-                               'штрафа брони) считается сама. Внизу проверка обязательных 13 и максимума 6.'),
-            ('Лист 04 ХРОМ', 'Импланты: HL по среднему, срез максимума Humanity, клиника, слоты. Здесь же Humanity, терапия и '
-                             'ментальная травма 2070-х.'),
-            ('Лист 05 СНАРЯЖЕНИЕ', 'Стартовый бюджет 2550 + 800 на стиль. Траты копятся из трёх мест: инвентарь (Ⅲ), броня (Ⅱ) и '
-                                   'установленный хром с листа 04 — дубли не считаются. Ниже касса кампании: доходы, траты, баланс.'),
-            ('Лист 06 СОСТОЯНИЕ', 'Раны, крит-травмы (выбери локацию и бросок 2d6 — травма подтянется), зависимости, IP и лог дел. '
-                                  'Здесь же таблицы крит-травм для стола.'),
-            ('КАТАЛОГ / СПРАВКА / ПРАВИЛА', 'Каталог 1092 позиций из Data Pool и справочник DV/укрытий/IP. Эти листы не правь — на них ссылаются формулы.'),
+        ('Ⅰ · ЦВЕТА И ЛОГИКА', [
+            ('Янтарные поля', 'Сюда пишешь ты: имена, отыгрыш, уровни навыков, оружие, патроны, даты.'),
+            ('Тёмные поля', 'Считается само. Можно перебить своим значением — формула заменится цифрой.'),
+            ('Красный и «⚠»', 'Проверки и опасность: перерасход бюджета, лишние очки, киберпсихоз, превышение ранга роли.'),
+            ('Шрифты', 'Заголовки — Oswald, текст — Roboto, цифры и метки — Roboto Mono. Все три есть в Google Таблицах; '
+                       'в Excel без них подставится системный шрифт.'),
+            ('Альбомная ориентация', 'Все листы свёрстаны под альбом и печать по ширине страницы (Файл → Печать → '
+                                     '«Вписать по ширине»).'),
         ]),
-        ('Ⅱ · ШАГИ СОЗДАНИЯ ПЕРСОНАЖА (ГАЙД SPES DESPERATA)', [
-            ('1. Роль', 'Lawman (коп в отставке) — ролевая способность Backup; Solo — Combat Awareness. На старте ранг роли 4. '
-                        'Обязательный пакет роли — 7 навыков минимум по 2 (лист 03, блок Ⅱ).'),
-            ('2. Lifepath', 'Общий (CP:R стр. 45) + ролевой: Lawman — стр. 36 (должность, юрисдикция, коррумпированность, враг, цель), '
-                           'Solo — стр. 53. Результаты — на лист 01 ДОСЬЕ.'),
+        ('Ⅱ · ГДЕ ЧТО ЛЕЖИТ', [
+            ('01 ДОСЬЕ', 'Кто персонаж: личность, служба, прошлое, связи и служебная сводка с игровых листов. Две колонки, '
+                         'фото — в правом верхнем углу. Это то, что читает GM.'),
+            ('02 ОСНОВА', 'Характеристики (62 очка), производные (HP, Humanity, инициатива, MOVE), Backup (Lawman), '
+                           'оружие в руках, броня и памятка бойца.'),
+            ('03 НАВЫКИ', '66 навыков + 6 свободных строк. Пишешь только уровень; база (уровень + стата со штрафом брони) '
+                          'считается сама. Справа — панель проверок: 86 очков, максимум 6, 13 обязательных и пакет Lawman.'),
+            ('04 ХРОМ', 'Импланты: HL по среднему, срез максимума Humanity, клиника, слоты. Ниже — Humanity, терапия и '
+                        'таблица «что режет Humanity» (хром, события, жизнь).'),
+            ('05 СНАРЯЖЕНИЕ', 'Бюджеты 2550 €$ и 800 €$ на стиль, оружие, броня, инвентарь и касса кампании. Броня и хром '
+                              'считаются каждый в своём блоке — в инвентарь их дублировать не надо.'),
+            ('06 СОСТОЯНИЕ', 'Трекер крит-травм (выбери локацию и 2d6 — травма подтянется из СПРАВКИ), зависимости, '
+                             'IP и лог дел.'),
+            ('КАТАЛОГ / СПРАВКА / ПРАВИЛА', 'Каталог 1092 позиций из Data Pool, справочник DV/укрытий/крит-травм/IP и эта '
+                                             'инструкция. Служебные листы не правь — на них ссылаются формулы.'),
+        ]),
+        ('Ⅲ · ШАГИ СОЗДАНИЯ ПЕРСОНАЖА (ГАЙД SPES DESPERATA)', [
+            ('1. Роль', 'Lawman (коп в отставке) — ролевая способность Backup. На старте ранг роли 4. Обязательный пакет '
+                        'роли — 7 навыков минимум по 2 (лист 03, панель справа).'),
+            ('2. Lifepath', 'Общий (CP:R стр. 45) + ролевой: Lawman — стр. 36 (должность, юрисдикция, коррумпированность, '
+                            'враг, цель). Результаты — на лист 01 ДОСЬЕ.'),
             ('3. Характеристики', '62 очка на 10 стат, каждая от 2 до 8. Рабочий приём: по 6 везде, потом 2 лишних по вкусу.'),
             ('4. Производные', 'HP = 10 + 5 × ⌈(BODY+WILL)/2⌉, порог серьёзного ранения — половина HP вверх, спасбросок = BODY, '
                                'Humanity = EMP × 10. Всё считается на листе 02.'),
             ('5. Навыки', '86 очков: 26 в 13 обязательных (по 2) + 60 свободных, максимум 6. Родной язык — 4 уровня бесплатно. '
                           'Навыки с ×2 стоят 2 очка за уровень.'),
-            ('6. Закупка', '2550 €$ на оружие, броню, снаряжение и хром + 800 €$ на Fashion и Fashionware. Бюджет считается сам: '
-                           'инвентарь + броня + установленный хром; Neuroport при создании бесплатен (0 €$, 0 HL). Остаток '
-                           'бюджета снаряжения забираешь наличными, остаток модного бюджета сгорает (CP:R стр. 104).'),
-            ('7. Lifestyle', 'Жильё 1 000 €$ + Kibble Lifestyle 100 €$/мес = 1 100 €$ к 1-му числу каждого месяца, первый месяц '
-                             'покрыт (CP:R стр. 105, 377). Дальше платишь сам — см. СПРАВКУ.'),
+            ('6. Закупка', '2550 €$ на оружие, броню, снаряжение и хром + 800 €$ на Fashion и Fashionware. Neuroport при '
+                           'создании бесплатен (0 €$, 0 HL). Остаток бюджета снаряжения забираешь наличными, остаток модного '
+                           'бюджета сгорает (CP:R стр. 104).'),
+            ('7. Lifestyle', 'Жильё 1 000 €$ + Kibble Lifestyle 100 €$/мес = 1 100 €$ к 1-му числу, первый месяц покрыт '
+                             '(CP:R стр. 105, 377). Дальше платишь сам — см. СПРАВКУ.'),
         ]),
-        ('Ⅲ · LAWMAN В 2070-Х: КОП ВНЕ СИСТЕМЫ', [
-            ('Backup — твой козырь', 'Ранг роли = шанс дозвониться. Действие, 1d10 ≤ ранга, приезд через 1d6 раундов; «6» на d6 — тир выше. '
-                                     'Таблица тиров — на листах 02 и СПРАВКА.'),
+        ('Ⅳ · LAWMAN В 2070-Х: КОП ВНЕ СИСТЕМЫ', [
+            ('Backup — твой козырь', 'Ранг роли = шанс дозвониться. Действие, 1d10 ≤ ранга, приезд через 1d6 раундов; «6» на d6 — '
+                                     'тир выше. Таблица тиров — на листах 02 и СПРАВКА.'),
             ('Цена отставки', 'Отставной коп зовёт только тех, с кем сохранил отношения, и только когда действительно надо: '
                               'частые вызовы = штраф или разжалование. Взамен — свобода работать вне приказов и доступ к старым базам данных.'),
-            ('Навыки копа', 'Criminology, Deduction, Interrogation, Tracking — расследование; Autofire (×2), Handgun, Shoulder Arms — стволы; '
-                            'плюс социальные (Conversation, Human Perception, Persuasion, Bribery), чтобы говорить с улицей и с управлением.'),
+            ('Навыки копа', 'Criminology, Deduction, Interrogation, Tracking — расследование; Autofire (×2), Handgun, Shoulder Arms — '
+                            'стволы; плюс социальные (Conversation, Human Perception, Persuasion, Bribery), чтобы говорить с улицей и управлением.'),
             ('Роль в команде', 'Ты — тот, кто читает место преступления, держит допрос и приводит подкрепление, когда всё пошло не так. '
                                'Броня и ствол у тебя как у «стены», но решать дело ты можешь и языком.'),
         ]),
-        ('Ⅳ · SOLO В 2070-Х: ЧТО ДЕРЖАТЬ В ГОЛОВЕ', [
-            ('Combat Awareness', 'Свободно распределяешь очки ранга между шестью способностями: до боя, вне боя и — за Действие — '
-                                 'в бою. Расклад на листе 02, там же счётчик вложенного.'),
-            ('Загрузка под задачу', 'Перед штурмом — Precision Attack, в обороне — Damage Deflection, на разведке — Threat Detection. '
-                                    'Не забывай менять расклад под сцену.'),
-            ('Что чаще всего нужно', 'Autofire и Shoulder Arms для тяжёлых целей, Handgun всегда с собой, Interrogation и '
-                                     'Resist Torture/Drugs — рабочие навыки наёмника, Tactics — чтобы читать поле боя.'),
-            ('Роль в команде', 'Ты — тот, кто держит линию огня, читает засады и вытаскивает раненых. Твоя броня и SP — '
-                               'аргумент в переговорах; твоя Humanity — цена за хром.'),
-        ]),
-        ('Ⅳ · ЕСЛИ ЧТО-ТО СЛОМАЛОСЬ', [
-            ('Появилась вещь не из каталога', 'Впиши название вручную, а цену — в столбец «ЦЕНА СВОЯ»: сумма и бюджет посчитаются по ней.'),
-            ('Добавляешь строки', 'Вставляй строки ВНУТРИ таблиц (не вместо заголовков) — тогда формулы и суммы подтянутся. '
-                                  'Если что-то поехало — сверься с адресами в шапке блоков.'),
+        ('Ⅴ · ЕСЛИ ЧТО-ТО СЛОМАЛОСЬ', [
+            ('Вещь не из каталога', 'Впиши название вручную, а цену — в столбец «ЦЕНА СВОЯ»: сумма и бюджет посчитаются по ней.'),
+            ('Добавляешь строки', 'Вставляй строки ВНУТРИ таблиц (не вместо заголовков) — формулы и суммы подтянутся.'),
             ('Не переименовывай листы', 'Формулы ссылаются на «02 ОСНОВА», «04 ХРОМ» и остальные листы по именам.'),
-            ('Хочешь больше автоподстановки', 'Расширь КАТАЛОГ: добавь строку с тем же порядком столбцов, и подстановка заработает.'),
+            ('Хочешь больше автоподстановки', 'Расширь КАТАЛОГ: добавь строку с тем же порядком столбцов — подстановка заработает.'),
         ]),
-        ('Ⅴ · ИСТОЧНИКИ', [
+        ('Ⅵ · ИСТОЧНИКИ', [
             ('Cyberpunk RED Corebook', 'Создание персонажа (стр. 73–89), навыки (стр. 86–90), броня и оружие (стр. 340–351), '
-                                       'бой (стр. 170–190), терапия (стр. 229), IP (стр. 408), Lifestyle (стр. 377).'),
+                                       'бой (стр. 170–190), терапия (стр. 229), крит-травмы (стр. 187–188), IP (стр. 408), Lifestyle (стр. 377).'),
             ('Cyberpunk: Edgerunners Mission Kit', 'Правила 2070-х: Neuroport (стр. 26, 35), твики ролей, расширенная доступность, '
                                                    'ментальная травма (стр. 28–30).'),
             ('Гайд «Spes Desperata»', 'Порядок создания, 62/86, must-have навыки по ролям, закупка, Lifestyle — используется в кампании.'),
@@ -2038,23 +1992,22 @@ def build_rules(wb):
             r += 1
             put(ws, f'B{r}', label, kind='kv_label')
             put(ws, f'C{r}', text, kind='text')
-            ws.row_dimensions[r].height = max(30, 15 * (len(text) // 90 + 1))
+            ws.row_dimensions[r].height = max(28, 15 * (len(text) // 100 + 1))
         r += 1
     return ws
-
 
 # ================================================================= MAIN ====
 def make_photo_placeholder(path, width=640, height=380):
     from PIL import Image, ImageDraw
-    img = Image.new('RGB', (width, height), (27, 36, 48))
+    img = Image.new('RGB', (width, height), (10, 10, 12))
     draw = ImageDraw.Draw(img)
-    for x in range(0, width, 16):
-        draw.line([(x, 0), (x + height, height)], fill=(34, 45, 60), width=6)
-    draw.rectangle([6, 6, width - 7, height - 7], outline=(179, 24, 31), width=4)
-    draw.text((26, 26), 'NCPD  ·  FILE PHOTO', fill=(224, 168, 28))
-    draw.text((26, height - 62), 'ФОТО ОБЪЕКТА', fill=(243, 239, 225))
-    draw.text((26, height - 40), 'вставь сюда портрет своего персонажа', fill=(160, 160, 160))
-    draw.line([(26, height - 74), (width - 26, height - 74)], fill=(179, 24, 31), width=2)
+    for x in range(0, width, 18):
+        draw.line([(x, 0), (x + height, height)], fill=(26, 26, 32), width=5)
+    draw.rectangle([6, 6, width - 7, height - 7], outline=(255, 0, 60), width=4)
+    draw.text((26, 26), 'NCPD  ·  FILE PHOTO', fill=(255, 177, 0))
+    draw.text((26, height - 62), 'ФОТО ОБЪЕКТА', fill=(255, 255, 255))
+    draw.text((26, height - 40), 'вставь сюда портрет своего персонажа', fill=(166, 171, 178))
+    draw.line([(26, height - 74), (width - 26, height - 74)], fill=(255, 0, 60), width=2)
     img.save(path)
     return path
 
@@ -2070,18 +2023,21 @@ def main():
 
     wb = Workbook()
     wb.remove(wb.active)
-    use_theme('ncpd')          # 01 ДОСЬЕ и приложения — бумажное дело NCPD
+    use_theme('hud')           # единое оформление: HUD Night City (чёрный / красный / янтарный)
+    global CRIT_BODY_FIRST, CRIT_HEAD_FIRST
+    build_catalog(wb, rows)
+    build_reference(wb, data)  # считает адреса таблиц крит-травм, на них ссылается лист 06
     build_dossier(wb)
-    use_theme('dark')          # игровые листы 02–06 — тёмный протокол с красными акцентами
     build_base(wb)
     build_skills(wb)
     build_chrome(wb)
     build_gear(wb)
     build_state(wb)
-    use_theme('ncpd')          # КАТАЛОГ / СПРАВКА / ПРАВИЛА — бумажная справка
-    build_catalog(wb, rows)
-    build_reference(wb, data)
     build_rules(wb)
+    # вкладки — в игровом порядке: досье, механика, служебные листы
+    order = [NAMES['doc'], NAMES['base'], NAMES['skl'], NAMES['chr'], NAMES['gear'],
+             NAMES['sta'], NAMES['cat'], NAMES['ref'], NAMES['rul']]
+    wb._sheets = [wb[name] for name in order]
 
     ws = wb[NAMES['doc']]
     tmpdir = tempfile.mkdtemp(prefix='ncnet-sheet-')
@@ -2089,8 +2045,8 @@ def main():
         from openpyxl.drawing.image import Image as XLImage
         photo = make_photo_placeholder(os.path.join(tmpdir, 'photo.png'))
         img = XLImage(photo)
-        img.width, img.height = 430, 250
-        ws.add_image(img, 'F6')
+        img.width, img.height = 460, 250
+        ws.add_image(img, 'F4')
     except Exception as exc:  # noqa: BLE001
         print('фото-заглушка не добавлена:', exc)
 

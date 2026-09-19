@@ -43,7 +43,7 @@ def fnt(mono, size, bold):
     k=(mono,size,bold)
     if k not in CACHE:
         n='DejaVuSansMono' if mono else 'DejaVuSans'
-        CACHE[k]=ImageFont.truetype(F+n+('-Bold' if bold else '')+'.ttf', size)
+        CACHE[k]=ImageFont.truetype(F+n+('-Bold' if bold else '')+'.ttf', max(7, min(20, int(size))))
     return CACHE[k]
 
 ws = wb[SHEET]
@@ -81,9 +81,12 @@ for r in rows:
             if txt not in (None,''):
                 try: fc='#'+cell.font.color.rgb[-6:]
                 except Exception: fc='#E8E6E3'
-                mono=(cell.font.name=='Courier New'); bold=bool(cell.font.bold)
-                size=int(cell.font.size or 9); size=7 if size<=8 else 9
-                f=fnt(mono,size,bold)
+                name=(cell.font.name or '').lower()
+                mono = name in ('courier new','roboto mono','consolas')
+                display = name in ('oswald','impact')
+                bold=bool(cell.font.bold)
+                size=int(cell.font.size or 9)
+                f=fnt(mono or display, size, bold)
                 hal=cell.alignment.horizontal or 'left'; val=cell.alignment.vertical or 'center'
                 lines=[]; maxw=max(10,w-4)
                 for part in str(txt).split('\n'):
