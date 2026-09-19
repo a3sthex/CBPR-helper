@@ -163,3 +163,22 @@ a few out-of-focus pedestrians. Cinematic, 35mm, f/2, deep blacks, black-red-whi
 → `photo-civ-suit.png` — «по делу в корпоративном районе»
 
 Общее для №3–№5: в negative добавляй `NCPD patch, police badge, uniform, insignia, text, letters, numbers, watermark, logo`.
+
+---
+
+## Очки и без очков — на одном кадре, разделены красной линией
+
+```
+Create a single image divided into two equal panels by one bold vertical crimson red line running
+from the very top to the very bottom of the frame. Keep the exact same man in both panels: lean,
+wiry 30-year-old, short dark buzz-cut hair, crooked broken nose, thin scar through the left eyebrow,
+two-day stubble, worn dark tactical jacket over a grey shirt. LEFT panel: he wears black mirrored
+aviator sunglasses (mirrorshades) with reflective lenses that catch a red glow. RIGHT panel:
+exactly the same man, same pose, same framing, no glasses at all, eyes clearly visible. Both panels:
+identical camera angle, waist-up front view, flat matte black wall with a faint dark red technical
+grid, hard crimson key light from the left, thin amber rim light on the right, cool white frontal
+flash. Photorealistic, 35mm, f/2.8, film grain, deep blacks, palette limited to black, red, white
+and amber. No text, no letters, no numbers, no watermark, no logos.
+```
+Соотношение 2:1. Делать image-to-image от кадра досье — иначе лицо уедет.
+→ `photo-glasses-split.png`, он же под рамку листа: `photo-glasses-split-fit.jpg` (1018×677)
