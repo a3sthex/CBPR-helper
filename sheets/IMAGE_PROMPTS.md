@@ -102,3 +102,64 @@ bulky muscles, bodybuilder, crowd in focus
 - Midjourney: сделать кадр №1, затем №2 с `--cref <ссылка на кадр №1> --cw 20 --seed 207701 --ar 16:9 --style raw`;
 - Stable Diffusion / Flux / ComfyUI: image-to-image с кадром №1, denoise 0.45–0.6, либо тот же seed + ControlNet/IP-Adapter по лицу;
 - фотошоп-путь: тот же seed в текстовом режиме даёт похожий типаж, но лицо всё равно уедет — надёжнее перечисленные выше способы.
+
+---
+
+## Досье без плашки (итоговый кадр)
+
+Первый кадр понравился, но плашка с именем/делом в кадре не нужна — данные и так подписаны в самом листе. Промпт-правка (image-to-image от `demo-photo-01-dose.png`):
+
+```
+Edit this exact photograph. Remove the identification placard with the name and case numbers
+from the background completely, and remove every printed text, barcode, height marker and
+measuring marking from the walls and frame edges. Keep the man absolutely identical: same face,
+same buzz-cut hair, same crooked nose, scar through left eyebrow, same stubble, same pose, same
+worn dark tactical jacket over grey shirt, same NCPD patch on his shoulder, same lighting —
+hard crimson key light from the left, thin amber rim light on the right, cool white frontal flash.
+The background must become a clean matte black wall with only a very faint dark red technical grid,
+no letters and no numbers anywhere. Photorealistic, 35mm, fine film grain, deep blacks, high
+contrast, black-red-white-amber palette. Absolutely no text, no watermark, no logos.
+```
+→ результат: `photo-dossier-full.png`, он же обрезан под рамку листа (`photo-dose-fit.jpg`, 509×338 px) и **вставлен в 01 ДОСЬЕ**.
+
+## Не в форме: три комплекта (лицо то же — все сделаны от `photo-dossier-full.png`)
+
+### №3 — улица, гражданское
+```
+Keep exactly this man's face and features: lean, wiry 30-year-old, short dark buzz-cut hair,
+crooked broken nose, thin scar through the left eyebrow, two-day stubble. Show him out of uniform,
+in civilian street clothes: worn black leather jacket over a dark grey hoodie, matte black t-shirt,
+worn dark jeans, a plain wristwatch, no police patches, no insignia, no badges anywhere.
+Rain-slick Night City street at night, three-quarter portrait, thin glowing red lines tattooed
+along his left forearm. Background: wet asphalt reflecting blurred neon in red, amber and white,
+steam from a vent, distant passing cars. Cinematic anamorphic, 35mm, f/2, volumetric haze, rain,
+hard rim light, deep blacks, film grain, black-red-white-amber, no cyan.
+```
+→ `photo-civ-street.png` — «по улице, но не на службе»
+
+### №4 — дома, в контейнере
+```
+Keep exactly this man's face and features: lean, wiry 30-year-old, short dark buzz-cut hair,
+crooked broken nose, thin scar through the left eyebrow, two-day stubble. Scene: at home in a
+repurposed cargo container apartment in the combat zone, warm amber work lamp as the only light,
+a kettle and a folding table with scattered papers and an old case folder. He is out of uniform:
+plain dark grey t-shirt, open olive-grey canvas work jacket, worn jeans, dog tags, no police
+patches. He sits on a crate, elbows on knees, looking off frame, weary but composed, mug of coffee
+in hand. Thin glowing red lines along his left forearm. 35mm, f/2, deep blacks, amber and red
+palette, film grain, documentary mood.
+```
+→ `photo-civ-home.png` — «жильё — грузовой контейнер», совпадает с E11 в досье
+
+### №5 — корпоративный район (undercover)
+```
+Keep exactly this man's face and features: lean, wiry 30-year-old, short dark buzz-cut hair,
+crooked broken nose, thin scar through the left eyebrow, two-day stubble. He is working undercover,
+out of uniform: dark charcoal blazer over a plain black t-shirt, no tie, no police patches, no
+insignia, no badges. Corporate plaza at night, three-quarter portrait, hands in pockets, calm and
+watchful, thin glowing red lines along his left forearm peeking from the sleeve. Background: glass
+and dark steel towers, blurred amber and red accent lighting, faint holographic glow, wet pavement,
+a few out-of-focus pedestrians. Cinematic, 35mm, f/2, deep blacks, black-red-white-amber, film grain.
+```
+→ `photo-civ-suit.png` — «по делу в корпоративном районе»
+
+Общее для №3–№5: в negative добавляй `NCPD patch, police badge, uniform, insignia, text, letters, numbers, watermark, logo`.
