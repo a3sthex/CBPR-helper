@@ -18,6 +18,7 @@
 Запуск:  PYTHONPATH=<deps> python3 tools/build_character_sheet_xlsx.py [out.xlsx]
 """
 import json
+import math
 import os
 import re
 import shutil
@@ -36,93 +37,143 @@ sys.path.insert(0, os.path.join(ROOT, 'app'))
 import rules as RULES  # noqa: E402  (проектные правила: статы, навыки, крит-травмы)
 
 # ---------------------------------------------------------------- палитра ----
-INK = '17191D'
-BAND = '1B2430'          # тёмная плашка NCPD
-BAND2 = '2B3440'
-ACCENT = 'B3181F'        # штамп-красный
-ACCENT_D = '7C1015'
-PAPER = 'F3EFE1'         # бумага дела
-PAPER_D = 'E4DECB'
-INPUT = 'FFF7D6'         # поле для заполнения
-AUTO = 'E8EDF0'          # авторасчёт
-OK_BG = 'DCE9D3'
-BAD_BG = 'F7D2CC'
-WARN_BG = 'FBE9C6'
-WHITE = 'FFFFFF'
-MUTED = '7A7364'
-CYAN = '0F6E7C'
-GOLD = 'E0A81C'
+# Два оформления: 'ncpd' — бумажное дело (штамп-красный по бумаге), 'dark' — тёмный
+# протокол с красными акцентами (игровые листы 02–06).
+PAL_NCPD = dict(
+    ink='17191D', muted='7A7364', accent='B3181F',
+    st_title='17191D', st_banner_bg='1B2430', st_banner2_bg='2B3440',
+    st_h1_bg='2B3440', st_h2_bg='E4DECB', st_head_bg='1B2430', st_head_fg='FFFFFF',
+    st_label_bg='F3EFE1', st_label_fg='7A7364', st_text_bg='F3EFE1', st_text_fg='17191D',
+    st_input_bg='FFF7D6', st_input_fg='12303F', st_auto_bg='E8EDF0', st_auto_fg='17191D',
+    st_cell_bg='FFFFFF', st_cell_fg='17191D', st_note_fg='7A7364',
+    st_kvlabel_bg='E4DECB', st_stamp_fg='B3181F', st_big_fg='17191D',
+    st_border='17191D', st_border2='7A7364', st_input_edge='17191D',
+    banner_fg='FFFFFF', h1_fg='FFFFFF', head_fg='FFFFFF', h2_fg='17191D', title_fg='17191D',
+    cf_ok_bg='DCE9D3', cf_ok_fg='205020', cf_warn_bg='F7D2CC', cf_warn_fg='7C1015',
+    tab='1B2430', cyan='0F6E7C', gold='E0A81C',
+)
+PAL_DARK = dict(
+    ink='E8E6E3', muted='9A9AA4', accent='FF2A3C',
+    st_title='FF2A3C', st_banner_bg='2A1016', st_banner2_bg='17171C',
+    st_h1_bg='3A1218', st_h2_bg='1B1B22', st_head_bg='26131A', st_head_fg='F2C9CE',
+    st_label_bg='14141A', st_label_fg='9A9AA4', st_text_bg='14141A', st_text_fg='E8E6E3',
+    st_input_bg='241A10', st_input_fg='FFD9A0', st_auto_bg='0F0F15', st_auto_fg='E8E6E3',
+    st_cell_bg='14141A', st_cell_fg='E8E6E3', st_note_fg='9A9AA4',
+    st_kvlabel_bg='1A1A22', st_stamp_fg='FF2A3C', st_big_fg='E8E6E3',
+    st_border='33333C', st_border2='5A5A66', st_input_edge='FF2A3C',
+    banner_fg='FFFFFF', h1_fg='FFFFFF', head_fg='F2C9CE', h2_fg='FF9AA2', title_fg='FF2A3C',
+    cf_ok_bg='10231A', cf_ok_fg='6BE39A', cf_warn_bg='2A1013', cf_warn_fg='FF6B76',
+    tab='FF2A3C', cyan='3AA0B0', gold='FFB84D',
+)
+PALETTES = {'ncpd': PAL_NCPD, 'dark': PAL_DARK}
+THEME = 'ncpd'
 
 MONO = 'Courier New'
 SANS = 'Arial'
 CASH_FMT = '#,##0" €$"'
 
-THIN = Side(style='thin', color=INK)
-MED = Side(style='medium', color=INK)
-DOT = Side(style='dotted', color=MUTED)
 
-# ------------------------------------------------------------------ стили ----
-STYLES = {
-    'banner': dict(font=Font(name=MONO, size=10, bold=True, color=WHITE),
-                   fill=PatternFill('solid', start_color=BAND),
-                   align=Alignment(horizontal='center', vertical='center', wrap_text=True)),
-    'banner2': dict(font=Font(name=MONO, size=8, color=WHITE),
-                    fill=PatternFill('solid', start_color=BAND2),
-                    align=Alignment(horizontal='center', vertical='center', wrap_text=True)),
-    'title': dict(font=Font(name=MONO, size=24, bold=True, color=INK),
-                  align=Alignment(horizontal='left', vertical='center')),
-    'h1': dict(font=Font(name=MONO, size=11, bold=True, color=WHITE),
-               fill=PatternFill('solid', start_color=BAND2),
-               align=Alignment(horizontal='left', vertical='center')),
-    'h2': dict(font=Font(name=MONO, size=9, bold=True, color=INK),
-               fill=PatternFill('solid', start_color=PAPER_D),
-               align=Alignment(horizontal='left', vertical='center')),
-    'head': dict(font=Font(name=MONO, size=8, bold=True, color=WHITE),
-                 fill=PatternFill('solid', start_color=BAND),
-                 align=Alignment(horizontal='center', vertical='center', wrap_text=True)),
-    'label': dict(font=Font(name=MONO, size=8, bold=True, color=MUTED),
-                  fill=PatternFill('solid', start_color=PAPER),
-                  align=Alignment(horizontal='left', vertical='center', wrap_text=True)),
-    'text': dict(font=Font(name=SANS, size=10, color=INK),
-                 fill=PatternFill('solid', start_color=PAPER),
-                 align=Alignment(horizontal='left', vertical='top', wrap_text=True)),
-    'input': dict(font=Font(name=SANS, size=10, color='12303F'),
-                  fill=PatternFill('solid', start_color=INPUT),
-                  align=Alignment(horizontal='left', vertical='center', wrap_text=True),
-                  border=Border(left=THIN, right=THIN, top=THIN, bottom=THIN)),
-    'inputc': dict(font=Font(name=MONO, size=10, bold=True, color='12303F'),
-                   fill=PatternFill('solid', start_color=INPUT),
-                   align=Alignment(horizontal='center', vertical='center'),
-                   border=Border(left=THIN, right=THIN, top=THIN, bottom=THIN)),
-    'auto': dict(font=Font(name=MONO, size=10, bold=True, color=INK),
-                 fill=PatternFill('solid', start_color=AUTO),
-                 align=Alignment(horizontal='center', vertical='center'),
-                 border=Border(left=THIN, right=THIN, top=THIN, bottom=THIN)),
-    'auto_l': dict(font=Font(name=MONO, size=10, color=INK),
-                   fill=PatternFill('solid', start_color=AUTO),
-                   align=Alignment(horizontal='left', vertical='center', wrap_text=True),
-                   border=Border(left=THIN, right=THIN, top=THIN, bottom=THIN)),
-    'cell': dict(font=Font(name=SANS, size=10, color=INK),
-                 fill=PatternFill('solid', start_color=WHITE),
-                 align=Alignment(horizontal='left', vertical='center', wrap_text=True),
-                 border=Border(left=THIN, right=THIN, top=THIN, bottom=THIN)),
-    'cellc': dict(font=Font(name=MONO, size=9, color=INK),
-                  fill=PatternFill('solid', start_color=WHITE),
-                  align=Alignment(horizontal='center', vertical='center'),
-                  border=Border(left=THIN, right=THIN, top=THIN, bottom=THIN)),
-    'note': dict(font=Font(name=SANS, size=9, italic=True, color=MUTED),
-                 fill=PatternFill('solid', start_color=PAPER),
-                 align=Alignment(horizontal='left', vertical='center', wrap_text=True)),
-    'stamp': dict(font=Font(name=MONO, size=11, bold=True, color=ACCENT),
-                  fill=PatternFill('solid', start_color=PAPER),
-                  align=Alignment(horizontal='center', vertical='center', wrap_text=True)),
-    'big': dict(font=Font(name=MONO, size=12, bold=True, color=INK),
-                align=Alignment(horizontal='center', vertical='center')),
-    'kv_label': dict(font=Font(name=MONO, size=8, bold=True, color=INK),
-                     fill=PatternFill('solid', start_color=PAPER_D),
+def make_styles(p):
+    """Пресеты стилей для выбранной палитры."""
+    thin = Side(style='thin', color=p['st_border'])
+    med = Side(style='medium', color=p['st_border'])
+    dot = Side(style='dotted', color=p['st_border2'])
+    cell_edge = Border(left=thin, right=thin, top=thin, bottom=thin)
+    input_edge = Border(left=Side(style='thin', color=p['st_input_edge']),
+                        right=thin, top=thin, bottom=thin)
+    return {
+        'banner': dict(font=Font(name=MONO, size=10, bold=True, color=p['banner_fg']),
+                       fill=PatternFill('solid', start_color=p['st_banner_bg']),
+                       align=Alignment(horizontal='center', vertical='center', wrap_text=True)),
+        'banner2': dict(font=Font(name=MONO, size=8, color=p['banner_fg']),
+                        fill=PatternFill('solid', start_color=p['st_banner2_bg']),
+                        align=Alignment(horizontal='center', vertical='center', wrap_text=True)),
+        'title': dict(font=Font(name=MONO, size=24, bold=True, color=p['title_fg']),
+                      align=Alignment(horizontal='left', vertical='center')),
+        'h1': dict(font=Font(name=MONO, size=11, bold=True, color=p['h1_fg']),
+                   fill=PatternFill('solid', start_color=p['st_h1_bg']),
+                   align=Alignment(horizontal='left', vertical='center')),
+        'h2': dict(font=Font(name=MONO, size=9, bold=True, color=p['h2_fg']),
+                   fill=PatternFill('solid', start_color=p['st_h2_bg']),
+                   align=Alignment(horizontal='left', vertical='center')),
+        'head': dict(font=Font(name=MONO, size=8, bold=True, color=p['st_head_fg']),
+                     fill=PatternFill('solid', start_color=p['st_head_bg']),
+                     align=Alignment(horizontal='center', vertical='center', wrap_text=True)),
+        'label': dict(font=Font(name=MONO, size=8, bold=True, color=p['st_label_fg']),
+                      fill=PatternFill('solid', start_color=p['st_label_bg']),
+                      align=Alignment(horizontal='left', vertical='center', wrap_text=True)),
+        'text': dict(font=Font(name=SANS, size=10, color=p['st_text_fg']),
+                     fill=PatternFill('solid', start_color=p['st_text_bg']),
+                     align=Alignment(horizontal='left', vertical='top', wrap_text=True)),
+        'input': dict(font=Font(name=SANS, size=10, color=p['st_input_fg']),
+                      fill=PatternFill('solid', start_color=p['st_input_bg']),
+                      align=Alignment(horizontal='left', vertical='center', wrap_text=True),
+                      border=input_edge),
+        'inputc': dict(font=Font(name=MONO, size=10, bold=True, color=p['st_input_fg']),
+                       fill=PatternFill('solid', start_color=p['st_input_bg']),
+                       align=Alignment(horizontal='center', vertical='center'),
+                       border=input_edge),
+        'auto': dict(font=Font(name=MONO, size=10, bold=True, color=p['st_auto_fg']),
+                     fill=PatternFill('solid', start_color=p['st_auto_bg']),
+                     align=Alignment(horizontal='center', vertical='center'),
+                     border=cell_edge),
+        'auto_l': dict(font=Font(name=MONO, size=10, color=p['st_auto_fg']),
+                       fill=PatternFill('solid', start_color=p['st_auto_bg']),
+                       align=Alignment(horizontal='left', vertical='center', wrap_text=True),
+                       border=cell_edge),
+        'cell': dict(font=Font(name=SANS, size=10, color=p['st_cell_fg']),
+                     fill=PatternFill('solid', start_color=p['st_cell_bg']),
                      align=Alignment(horizontal='left', vertical='center', wrap_text=True),
-                     border=Border(left=THIN, right=THIN, top=THIN, bottom=THIN)),
-}
+                     border=cell_edge),
+        'cellc': dict(font=Font(name=MONO, size=9, color=p['st_cell_fg']),
+                      fill=PatternFill('solid', start_color=p['st_cell_bg']),
+                      align=Alignment(horizontal='center', vertical='center'),
+                      border=cell_edge),
+        'note': dict(font=Font(name=SANS, size=9, italic=True, color=p['st_note_fg']),
+                     fill=PatternFill('solid', start_color=p['st_text_bg']),
+                     align=Alignment(horizontal='left', vertical='center', wrap_text=True)),
+        'stamp': dict(font=Font(name=MONO, size=11, bold=True, color=p['st_stamp_fg']),
+                      fill=PatternFill('solid', start_color=p['st_text_bg']),
+                      align=Alignment(horizontal='center', vertical='center', wrap_text=True)),
+        'big': dict(font=Font(name=MONO, size=12, bold=True, color=p['st_big_fg']),
+                    align=Alignment(horizontal='center', vertical='center')),
+        'kv_label': dict(font=Font(name=MONO, size=8, bold=True, color=p['st_text_fg']),
+                         fill=PatternFill('solid', start_color=p['st_kvlabel_bg']),
+                         align=Alignment(horizontal='left', vertical='center', wrap_text=True),
+                         border=cell_edge),
+    }
+
+
+def use_theme(name):
+    """Переключить палитру: 'ncpd' (бумага) или 'dark' (тёмный протокол)."""
+    global THEME, STYLES, INK, ACCENT, MUTED, PAPER, PAPER_D, INPUT, AUTO, BAND, BAND2, WHITE, CYAN, GOLD
+    global THIN, MED, DOT, OK_BG, BAD_BG, WARN_BG, ACCENT_D
+    global CF_OK_BG, CF_OK_FG, CF_WARN_BG, CF_WARN_FG
+    p = PALETTES[name]
+    THEME = name
+    STYLES = make_styles(p)
+    INK = p['ink']
+    MUTED = p['muted']
+    ACCENT = p['accent']
+    ACCENT_D = p['cf_warn_fg']
+    BAND = p['st_banner_bg']
+    BAND2 = p['st_h1_bg']
+    PAPER = p['st_text_bg']
+    PAPER_D = p['st_kvlabel_bg']
+    INPUT = p['st_input_bg']
+    AUTO = p['st_auto_bg']
+    WHITE = p['st_cell_bg']
+    CYAN = p['cyan']
+    GOLD = p['gold']
+    OK_BG, BAD_BG, WARN_BG = p['cf_ok_bg'], p['cf_warn_bg'], p['cf_warn_bg']
+    CF_OK_BG, CF_OK_FG = p['cf_ok_bg'], p['cf_ok_fg']
+    CF_WARN_BG, CF_WARN_FG = p['cf_warn_bg'], p['cf_warn_fg']
+    THIN = Side(style='thin', color=p['st_border'])
+    MED = Side(style='medium', color=p['st_border'])
+    DOT = Side(style='dotted', color=p['st_border2'])
+
+
+use_theme('ncpd')
 
 
 def put(ws, ref, value=None, *, kind='cell', fmt=None, border=None, align=None,
@@ -220,16 +271,16 @@ def dv_num(ws, rng, mn, mx, integer=True):
     dv.add(rng)
 
 
-def cf_warn(ws, rng, formula, bg=BAD_BG, color=ACCENT_D):
+def cf_warn(ws, rng, formula, bg=None, color=None):
     ws.conditional_formatting.add(rng, FormulaRule(
-        formula=[formula], fill=PatternFill('solid', start_color=bg),
-        font=Font(name=MONO, bold=True, color=color), stopIfTrue=False))
+        formula=[formula], fill=PatternFill('solid', start_color=bg or CF_WARN_BG),
+        font=Font(name=MONO, bold=True, color=color or CF_WARN_FG), stopIfTrue=False))
 
 
-def cf_ok(ws, rng, formula, bg=OK_BG, color='205020'):
+def cf_ok(ws, rng, formula, bg=None, color=None):
     ws.conditional_formatting.add(rng, FormulaRule(
-        formula=[formula], fill=PatternFill('solid', start_color=bg),
-        font=Font(name=MONO, bold=True, color=color), stopIfTrue=False))
+        formula=[formula], fill=PatternFill('solid', start_color=bg or CF_OK_BG),
+        font=Font(name=MONO, bold=True, color=color or CF_OK_FG), stopIfTrue=False))
 
 
 def sheet_setup(ws, tab_color, freeze=None, cols=None, landscape=False):
@@ -640,23 +691,24 @@ def build_base(wb):
 
     mput(ws, 'B1:G1', 'ЛИСТ ПЕРСОНАЖА  ▚  ОСНОВА  ▚  CYBERPUNK RED / CEMK · НАЙТ-СИТИ, 2070-е', kind='banner')
     heights(ws, {1: 20})
-    mput(ws, 'B2:D2', 'ПОЗЫВНОЙ / РОЛЬ', kind='kv_label')
-    put(ws, 'E2', f'={S_DOC}!C6&" · "&{S_DOC}!C7', kind='auto_l')
-    mput(ws, 'F2:F2', 'РАНГ РОЛИ', kind='kv_label')
+    mput(ws, 'B2:D2', 'ПОЗЫВНОЙ / РОЛЬ  ·  РАНГ РОЛИ →', kind='kv_label')
+    mput(ws, 'E2:F2', f'={S_DOC}!C6&" · "&{S_DOC}!C7', kind='auto_l')
     put(ws, 'G2', 4, kind='inputc')
+    ws['G2'].number_format = '"РАНГ "0'   # значение остаётся числом для формулы Backup
     dv_num(ws, 'G2', 1, 10)
     mput(ws, 'B3:D3', 'ИГРОК / СТАТУС ДЕЛА', kind='kv_label')
-    put(ws, 'E3', f'={S_DOC}!C8&" · "&{S_DOC}!G3', kind='auto_l')
-    mput(ws, 'F3:F3', 'СОСТОЯНИЕ РАН', kind='kv_label')
-    put(ws, 'G3', '=IF(D25="","—",IF(D25<1,"СМЕРТЕЛЬНО РАНЕН",IF(D25<=D26,"СЕРЬЁЗНО РАНЕН",'
+    mput(ws, 'E3:F3', f'={S_DOC}!C8&" · "&{S_DOC}!G3', kind='auto_l')
+    put(ws, 'G3', '="СОСТОЯНИЕ: "&IF(D25="","—",IF(D25<1,"СМЕРТЕЛЬНО РАНЕН",IF(D25<=D26,"СЕРЬЁЗНО РАНЕН",'
                   'IF(D25<D24,"ЛЁГКОЕ РАНЕНИЕ","В НОРМЕ"))))', kind='auto')
     mput(ws, 'B4:D4', 'КОНТАКТ / HOLOPHONE', kind='kv_label')
-    put(ws, 'E4', f'={S_DOC}!C13', kind='auto_l')
-    mput(ws, 'F4:F4', 'КИБЕРПСИХОЗ', kind='kv_label')
-    put(ws, 'G4', '=IF(AND($D$37=0,$D$36<0),"⚠ ЭКСТРЕМАЛЬНЫЙ — лист забирает GM",IF($D$37=0,"⚠ КИБЕРПСИХОЗ",'
-                   'IF($D$37=1,"⚠ диссоциативное расстройство",IF($D$37=2,"⚠ пограничное состояние","—"))))', kind='auto')
-    mput(ws, 'B5:G5', 'ЖЁЛТЫЕ ПОЛЯ — ВВОД · СЕРО-СИНИЕ — СЧИТАЕТСЯ АВТОМАТИЧЕСКИ · '
-                      'СТАТЫ ДАЮТ ИТОГ С УЧЁТОМ ШТРАФА БРОНИ (ЛИСТ 05)', kind='note')
+    mput(ws, 'E4:F4', f'={S_DOC}!C13', kind='auto_l')
+    put(ws, 'G4', '="КИБЕРПСИХОЗ: "&IF(AND($D$37=0,$D$36<0),"⚠ ЭКСТРЕМАЛЬНЫЙ — лист забирает GM",'
+                   'IF($D$37=0,"⚠ КИБЕРПСИХОЗ",IF($D$37=1,"⚠ диссоциативное расстройство",'
+                   'IF($D$37=2,"⚠ пограничное состояние","—"))))', kind='auto')
+    mput(ws, 'B5:G5', ('ЯНТАРНЫЕ ПОЛЯ — ВВОД · ТЁМНЫЕ — СЧИТАЕТСЯ АВТОМАТИЧЕСКИ · ' if THEME == 'dark'
+                       else 'ЖЁЛТЫЕ ПОЛЯ — ВВОД · СЕРО-СИНИЕ — СЧИТАЕТСЯ АВТОМАТИЧЕСКИ · ')
+                      + 'СТАТЫ ДАЮТ ИТОГ С УЧЁТОМ ШТРАФА БРОНИ (ЛИСТ 05)', kind='note')
+    heights(ws, {2: 30, 3: 30, 4: 30})
 
     mput(ws, 'B6:G6', 'Ⅰ · ХАРАКТЕРИСТИКИ  ·  62 ОЧКА НА 10 СТАТ  ·  КАЖДАЯ ОТ 2 ДО 8', kind='h1')
     for col, text in (('B', 'КОД'), ('C', 'СТАТА'), ('D', 'ЗНАЧ.'), ('E', 'БРОНЯ'),
@@ -675,8 +727,8 @@ def build_base(wb):
             put(ws, f'F{r}', f'=IF(D{r}="",0,MIN(MAX(0,D{r}-E{r}),$D$37))', kind='auto')
         else:
             put(ws, f'F{r}', f'=IF(D{r}="",0,MAX(0,D{r}-E{r}))', kind='auto')
-        put(ws, f'G{r}', effect[:70], kind='cell')
-        ws.row_dimensions[r].height = 26
+        put(ws, f'G{r}', effect, kind='cell')      # полный текст, без обрыва на полуслове
+        ws.row_dimensions[r].height = max(26, 15 * math.ceil(len(effect) / 56))
     dv_num(ws, 'D8:D17', 2, 8)
     mput(ws, 'B18:C18', 'РАСКИДАНО / НОРМА 62', kind='kv_label')
     put(ws, 'D18', '=SUM(D8:D17)', kind='auto')
@@ -2018,12 +2070,15 @@ def main():
 
     wb = Workbook()
     wb.remove(wb.active)
+    use_theme('ncpd')          # 01 ДОСЬЕ и приложения — бумажное дело NCPD
     build_dossier(wb)
+    use_theme('dark')          # игровые листы 02–06 — тёмный протокол с красными акцентами
     build_base(wb)
     build_skills(wb)
     build_chrome(wb)
     build_gear(wb)
     build_state(wb)
+    use_theme('ncpd')          # КАТАЛОГ / СПРАВКА / ПРАВИЛА — бумажная справка
     build_catalog(wb, rows)
     build_reference(wb, data)
     build_rules(wb)
