@@ -9,6 +9,8 @@ app/data/backups/
 __pycache__/
 *.pyc
 .venv/
+sheets/preview/
+sheets/assets/print/
 nohup.out
 
 # локальные артефакты редакторов/ОС и временные smoke-файлы
