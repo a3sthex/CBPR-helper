@@ -20,29 +20,32 @@ from openpyxl.workbook.properties import CalcProperties
 ROOT = Path(__file__).resolve().parent
 PRINT = ROOT / "assets" / "print"
 
-# palette
-INK = "111111"
-GOLD = "FF9F1C"
-CRIMSON = "C41E3A"
-PAPER = "FFFFFF"
-CREAM = "FFF5E6"
-SLATE = "1A1A1A"
-ROW_ALT = "FFF5E6"
-WHITE = "FFFFFF"
+# NCPD Night Shift — screen palette
+TEXT = "E6EEF6"
+INK = "070A0E"       # header / tab dark
+GOLD = "F5C400"
+CRIMSON = "E10600"
+PAPER = "12161C"
+CREAM = "1C2430"     # fields / alt rows
+SLATE = "070A0E"
+ROW_ALT = "161C24"
+WHITE = "1C2430"     # input cells (dark fields)
+FG = "FFFFFF"        # text on crimson/black bars
+MUTED = "8A9AAB"
 
 thin = Border(
-    left=Side(style="thin", color="DDDDDD"),
-    right=Side(style="thin", color="DDDDDD"),
-    top=Side(style="thin", color="DDDDDD"),
-    bottom=Side(style="thin", color="DDDDDD"),
+    left=Side(style="thin", color="3A4654"),
+    right=Side(style="thin", color="3A4654"),
+    top=Side(style="thin", color="3A4654"),
+    bottom=Side(style="thin", color="3A4654"),
 )
-thick_bottom = Border(bottom=Side(style="medium", color=INK))
+thick_bottom = Border(bottom=Side(style="medium", color=GOLD))
 
 font_title = Font(name="Calibri", size=18, bold=True, color=GOLD)
-font_h = Font(name="Calibri", size=11, bold=True, color=WHITE)
-font_label = Font(name="Calibri", size=9, bold=True, color=INK)
-font_cell = Font(name="Calibri", size=10, color=INK)
-font_small = Font(name="Calibri", size=8, italic=True, color="5C5346")
+font_h = Font(name="Calibri", size=11, bold=True, color=FG)
+font_label = Font(name="Calibri", size=9, bold=True, color=TEXT)
+font_cell = Font(name="Calibri", size=10, color=TEXT)
+font_small = Font(name="Calibri", size=8, italic=True, color=MUTED)
 font_gold = Font(name="Calibri", size=10, bold=True, color=GOLD)
 
 fill_ink = PatternFill("solid", fgColor=INK)
@@ -68,7 +71,7 @@ def _page(ws, landscape=True, fit=True):
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_margins = PageMargins(left=0.4, right=0.4, top=0.5, bottom=0.5, header=0.2, footer=0.2)
     ws.sheet_view.showGridLines = False
-    ws.sheet_view.view = "pageLayout"
+    ws.sheet_view.view = "normal"
     ws.print_options.horizontalCentered = True
     ws.oddFooter.left.text = "NC//NET STREET FILE  ·  unofficial table aid"
     ws.oddFooter.right.text = "&A  ·  &P/&N"
@@ -280,7 +283,7 @@ def sheet_ledger(wb):
             cell = ws.cell(r, c, None)
             cell.border = thin
             cell.font = font_cell
-            cell.fill = fill_white if r % 2 == 0 else PatternFill("solid", fgColor="FBF6EC")
+            cell.fill = fill_white if r % 2 == 0 else fill_cream
             cell.alignment = left
         ws.cell(r, 6).number_format = '#,##0'
         ws.cell(r, 7).number_format = '0'
@@ -288,7 +291,7 @@ def sheet_ledger(wb):
 
     # Excel table so META SUMIF(LEDGER[eb]) works
     tab = Table(displayName="LEDGER", ref="A3:K43")
-    tab.tableStyleInfo = TableStyleInfo(name="TableStyleMedium2", showRowStripes=True)
+    tab.tableStyleInfo = TableStyleInfo(name="TableStyleDark2", showRowStripes=True)
     ws.add_table(tab)
 
     ws.merge_cells("A45:B45")
@@ -320,11 +323,11 @@ def sheet_contacts(wb):
             cell = ws.cell(r, c)
             cell.border = thin
             cell.font = font_cell
-            cell.fill = fill_white if r % 2 == 0 else PatternFill("solid", fgColor="FBF6EC")
+            cell.fill = fill_white if r % 2 == 0 else fill_cream
             cell.alignment = left
         ws.row_dimensions[r].height = 20
     tab = Table(displayName="CONTACTS", ref="A3:J23")
-    tab.tableStyleInfo = TableStyleInfo(name="TableStyleMedium1", showRowStripes=True)
+    tab.tableStyleInfo = TableStyleInfo(name="TableStyleDark1", showRowStripes=True)
     ws.add_table(tab)
     _note(ws, 25, 10, "Other PCs at the table + recurring NPCs. Dossier page 0 only keeps name-lists; this sheet is the actual cards. Trust 1 = will burn you, 5 = choomba.")
     ws.freeze_panes = "A4"
@@ -419,7 +422,7 @@ def sheet_garage(wb):
             _input(ws.cell(r, c))
         ws.row_dimensions[r].height = 20
     tab = Table(displayName="GARAGE", ref="A6:J16")
-    tab.tableStyleInfo = TableStyleInfo(name="TableStyleMedium4", showRowStripes=True)
+    tab.tableStyleInfo = TableStyleInfo(name="TableStyleDark4", showRowStripes=True)
     ws.add_table(tab)
     ws.freeze_panes = "A7"
     ws.sheet_properties.tabColor = "6B5A3A"
@@ -498,7 +501,7 @@ def sheet_team(wb):
             _input(ws.cell(r, c))
         ws.row_dimensions[r].height = 20
     tab = Table(displayName="TEAM", ref="A6:L12")
-    tab.tableStyleInfo = TableStyleInfo(name="TableStyleMedium7", showRowStripes=True)
+    tab.tableStyleInfo = TableStyleInfo(name="TableStyleDark7", showRowStripes=True)
     ws.add_table(tab)
     ws.sheet_properties.tabColor = "2F4A6E"
     return ws
@@ -549,7 +552,7 @@ def sheet_ref_combat(wb):
     ]
     for i, (a, b, n, p) in enumerate(actions):
         r = 5 + i
-        ws.cell(r, 1, a).font = Font(name="Calibri", size=9, bold=True)
+        ws.cell(r, 1, a).font = Font(name="Calibri", size=9, bold=True, color=TEXT)
         ws.cell(r, 2, b).font = font_cell
         ws.cell(r, 3, n).font = font_small
         ws.cell(r, 4, p).alignment = center
@@ -618,7 +621,7 @@ def sheet_ref_range(wb):
             cell = ws.cell(r, c, v)
             cell.border = thin
             cell.alignment = center if c > 1 else left
-            cell.font = Font(name="Calibri", size=10, bold=(c == 1))
+            cell.font = Font(name="Calibri", size=10, bold=(c == 1), color=TEXT)
             cell.fill = fill_white if i % 2 == 0 else fill_cream
         ws.row_dimensions[r].height = 18
 
@@ -676,7 +679,7 @@ def sheet_ref_dv(wb):
     ]
     for i, (n, dv, desc, p) in enumerate(dvs):
         r = 6 + i
-        ws.cell(r, 1, n).font = Font(name="Calibri", size=10, bold=True)
+        ws.cell(r, 1, n).font = Font(name="Calibri", size=10, bold=True, color=TEXT)
         ws.cell(r, 2, dv).alignment = center
         ws.cell(r, 2).font = Font(name="Calibri", size=12, bold=True, color=CRIMSON)
         ws.cell(r, 3, desc)
@@ -758,6 +761,23 @@ def build_xlsx(path: Path):
     wb.properties.title = "NC//NET Street File"
     wb.properties.creator = "NC//NET"
     wb.properties.description = "Offline character ledger + play screen for Cyberpunk RED. Unofficial table aid."
+    for ws in wb.worksheets:
+        max_r = max(ws.max_row or 1, 36)
+        max_c = max(ws.max_column or 1, 12)
+        for r in range(1, max_r + 1):
+            for c in range(1, max_c + 1):
+                cell = ws.cell(r, c)
+                if cell.fill.fill_type is None:
+                    cell.fill = fill_paper
+                if cell.font and cell.font.color is None and cell.value:
+                    cell.font = Font(
+                        name=cell.font.name or "Calibri",
+                        size=cell.font.size or 10,
+                        bold=cell.font.bold,
+                        italic=cell.font.italic,
+                        color=TEXT,
+                    )
+        ws.sheet_view.showGridLines = False
     path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)
     print("wrote", path, "sheets:", wb.sheetnames)

@@ -14,16 +14,19 @@ PAGE = landscape(A4)
 W, H = PAGE  # 841.89 x 595.27
 M = 14
 
-INK = HexColor("#111111")
-CRIMSON = HexColor("#C41E3A")
-AMBER = HexColor("#FF9F1C")
-GOLD = AMBER  # alias used throughout
-PAPER = white
-FIELD = HexColor("#FFF7EC")
-RULE = HexColor("#1A1A1A")
-MUTED = HexColor("#5C5C5C")
-NCPD_BG = HexColor("#111111")
-FIXER_BG = HexColor("#111111")
+# NCPD Night Shift — screen palette (not for print)
+INK = HexColor("#E6EEF6")
+CRIMSON = HexColor("#E10600")
+AMBER = HexColor("#F5C400")
+GOLD = AMBER
+PAPER = HexColor("#12161C")
+FIELD = HexColor("#1C2430")
+RULE = HexColor("#3A4654")
+MUTED = HexColor("#8A9AAB")
+NCPD_BG = HexColor("#070A0E")
+FIXER_BG = HexColor("#070A0E")
+PHOTO_BOOKING = HexColor("#1A222C")
+PHOTO_KNOWN = HexColor("#241C14")
 
 SKILL_GROUPS = [
     ("AWARENESS", [
@@ -147,7 +150,7 @@ class Form:
             x=x, y=y, size=size,
             buttonStyle="check",
             borderColor=RULE,
-            fillColor=white,
+            fillColor=FIELD,
             textColor=CRIMSON,
             checked=False,
         )
@@ -290,7 +293,7 @@ def page_dossier(c, form: Form):
     y_photo = H - 208
     # booking
     _string(c, "BOOKING PHOTO", M, y_photo + photo_h + 3, "Helvetica-Bold", 6, CRIMSON)
-    _rect(c, M, y_photo, photo_w, photo_h, fill=HexColor("#F4F4F4"), stroke=INK, lw=1.2)
+    _rect(c, M, y_photo, photo_w, photo_h, fill=PHOTO_BOOKING, stroke=RULE, lw=1.2)
     _draw_mugshot_ticks(c, M, y_photo, photo_w, photo_h)
     form.btn("Mugshot", M + 14, y_photo + 4, photo_w - 18, photo_h - 8,
              "Acrobat: click to import booking photo")
@@ -299,7 +302,7 @@ def page_dossier(c, form: Form):
     # known photo
     kx = 430
     _string(c, "KNOWN PHOTOGRAPH", kx, y_photo + photo_h + 3, "Helvetica-Bold", 6, GOLD)
-    _rect(c, kx, y_photo, photo_w, photo_h, fill=HexColor("#FFF4E0"), stroke=AMBER, lw=1.2)
+    _rect(c, kx, y_photo, photo_w, photo_h, fill=PHOTO_KNOWN, stroke=AMBER, lw=1.2)
     form.btn("KnownPhoto", kx + 4, y_photo + 4, photo_w - 8, photo_h - 8,
              "Acrobat: click to import street / known photograph")
     _center(c, "CLICK / PASTE", kx + photo_w / 2, y_photo + 8, "Helvetica", 5, MUTED)
@@ -463,7 +466,7 @@ def _draw_mugshot_ticks(c, x, y, w, h):
 # ---------------------------------------------------------------------------
 
 def page_edgerunner(c, form: Form):
-    c.setFillColor(white)
+    c.setFillColor(PAPER)
     c.rect(0, 0, W, H, stroke=0, fill=1)
     _header_bar(c, "EDGERUNNER  ·  PAGE 1", "STATS + SKILLS + COMBAT")
 
@@ -679,7 +682,7 @@ def _draw_skills(c, form: Form, x, y_top, width, height, cols=2):
 # ---------------------------------------------------------------------------
 
 def page_street(c, form: Form):
-    c.setFillColor(white)
+    c.setFillColor(PAPER)
     c.rect(0, 0, W, H, stroke=0, fill=1)
     _header_bar(c, "STREET KIT  ·  PAGE 2", "POCKET  ·  copy Cash / IP / Heat from xlsx META")
 
@@ -771,7 +774,7 @@ CYBER_BLOCKS = [
 
 
 def page_chrome(c, form: Form):
-    c.setFillColor(white)
+    c.setFillColor(PAPER)
     c.rect(0, 0, W, H, stroke=0, fill=1)
     _header_bar(c, "CHROME  ·  PAGE 3", "NEURAL LINK / NEUROPORT / SLOTS  ·  NET in the xlsx")
 
