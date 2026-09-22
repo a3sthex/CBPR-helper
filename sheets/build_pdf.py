@@ -3,25 +3,27 @@
 from pathlib import Path
 
 from reportlab.lib.colors import Color, HexColor, white, black
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.pdfbase import pdfform  # noqa: F401
 from reportlab.pdfgen import canvas
 
 ROOT = Path(__file__).resolve().parent
 PRINT = ROOT / "assets" / "print"
 
-W, H = A4  # 595.27 x 841.89
-M = 16
+PAGE = landscape(A4)
+W, H = PAGE  # 841.89 x 595.27
+M = 14
 
-INK = HexColor("#161616")
-CRIMSON = HexColor("#9B1B2E")
-GOLD = HexColor("#C4A35A")
-PAPER = HexColor("#F3EDE1")
-FIELD = HexColor("#FFFDF8")
-RULE = HexColor("#2A2A2A")
-MUTED = HexColor("#5A5348")
-NCPD_BG = HexColor("#1B1B1B")
-FIXER_BG = HexColor("#241C12")
+INK = HexColor("#111111")
+CRIMSON = HexColor("#C41E3A")
+AMBER = HexColor("#FF9F1C")
+GOLD = AMBER  # alias used throughout
+PAPER = white
+FIELD = HexColor("#FFF7EC")
+RULE = HexColor("#1A1A1A")
+MUTED = HexColor("#5C5C5C")
+NCPD_BG = HexColor("#111111")
+FIXER_BG = HexColor("#111111")
 
 SKILL_GROUPS = [
     ("AWARENESS", [
@@ -222,40 +224,52 @@ def _pair(form, c, label, name, x, y, w, h=11):
 # PAGE 0 — dossier
 # ---------------------------------------------------------------------------
 
+def _header_bar(c, title, right=""):
+    c.setFillColor(NCPD_BG)
+    c.rect(0, H - 30, W, 30, stroke=0, fill=1)
+    c.setFillColor(CRIMSON)
+    c.rect(0, H - 33, W, 3, stroke=0, fill=1)
+    _string(c, title, M, H - 19, "Helvetica-Bold", 11, white)
+    if right:
+        _right(c, right, W - M, H - 19, "Helvetica-Bold", 8, AMBER)
+
+
 def page_dossier(c, form: Form):
-    # paper
     c.setFillColor(PAPER)
     c.rect(0, 0, W, H, stroke=0, fill=1)
-
-    # top bar
     c.setFillColor(NCPD_BG)
-    c.rect(0, H - 54, W, 54, stroke=0, fill=1)
-    c.setFillColor(HexColor("#F3EDE1"))
-    c.circle(31, H - 27, 22, fill=1, stroke=0)
-    _draw_image(c, PRINT / "ncpd-seal.png", 8, H - 50, 46, 46)
-    _string(c, "NIGHT CITY POLICE DEPARTMENT", 58, H - 22, "Helvetica-Bold", 11, white)
-    _string(c, "RECORDS DIVISION  ·  STREET FILE  ·  CONFIDENTIAL", 58, H - 36, "Helvetica", 7, HexColor("#E8D9B0"))
-    c.setFillColor(HexColor("#F3EDE1"))
-    c.circle(W - 31, H - 27, 22, fill=1, stroke=0)
-    _draw_image(c, PRINT / "operator-mark.png", W - 54, H - 50, 46, 46)
-    _right(c, "OPERATOR FILE", W - 58, H - 20, "Helvetica-Bold", 9, GOLD)
-    _right(c, "NIGHT MARKET COPY", W - 58, H - 34, "Helvetica", 6, HexColor("#E8D9B0"))
+    c.rect(0, H - 36, W, 36, stroke=0, fill=1)
+    c.setFillColor(CRIMSON)
+    c.rect(0, H - 39, W, 3, stroke=0, fill=1)
+    c.setFillColor(white)
+    c.circle(26, H - 18, 15, fill=1, stroke=0)
+    _draw_image(c, PRINT / "ncpd-seal.png", 10, H - 34, 32, 32)
+    _string(c, "NIGHT CITY POLICE DEPARTMENT", 48, H - 16, "Helvetica-Bold", 12, white)
+    _string(c, "RECORDS DIVISION  ·  STREET FILE", 48, H - 28, "Helvetica", 7, AMBER)
+    c.setFillColor(white)
+    c.circle(W - 26, H - 18, 15, fill=1, stroke=0)
+    _draw_image(c, PRINT / "operator-mark.png", W - 42, H - 34, 32, 32)
+    _right(c, "OPERATOR FILE", W - 48, H - 16, "Helvetica-Bold", 10, AMBER)
+    _right(c, "NIGHT MARKET COPY", W - 48, H - 28, "Helvetica", 6.5, white)
 
-    # case strip
-    y = H - 70
+    y = H - 54
     _string(c, "CASE", M, y + 3, "Helvetica-Bold", 6, CRIMSON)
-    form.tf("CaseNo", M + 28, y - 2, 90, 12, size=8)
-    _string(c, "PRECINCT", M + 124, y + 3, "Helvetica-Bold", 6, MUTED)
-    form.tf("Precinct", M + 168, y - 2, 50, 12)
-    _string(c, "OPENED", M + 224, y + 3, "Helvetica-Bold", 6, MUTED)
-    form.tf("FileDate", M + 262, y - 2, 58, 12)
-    _string(c, "UPDATED", M + 326, y + 3, "Helvetica-Bold", 6, MUTED)
-    form.tf("FileUpdated", M + 368, y - 2, 58, 12)
-    _string(c, "PLAYER", M + 432, y + 3, "Helvetica-Bold", 6, MUTED)
-    form.tf("Player", M + 470, y - 2, W - M - 470, 12)
+    form.tf("CaseNo", M + 28, y - 2, 100, 12, size=8)
+    _string(c, "PRECINCT", M + 136, y + 3, "Helvetica-Bold", 6, MUTED)
+    form.tf("Precinct", M + 180, y - 2, 54, 12)
+    _string(c, "OPENED", M + 242, y + 3, "Helvetica-Bold", 6, MUTED)
+    form.tf("FileDate", M + 280, y - 2, 64, 12)
+    _string(c, "UPDATED", M + 352, y + 3, "Helvetica-Bold", 6, MUTED)
+    form.tf("FileUpdated", M + 396, y - 2, 64, 12)
+    _string(c, "PLAYER", M + 468, y + 3, "Helvetica-Bold", 6, MUTED)
+    form.tf("Player", M + 508, y - 2, 90, 12)
+    _string(c, "FILE PRICE", M + 606, y + 3, "Helvetica-Bold", 6, AMBER)
+    form.tf("FilePrice", M + 658, y - 2, 44, 12)
+    _string(c, "eb", M + 704, y + 1, "Helvetica", 6, MUTED)
+    form.cb("DoNotBurn", M + 722, y - 1, 8)
+    _string(c, "DO NOT BURN", M + 734, y + 1, "Helvetica-Bold", 6, CRIMSON)
 
-    # classification
-    y = H - 88
+    y = H - 72
     _string(c, "CLASSIFICATION", M, y + 2, "Helvetica-Bold", 6, CRIMSON)
     tags = [
         ("Class_POI", "POI"),
@@ -264,33 +278,28 @@ def page_dossier(c, form: Form):
         ("Class_PSYCHO", "CYBERPSYCHO WATCH"),
         ("Class_DEAD", "DECEASED"),
     ]
-    x = M + 78
+    x = M + 82
     for name, lab in tags:
         form.cb(name, x, y - 1, 8)
-        _string(c, lab, x + 11, y + 1, "Helvetica", 6)
-        x += 11 + c.stringWidth(lab, "Helvetica", 6) + 10
+        _string(c, lab, x + 11, y + 1, "Helvetica", 6.5)
+        x += 12 + c.stringWidth(lab, "Helvetica", 6.5) + 14
+    _string(c, "RELIABILITY 1–5", x + 8, y + 2, "Helvetica-Bold", 6, AMBER)
+    form.tf("SourceReliability", x + 90, y - 2, 28, 12)
 
-    _string(c, "FILE PRICE", M + 400, y + 2, "Helvetica-Bold", 5.5, GOLD)
-    form.tf("FilePrice", M + 448, y - 2, 42, 11)
-    _string(c, "eb", M + 492, y + 1, "Helvetica", 6, MUTED)
-    form.cb("DoNotBurn", M + 512, y - 1, 8)
-    _string(c, "DO NOT BURN", M + 523, y + 1, "Helvetica-Bold", 5.5, CRIMSON)
-
-    # photos + identity
-    photo_h, photo_w = 112, 90
-    y_photo = H - 226
+    photo_h, photo_w = 126, 82
+    y_photo = H - 208
     # booking
     _string(c, "BOOKING PHOTO", M, y_photo + photo_h + 3, "Helvetica-Bold", 6, CRIMSON)
-    _rect(c, M, y_photo, photo_w, photo_h, fill=HexColor("#E8E0D2"), stroke=INK, lw=1.2)
+    _rect(c, M, y_photo, photo_w, photo_h, fill=HexColor("#F4F4F4"), stroke=INK, lw=1.2)
     _draw_mugshot_ticks(c, M, y_photo, photo_w, photo_h)
     form.btn("Mugshot", M + 14, y_photo + 4, photo_w - 18, photo_h - 8,
              "Acrobat: click to import booking photo")
     _center(c, "CLICK / PASTE", M + photo_w / 2, y_photo + 8, "Helvetica", 5, MUTED)
 
     # known photo
-    kx = W / 2 + 4
+    kx = 430
     _string(c, "KNOWN PHOTOGRAPH", kx, y_photo + photo_h + 3, "Helvetica-Bold", 6, GOLD)
-    _rect(c, kx, y_photo, photo_w, photo_h, fill=HexColor("#E8E0D2"), stroke=GOLD, lw=1.2)
+    _rect(c, kx, y_photo, photo_w, photo_h, fill=HexColor("#FFF4E0"), stroke=AMBER, lw=1.2)
     form.btn("KnownPhoto", kx + 4, y_photo + 4, photo_w - 8, photo_h - 8,
              "Acrobat: click to import street / known photograph")
     _center(c, "CLICK / PASTE", kx + photo_w / 2, y_photo + 8, "Helvetica", 5, MUTED)
@@ -299,38 +308,30 @@ def page_dossier(c, form: Form):
     # Layout: booking | ID | known | fixer meta
     id_x = M + photo_w + 8
     id_w = kx - id_x - 8
-    yy = y_photo + photo_h - 14
-    fields_id = [
-        ("Handle", "HANDLE", 12),
-        ("Real Name", "LEGAL NAME", 12),
-        ("Aliases", "AKA / ALIASES", 12),
-        ("Role", "ROLE", 12),
-    ]
-    # Role + Rank on one row
+    yy = y_photo + photo_h - 10
     _string(c, "HANDLE", id_x, yy, "Helvetica", 5.2, MUTED)
-    form.tf("Handle", id_x, yy - 12, id_w, 12, size=9)
-    yy -= 26
+    form.tf("Handle", id_x, yy - 11, id_w, 11, size=9)
+    yy -= 21
     _string(c, "LEGAL NAME", id_x, yy, "Helvetica", 5.2, MUTED)
-    form.tf("Real Name", id_x, yy - 12, id_w, 12)
-    yy -= 26
+    form.tf("Real Name", id_x, yy - 11, id_w, 11)
+    yy -= 21
     _string(c, "AKA / ALIASES", id_x, yy, "Helvetica", 5.2, MUTED)
-    form.tf("Aliases", id_x, yy - 12, id_w, 12)
-    yy -= 26
+    form.tf("Aliases", id_x, yy - 11, id_w, 11)
+    yy -= 21
     hw = (id_w - 6) / 2
     _string(c, "ROLE", id_x, yy, "Helvetica", 5.2, MUTED)
-    form.tf("Role", id_x, yy - 12, hw, 12)
+    form.tf("Role", id_x, yy - 11, hw, 11)
     _string(c, "RANK", id_x + hw + 6, yy, "Helvetica", 5.2, MUTED)
-    form.tf("Rank", id_x + hw + 6, yy - 12, hw, 12)
-    yy -= 26
+    form.tf("Rank", id_x + hw + 6, yy - 11, hw, 11)
+    yy -= 21
     _string(c, "COVER OCCUPATION", id_x, yy, "Helvetica", 5.2, MUTED)
-    form.tf("CoverOccupation", id_x, yy - 12, id_w, 12)
+    form.tf("CoverOccupation", id_x, yy - 11, id_w, 11)
 
     # fixer meta to the right of known photo
     fx = kx + photo_w + 8
     fw = W - M - fx
     fy = y_photo + photo_h - 14
     for lab, name, h in [
-        ("RELIABILITY 1–5", "SourceReliability", 12),
         ("HEAT (NCPD / CORP / GANG)", "Heat", 12),
         ("DEAD DROP", "DeadDrop", 12),
         ("BACKER", "Backer", 12),
@@ -342,9 +343,8 @@ def page_dossier(c, form: Form):
         fy -= h + 10
 
     # physical ID row under photos
-    y = y_photo - 16
-    _string(c, "PHYSICAL / ID", M, y + 4, "Helvetica-Bold", 6, CRIMSON)
-    y -= 12
+    y = y_photo - 44
+    _string(c, "PHYSICAL / ID", M, y + 26, "Helvetica-Bold", 6, CRIMSON)
     cols = [
         ("Age", "AGE", 36),
         ("Sex", "SEX / PRONOUNS", 70),
@@ -358,20 +358,19 @@ def page_dossier(c, form: Form):
     ]
     x = M
     for name, lab, w in cols:
-        _string(c, lab, x, y + 12, "Helvetica", 4.8, MUTED)
+        _string(c, lab, x, y + 13, "Helvetica", 4.8, MUTED)
         form.tf(name, x, y, w, 11)
         x += w + 4
-    # languages full width leftover
-    _string(c, "LANGUAGES", M, y - 4, "Helvetica", 4.8, MUTED)
-    form.tf("Languages", M + 52, y - 14, W - M - M - 52, 11)
+    _string(c, "LANGUAGES", M, y - 14, "Helvetica", 4.8, MUTED)
+    form.tf("Languages", M + 52, y - 26, W - M - M - 52, 11)
 
     # BOLO
-    y = y - 32
-    _string(c, "BOLO  /  DISTINGUISHING MARKS", M, y + 14, "Helvetica-Bold", 6.5, CRIMSON)
-    _string(c, "NCPD: visible chrome, scars  ·  Operator: how they show up to a meet", M + 178, y + 14, "Helvetica-Oblique", 5.5, MUTED)
-    form.tf("BOLO", M, y - 28, W - 2 * M, 40, multiline=True, size=8)
-
     y = y - 48
+    _string(c, "BOLO  /  DISTINGUISHING MARKS", M, y + 12, "Helvetica-Bold", 6.5, CRIMSON)
+    _string(c, "NCPD: visible chrome, scars  ·  Operator: how they show up to a meet", M + 178, y + 12, "Helvetica-Oblique", 5.5, MUTED)
+    form.tf("BOLO", M, y - 24, W - 2 * M, 34, multiline=True, size=8)
+
+    y = y - 42
     # two voice columns
     col_w = (W - 2 * M - 8) / 2
     left_x = M
@@ -384,29 +383,28 @@ def page_dossier(c, form: Form):
     c.rect(right_x, y - 2, col_w, 14, stroke=0, fill=1)
     _string(c, "OPERATOR  ·  HOW TO WORK THEM / STREET TALK", right_x + 6, y + 2, "Helvetica-Bold", 7, GOLD)
 
-    y -= 18
-    # psych vs how
-    h = 36
+    y -= 16
+    h = 24
     _string(c, "PSYCHOLOGICAL PROFILE", left_x, y, "Helvetica", 5, MUTED)
     form.tf("PsychProfile", left_x, y - h, col_w, h, multiline=True)
     _string(c, "HOW TO WORK THEM  (what to say / not say)", right_x, y, "Helvetica", 5, GOLD)
     form.tf("HowToWorkThem", right_x, y - h, col_w, h, multiline=True)
 
-    y -= h + 14
-    h = 44
+    y -= h + 12
+    h = 36
     _string(c, "RAP  ·  WHO / WHAT / WHAT THEY CAN THROW / WHAT’S GONNA HAPPEN", left_x, y, "Helvetica", 5, MUTED)
     form.tf("RAP", left_x, y - h, col_w, h, multiline=True)
     _string(c, "STREET TALK  ·  WHAT THE STREET SAYS", right_x, y, "Helvetica", 5, GOLD)
     form.tf("StreetTalk", right_x, y - h, col_w, h, multiline=True)
 
-    y -= h + 14
-    h = 28
+    y -= h + 12
+    h = 24
     _string(c, "OCCUPATIONAL HISTORY  /  M.O.  (role-specific lifepath, prose)", left_x, y, "Helvetica", 5, MUTED)
     form.tf("OccupationHistory", left_x, y - h, col_w, h, multiline=True)
     _string(c, "GOALS  ·  PREDICTED ACTIVITY / WHAT GIG THEY BITE ON", right_x, y, "Helvetica", 5, GOLD)
     form.tf("Goals", right_x, y - h, col_w, h, multiline=True)
 
-    y -= h + 14
+    y -= h + 12
     # leverage row — dual labels, one box each, full width grid 3x2
     boxes = [
         ("Leverage", "LEVERAGE  ·  what they value / what they’ll take a job for"),
@@ -420,20 +418,27 @@ def page_dossier(c, form: Form):
         ("Childhood", "CHILDHOOD ENVIRONMENT"),
         ("FamilyCrisis", "FAMILY CRISIS"),
     ]
-    bw = (W - 2 * M - 12) / 2
+    bw = (W - 2 * M - 24) / 5
     bh = 22
     for i, (name, lab) in enumerate(boxes):
-        col = i % 2
-        row = i // 2
-        bx = M + col * (bw + 12)
-        by = y - row * (bh + 12) - bh
+        col = i % 5
+        row = i // 5
+        bx = M + col * (bw + 6)
+        by = y - row * (bh + 14) - bh
         _string(c, lab, bx, by + bh + 1, "Helvetica", 4.8, MUTED if col == 0 else GOLD)
         form.tf(name, bx, by, bw, bh, multiline=True, size=7)
 
     # stamps sit in the bottom margin, not over fields
-    _draw_image(c, PRINT / "stamp-confidential.png", W / 2 - 55, 22, 110, 42)
-    _draw_image(c, PRINT / "stamp-burn.png", W - 158, 20, 130, 50)
-    _draw_image(c, PRINT / "stamp-felony.png", M, 20, 140, 46)
+    c.saveState()
+    try:
+        c.setFillAlpha(0.7)
+        c.setStrokeAlpha(0.7)
+    except Exception:
+        pass
+    _draw_image(c, PRINT / "stamp-felony.png", M + 6, y_photo + 6, 72, 28)
+    _draw_image(c, PRINT / "stamp-confidential.png", kx + 6, y_photo + 6, 74, 28)
+    c.restoreState()
+    _draw_image(c, PRINT / "stamp-burn.png", kx + 8, y_photo + photo_h - 38, 70, 28)
 
     _footer(c, 1)
     c.showPage()
@@ -460,10 +465,7 @@ def _draw_mugshot_ticks(c, x, y, w, h):
 def page_edgerunner(c, form: Form):
     c.setFillColor(white)
     c.rect(0, 0, W, H, stroke=0, fill=1)
-    c.setFillColor(NCPD_BG)
-    c.rect(0, H - 28, W, 28, stroke=0, fill=1)
-    _string(c, "EDGERUNNER  ·  PAGE 1", M, H - 18, "Helvetica-Bold", 10, white)
-    _right(c, "STATS + SKILLS + COMBAT", W - M, H - 18, "Helvetica", 8, GOLD)
+    _header_bar(c, "EDGERUNNER  ·  PAGE 1", "STATS + SKILLS + COMBAT")
 
     y = H - 42
     _string(c, "HANDLE", M, y, "Helvetica", 5.2, MUTED)
@@ -507,17 +509,17 @@ def page_edgerunner(c, form: Form):
     _string(c, "/", x + 33, y - 8, "Helvetica-Bold", 10, white)
     form.tf("EMP", x + 38, y - 14, 28, 16, size=10)
 
-    # luck ticks
-    y = H - 108
-    _string(c, "LUCK SPENT THIS SESSION (resets each session)", M, y + 6, "Helvetica", 5.5, MUTED)
+    y_luck = H - 108
+    _string(c, "LUCK SPENT", M, y_luck + 2, "Helvetica", 5.5, MUTED)
     for i in range(10):
-        form.cb(f"LuckTick{i+1}", M + 188 + i * 14, y, 9)
+        form.cb(f"LuckTick{i+1}", M + 58 + i * 13, y_luck - 6, 9)
+    _string(c, "SKILLS: LVL + STAT = BASE   ·   (x2) double IP",
+            M + 200, y_luck + 2, "Helvetica", 5.5, MUTED)
 
-    # skills 2-col LEFT; derived/role RIGHT; weapons full-width bottom
-    y_top = H - 120
-    weapons_top = 168
-    left_w = 348
-    _draw_skills(c, form, M, y_top, left_w, y_top - weapons_top - 8, cols=2)
+    y_top = H - 126
+    weapons_top = 128
+    left_w = 548
+    _draw_skills(c, form, M, y_top, left_w, y_top - weapons_top - 8, cols=3)
 
     rx = M + left_w + 10
     rw = W - M - rx
@@ -550,11 +552,11 @@ def page_edgerunner(c, form: Form):
     form.tf("Humanity Max", rx + 50, dy, 40, 14, size=10)
     dy -= 18
     _string(c, "MED ALERT", rx, dy + 6, "Helvetica-Bold", 6.5, CRIMSON)
-    form.tf("MedAlert", rx, dy - 28, rw, 32, multiline=True, size=7)
-    dy -= 48
+    form.tf("MedAlert", rx, dy - 22, rw, 26, multiline=True, size=7)
+    dy -= 40
     _string(c, "ROLE ABILITY", rx, dy + 6, "Helvetica-Bold", 7, CRIMSON)
-    form.tf("RoleAbility", rx, dy - 28, rw, 32, multiline=True, size=7)
-    dy -= 48
+    form.tf("RoleAbility", rx, dy - 22, rw, 26, multiline=True, size=7)
+    dy -= 40
     _string(c, "COMBAT AWARENESS  (Solo: split Rank before Initiative)", rx, dy + 6, "Helvetica-Bold", 5.5, CRIMSON)
     ca = [
         ("CA_Deflect", "DEFLECT"),
@@ -576,17 +578,19 @@ def page_edgerunner(c, form: Form):
     _string(c, "ARRIVES", rx + 74, dy - 9, "Helvetica", 5, MUTED)
     form.tf("BackupETA", rx + 114, dy - 12, 32, 12)
     _string(c, "rd", rx + 148, dy - 9, "Helvetica", 6, MUTED)
-    dy -= 32
+    dy -= 28
     _string(c, "CRITICAL INJURIES", rx, dy + 6, "Helvetica-Bold", 6.5, CRIMSON)
-    form.tf("CritInjuries", rx, dy - 36, rw, 40, multiline=True, size=7)
-    dy -= 54
+    form.tf("CritInjuries", rx, dy - 28, rw, 32, multiline=True, size=7)
+    dy -= 44
     _string(c, "ADDICTIONS", rx, dy + 6, "Helvetica-Bold", 6.5, CRIMSON)
-    form.tf("Addictions", rx, weapons_top + 8, rw, dy - (weapons_top + 8), multiline=True, size=7)
+    add_h = max(28, dy - (weapons_top + 10))
+    form.tf("Addictions", rx, dy - add_h, rw, add_h, multiline=True, size=7)
 
     y = weapons_top
-    _hline(c, M, y + 8, W - 2 * M, CRIMSON, 1.2)
+    _hline(c, M, y + 8, left_w, CRIMSON, 1.2)
     _string(c, "WEAPONS", M, y - 2, "Helvetica-Bold", 8, CRIMSON)
-    headers = [("NAME", 150), ("DMG", 44), ("AMMO", 48), ("ROF", 32), ("NOTES", W - 2 * M - 150 - 44 - 48 - 32 - 16)]
+    notes_w = left_w - 150 - 44 - 48 - 32 - 16
+    headers = [("NAME", 150), ("DMG", 44), ("AMMO", 48), ("ROF", 32), ("NOTES", notes_w)]
     x = M
     hy = y - 14
     for lab, w in headers:
@@ -632,9 +636,6 @@ def _draw_skills(c, form: Form, x, y_top, width, height, cols=2):
     col_i = 0
     yy = y_top
     cx = x
-    _string(c, "SKILLS   ·   LVL you fill   ·   STAT is printed   ·   BASE = LVL + STAT   ·   (x2) costs double IP",
-            x, y_top + 8, "Helvetica", 5.5, MUTED)
-
     # mini header per column
     def col_caps(cx, yy):
         _string(c, "SKILL", cx, yy, "Helvetica", 4.5, MUTED)
@@ -680,88 +681,69 @@ def _draw_skills(c, form: Form, x, y_top, width, height, cols=2):
 def page_street(c, form: Form):
     c.setFillColor(white)
     c.rect(0, 0, W, H, stroke=0, fill=1)
-    c.setFillColor(NCPD_BG)
-    c.rect(0, H - 28, W, 28, stroke=0, fill=1)
-    _string(c, "STREET KIT  ·  PAGE 2", M, H - 18, "Helvetica-Bold", 10, white)
-    _right(c, "POCKET  ·  copy Cash / IP / Heat from xlsx META after each session", W - M, H - 18, "Helvetica", 6.5, GOLD)
+    _header_bar(c, "STREET KIT  ·  PAGE 2", "POCKET  ·  copy Cash / IP / Heat from xlsx META")
 
-    y = H - 48
+    y = H - 44
     _string(c, "HANDLE", M, y, "Helvetica", 5.2, MUTED)
-    form.tf("Handle", M, y - 12, 120, 12, size=9)
-    _string(c, "CASH eb", M + 130, y, "Helvetica-Bold", 6, CRIMSON)
-    form.tf("Cash", M + 130, y - 12, 70, 14, size=10)
-    _string(c, "IP NOW", M + 210, y, "Helvetica-Bold", 6, CRIMSON)
-    form.tf("IP_Current", M + 210, y - 12, 50, 14, size=10)
-    _string(c, "IP EARNED", M + 270, y, "Helvetica", 5.2, MUTED)
-    form.tf("IP_TotalEarned", M + 270, y - 12, 50, 14)
-    _string(c, "IP SPENT", M + 330, y, "Helvetica", 5.2, MUTED)
-    form.tf("IP_Spent", M + 330, y - 12, 50, 14)
-    _string(c, "REP #", M + 390, y, "Helvetica", 5.2, MUTED)
-    form.tf("Reputation", M + 390, y - 12, 40, 14)
-    _string(c, "HEAT", M + 440, y, "Helvetica", 5.2, MUTED)
-    form.tf("Heat", M + 440, y - 12, W - M - 440, 14)
+    form.tf("Handle", M, y - 16, 120, 12, size=9)
+    _string(c, "CASH eb", M + 128, y, "Helvetica-Bold", 6, CRIMSON)
+    form.tf("Cash", M + 128, y - 16, 70, 12, size=10)
+    _string(c, "IP NOW", M + 206, y, "Helvetica-Bold", 6, CRIMSON)
+    form.tf("IP_Current", M + 206, y - 16, 48, 12, size=10)
+    _string(c, "IP EARNED", M + 262, y, "Helvetica", 5.2, MUTED)
+    form.tf("IP_TotalEarned", M + 262, y - 16, 48, 12)
+    _string(c, "IP SPENT", M + 318, y, "Helvetica", 5.2, MUTED)
+    form.tf("IP_Spent", M + 318, y - 16, 48, 12)
+    _string(c, "REP #", M + 374, y, "Helvetica", 5.2, MUTED)
+    form.tf("Reputation", M + 374, y - 16, 40, 12)
+    _string(c, "HEAT", M + 422, y, "Helvetica", 5.2, MUTED)
+    form.tf("Heat", M + 422, y - 16, 120, 12)
+    _string(c, "LIFESTYLE", M + 550, y, "Helvetica", 5.2, MUTED)
+    form.tf("Lifestyle", M + 550, y - 16, 90, 12)
+    _string(c, "HOUSING", M + 648, y, "Helvetica", 5.2, MUTED)
+    form.tf("Housing", M + 648, y - 16, W - M - 648, 12)
 
-    y = H - 86
-    _string(c, "REPUTATION EVENTS  (short; full RAP is on page 0)", M, y + 6, "Helvetica-Bold", 7, CRIMSON)
-    for i in range(3):
-        form.tf(f"RepEvent{i+1}", M, y - 14 - i * 16, W - 2 * M, 14)
+    y = H - 76
+    _string(c, "RENT / mo", M, y, "Helvetica", 5.2, MUTED)
+    form.tf("Rent", M, y - 16, 70, 12)
+    _string(c, "TRAUMA TEAM / SUBS", M + 80, y, "Helvetica", 5.2, MUTED)
+    form.tf("TraumaTeam", M + 80, y - 16, 160, 12)
+    _string(c, "REP EVENTS", M + 250, y, "Helvetica-Bold", 6, CRIMSON)
+    form.tf("RepEvent1", M + 310, y - 16, 160, 12)
+    form.tf("RepEvent2", M + 476, y - 16, 160, 12)
+    form.tf("RepEvent3", M + 642, y - 16, W - M - 642, 12)
 
-    y = H - 150
-    # lifestyle block
-    _string(c, "LIFESTYLE / HOUSING", M, y + 6, "Helvetica-Bold", 8, CRIMSON)
-    labs = [
-        ("Lifestyle", "LIFESTYLE", 150),
-        ("Housing", "HOUSING", 160),
-        ("Rent", "RENT / mo", 70),
-        ("TraumaTeam", "TRAUMA TEAM / SUBS", 170),
-    ]
-    x = M
-    for name, lab, w in labs:
-        _string(c, lab, x, y - 6, "Helvetica", 5, MUTED)
-        form.tf(name, x, y - 20, w, 12)
-        x += w + 8
-
-    # IN CASE OF FLATLINE
-    y = H - 200
+    y = H - 108
     c.setFillColor(CRIMSON)
-    c.rect(M, y - 8, W - 2 * M, 16, stroke=0, fill=1)
-    _string(c, "IN CASE OF FLATLINE", M + 6, y - 4, "Helvetica-Bold", 8, white)
-    y -= 28
+    c.rect(M, y - 2, W - 2 * M, 14, stroke=0, fill=1)
+    _string(c, "IN CASE OF FLATLINE", M + 6, y + 2, "Helvetica-Bold", 8, white)
+    y -= 22
     _string(c, "TRAUMA TEAM # / TIER", M, y + 4, "Helvetica", 5, MUTED)
-    form.tf("FlatlineTT", M, y - 10, 150, 12)
-    _string(c, "RIPPERDOC", M + 160, y + 4, "Helvetica", 5, MUTED)
-    form.tf("FlatlineRipper", M + 160, y - 10, 130, 12)
-    _string(c, "WHO TO CALL", M + 300, y + 4, "Helvetica", 5, MUTED)
-    form.tf("FlatlineCall", M + 300, y - 10, 130, 12)
-    _string(c, "AGENT", M + 440, y + 4, "Helvetica", 5, MUTED)
-    form.tf("Agent", M + 440, y - 10, W - M - 440, 12)
+    form.tf("FlatlineTT", M, y - 10, 170, 12)
+    _string(c, "RIPPERDOC", M + 180, y + 4, "Helvetica", 5, MUTED)
+    form.tf("FlatlineRipper", M + 180, y - 10, 160, 12)
+    _string(c, "WHO TO CALL", M + 350, y + 4, "Helvetica", 5, MUTED)
+    form.tf("FlatlineCall", M + 350, y - 10, 200, 12)
+    _string(c, "AGENT", M + 560, y + 4, "Helvetica", 5, MUTED)
+    form.tf("Agent", M + 560, y - 10, W - M - 560, 12)
 
-    y = H - 250
-    half = (W - 2 * M - 10) / 2
+    y = H - 160
+    third = (W - 2 * M - 16) / 3
+    box_h = 355
     _string(c, "GEAR", M, y + 6, "Helvetica-Bold", 8, CRIMSON)
-    form.tf("Gear", M, y - 150, half, 154, multiline=True, size=8)
-    _string(c, "FASHION INVENTORY  (items / cost / SP if any — look is BOLO on p.0)", M + half + 10, y + 6, "Helvetica-Bold", 7, GOLD)
-    form.tf("FashionInventory", M + half + 10, y - 150, half, 154, multiline=True, size=8)
+    form.tf("Gear", M, y - box_h, third, box_h, multiline=True, size=8)
+    _string(c, "FASHION INVENTORY  (look is BOLO on p.0)", M + third + 8, y + 6, "Helvetica-Bold", 7, AMBER)
+    form.tf("FashionInventory", M + third + 8, y - box_h, third, box_h, multiline=True, size=8)
+    _string(c, "NOTES  /  DOWNTIME  /  THERAPY", M + 2 * (third + 8), y + 6, "Helvetica-Bold", 7, CRIMSON)
+    form.tf("Notes", M + 2 * (third + 8), y - box_h, third, box_h, multiline=True, size=8)
 
-    y = H - 430
+    y = y - box_h - 18
     _string(c, "AMMUNITION", M, y + 6, "Helvetica-Bold", 8, CRIMSON)
-    _string(c, "TYPE", M, y - 6, "Helvetica", 5, MUTED)
-    _string(c, "QTY", M + 130, y - 6, "Helvetica", 5, MUTED)
-    _string(c, "TYPE", M + 180, y - 6, "Helvetica", 5, MUTED)
-    _string(c, "QTY", M + 310, y - 6, "Helvetica", 5, MUTED)
-    _string(c, "TYPE", M + 360, y - 6, "Helvetica", 5, MUTED)
-    _string(c, "QTY", M + 490, y - 6, "Helvetica", 5, MUTED)
     for i in range(6):
-        col = i % 3
-        row = i // 3
-        xx = M + col * 180
-        yy = y - 22 - row * 16
-        form.tf(f"Ammo{i+1}_Type", xx, yy, 128, 13)
-        form.tf(f"Ammo{i+1}_Qty", xx + 132, yy, 40, 13)
-
-    y = H - 490
-    _string(c, "NOTES  /  DOWNTIME  /  THERAPY", M, y + 6, "Helvetica-Bold", 8, CRIMSON)
-    form.tf("Notes", M, 22, W - 2 * M, y - 18, multiline=True, size=8)
+        xx = M + (i % 6) * 135
+        yy = y - 16
+        form.tf(f"Ammo{i+1}_Type", xx, yy, 90, 13)
+        form.tf(f"Ammo{i+1}_Qty", xx + 92, yy, 36, 13)
 
     _footer(c, 3)
     c.showPage()
@@ -791,10 +773,7 @@ CYBER_BLOCKS = [
 def page_chrome(c, form: Form):
     c.setFillColor(white)
     c.rect(0, 0, W, H, stroke=0, fill=1)
-    c.setFillColor(NCPD_BG)
-    c.rect(0, H - 28, W, 28, stroke=0, fill=1)
-    _string(c, "CHROME  ·  PAGE 3", M, H - 18, "Helvetica-Bold", 10, white)
-    _right(c, "NEURAL LINK / NEUROPORT / SLOTS  ·  NET programs live in the xlsx", W - M, H - 18, "Helvetica", 6.5, GOLD)
+    _header_bar(c, "CHROME  ·  PAGE 3", "NEURAL LINK / NEUROPORT / SLOTS  ·  NET in the xlsx")
 
     y = H - 46
     _string(c, "HANDLE", M, y, "Helvetica", 5.2, MUTED)
@@ -814,7 +793,7 @@ def page_chrome(c, form: Form):
 
     # neuroport built-ins row
     y = H - 96
-    c.setFillColor(HexColor("#241C12"))
+    c.setFillColor(NCPD_BG)
     c.rect(M, y - 4, W - 2 * M, 14, stroke=0, fill=1)
     _string(c, "NEUROPORT SUITE  (Holophone, Biomonitor, Virtu, HUD, 2 shard slots, Personal Link)", M + 4, y, "Helvetica-Bold", 7, GOLD)
     y -= 18
@@ -840,10 +819,8 @@ def page_chrome(c, form: Form):
             y -= 14
 
     y -= 22
-    # two-column chrome blocks
-    col_w = (W - 2 * M - 10) / 2
-    blocks_left = CYBER_BLOCKS[0:7]
-    blocks_right = CYBER_BLOCKS[7:]
+    col_w = (W - 2 * M - 24) / 4
+    chunks = [CYBER_BLOCKS[0:4], CYBER_BLOCKS[4:8], CYBER_BLOCKS[8:11], CYBER_BLOCKS[11:]]
     y0 = y
 
     def draw_blocks(blocks, x, y):
@@ -851,9 +828,8 @@ def page_chrome(c, form: Form):
             _string(c, title.upper(), x + (14 if founded else 0), y, "Helvetica-Bold", 7, CRIMSON)
             if founded:
                 form.cb(f"{key}_Has", x, y - 2, 9)
-            _string(c, "HL", x + col_w - 70, y, "Helvetica", 5, MUTED)
-            form.tf(f"{key}_HL", x + col_w - 56, y - 4, 24, 11, size=7)
-            _string(c, "NOTES", x + col_w - 28, y, "Helvetica", 4.5, MUTED)
+            _string(c, "HL", x + col_w - 40, y, "Helvetica", 5, MUTED)
+            form.tf(f"{key}_HL", x + col_w - 26, y - 4, 24, 11, size=7)
             y -= 14
             for i in range(slots):
                 form.tf(f"{key}_{i+1}", x, y - 2, col_w, 12, size=7)
@@ -861,12 +837,12 @@ def page_chrome(c, form: Form):
             y -= 6
         return y
 
-    draw_blocks(blocks_left, M, y0)
-    draw_blocks(blocks_right, M + col_w + 10, y0)
+    for i, chunk in enumerate(chunks):
+        draw_blocks(chunk, M + i * (col_w + 8), y0)
 
     _string(c, "Install notes / therapy / humanity recovery — also track on xlsx CLINIC",
-            M, 22, "Helvetica", 6, MUTED)
-    form.tf("ChromeNotes", M, 34, W - 2 * M, 48, multiline=True, size=8)
+            M, 56, "Helvetica", 6, MUTED)
+    form.tf("ChromeNotes", M, 18, W - 2 * M, 34, multiline=True, size=8)
 
     _footer(c, 4)
     c.showPage()
@@ -907,7 +883,7 @@ def _wire_image_js(path: Path):
 
 def build_pdf(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
-    c = canvas.Canvas(str(path), pagesize=A4)
+    c = canvas.Canvas(str(path), pagesize=PAGE)
     c.setTitle("NC//NET Street File")
     c.setAuthor("NC//NET")
     c.setSubject("Unofficial Cyberpunk RED fillable character dossier + street kit")
@@ -920,4 +896,6 @@ def build_pdf(path: Path):
     c.save()
     _wire_image_js(path)
     print("wrote", path, "size", path.stat().st_size)
+    return path
+
     return path

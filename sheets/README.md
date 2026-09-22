@@ -4,8 +4,8 @@ Unofficial, offline Cyberpunk RED packet. Not affiliated with R. Talsorian Games
 
 | File | What |
 |---|---|
-| `Street-File.pdf` | 4-page A4 fillable dossier (AcroForm) |
-| `Street-File.xlsx` | Ledger, contacts, role tabs, play-screen tables |
+| `Street-File.pdf` | 4-page **A4 landscape** fillable dossier (AcroForm) |
+| `Street-File.xlsx` | Ledger, contacts, role tabs, play-screen tables (all sheets landscape) |
 
 English labels. Rebuild:
 

@@ -21,20 +21,20 @@ ROOT = Path(__file__).resolve().parent
 PRINT = ROOT / "assets" / "print"
 
 # palette
-INK = "1A1A1A"
-GOLD = "C4A35A"
-CRIMSON = "9B1B2E"
-PAPER = "F7F1E6"
-CREAM = "FFF8EC"
-SLATE = "2C3338"
-ROW_ALT = "F3EDE0"
+INK = "111111"
+GOLD = "FF9F1C"
+CRIMSON = "C41E3A"
+PAPER = "FFFFFF"
+CREAM = "FFF5E6"
+SLATE = "1A1A1A"
+ROW_ALT = "FFF5E6"
 WHITE = "FFFFFF"
 
 thin = Border(
-    left=Side(style="thin", color="B9A989"),
-    right=Side(style="thin", color="B9A989"),
-    top=Side(style="thin", color="B9A989"),
-    bottom=Side(style="thin", color="B9A989"),
+    left=Side(style="thin", color="DDDDDD"),
+    right=Side(style="thin", color="DDDDDD"),
+    top=Side(style="thin", color="DDDDDD"),
+    bottom=Side(style="thin", color="DDDDDD"),
 )
 thick_bottom = Border(bottom=Side(style="medium", color=INK))
 
@@ -58,7 +58,7 @@ left = Alignment(horizontal="left", vertical="center", wrap_text=True)
 top_left = Alignment(horizontal="left", vertical="top", wrap_text=True)
 
 
-def _page(ws, landscape=False, fit=True):
+def _page(ws, landscape=True, fit=True):
     ws.page_setup.paperSize = ws.PAPERSIZE_A4
     ws.page_setup.orientation = "landscape" if landscape else "portrait"
     ws.page_setup.fitToPage = fit
@@ -139,7 +139,7 @@ def _dv(ws, formula, sqref, name):
 def sheet_meta(wb):
     ws = wb.active
     ws.title = "META"
-    _page(ws, landscape=False)
+    _page(ws, landscape=True)
     _banner(ws, "  STREET FILE   ·   META", 8)
     _widths(ws, [22, 22, 18, 16, 16, 16, 18, 22])
 
@@ -334,7 +334,7 @@ def sheet_contacts(wb):
 
 def sheet_net(wb):
     ws = wb.create_sheet("NET")
-    _page(ws, landscape=False)
+    _page(ws, landscape=True)
     _banner(ws, "  NET   ·   INTERFACE / QUICKHACKS", 6)
     _widths(ws, [26, 16, 14, 14, 18, 28])
     _label(ws["A3"], "Cyberdeck")
@@ -428,7 +428,7 @@ def sheet_garage(wb):
 
 def sheet_workshop(wb):
     ws = wb.create_sheet("WORKSHOP")
-    _page(ws, landscape=False)
+    _page(ws, landscape=True)
     _banner(ws, "  WORKSHOP   ·   MAKER", 6)
     _widths(ws, [26, 14, 14, 16, 16, 30])
     for i, lab in enumerate(["Field Expertise", "Upgrade Expertise", "Fabrication Expertise", "Invention Expertise"], 3):
@@ -457,7 +457,7 @@ def sheet_workshop(wb):
 
 def sheet_clinic(wb):
     ws = wb.create_sheet("CLINIC")
-    _page(ws, landscape=False)
+    _page(ws, landscape=True)
     _banner(ws, "  CLINIC   ·   MEDICINE", 6, fill_red)
     _widths(ws, [24, 14, 16, 16, 16, 30])
     for i, lab in enumerate(["Surgery (skill = 2× pts)", "Medical Tech — Pharma", "Medical Tech — Cryo"], 3):
@@ -506,7 +506,7 @@ def sheet_team(wb):
 
 def sheet_wishlist(wb):
     ws = wb.create_sheet("WISHLIST")
-    _page(ws, landscape=False)
+    _page(ws, landscape=True)
     _banner(ws, "  WISHLIST   ·   NIGHT MARKET", 6, fill_slate)
     _widths(ws, [28, 16, 12, 14, 14, 30])
     _header_row(ws, 3, ["Item", "Category", "Price cat.", "eb", "Source / Fixer", "Notes"], fill=fill_slate)
@@ -522,7 +522,7 @@ def sheet_wishlist(wb):
 
 def sheet_ref_combat(wb):
     ws = wb.create_sheet("REF_COMBAT")
-    _page(ws, landscape=False)
+    _page(ws, landscape=True)
     _banner(ws, "  REF  ·  COMBAT  ·  CPR p.127–176, 186", 4)
     _widths(ws, [28, 52, 18, 18])
     ws.merge_cells("A3:D3")
@@ -657,7 +657,7 @@ def sheet_ref_range(wb):
 
 def sheet_ref_dv(wb):
     ws = wb.create_sheet("REF_DV")
-    _page(ws, landscape=False)
+    _page(ws, landscape=True)
     _banner(ws, "  REF  ·  DIFFICULTY  ·  IP  ·  PRICES  ·  CPR p.129–130, 385, 411", 4)
     _widths(ws, [18, 12, 42, 22])
     ws.merge_cells("A3:D3")
