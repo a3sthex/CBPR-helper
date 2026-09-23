@@ -253,11 +253,6 @@ def _led(c, x, y, r=2.3, on=True):
         c.circle(x - r * 0.35, y + r * 0.3, r * 0.32, fill=1, stroke=0)
 
 
-def _rec_badge(c, x, y):
-    _led(c, x, y + 3.2, 2.5)
-    _string(c, "REC", x + 7, y, "Helvetica-Bold", 6.5, CRIMSON)
-
-
 def _watermark_seal(c):
     c.saveState()
     try:
@@ -293,7 +288,6 @@ def _header_bar(c, title, right=""):
     c.setFillColor(CRIMSON)
     c.rect(0, H - 33, W, 3, stroke=0, fill=1)
     _string(c, title, M, H - 19, "Helvetica-Bold", 11, white)
-    _rec_badge(c, M + c.stringWidth(title, "Helvetica-Bold", 11) + 12, H - 22)
     if right:
         _right(c, right, W - M, H - 19, "Helvetica-Bold", 8, AMBER)
 
@@ -360,7 +354,6 @@ def page_dossier(c, form: Form):
     _string(c, "BOOKING PHOTO", M, y_photo + photo_h + 3, "Helvetica-Bold", 6, CRIMSON)
     _rect(c, M, y_photo, photo_w, photo_h, fill=PHOTO_BOOKING, stroke=RULE, lw=1.2)
     _hud_corners(c, M - 2, y_photo - 2, photo_w + 4, photo_h + 4, CRIMSON, arm=8)
-    _draw_mugshot_ticks(c, M, y_photo, photo_w, photo_h)
     form.btn("Mugshot", M + 14, y_photo + 4, photo_w - 18, photo_h - 8,
              "Acrobat: click to import booking photo")
     _center(c, "CLICK / PASTE", M + photo_w / 2, y_photo + 8, "Helvetica", 5, MUTED)
@@ -504,20 +497,6 @@ def page_dossier(c, form: Form):
 
     _footer(c, 1)
     c.showPage()
-
-
-def _draw_mugshot_ticks(c, x, y, w, h):
-    c.setStrokeColor(INK)
-    c.setFillColor(INK)
-    c.setLineWidth(0.5)
-    n = 8
-    for i in range(n + 1):
-        yy = y + 8 + i * ((h - 16) / n)
-        ln = 10 if i % 2 == 0 else 6
-        c.line(x, yy, x + ln, yy)
-        if i % 2 == 0:
-            cm = 150 + (i // 2) * 10
-            _string(c, str(cm), x + 2, yy + 1, "Helvetica", 4, INK)
 
 
 # ---------------------------------------------------------------------------
@@ -979,6 +958,4 @@ def build_pdf(path: Path):
     c.save()
     _wire_image_js(path)
     print("wrote", path, "size", path.stat().st_size)
-    return path
-
     return path
