@@ -209,6 +209,53 @@ def _draw_image(c, path, x, y, w, h):
                     preserveAspectRatio=True, anchor="c")
 
 
+def _hud_corners(c, x, y, w, h, color=CRIMSON, arm=9, lw=1.15):
+    """Terminal-style corner brackets around a box."""
+    c.setStrokeColor(color)
+    c.setLineWidth(lw)
+    c.setLineCap(0)
+    for ox, oy, sx, sy in (
+        (x, y, 1, 1),
+        (x + w, y, -1, 1),
+        (x, y + h, 1, -1),
+        (x + w, y + h, -1, -1),
+    ):
+        c.line(ox, oy, ox + sx * arm, oy)
+        c.line(ox, oy, ox, oy + sy * arm)
+
+
+def _barcode(c, x, y, w, h=10, color=INK):
+    c.setFillColor(color)
+    seed = 0xC20770
+    xx = x
+    while xx < x + w:
+        seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+        bw = 1.0 if seed % 3 else 1.8
+        if seed % 4 != 0:
+            c.rect(xx, y, min(bw, x + w - xx), h, stroke=0, fill=1)
+        xx += bw + 0.65
+
+
+def _page_bezel(c):
+    """Hairline HUD frame at the page edge."""
+    _hud_corners(c, 5, 5, W - 10, H - 10, color=RULE, arm=14, lw=0.9)
+    c.setStrokeColor(CRIMSON)
+    c.setLineWidth(0.6)
+    c.line(5, H - 5, 28, H - 5)
+    c.line(5, H - 5, 5, H - 28)
+
+
+def _watermark_seal(c):
+    c.saveState()
+    try:
+        c.setFillAlpha(0.055)
+        c.setStrokeAlpha(0.055)
+    except Exception:
+        pass
+    _draw_image(c, PRINT / "ncpd-seal.png", W / 2 - 110, H / 2 - 150, 220, 220)
+    c.restoreState()
+
+
 def _labeled_field(form, c, label, name, x, y, w, h=11, lab_w=None, size=7):
     if lab_w is None:
         lab_w = min(70, w * 0.38)
@@ -240,6 +287,8 @@ def _header_bar(c, title, right=""):
 def page_dossier(c, form: Form):
     c.setFillColor(PAPER)
     c.rect(0, 0, W, H, stroke=0, fill=1)
+    _watermark_seal(c)
+    _page_bezel(c)
     c.setFillColor(NCPD_BG)
     c.rect(0, H - 36, W, 36, stroke=0, fill=1)
     c.setFillColor(CRIMSON)
@@ -254,6 +303,7 @@ def page_dossier(c, form: Form):
     _draw_image(c, PRINT / "operator-mark.png", W - 42, H - 34, 32, 32)
     _right(c, "OPERATOR FILE", W - 48, H - 16, "Helvetica-Bold", 10, AMBER)
     _right(c, "NIGHT MARKET COPY", W - 48, H - 28, "Helvetica", 6.5, white)
+    _barcode(c, 320, H - 30, 88, 8, MUTED)
 
     y = H - 54
     _string(c, "CASE", M, y + 3, "Helvetica-Bold", 6, CRIMSON)
@@ -294,6 +344,7 @@ def page_dossier(c, form: Form):
     # booking
     _string(c, "BOOKING PHOTO", M, y_photo + photo_h + 3, "Helvetica-Bold", 6, CRIMSON)
     _rect(c, M, y_photo, photo_w, photo_h, fill=PHOTO_BOOKING, stroke=RULE, lw=1.2)
+    _hud_corners(c, M - 2, y_photo - 2, photo_w + 4, photo_h + 4, CRIMSON, arm=8)
     _draw_mugshot_ticks(c, M, y_photo, photo_w, photo_h)
     form.btn("Mugshot", M + 14, y_photo + 4, photo_w - 18, photo_h - 8,
              "Acrobat: click to import booking photo")
@@ -303,6 +354,7 @@ def page_dossier(c, form: Form):
     kx = 430
     _string(c, "KNOWN PHOTOGRAPH", kx, y_photo + photo_h + 3, "Helvetica-Bold", 6, GOLD)
     _rect(c, kx, y_photo, photo_w, photo_h, fill=PHOTO_KNOWN, stroke=AMBER, lw=1.2)
+    _hud_corners(c, kx - 2, y_photo - 2, photo_w + 4, photo_h + 4, AMBER, arm=8)
     form.btn("KnownPhoto", kx + 4, y_photo + 4, photo_w - 8, photo_h - 8,
              "Acrobat: click to import street / known photograph")
     _center(c, "CLICK / PASTE", kx + photo_w / 2, y_photo + 8, "Helvetica", 5, MUTED)
@@ -431,18 +483,6 @@ def page_dossier(c, form: Form):
         _string(c, lab, bx, by + bh + 1, "Helvetica", 4.8, MUTED if col == 0 else GOLD)
         form.tf(name, bx, by, bw, bh, multiline=True, size=7)
 
-    # stamps sit in the bottom margin, not over fields
-    c.saveState()
-    try:
-        c.setFillAlpha(0.7)
-        c.setStrokeAlpha(0.7)
-    except Exception:
-        pass
-    _draw_image(c, PRINT / "stamp-felony.png", M + 6, y_photo + 6, 72, 28)
-    _draw_image(c, PRINT / "stamp-confidential.png", kx + 6, y_photo + 6, 74, 28)
-    c.restoreState()
-    _draw_image(c, PRINT / "stamp-burn.png", kx + 8, y_photo + photo_h - 38, 70, 28)
-
     _footer(c, 1)
     c.showPage()
 
@@ -468,6 +508,7 @@ def _draw_mugshot_ticks(c, x, y, w, h):
 def page_edgerunner(c, form: Form):
     c.setFillColor(PAPER)
     c.rect(0, 0, W, H, stroke=0, fill=1)
+    _page_bezel(c)
     _header_bar(c, "EDGERUNNER  ·  PAGE 1", "STATS + SKILLS + COMBAT")
 
     y = H - 42
@@ -684,6 +725,7 @@ def _draw_skills(c, form: Form, x, y_top, width, height, cols=2):
 def page_street(c, form: Form):
     c.setFillColor(PAPER)
     c.rect(0, 0, W, H, stroke=0, fill=1)
+    _page_bezel(c)
     _header_bar(c, "STREET KIT  ·  PAGE 2", "POCKET  ·  copy Cash / IP / Heat from xlsx META")
 
     y = H - 44
@@ -719,6 +761,18 @@ def page_street(c, form: Form):
     y = H - 108
     c.setFillColor(CRIMSON)
     c.rect(M, y - 2, W - 2 * M, 14, stroke=0, fill=1)
+    c.saveState()
+    pth = c.beginPath()
+    pth.rect(M, y - 2, W - 2 * M, 14)
+    c.clipPath(pth, stroke=0, fill=0)
+    c.setFillColor(AMBER)
+    for i in range(-4, 90):
+        c.saveState()
+        c.translate(M + i * 14, y - 8)
+        c.rotate(35)
+        c.rect(0, 0, 5, 28, stroke=0, fill=1)
+        c.restoreState()
+    c.restoreState()
     _string(c, "IN CASE OF FLATLINE", M + 6, y + 2, "Helvetica-Bold", 8, white)
     y -= 22
     _string(c, "TRAUMA TEAM # / TIER", M, y + 4, "Helvetica", 5, MUTED)
@@ -776,6 +830,7 @@ CYBER_BLOCKS = [
 def page_chrome(c, form: Form):
     c.setFillColor(PAPER)
     c.rect(0, 0, W, H, stroke=0, fill=1)
+    _page_bezel(c)
     _header_bar(c, "CHROME  ·  PAGE 3", "NEURAL LINK / NEUROPORT / SLOTS  ·  NET in the xlsx")
 
     y = H - 46
