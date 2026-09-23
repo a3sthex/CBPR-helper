@@ -245,6 +245,19 @@ def _page_bezel(c):
     c.line(5, H - 5, 5, H - 28)
 
 
+def _led(c, x, y, r=2.3, on=True):
+    c.setFillColor(CRIMSON if on else RULE)
+    c.circle(x, y, r, fill=1, stroke=0)
+    if on:
+        c.setFillColor(HexColor("#FF7A7A"))
+        c.circle(x - r * 0.35, y + r * 0.3, r * 0.32, fill=1, stroke=0)
+
+
+def _rec_badge(c, x, y):
+    _led(c, x, y + 3.2, 2.5)
+    _string(c, "REC", x + 7, y, "Helvetica-Bold", 6.5, CRIMSON)
+
+
 def _watermark_seal(c):
     c.saveState()
     try:
@@ -280,6 +293,7 @@ def _header_bar(c, title, right=""):
     c.setFillColor(CRIMSON)
     c.rect(0, H - 33, W, 3, stroke=0, fill=1)
     _string(c, title, M, H - 19, "Helvetica-Bold", 11, white)
+    _rec_badge(c, M + c.stringWidth(title, "Helvetica-Bold", 11) + 12, H - 22)
     if right:
         _right(c, right, W - M, H - 19, "Helvetica-Bold", 8, AMBER)
 
@@ -324,6 +338,7 @@ def page_dossier(c, form: Form):
 
     y = H - 72
     _string(c, "CLASSIFICATION", M, y + 2, "Helvetica-Bold", 6, CRIMSON)
+    _led(c, M + 78, y + 5, 2.0)
     tags = [
         ("Class_POI", "POI"),
         ("Class_WANT", "WANT"),
@@ -400,6 +415,7 @@ def page_dossier(c, form: Form):
     # physical ID row under photos
     y = y_photo - 44
     _string(c, "PHYSICAL / ID", M, y + 26, "Helvetica-Bold", 6, CRIMSON)
+    _led(c, M + 68, y + 29, 2.0)
     cols = [
         ("Age", "AGE", 36),
         ("Sex", "SEX / PRONOUNS", 70),
@@ -422,6 +438,7 @@ def page_dossier(c, form: Form):
     # BOLO
     y = y - 48
     _string(c, "BOLO  /  DISTINGUISHING MARKS", M, y + 12, "Helvetica-Bold", 6.5, CRIMSON)
+    _led(c, M + 158, y + 15.5, 2.0)
     _string(c, "NCPD: visible chrome, scars  ·  Operator: how they show up to a meet", M + 178, y + 12, "Helvetica-Oblique", 5.5, MUTED)
     form.tf("BOLO", M, y - 24, W - 2 * M, 34, multiline=True, size=8)
 
@@ -433,9 +450,11 @@ def page_dossier(c, form: Form):
     # headers
     c.setFillColor(NCPD_BG)
     c.rect(left_x, y - 2, col_w, 14, stroke=0, fill=1)
+    _led(c, left_x + col_w - 10, y + 5, 2.1)
     _string(c, "NCPD  ·  PSYCH / RAP / ORIGIN", left_x + 6, y + 2, "Helvetica-Bold", 7, white)
     c.setFillColor(FIXER_BG)
     c.rect(right_x, y - 2, col_w, 14, stroke=0, fill=1)
+    _led(c, right_x + col_w - 10, y + 5, 2.1)
     _string(c, "OPERATOR  ·  HOW TO WORK THEM / STREET TALK", right_x + 6, y + 2, "Helvetica-Bold", 7, GOLD)
 
     y -= 16
@@ -529,6 +548,7 @@ def page_edgerunner(c, form: Form):
     y = H - 78
     _string(c, "STATISTICS   ·   LUCK and EMP are current / max — do not repeat below",
             M, y + 16, "Helvetica-Bold", 7, CRIMSON)
+    _led(c, M + 62, y + 19.5, 2.0)
     stats = ["INT", "REF", "DEX", "TECH", "COOL", "WILL", "MOVE", "BODY"]
     box_w = 42
     x = M
@@ -571,6 +591,7 @@ def page_edgerunner(c, form: Form):
     c.setFillColor(NCPD_BG)
     c.rect(rx, dy - 2, rw, 14, stroke=0, fill=1)
     _string(c, "DERIVED", rx + 4, dy + 2, "Helvetica-Bold", 7, GOLD)
+    _led(c, rx + rw - 10, dy + 5, 2.1)
     dy -= 16
     _string(c, "HP  cur / max", rx, dy, "Helvetica", 5.5, MUTED)
     _string(c, "10+5×ceil((BODY+WILL)/2)", rx + 70, dy, "Helvetica", 5, MUTED)
@@ -633,6 +654,7 @@ def page_edgerunner(c, form: Form):
     y = weapons_top
     _hline(c, M, y + 8, left_w, CRIMSON, 1.2)
     _string(c, "WEAPONS", M, y - 2, "Helvetica-Bold", 8, CRIMSON)
+    _led(c, M + 58, y + 1.5, 2.1)
     notes_w = left_w - 150 - 44 - 48 - 32 - 16
     headers = [("NAME", 150), ("DMG", 44), ("AMMO", 48), ("ROF", 32), ("NOTES", notes_w)]
     x = M
@@ -703,6 +725,7 @@ def _draw_skills(c, form: Form, x, y_top, width, height, cols=2):
             c.setFillColor(NCPD_BG)
             c.rect(cx, yy - 8, col_w, 10, stroke=0, fill=1)
             _string(c, title, cx + 3, yy - 5.5, "Helvetica-Bold", 6, GOLD)
+            _led(c, cx + col_w - 7, yy - 3.2, 1.7)
             yy -= 12
             continue
         label, stat, fname, spec = rest
@@ -788,6 +811,7 @@ def page_street(c, form: Form):
     third = (W - 2 * M - 16) / 3
     box_h = 355
     _string(c, "GEAR", M, y + 6, "Helvetica-Bold", 8, CRIMSON)
+    _led(c, M + 32, y + 9.5, 2.1)
     form.tf("Gear", M, y - box_h, third, box_h, multiline=True, size=8)
     _string(c, "FASHION INVENTORY  (look is BOLO on p.0)", M + third + 8, y + 6, "Helvetica-Bold", 7, AMBER)
     form.tf("FashionInventory", M + third + 8, y - box_h, third, box_h, multiline=True, size=8)
@@ -796,6 +820,7 @@ def page_street(c, form: Form):
 
     y = y - box_h - 18
     _string(c, "AMMUNITION", M, y + 6, "Helvetica-Bold", 8, CRIMSON)
+    _led(c, M + 72, y + 9.5, 2.1)
     for i in range(6):
         xx = M + (i % 6) * 135
         yy = y - 16
