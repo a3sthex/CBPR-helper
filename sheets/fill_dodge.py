@@ -251,7 +251,7 @@ def main():
                     w.update()
                     filled += 1
     tmp = PDF.with_suffix(".filled.pdf")
-    doc.save(tmp, garbage=4, deflate=True)
+    doc.save(tmp, deflate=True)
     doc.close()
     tmp.replace(PDF)
     print("filled widgets", filled)
