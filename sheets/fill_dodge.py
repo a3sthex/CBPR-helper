@@ -188,40 +188,132 @@ TEXT = {
     "Language 2 Spec": "Spanish",
     "Language 2": "4",
     "Language 2 BASE": "9",
+    "Language 3 Spec": "",
+    "Language 3": "0",
+    "Language 3 BASE": "5",
+    "Local Expert 2 Spec": "",
+    "Local Expert 2": "0",
+    "Local Expert 2 BASE": "5",
+    "Science Spec": "",
+    "Martial Arts Spec": "",
+    "Martial Arts 2 Spec": "",
+    "Play Instrument Spec": "",
+    "Play Instrument 2 Spec": "",
     "FA_1": "Skinwatch (fashionware, 0 HL)",
     "FA_2": "EMP Threading (fashionware, 0 HL)",
     "ChromeNotes": "No Neuroport. NCPD chip never sat. Do not install. Quickhack: not a valid jack target.",
 }
 
-# LVL, BASE
-SKILLS = {
-    "Athletics": (4, 12),
-    "Brawling": (6, 14),
-    "Bureaucracy": (2, 7),
-    "Concentration": (2, 9),
-    "Conversation": (4, 9),
-    "Criminology": (2, 7),
-    "Education": (2, 7),
-    "Evasion": (6, 14),
-    "First Aid": (2, 6),
-    "Handgun": (6, 14),
-    "Human Perception": (4, 9),
-    "Interrogation": (6, 14),
-    "Language (Streetslang)": (4, 9),
-    "Local Expert": (6, 11),
-    "Melee Weapon": (4, 12),
-    "Perception": (6, 11),
-    "Persuasion": (2, 10),
-    "Resist Torture/Drugs": (2, 9),
-    "Shoulder Arms": (6, 14),
-    "Stealth": (2, 10),
-    "Streetwise": (6, 14),
+# Complete Package: 86 pts, max 6, x2 skills cost 2/level.
+# Mandatory ≥2: Athletics, Brawling, Concentration, Conversation, Education,
+# Evasion, First Aid, Human Perception, Streetslang, Local Expert (home),
+# Perception, Persuasion, Stealth. Cultural origin Language 4 is free (Spanish).
+# SA 6 (x2=12) made the old list 90. Cut Conversation 4→2 and Criminology 2→0.
+STAT = {
+    "INT": 5, "REF": 8, "DEX": 8, "TECH": 4, "COOL": 8, "WILL": 7, "EMP": 5,
 }
+
+# name -> (stat, lvl, x2)
+SKILL_DEF = {
+    "Concentration": ("WILL", 2, False),
+    "Conceal/Reveal Object": ("INT", 0, False),
+    "Lip Reading": ("INT", 0, False),
+    "Perception": ("INT", 6, False),
+    "Tracking": ("INT", 0, False),
+    "Athletics": ("DEX", 4, False),
+    "Contortionist": ("DEX", 0, False),
+    "Dance": ("DEX", 0, False),
+    "Endurance": ("WILL", 0, False),
+    "Resist Torture/Drugs": ("WILL", 2, False),
+    "Stealth": ("DEX", 2, False),
+    "Drive Land Vehicle": ("REF", 0, False),
+    "Pilot Air Vehicle": ("REF", 0, True),
+    "Pilot Sea Vehicle": ("REF", 0, False),
+    "Riding": ("REF", 0, False),
+    "Accounting": ("INT", 0, False),
+    "Animal Handling": ("INT", 0, False),
+    "Bureaucracy": ("INT", 2, False),
+    "Business": ("INT", 0, False),
+    "Composition": ("INT", 0, False),
+    "Criminology": ("INT", 0, False),
+    "Cryptography": ("INT", 0, False),
+    "Deduction": ("INT", 0, False),
+    "Education": ("INT", 2, False),
+    "Gamble": ("INT", 0, False),
+    "Language (Streetslang)": ("INT", 4, False),
+    "Library Search": ("INT", 0, False),
+    "Local Expert": ("INT", 6, False),
+    "Science": ("INT", 0, False),
+    "Tactics": ("INT", 0, False),
+    "Wilderness Survival": ("INT", 0, False),
+    "Brawling": ("DEX", 6, False),
+    "Evasion": ("DEX", 6, False),
+    "Martial Arts": ("DEX", 0, True),
+    "Martial Arts 2": ("DEX", 0, True),
+    "Melee Weapon": ("DEX", 4, False),
+    "Acting": ("COOL", 0, False),
+    "Play Instrument": ("TECH", 0, False),
+    "Play Instrument 2": ("TECH", 0, False),
+    "Archery": ("REF", 0, False),
+    "Autofire": ("REF", 0, True),
+    "Handgun": ("REF", 6, False),
+    "Heavy Weapons": ("REF", 0, True),
+    "Shoulder Arms": ("REF", 6, True),
+    "Bribery": ("COOL", 0, False),
+    "Conversation": ("EMP", 2, False),
+    "Human Perception": ("EMP", 4, False),
+    "Interrogation": ("COOL", 6, False),
+    "Persuasion": ("COOL", 2, False),
+    "Personal Grooming": ("COOL", 0, False),
+    "Streetwise": ("COOL", 6, False),
+    "Trading": ("COOL", 0, False),
+    "Wardrobe & Style": ("COOL", 0, False),
+    "Air Vehicle Tech": ("TECH", 0, False),
+    "Basic Tech": ("TECH", 0, False),
+    "Cybertech": ("TECH", 0, False),
+    "Demolitions": ("TECH", 0, True),
+    "Electronics/Security Tech": ("TECH", 0, True),
+    "First Aid": ("TECH", 2, False),
+    "Forgery": ("TECH", 0, False),
+    "Land Vehicle Tech": ("TECH", 0, False),
+    "Paint/Draw/Sculpt": ("TECH", 0, False),
+    "Paramedic": ("TECH", 0, True),
+    "Photography/Film": ("TECH", 0, False),
+    "Pick Lock": ("TECH", 0, False),
+    "Pick Pocket": ("TECH", 0, False),
+    "Sea Vehicle Tech": ("TECH", 0, False),
+    "Weaponstech": ("TECH", 0, False),
+}
+
+MUST_MIN2 = {
+    "Athletics", "Brawling", "Concentration", "Conversation", "Education",
+    "Evasion", "First Aid", "Human Perception", "Language (Streetslang)",
+    "Local Expert", "Perception", "Persuasion", "Stealth",
+}
+
+SKILLS = {}  # name -> (lvl, base)
+for _n, (_st, _lvl, _x2) in SKILL_DEF.items():
+    SKILLS[_n] = (_lvl, STAT[_st] + _lvl)
+
+
+def _assert_creation_legal():
+    cost = 0
+    for n, (st, lvl, x2) in SKILL_DEF.items():
+        if not (0 <= lvl <= 6):
+            raise SystemExit(f"{n} lvl {lvl} not in 0–6")
+        if n in MUST_MIN2 and lvl < 2:
+            raise SystemExit(f"{n} mandatory min 2, got {lvl}")
+        cost += lvl * (2 if x2 else 1)
+    # Spanish 4 free — not in SKILL_DEF cost
+    if cost != 86:
+        raise SystemExit(f"skill cost {cost} != 86")
+    print("Complete Package skills OK: 86 pts, max 6, mandatory ≥2, Spanish 4 free")
 
 CHECKS_ON = {"DoNotBurn", "Class_POI"}
 
 
 def main():
+    _assert_creation_legal()
     doc = fitz.open(PDF)
     filled, missing = 0, []
     seen = set()
